@@ -10,6 +10,8 @@
 # - Adds a "missing-issue-link" label on failure; removes it on pass.
 # - Automatically reopens PRs that were closed by this workflow once the
 #   check passes (e.g. author edits the body to add a valid issue link).
+# - Respects maintainer reopens: if an org member manually reopens a
+#   previously auto-closed PR, enforcement is skipped so it stays open.
 # - Posts a comment explaining the requirement on failure.
 # - Cancels all other in-progress/queued CI runs for the PR on closure.
 # - Deduplicates comments via an HTML marker so re-runs don't spam.
@@ -59,6 +61,42 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
+
+            // If a maintainer (org member) manually reopened a PR that was
+            // previously auto-closed by this workflow (indicated by the
+            // "missing-issue-link" label), respect that decision and skip
+            // enforcement. Without this, the workflow would immediately
+            // re-close the PR on the "reopened" event.
+            const prLabels = context.payload.pull_request.labels.map(l => l.name);
+            if (context.payload.action === 'reopened' && prLabels.includes('missing-issue-link')) {
+              const sender = context.payload.sender?.login;
+              if (!sender) {
+                throw new Error('Unexpected: reopened event has no sender — cannot check org membership');
+              }
+              try {
+                const { data: membership } = await github.rest.orgs.getMembershipForUser({
+                  org: 'langchain-ai',
+                  username: sender,
+                });
+                if (membership.state === 'active') {
+                  console.log(`Maintainer ${sender} reopened PR #${prNumber} — skipping enforcement`);
+                  core.setOutput('has-link', 'true');
+                  core.setOutput('is-assigned', 'true');
+                  return;
+                } else {
+                  console.log(`${sender} is an org member but state is "${membership.state}" — proceeding with check`);
+                }
+              } catch (e) {
+                if (e.status === 404) {
+                  console.log(`${sender} is not an org member — proceeding with check`);
+                } else {
+                  const status = e.status ?? 'unknown';
+                  throw new Error(
+                    `Membership check failed for ${sender} (HTTP ${status}): ${e.message}`,
+                  );
+                }
+              }
+            }
 
             // Fetch live labels to handle the race where "external" fires
             // before "trusted-contributor" appears in the event payload.

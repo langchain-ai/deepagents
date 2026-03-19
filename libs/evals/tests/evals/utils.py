@@ -72,7 +72,6 @@ class AgentTrajectory:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
 class SuccessAssertion:
     """Base for correctness assertions that fail the test when violated."""
 

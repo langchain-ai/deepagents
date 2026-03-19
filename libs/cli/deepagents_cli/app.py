@@ -482,6 +482,39 @@ List what you captured and where you stored it:
 """  # noqa: E501
 
 
+@dataclass(frozen=True, slots=True)
+class SanitizeInputResult:
+    """Result of sanitizing human input."""
+
+    redacted: str
+    findings: list[SanitizeFinding]
+
+
+async def sanitize_human_input(
+    text: str,
+    provider: SanitizerProvider | None,
+) -> SanitizeInputResult:
+    """Run human input through the sanitizer provider.
+
+    Args:
+        text: The raw user input.
+        provider: The active sanitizer provider, or ``None`` if disabled.
+
+    Returns:
+        A ``SanitizeInputResult`` with the (possibly redacted) text and any
+        findings. If the provider raises, returns the original text with no
+        findings (fail-open to avoid blocking user input).
+    """
+    if provider is None:
+        return SanitizeInputResult(redacted=text, findings=[])
+    try:
+        result = await provider.asanitize(text)
+    except Exception:  # noqa: BLE001
+        logger.warning("Sanitizer failed on human input — sending unsanitized", exc_info=True)
+        return SanitizeInputResult(redacted=text, findings=[])
+    return SanitizeInputResult(redacted=result["content"], findings=result["findings"])
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
@@ -2216,7 +2249,18 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
-        # Mount the user message
+        # Sanitize input if provider is active
+        san_result = await sanitize_human_input(message, self._sanitizer)
+        if san_result.findings:
+            count = len(san_result.findings)
+            self.notify(
+                f"{count} secret(s) redacted from your input.",
+                severity="warning",
+                timeout=5,
+            )
+        message = san_result.redacted
+
+        # Mount the user message (now sanitized)
         await self._mount_message(UserMessage(message))
 
         # Anchor to bottom so streaming response stays visible

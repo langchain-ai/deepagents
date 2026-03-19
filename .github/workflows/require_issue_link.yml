@@ -31,7 +31,7 @@ on:
 # visibility) but will NOT label, comment, close, or fail PRs.
 # ──────────────────────────────────────────────────────────────────────────────
 env:
-  ENFORCE_ISSUE_LINK: 'false'
+  ENFORCE_ISSUE_LINK: 'true'
 
 permissions:
   contents: read

@@ -9,9 +9,10 @@
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests
 INTEGRATION_FILES ?= tests/integration_tests
+PYTEST_EXTRA ?=
 
 test: ## Run unit tests
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
 test_integration: ## Run integration tests
 	uv run pytest $(INTEGRATION_FILES)

@@ -12,11 +12,12 @@ UV_FROZEN = true
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests/
 SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
+PYTEST_EXTRA ?=
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+	uv run --group test pytest -n auto -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
 		--cov-report=term-missing
 

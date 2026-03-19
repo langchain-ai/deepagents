@@ -516,8 +516,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sanitizer",
         metavar="PROVIDER",
-        help="Enable output sanitization with the given provider (e.g., 'gitleaks'). "
-        "Redacts secrets from tool output before they reach the LLM.",
+        help="Enable secret sanitization with the given provider (e.g., 'gitleaks'). "
+        "Redacts secrets from human input (with a warning) and tool output before "
+        "they reach the LLM or are displayed.",
     )
 
     try:

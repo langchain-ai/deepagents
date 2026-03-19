@@ -186,6 +186,7 @@ class TestRunTextualCliAsyncMcp:
             result = await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
+                model_name="openai:gpt-4o",
             )
 
         assert result == app_result
@@ -201,7 +202,7 @@ class TestRunTextualCliAsyncMcp:
 
         # Model kwargs forwarded for deferred create_model() inside the TUI
         assert captured_kwargs["model_kwargs"] is not None
-        assert captured_kwargs["model_kwargs"]["model_spec"] is None
+        assert captured_kwargs["model_kwargs"]["model_spec"] == "openai:gpt-4o"
         assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
 
     async def test_no_mcp_kwargs_when_disabled(self) -> None:
@@ -218,6 +219,7 @@ class TestRunTextualCliAsyncMcp:
             await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
+                model_name="openai:gpt-4o",
                 no_mcp=True,
             )
 

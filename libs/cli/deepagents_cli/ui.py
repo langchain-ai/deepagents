@@ -4,15 +4,11 @@ This module is imported at CLI startup to wire `-h` actions into the
 argparse tree.  It must stay lightweight — no SDK or langchain imports.
 """
 
-import argparse
-from collections.abc import Callable
-
 from rich.markup import escape
 
-from deepagents_cli._version import __version__
+from deepagents_cli._version import DOCS_URL, __version__
 from deepagents_cli.config import (
     COLORS,
-    DOCS_URL,
     _get_editable_install_path,
     _is_editable_install,
     console,
@@ -20,30 +16,6 @@ from deepagents_cli.config import (
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
 _HELP_OPTION_LINE = "  -h, --help              Show this help message"
-
-
-def build_help_parent(
-    help_fn: Callable[[], None],
-    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
-) -> list[argparse.ArgumentParser]:
-    """Build a parent parser whose `-h` invokes *help_fn*.
-
-    This eliminates boilerplate: without the helper every `add_parser`
-    call would need its own three-line parent-parser setup.  Used by both
-    `main.parse_args` and `skills.commands.setup_skills_parser`.
-
-    Args:
-        help_fn: Zero-argument callable that renders a Rich help screen.
-        make_help_action: Factory that turns *help_fn* into an argparse
-            Action class (see `main._make_help_action`).
-
-    Returns:
-        Single-element list suitable for the `parents` kwarg of
-        `add_parser`.
-    """
-    parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument("-h", "--help", action=make_help_action(help_fn))
-    return [parent]
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:

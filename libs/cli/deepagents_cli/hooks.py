@@ -23,11 +23,7 @@ import subprocess  # noqa: S404
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
-
 logger = logging.getLogger(__name__)
-
-_HOOKS_PATH = DEFAULT_CONFIG_DIR / "hooks.json"
 
 _hooks_config: list[dict[str, Any]] | None = None
 """Cached config — loaded lazily on first dispatch."""
@@ -47,16 +43,20 @@ def _load_hooks() -> list[dict[str, Any]]:
     if _hooks_config is not None:
         return _hooks_config
 
-    if not _HOOKS_PATH.is_file():
+    from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
+
+    hooks_path = DEFAULT_CONFIG_DIR / "hooks.json"
+
+    if not hooks_path.is_file():
         _hooks_config = []
         return _hooks_config
 
     try:
-        data = json.loads(_HOOKS_PATH.read_text())
+        data = json.loads(hooks_path.read_text())
         if not isinstance(data, dict):
             logger.warning(
                 "Hooks config at %s must be a JSON object, got %s",
-                _HOOKS_PATH,
+                hooks_path,
                 type(data).__name__,
             )
             _hooks_config = []
@@ -65,14 +65,14 @@ def _load_hooks() -> list[dict[str, Any]]:
         if not isinstance(hooks, list):
             logger.warning(
                 "Hooks config 'hooks' key at %s must be a list, got %s",
-                _HOOKS_PATH,
+                hooks_path,
                 type(hooks).__name__,
             )
             _hooks_config = []
             return _hooks_config
         _hooks_config = hooks
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to load hooks config from %s: %s", _HOOKS_PATH, exc)
+        logger.warning("Failed to load hooks config from %s: %s", hooks_path, exc)
         _hooks_config = []
 
     return _hooks_config

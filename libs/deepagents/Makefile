@@ -1,4 +1,4 @@
-.PHONY: format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -12,11 +12,12 @@ UV_FROZEN = true
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests/
 SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
+PYTEST_EXTRA ?=
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+	uv run --group test pytest -n auto -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
 		--cov-report=term-missing
 
@@ -35,8 +36,6 @@ integration_test: ## Run integration tests
 integration_test integration_tests:
 	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
 
-evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test --group evals pytest tests/evals
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)

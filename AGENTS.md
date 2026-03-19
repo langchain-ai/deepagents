@@ -14,7 +14,7 @@ deepagents/
 │   ├── deepagents/  # SDK
 │   ├── cli/         # CLI tool
 │   ├── acp/         # Agent Context Protocol support
-│   ├── harbor/      # Evaluation/benchmark framework
+│   ├── evals/       # Evaluation suite and Harbor integration
 │   └── partners/    # Integration packages
 │       └── daytona/
 │       └── ...
@@ -85,7 +85,7 @@ Suggest PR titles that follow Conventional Commits format. Refer to .github/work
 ```txt
 feat(sdk): add new chat completion feature
 fix(cli): resolve type hinting issue
-chore(harbor): update infrastructure dependencies
+chore(evals): update infrastructure dependencies
 ```
 
 - Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
@@ -283,6 +283,12 @@ Model discovery, credential checking, and UI integration are automatic once `PRO
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+
+### Evals (`libs/evals/`)
+
+**Vendored data files:**
+
+`libs/evals/tests/evals/tau2_airline/data/` contains vendored data from the upstream [tau-bench](https://github.com/sierra-research/tau-bench) project. These files must stay byte-identical to upstream. Pre-commit hooks (`end-of-file-fixer`, `trailing-whitespace`, `fix-smartquotes`, `fix-spaces`) are excluded from this directory in `.pre-commit-config.yaml`. Do not remove those exclusions or reformat files in this directory.
 
 ## Additional resources
 

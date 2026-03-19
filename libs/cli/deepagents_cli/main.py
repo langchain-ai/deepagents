@@ -608,6 +608,7 @@ async def run_textual_cli_async(
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
+    resume_thread: str | None = None,
     initial_prompt: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -634,6 +635,12 @@ async def run_textual_cli_async(
 
             Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
+        resume_thread: Raw resume intent from `-r` flag.
+
+            `'__MOST_RECENT__'` for bare `-r`, a thread ID string for `-r <id>`,
+            or `None` for new sessions.
+
+            Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
@@ -712,6 +719,7 @@ async def run_textual_cli_async(
             auto_approve=auto_approve,
             cwd=Path.cwd(),
             thread_id=thread_id,
+            resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
@@ -1364,72 +1372,15 @@ def cli_main() -> None:
                 build_langsmith_thread_url,
             )
             from deepagents_cli.sessions import (
-                find_similar_threads,
                 generate_thread_id,
-                get_most_recent,
-                get_thread_agent,
                 thread_exists,
             )
 
-            thread_id = None
-
-            if args.resume_thread == "__MOST_RECENT__":
-                # -r (no ID): Get most recent thread
-                # If --agent specified, filter by that agent; otherwise get
-                # most recent overall
-                agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
-                thread_id = asyncio.run(get_most_recent(agent_filter))
-                if thread_id:
-                    agent_name = asyncio.run(get_thread_agent(thread_id))
-                    if agent_name:
-                        args.agent = agent_name
-                else:
-                    if agent_filter:
-                        msg = Text("No previous thread for '", style="yellow")
-                        msg.append(args.agent)
-                        msg.append("', starting new.", style="yellow")
-                    else:
-                        msg = Text("No previous threads, starting new.", style="yellow")
-                    console.print(msg)
-
-            elif args.resume_thread:
-                # -r <ID>: Resume specific thread
-                if asyncio.run(thread_exists(args.resume_thread)):
-                    thread_id = args.resume_thread
-                    if args.agent == _DEFAULT_AGENT_NAME:
-                        agent_name = asyncio.run(get_thread_agent(thread_id))
-                        if agent_name:
-                            args.agent = agent_name
-                else:
-                    error_msg = Text("Thread '", style="red")
-                    error_msg.append(args.resume_thread)
-                    error_msg.append("' not found.", style="red")
-                    console.print(error_msg)
-
-                    # Check for similar thread IDs
-                    similar = asyncio.run(find_similar_threads(args.resume_thread))
-                    if similar:
-                        console.print()
-                        console.print("[yellow]Did you mean?[/yellow]")
-                        for tid in similar:
-                            hint = Text("  deepagents -r ", style="cyan")
-                            hint.append(str(tid), style="cyan")
-                            console.print(hint)
-                        console.print()
-
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see "
-                        "available threads.[/dim]"
-                    )
-                    console.print(
-                        "[dim]Use 'deepagents -r' to resume the most "
-                        "recent thread.[/dim]"
-                    )
-                    sys.exit(1)
-
-            # Generate new thread ID if not resuming
-            if thread_id is None:
-                thread_id = generate_thread_id()
+            # Instead of resolving thread_id here with synchronous asyncio.run()
+            # DB calls, pass the raw resume request to the TUI and let it
+            # resolve asynchronously during startup.
+            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
+            thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess
             if args.sandbox and args.sandbox not in {"none", "langsmith"}:
@@ -1462,6 +1413,7 @@ def cli_main() -> None:
                         model_params=model_params,
                         profile_override=profile_override,
                         thread_id=thread_id,
+                        resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
@@ -1482,21 +1434,22 @@ def cli_main() -> None:
 
             # Show LangSmith thread link for threads with checkpointed
             # content (same table that backs the `/threads` listing).
-            try:
-                thread_url = build_langsmith_thread_url(thread_id)
-                if thread_url and asyncio.run(thread_exists(thread_id)):
-                    console.print()
-                    ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                    ls_hint.append(
-                        thread_url,
-                        style=Style(dim=True, link=thread_url),
+            if thread_id:
+                try:
+                    thread_url = build_langsmith_thread_url(thread_id)
+                    if thread_url and asyncio.run(thread_exists(thread_id)):
+                        console.print()
+                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
+                        ls_hint.append(
+                            thread_url,
+                            style=Style(dim=True, link=thread_url),
+                        )
+                        console.print(ls_hint)
+                except Exception:
+                    logger.debug(
+                        "Could not display LangSmith thread URL on teardown",
+                        exc_info=True,
                     )
-                    console.print(ls_hint)
-            except Exception:
-                logger.debug(
-                    "Could not display LangSmith thread URL on teardown",
-                    exc_info=True,
-                )
 
             # Show resume hint on exit for threads with checkpointed content.
             if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):

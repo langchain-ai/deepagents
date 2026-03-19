@@ -451,6 +451,7 @@ class DeepAgentsApp(App):
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
+        resume_thread: str | None = None,
         initial_prompt: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
@@ -470,6 +471,12 @@ class DeepAgentsApp(App):
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
+            resume_thread: Raw resume intent from `-r` flag.
+
+                `'__MOST_RECENT__'` for bare `-r`, a thread ID string for
+                `-r <id>`, or `None` for new sessions.
+
+                Resolved asynchronously in `_start_server_background`.
             initial_prompt: Optional prompt to auto-submit when session starts
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
@@ -499,6 +506,7 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
+        self._resume_thread_intent = resume_thread
         self._initial_prompt = initial_prompt
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
@@ -817,12 +825,82 @@ class DeepAgentsApp(App):
             group="startup-model-prewarm",
         )
 
+    async def _resolve_resume_thread(self) -> None:
+        """Resolve a `-r` resume intent into a concrete thread ID.
+
+        Called as the first phase of `_start_server_background` when
+        `self._resume_thread_intent` is set. Mutates `self._lc_thread_id` and
+        optionally `self._assistant_id` / `self._server_kwargs`.
+        """
+        from deepagents_cli.sessions import (
+            find_similar_threads,
+            generate_thread_id,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        resume = self._resume_thread_intent
+        self._resume_thread_intent = None  # consumed
+
+        if not resume:
+            return
+
+        # "agent" is the default from argparse (_DEFAULT_AGENT_NAME in main.py)
+        default_agent = "agent"
+
+        if resume == "__MOST_RECENT__":
+            agent_filter = (
+                self._assistant_id if self._assistant_id != default_agent else None
+            )
+            thread_id = await get_most_recent(agent_filter)
+            if thread_id:
+                agent_name = await get_thread_agent(thread_id)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
+                self._lc_thread_id = thread_id
+            else:
+                # No previous thread — fall through to new thread
+                self._lc_thread_id = generate_thread_id()
+                self.call_from_thread(
+                    self.notify,
+                    "No previous threads, starting new.",
+                    severity="warning",
+                )
+        # Specific thread ID
+        elif await thread_exists(resume):
+            self._lc_thread_id = resume
+            if self._assistant_id == default_agent:
+                agent_name = await get_thread_agent(resume)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
+        else:
+            # Thread not found — notify + fall back to new thread
+            self._lc_thread_id = generate_thread_id()
+            similar = await find_similar_threads(resume)
+            hint = f"Thread '{resume}' not found."
+            if similar:
+                hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+            self.call_from_thread(self.notify, hint, severity="warning")
+
+        # Update session state (created in on_mount before worker starts)
+        if self._session_state:
+            self._session_state.thread_id = self._lc_thread_id
+
     async def _start_server_background(self) -> None:
         """Background worker: start server + MCP preload concurrently.
 
         Also runs deferred model creation if `model_kwargs` was provided,
         so the langchain import + init doesn't block first paint.
         """
+        # Phase 1: Resolve resume thread (if any) before server startup
+        if self._resume_thread_intent:
+            await self._resolve_resume_thread()
+
         # Run deferred model creation. settings.model_name / model_provider
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
@@ -3873,6 +3951,7 @@ async def run_textual_app(
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
+    resume_thread: str | None = None,
     initial_prompt: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -3894,6 +3973,11 @@ async def run_textual_app(
         auto_approve: Whether to start with auto-approve enabled.
         cwd: Current working directory to display.
         thread_id: Optional thread ID for session persistence.
+        resume_thread: Raw resume intent from `-r` flag. `'__MOST_RECENT__'` for
+            bare `-r`, a thread ID string for `-r <id>`, or `None` for new
+            sessions.
+
+            Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
@@ -3919,6 +4003,7 @@ async def run_textual_app(
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,
+        resume_thread=resume_thread,
         initial_prompt=initial_prompt,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,

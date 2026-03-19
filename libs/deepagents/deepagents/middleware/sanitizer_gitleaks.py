@@ -1,26 +1,27 @@
-"""Gitleaks-based sanitizer provider for secret detection and redaction."""
+"""Gitleaks-based sanitizer provider for secret detection and redaction.
+
+Uses ``gitleaks stdin`` to pipe content directly and read the JSON report
+from stdout — no temp files needed.
+"""
 
 import asyncio
 import json
 import logging
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
 from deepagents.middleware.sanitizer import SanitizeFinding, SanitizeResult
 
 logger = logging.getLogger(__name__)
 
 
-def _read_report(report_path: Path) -> list[dict]:
-    """Read and parse a gitleaks JSON report file."""
+def _parse_report(stdout: str) -> list[dict]:
+    """Parse gitleaks JSON report from stdout."""
     try:
-        text = report_path.read_text()
-        if not text.strip():
+        if not stdout.strip():
             return []
-        return json.loads(text)
-    except (json.JSONDecodeError, FileNotFoundError):
+        return json.loads(stdout)
+    except json.JSONDecodeError:
         return []
 
 
@@ -43,7 +44,11 @@ def _process_findings(content: str, raw_findings: list[dict]) -> SanitizeResult:
 
 
 class GitleaksSanitizerProvider:
-    """Sanitizer provider that uses gitleaks for secret detection."""
+    """Sanitizer provider that uses gitleaks for secret detection.
+
+    Pipes content to ``gitleaks stdin`` and reads the JSON report from stdout.
+    No temp files are created.
+    """
 
     def __init__(self) -> None:
         self._binary = shutil.which("gitleaks")
@@ -54,64 +59,49 @@ class GitleaksSanitizerProvider:
     def name(self) -> str:
         return "gitleaks"
 
-    def _run_gitleaks(self, content: str) -> SanitizeResult:
+    def sanitize(self, content: str) -> SanitizeResult:
         if self._binary is None:
             return SanitizeResult(content=content, findings=[])
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = Path(tmpdir) / "source.txt"
-            report_path = Path(tmpdir) / "report.json"
-            source_path.write_text(content)
+        result = subprocess.run(
+            [self._binary, "stdin", "--report-format", "json", "--report-path", "/dev/stdout"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
 
-            result = subprocess.run(
-                [self._binary, "detect", "--no-git",
-                 "--report-format", "json",
-                 "--report-path", str(report_path),
-                 "--source", str(source_path)],
-                capture_output=True,
-                timeout=10,
-            )
+        # Exit 0 = clean, exit 1 = findings, other = error
+        if result.returncode == 0:
+            return SanitizeResult(content=content, findings=[])
+        if result.returncode != 1:
+            logger.warning("gitleaks exited with code %d — skipping", result.returncode)
+            return SanitizeResult(content=content, findings=[])
 
-            if result.returncode == 0:
-                return SanitizeResult(content=content, findings=[])
-            if result.returncode != 1:
-                logger.warning("gitleaks exited with code %d — skipping", result.returncode)
-                return SanitizeResult(content=content, findings=[])
-
-            raw_findings = _read_report(report_path)
-            if not raw_findings:
-                return SanitizeResult(content=content, findings=[])
-            return _process_findings(content, raw_findings)
-
-    def sanitize(self, content: str) -> SanitizeResult:
-        return self._run_gitleaks(content)
+        raw_findings = _parse_report(result.stdout)
+        if not raw_findings:
+            return SanitizeResult(content=content, findings=[])
+        return _process_findings(content, raw_findings)
 
     async def asanitize(self, content: str) -> SanitizeResult:
         if self._binary is None:
             return SanitizeResult(content=content, findings=[])
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = Path(tmpdir) / "source.txt"
-            report_path = Path(tmpdir) / "report.json"
-            source_path.write_text(content)
+        proc = await asyncio.create_subprocess_exec(
+            self._binary, "stdin", "--report-format", "json", "--report-path", "/dev/stdout",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(content.encode()), timeout=10)
 
-            proc = await asyncio.create_subprocess_exec(
-                self._binary, "detect", "--no-git",
-                "--report-format", "json",
-                "--report-path", str(report_path),
-                "--source", str(source_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=10)
+        if proc.returncode == 0:
+            return SanitizeResult(content=content, findings=[])
+        if proc.returncode != 1:
+            logger.warning("gitleaks exited with code %d — skipping", proc.returncode)
+            return SanitizeResult(content=content, findings=[])
 
-            if proc.returncode == 0:
-                return SanitizeResult(content=content, findings=[])
-            if proc.returncode != 1:
-                logger.warning("gitleaks exited with code %d — skipping", proc.returncode)
-                return SanitizeResult(content=content, findings=[])
-
-            raw_findings = _read_report(report_path)
-            if not raw_findings:
-                return SanitizeResult(content=content, findings=[])
-            return _process_findings(content, raw_findings)
+        raw_findings = _parse_report(stdout_bytes.decode())
+        if not raw_findings:
+            return SanitizeResult(content=content, findings=[])
+        return _process_findings(content, raw_findings)

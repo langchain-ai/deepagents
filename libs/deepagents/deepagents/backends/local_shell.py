@@ -17,6 +17,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator  # noqa: F401
     from pathlib import Path
 
 

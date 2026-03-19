@@ -8,6 +8,9 @@ Reimplements the core tau2 evaluation strategy:
 - **Action check**: verify that expected tool calls were made (informational).
 
 The overall reward mirrors tau2: product of DB and COMMUNICATE scores.
+
+Based on τ-bench / τ²-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
 """
 
 from __future__ import annotations

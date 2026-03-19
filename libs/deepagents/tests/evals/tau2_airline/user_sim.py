@@ -3,6 +3,9 @@
 Uses a cheap model to play the customer role based on a tau2 task scenario.
 The simulator follows tau2's simulation guidelines: disclose information
 progressively, stay in character, and emit stop tokens when the task is done.
+
+Based on τ-bench / τ²-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
 """
 
 from __future__ import annotations

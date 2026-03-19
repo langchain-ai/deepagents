@@ -62,24 +62,24 @@ There are two types of trip: **one way** and **round trip**.
 
 ## Book flight
 
-The agent must first obtain the user id from the user.
+The agent must first obtain the user id from the user. 
 
 The agent should then ask for the trip type, origin, destination.
 
 Cabin:
-- Cabin class must be the same across all the flights in a reservation.
+- Cabin class must be the same across all the flights in a reservation. 
 
-Passengers:
-- Each reservation can have at most five passengers.
-- The agent needs to collect the first name, last name, and date of birth for each passenger.
+Passengers: 
+- Each reservation can have at most five passengers. 
+- The agent needs to collect the first name, last name, and date of birth for each passenger. 
 - All passengers must fly the same flights in the same cabin.
 
-Payment:
-- Each reservation can use at most one travel certificate, at most one credit card, and at most three gift cards.
-- The remaining amount of a travel certificate is not refundable.
+Payment: 
+- Each reservation can use at most one travel certificate, at most one credit card, and at most three gift cards. 
+- The remaining amount of a travel certificate is not refundable. 
 - All payment methods must already be in user profile for safety reasons.
 
-Checked bag allowance:
+Checked bag allowance: 
 - If the booking user is a regular member:
   - 0 free checked bag for each basic economy passenger
   - 1 free checked bag for each economy passenger
@@ -96,30 +96,30 @@ Checked bag allowance:
 
 Do not add checked bags that the user does not need.
 
-Travel insurance:
+Travel insurance: 
 - The agent should ask if the user wants to buy the travel insurance.
 - The travel insurance is 30 dollars per passenger and enables full refund if the user needs to cancel the flight given health or weather reasons.
 
 ## Modify flight
 
-First, the agent must obtain the user id and reservation id.
-- The user must provide their user id.
+First, the agent must obtain the user id and reservation id. 
+- The user must provide their user id. 
 - If the user doesn't know their reservation id, the agent should help locate it using available tools.
 
-Change flights:
+Change flights: 
 - Basic economy flights cannot be modified.
 - Other reservations can be modified without changing the origin, destination, and trip type.
 - Some flight segments can be kept, but their prices will not be updated based on the current price.
 - The API does not check these for the agent, so the agent must make sure the rules apply before calling the API!
 
-Change cabin:
+Change cabin: 
 - Cabin cannot be changed if any flight in the reservation has already been flown.
 - In other cases, all reservations, including basic economy, can change cabin without changing the flights.
 - Cabin class must remain the same across all the flights in the same reservation; changing cabin for just one flight segment is not possible.
 - If the price after cabin change is higher than the original price, the user is required to pay for the difference.
 - If the price after cabin change is lower than the original price, the user is should be refunded the difference.
 
-Change baggage and insurance:
+Change baggage and insurance: 
 - The user can add but not remove checked bags.
 - The user cannot add insurance after initial booking.
 
@@ -127,13 +127,13 @@ Change passengers:
 - The user can modify passengers but cannot modify the number of passengers.
 - Even a human agent cannot modify the number of passengers.
 
-Payment:
+Payment: 
 - If the flights are changed, the user needs to provide a single gift card or credit card for payment or refund method. The payment method must already be in user profile for safety reasons.
 
 ## Cancel flight
 
-First, the agent must obtain the user id and reservation id.
-- The user must provide their user id.
+First, the agent must obtain the user id and reservation id. 
+- The user must provide their user id. 
 - If the user doesn't know their reservation id, the agent should help locate it using available tools.
 
 The agent must also obtain the reason for cancellation (change of plan, airline cancelled flight, or other reasons)

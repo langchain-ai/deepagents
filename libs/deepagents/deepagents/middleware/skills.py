@@ -401,6 +401,22 @@ def _format_skill_annotations(skill: SkillMetadata) -> str:
     return ", ".join(parts)
 
 
+def _resolve_effective_path(backend: BackendProtocol, source_path: str) -> str:
+    """Resolve effective path for listing skills.
+
+    Handles virtual_mode path resolution: when source_path is a relative path that
+    resolves to a direct child of backend.cwd, use "/" to list the backend's root.
+
+    This fixes an issue where backend=FilesystemBackend(root_dir="./skills/", virtual_mode=True)
+    and skills=["./skills/"] would fail because cwd=./skills and ls("./skills/")
+    resolves to cwd/skills which doesn't exist.
+    """
+    if source_path.startswith("/") or not hasattr(backend, "cwd"):
+        return source_path
+    resolved_source = (backend.cwd / source_path).resolve()  # type: ignore[operator]
+    return "/" if resolved_source.parent == backend.cwd else source_path  # type: ignore[union-attr]
+
+
 def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
@@ -424,7 +440,8 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
         List of skill metadata from successfully parsed `SKILL.md` files
     """
     skills: list[SkillMetadata] = []
-    ls_result = backend.ls(source_path)
+    effective_path = _resolve_effective_path(backend, source_path)
+    ls_result = backend.ls(effective_path)
     items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
@@ -502,7 +519,8 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
         List of skill metadata from successfully parsed `SKILL.md` files
     """
     skills: list[SkillMetadata] = []
-    ls_result = await backend.als(source_path)
+    effective_path = _resolve_effective_path(backend, source_path)
+    ls_result = await backend.als(effective_path)
     items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)

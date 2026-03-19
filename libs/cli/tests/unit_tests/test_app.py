@@ -125,7 +125,9 @@ class TestThreadCachePrewarm:
                     "deepagents_cli.sessions.get_cached_threads",
                     return_value=cached_threads,
                 ),
-                patch("deepagents_cli.app.ThreadSelectorScreen") as mock_screen_cls,
+                patch(
+                    "deepagents_cli.widgets.thread_selector.ThreadSelectorScreen"
+                ) as mock_screen_cls,
                 patch.object(app, "push_screen") as mock_push_screen,
             ):
                 mock_screen = MagicMock()
@@ -1116,7 +1118,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
                 ),
                 patch("deepagents_cli.app.webbrowser.open") as mock_open,
@@ -1142,7 +1144,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState()
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 return_value=None,
             ):
                 await app._handle_trace_command("/trace")
@@ -1173,7 +1175,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
                 patch(
@@ -1198,7 +1200,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState(thread_id="test-thread-123")
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 side_effect=RuntimeError("SDK error"),
             ):
                 await app._handle_trace_command("/trace")
@@ -1232,7 +1234,8 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             with patch(
-                "deepagents_cli.app.execute_task_textual", new_callable=AsyncMock
+                "deepagents_cli.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
 
@@ -1252,7 +1255,7 @@ class TestRunAgentTaskMediaTracker:
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
-                "deepagents_cli.app.execute_task_textual",
+                "deepagents_cli.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ):

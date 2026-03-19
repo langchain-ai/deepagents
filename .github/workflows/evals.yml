@@ -83,6 +83,11 @@ on:
         required: false
         default: ""
         type: string
+      eval_categories:
+        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Leave empty to run all categories."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -102,6 +107,39 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models }}
+          MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
+          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
+        run: |
+          echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`eval_categories\` (list) | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Build eval_categories as a bullet list
+          if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
+            echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            bullets=""
+            IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              bullets="${bullets}<li><code>${cat}</code></li>"
+            done
+            echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
@@ -122,7 +160,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: libs/deepagents
+        working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -146,12 +184,23 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals
+        run: uv sync --group test
+
+      - name: "🏷️ Apply category filter"
+        if: inputs.eval_categories != ''
+        run: |
+          flags=""
+          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          for cat in "${cats[@]}"; do
+            cat=$(echo "$cat" | xargs)
+            flags="$flags --eval-category $cat"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals
@@ -161,7 +210,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: evals-report-${{ strategy.job-index }}
-          path: libs/deepagents/evals_report.json
+          path: libs/evals/evals_report.json
           if-no-files-found: error
 
   aggregate:
@@ -181,12 +230,23 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals-aggregate
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "🧾 Write summary"
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+
+      - name: "📦 Install evals package"
+        id: install-evals
+        if: hashFiles('evals_summary.json') != ''
+        working-directory: libs/evals
+        run: uv sync --extra charts
+
+      - name: "📊 Generate radar chart"
+        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
+        working-directory: libs/evals
+        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@v7
@@ -194,3 +254,10 @@ jobs:
           name: evals-summary
           path: evals_summary.json
           if-no-files-found: warn
+
+      - name: "📤 Upload radar chart"
+        if: hashFiles('charts/radar.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: radar-chart
+          path: charts/radar.png

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-    from deepagents_cli.ask_user import (
+    from deepagents_cli._ask_user_types import (
         AskUserWidgetResult,
         Choice,
         Question,

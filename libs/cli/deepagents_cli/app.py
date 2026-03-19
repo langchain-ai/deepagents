@@ -28,37 +28,20 @@ from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
-from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.command_registry import (
-    ALWAYS_IMMEDIATE,
-    BYPASS_WHEN_CONNECTING,
-    IMMEDIATE_UI,
-    SIDE_EFFECT_FREE,
-)
-from deepagents_cli.config import (
-    DOCS_URL,
-    SHELL_TOOL_NAMES,
-    build_langsmith_thread_url,
-    create_model,
-    detect_provider,
-    is_ascii_mode,
-    is_shell_command_allowed,
-    newline_shortcut,
-    settings,
-)
-from deepagents_cli.configurable_model import CLIContext
-from deepagents_cli.hooks import dispatch_hook
-from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import (
+from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._session_stats import (
     SessionStats,
     SpinnerStatus,
-    TextualUIAdapter,
-    _get_git_branch,
-    execute_task_textual,
     format_token_count,
 )
-from deepagents_cli.widgets.approval import ApprovalMenu
-from deepagents_cli.widgets.ask_user import AskUserMenu
+
+# Only is_ascii_mode is needed before first paint (on_mount scrollbar config).
+# All other config imports — settings, create_model, detect_provider, etc. — are
+# deferred to local imports at their call sites since they are only accessed
+# after user interaction begins.
+from deepagents_cli._version import DOCS_URL
+from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.prompts import REMEMBER_PROMPT
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -75,12 +58,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
-from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import (
-    DeleteThreadConfirmScreen,
-    ThreadSelectorScreen,
-)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -98,10 +76,13 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
+    from deepagents_cli.textual_adapter import TextualUIAdapter
+    from deepagents_cli.widgets.approval import ApprovalMenu
+    from deepagents_cli.widgets.ask_user import AskUserMenu
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -381,121 +362,7 @@ _COMMAND_URLS: dict[str, str] = {
     "/docs": DOCS_URL,
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
-
-# Prompt for /remember command - triggers agent to review conversation and update
-# memory/skills
-REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
-
-## Step 1: Identify Best Practices and Key Learnings
-
-Scan the conversation for:
-
-### Best Practices (highest priority)
-- **Patterns that worked well** - approaches, techniques, or solutions we found effective
-- **Anti-patterns to avoid** - mistakes, gotchas, or approaches that caused problems
-- **Quality standards** - criteria we established for good code, documentation, or processes
-- **Decision rationale** - why we chose one approach over another
-
-### Other Valuable Knowledge
-- Coding conventions and style preferences
-- Project architecture decisions
-- Workflows and processes we developed
-- Tools, libraries, or techniques worth remembering
-- Feedback I gave about your behavior or outputs
-
-## Step 2: Decide Where to Store Each Learning
-
-For each best practice or learning, choose the right destination:
-
-### -> Memory (AGENTS.md) for preferences and guidelines
-Use memory when the knowledge is:
-- A preference or guideline (not a multi-step process)
-- Something to always keep in mind
-- A simple rule or pattern
-
-**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
-**Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
-
-### -> Skill for reusable workflows and methodologies
-**Create a skill when** we developed:
-- A multi-step process worth reusing
-- A methodology for a specific type of task
-- A workflow with best practices baked in
-- A procedure that should be followed consistently
-
-Skills are more powerful than memory entries because they can encode **how** to do something well, not just **what** to remember.
-
-## Step 3: Create Skills for Significant Best Practices
-
-If we established best practices around a workflow or process, capture them in a skill.
-
-**Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
-
-### Skill Location
-`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
-
-### Skill Structure
-```
-skill-name/
-├── SKILL.md          (required - main instructions with best practices)
-├── scripts/          (optional - executable code)
-├── references/       (optional - detailed documentation)
-└── assets/           (optional - templates, examples)
-```
-
-### SKILL.md Format
-```markdown
----
-name: skill-name
-description: "What this skill does AND when to use it. Include triggers like 'when the user asks to X' or 'when working with Y'. This description determines when the skill activates."
----
-
-# Skill Name
-
-## Overview
-Brief explanation of what this skill accomplishes.
-
-## Best Practices
-Capture the key best practices upfront:
-- Best practice 1: explanation
-- Best practice 2: explanation
-
-## Process
-Step-by-step instructions (imperative form):
-1. First, do X
-2. Then, do Y
-3. Finally, do Z
-
-## Common Pitfalls
-- Pitfall to avoid and why
-- Another anti-pattern we discovered
-```
-
-### Key Principles
-1. **Encode best practices prominently** - Put them near the top so they guide the entire workflow
-2. **Concise is key** - Only include non-obvious knowledge. Every paragraph should justify its token cost.
-3. **Clear triggers** - The description determines when the skill activates. Be specific.
-4. **Imperative form** - Write as commands: "Create a file" not "You should create a file"
-5. **Include anti-patterns** - What NOT to do is often as valuable as what to do
-
-## Step 4: Update Memory for Simpler Learnings
-
-For preferences, guidelines, and simple rules that don't warrant a full skill:
-
-```markdown
-## Best Practices
-- When doing X, always Y because Z
-- Avoid A because it leads to B
-```
-
-Use `edit_file` to update existing files or `write_file` to create new ones.
-
-## Step 5: Summarize Changes
-
-List what you captured and where you stored it:
-- Skills created (with key best practices encoded)
-- Memory entries added (with location)
-"""  # noqa: E501
+"""Slash-command to URL mapping for commands that just open a browser."""
 
 
 class DeepAgentsApp(App):
@@ -584,12 +451,14 @@ class DeepAgentsApp(App):
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
+        resume_thread: str | None = None,
         initial_prompt: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
+        model_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -601,7 +470,18 @@ class DeepAgentsApp(App):
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
-            thread_id: Optional thread ID for session persistence
+            thread_id: Thread ID for the session.
+
+                `None` when `resume_thread` is provided (resolved asynchronously).
+            resume_thread: Raw resume intent from `-r` flag.
+
+                `'__MOST_RECENT__'` for bare `-r`, a thread ID string for
+                `-r <id>`, or `None` for new sessions.
+
+                Resolved via `_resolve_resume_thread`
+                during `_start_server_background`.
+
+                Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
@@ -617,6 +497,10 @@ class DeepAgentsApp(App):
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
+            model_kwargs: Kwargs for deferred `create_model()`.
+
+                When provided, model creation runs in a background worker after
+                first paint instead of blocking startup.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -627,12 +511,14 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
+        self._resume_thread_intent = resume_thread
         self._initial_prompt = initial_prompt
         self._mcp_server_info = mcp_server_info
         self._profile_override = profile_override
         self._server_proc = server_proc
         self._server_kwargs = server_kwargs
         self._mcp_preload_kwargs = mcp_preload_kwargs
+        self._model_kwargs = model_kwargs
         self._connecting = server_kwargs is not None
         # Extract sandbox type from server kwargs for trace metadata.
         # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
@@ -673,6 +559,8 @@ class DeepAgentsApp(App):
         self._deferred_actions: list[DeferredAction] = []
         # Message virtualization store
         self._message_store = MessageStore()
+        # Startup task reference (set in on_mount)
+        self._startup_task: asyncio.Task[None] | None = None
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
         from deepagents_cli.input import MediaTracker
@@ -726,7 +614,18 @@ class DeepAgentsApp(App):
         yield StatusBar(cwd=self._cwd, id="status-bar")
 
     async def on_mount(self) -> None:
-        """Initialize components after mount."""
+        """Initialize components after mount.
+
+        Only widget queries and lightweight config go here — anything that
+        would delay the first rendered frame (subprocess calls, heavy
+        imports) is deferred to `_post_paint_init` via `call_after_refresh`.
+        """
+        # Move all objects allocated during import/compose into the permanent
+        # generation so the cyclic GC skips them during first-paint rendering.
+        import gc
+
+        gc.freeze()
+
         chat = self.query_one("#chat", VerticalScroll)
         chat.anchor()
         if is_ascii_mode():
@@ -739,16 +638,64 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Set git branch in status bar
-        self._status_bar.branch = _get_git_branch() or ""
+        # Focus the input immediately so the cursor is visible on first paint
+        self._chat_input.focus_input()
 
-        # Create session state
-        self._session_state = TextualSessionState(
-            auto_approve=self._auto_approve,
-            thread_id=self._lc_thread_id,
+        # Start branch resolution immediately — the thread launches now
+        # (during on_mount) so by the time the first frame finishes painting
+        # the subprocess is already done. _post_paint_init fires the heavier
+        # workers (server, model creation) afterward.
+        self._startup_task = asyncio.create_task(
+            self._resolve_git_branch_and_continue()
         )
 
-        # Create token tracker that updates status bar
+    async def _resolve_git_branch_and_continue(self) -> None:
+        """Resolve git branch, then schedule remaining init workers.
+
+        Launched via `asyncio.create_task()` during `on_mount` so the subprocess
+        runs concurrently with first-paint rendering. `_post_paint_init` is
+        scheduled via `call_after_refresh` regardless of whether branch
+        resolution succeeds.
+        """
+        try:
+            import subprocess  # noqa: S404  # stdlib, already loaded
+
+            def _get_branch() -> str:
+                try:
+                    result = subprocess.run(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        return result.stdout.strip()
+                except FileNotFoundError:
+                    pass  # git not installed
+                except subprocess.TimeoutExpired:
+                    logger.debug("Git branch detection timed out")
+                except OSError:
+                    logger.debug("Git branch detection failed", exc_info=True)
+                return ""
+
+            branch = await asyncio.to_thread(_get_branch)
+            if self._status_bar:
+                self._status_bar.branch = branch
+        except Exception:
+            logger.warning("Git branch resolution failed", exc_info=True)
+        finally:
+            # Always schedule post-paint init — even if branch resolution
+            # fails, the app must still start the server, session, etc.
+            self.call_after_refresh(self._post_paint_init)
+
+    async def _post_paint_init(self) -> None:
+        """Fire background workers for remaining startup work.
+
+        Everything here is non-blocking: workers and thread-offloaded calls
+        so the UI stays responsive.
+        """
+        # Create token tracker (lightweight, no imports)
         self._token_tracker = TextualTokenTracker(
             self._update_tokens, self._hide_tokens
         )
@@ -757,7 +704,10 @@ class DeepAgentsApp(App):
         if self._agent:
             self._init_agent_adapter()
 
-        # Deferred server startup: run in background while TUI is visible
+        # Fire-and-forget workers — none of these block the event loop.
+        self.run_worker(self._init_session_state, exclusive=True, group="session-init")
+
+        # Server startup (model creation + server process)
         if self._server_kwargs is not None:
             self.run_worker(
                 self._start_server_background,
@@ -773,30 +723,19 @@ class DeepAgentsApp(App):
                 group="startup-update-check",
             )
 
-        # Focus the input (autocomplete is now built into ChatInput)
-        self._chat_input.focus_input()
+        # Prewarm deferred widget imports in a thread
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
 
-        # Warn about missing optional tools (advisory only — never block startup)
-        try:
-            from deepagents_cli.main import (
-                check_optional_tools,
-                format_tool_warning_tui,
-            )
-        except ImportError:
-            logger.warning(
-                "Could not import optional tools checker; skipping tool warnings",
-                exc_info=True,
-            )
-        else:
-            try:
-                for tool in check_optional_tools():
-                    self.notify(
-                        format_tool_warning_tui(tool),
-                        severity="warning",
-                        timeout=15,
-                    )
-            except Exception:
-                logger.debug("Failed to check for optional tools", exc_info=True)
+        # Optional tool warnings in a thread (shutil.which is sync I/O)
+        self.run_worker(
+            self._check_optional_tools_background,
+            exclusive=True,
+            group="startup-tool-check",
+        )
 
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
@@ -814,8 +753,59 @@ class DeepAgentsApp(App):
                     lambda: asyncio.create_task(self._load_thread_history())
                 )
 
+    async def _init_session_state(self) -> None:
+        """Create session state in a thread (imports deepagents_cli.sessions)."""
+
+        def _create() -> TextualSessionState:
+            return TextualSessionState(
+                auto_approve=self._auto_approve,
+                thread_id=self._lc_thread_id,
+            )
+
+        try:
+            self._session_state = await asyncio.to_thread(_create)
+        except Exception:
+            logger.exception("Failed to create session state")
+            self.notify(
+                "Session initialization failed. Some features may be unavailable.",
+                severity="error",
+                timeout=10,
+            )
+
+    async def _check_optional_tools_background(self) -> None:
+        """Check for optional tools in a thread and notify if missing."""
+        try:
+            from deepagents_cli.main import (
+                check_optional_tools,
+                format_tool_warning_tui,
+            )
+        except ImportError:
+            logger.warning(
+                "Could not import optional tools checker",
+                exc_info=True,
+            )
+            return
+
+        try:
+            missing = await asyncio.to_thread(check_optional_tools)
+        except (OSError, FileNotFoundError):
+            logger.debug("Failed to check for optional tools", exc_info=True)
+            return
+        except Exception:
+            logger.warning("Unexpected error checking optional tools", exc_info=True)
+            return
+
+        for tool in missing:
+            self.notify(
+                format_tool_warning_tui(tool),
+                severity="warning",
+                timeout=15,
+            )
+
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
+        from deepagents_cli.textual_adapter import TextualUIAdapter
+
         self._ui_adapter = TextualUIAdapter(
             mount_message=self._mount_message,
             update_status=self._update_status,
@@ -840,8 +830,110 @@ class DeepAgentsApp(App):
             group="startup-model-prewarm",
         )
 
+    async def _resolve_resume_thread(self) -> None:
+        """Resolve a `-r` resume intent into a concrete thread ID.
+
+        Consumes `self._resume_thread_intent` and resolves it into a concrete
+        thread ID. Mutates `self._lc_thread_id` and optionally
+        `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
+        thread on any DB error.
+        """
+        from deepagents_cli.sessions import (
+            find_similar_threads,
+            generate_thread_id,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        resume = self._resume_thread_intent
+        self._resume_thread_intent = None  # consumed
+
+        if not resume:
+            return
+
+        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
+        # the CLI entry point and pulls in argparse, rich, etc. at module level.
+        # Even a deferred import drags in the full dep tree for a single
+        # string constant.
+        default_agent = "agent"
+
+        try:
+            if resume == "__MOST_RECENT__":
+                agent_filter = (
+                    self._assistant_id if self._assistant_id != default_agent else None
+                )
+                thread_id = await get_most_recent(agent_filter)
+                if thread_id:
+                    agent_name = await get_thread_agent(thread_id)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+                    self._lc_thread_id = thread_id
+                else:
+                    self._lc_thread_id = generate_thread_id()
+                    if agent_filter:
+                        msg = f"No previous threads for '{agent_filter}', starting new."
+                    else:
+                        msg = "No previous threads, starting new."
+                    self.notify(msg, severity="warning")
+            elif await thread_exists(resume):
+                self._lc_thread_id = resume
+                if self._assistant_id == default_agent:
+                    agent_name = await get_thread_agent(resume)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+            else:
+                # Thread not found — notify + fall back to new thread
+                self._lc_thread_id = generate_thread_id()
+                similar = await find_similar_threads(resume)
+                hint = f"Thread '{resume}' not found."
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                self.notify(hint, severity="warning")
+        except Exception:
+            logger.exception("Failed to resolve resume thread %r", resume)
+            self._lc_thread_id = generate_thread_id()
+            self.notify(
+                "Could not look up thread history. Starting new session.",
+                severity="warning",
+            )
+
+        # Update session state if ready (may still be initializing in a
+        # concurrent worker)
+        if self._session_state:
+            self._session_state.thread_id = self._lc_thread_id
+
     async def _start_server_background(self) -> None:
-        """Background worker: start server + MCP preload concurrently."""
+        """Background worker: resolve resume-thread intent, start server + MCP preload.
+
+        Also runs deferred model creation if `model_kwargs` was provided,
+        so the langchain import + init doesn't block first paint.
+        """
+        # Phase 1: Resolve resume thread (if any) before server startup
+        if self._resume_thread_intent:
+            await self._resolve_resume_thread()
+
+        # Run deferred model creation. settings.model_name / model_provider
+        # are already set eagerly for the status bar display; this call
+        # does the heavy langchain import + SDK init and may refine them
+        # (e.g., context_limit from the model profile).
+        if self._model_kwargs is not None:
+            from deepagents_cli.config import create_model
+            from deepagents_cli.model_config import ModelConfigError, save_recent_model
+
+            try:
+                result = create_model(**self._model_kwargs)
+            except ModelConfigError as exc:
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+            result.apply_to_settings()
+            save_recent_model(f"{result.provider}:{result.model_name}")
+            self._model_kwargs = None  # consumed
+
         from deepagents_cli.server_manager import start_server_and_get_agent
 
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
@@ -974,6 +1066,52 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    @staticmethod
+    def _prewarm_deferred_imports() -> None:
+        """Background-load modules deferred from the startup path.
+
+        Populates `sys.modules` so the first user-triggered inline import
+        is a cheap dict lookup instead of a cold module load.
+        """
+        # Internal modules moved from top-level to local imports — a failure
+        # here indicates a packaging or code bug, not a missing optional dep, so
+        # we let the exception propagate (the worker catches it and logs
+        # at WARNING).
+        from deepagents_cli.clipboard import (
+            copy_selection_to_clipboard,  # noqa: F401
+        )
+        from deepagents_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
+        from deepagents_cli.config import settings  # noqa: F401
+        from deepagents_cli.hooks import dispatch_hook  # noqa: F401
+        from deepagents_cli.model_config import ModelSpec  # noqa: F401
+
+        try:
+            # Heavy third-party deps deferred from textual_adapter /
+            # tool_display — hit on first message send and first tool
+            # approval. Best-effort: missing optional deps should not block the
+            # TUI from rendering.
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                ApproveDecision,
+            )
+            from langchain_core.messages import AIMessage  # noqa: F401
+            from langgraph.types import Command  # noqa: F401
+        except Exception:
+            logger.warning("Could not prewarm third-party imports", exc_info=True)
+
+        # Widgets deferred from app.py module level — a failure here indicates
+        # a packaging or code bug (same as the block above), so we let
+        # exceptions propagate.
+        from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+        from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+        from deepagents_cli.widgets.model_selector import (
+            ModelSelectorScreen,  # noqa: F401
+        )
+        from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1235,6 +1373,12 @@ class DeepAgentsApp(App):
         Returns:
             A Future that resolves to the user's decision.
         """
+        from deepagents_cli.config import (
+            SHELL_TOOL_NAMES,
+            is_shell_command_allowed,
+            settings,
+        )
+
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
@@ -1281,6 +1425,8 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
@@ -1465,6 +1611,8 @@ class DeepAgentsApp(App):
                     break
                 await asyncio.sleep(0.1)
 
+        from deepagents_cli.widgets.ask_user import AskUserMenu
+
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
         menu.set_future(result_future)
@@ -1539,6 +1687,12 @@ class DeepAgentsApp(App):
         Returns:
             `True` if the command should bypass the busy-state queue.
         """
+        from deepagents_cli.command_registry import (
+            BYPASS_WHEN_CONNECTING,
+            IMMEDIATE_UI,
+            SIDE_EFFECT_FREE,
+        )
+
         cmd = value.split(maxsplit=1)[0] if value else ""
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
@@ -1556,9 +1710,13 @@ class DeepAgentsApp(App):
         # Reset quit pending state on any input
         self._quit_pending = False
 
+        from deepagents_cli.hooks import dispatch_hook
+
         await dispatch_hook("user.prompt", {})
 
         # /quit and /q always execute immediately, even mid-thread-switch.
+        from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
+
         if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
             self.exit()
             return
@@ -1839,6 +1997,8 @@ class DeepAgentsApp(App):
         Returns:
             `Content` with a clickable thread ID, or a plain string.
         """
+        from deepagents_cli.config import build_langsmith_thread_url
+
         try:
             url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
@@ -1864,6 +2024,8 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
+        from deepagents_cli.config import build_langsmith_thread_url
+
         await self._mount_message(UserMessage(command))
         if not self._session_state:
             await self._mount_message(AppMessage("No active session."))
@@ -1898,6 +2060,8 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
+        from deepagents_cli.config import newline_shortcut, settings
+
         cmd = command.lower().strip()
 
         if cmd in {"/quit", "/q"}:
@@ -2165,6 +2329,8 @@ class DeepAgentsApp(App):
             A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
+        from deepagents_cli.config import create_model, settings
+
         try:
             from deepagents.middleware.summarization import (
                 compute_summarization_defaults,
@@ -2188,6 +2354,7 @@ class DeepAgentsApp(App):
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
+        from deepagents_cli.config import settings
         from deepagents_cli.offload import (
             OffloadModelError,
             OffloadThresholdNotMet,
@@ -2223,6 +2390,8 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while offload modifies state
         self._agent_running = True
         try:
+            from deepagents_cli.hooks import dispatch_hook
+
             await dispatch_hook("context.offload", {})
             # Keep old hook name for backward compatibility
             await dispatch_hook("context.compact", {})
@@ -2351,6 +2520,8 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        from deepagents_cli.textual_adapter import execute_task_textual
+
         turn_stats: SessionStats | None = None
         try:
             turn_stats = await execute_task_textual(
@@ -3072,6 +3243,8 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if (
             isinstance(self.screen, ThreadSelectorScreen)
             and self.screen.is_delete_confirmation_open
@@ -3117,6 +3290,11 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
@@ -3179,6 +3357,8 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
@@ -3334,6 +3514,8 @@ class DeepAgentsApp(App):
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard on mouse release."""
+        from deepagents_cli.clipboard import copy_selection_to_clipboard
+
         copy_selection_to_clipboard(self)
 
     # =========================================================================
@@ -3351,6 +3533,9 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from functools import partial
+
+        from deepagents_cli.config import settings
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
@@ -3406,6 +3591,7 @@ class DeepAgentsApp(App):
         from functools import partial
 
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
@@ -3592,16 +3778,19 @@ class DeepAgentsApp(App):
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
+        from deepagents_cli.config import create_model, detect_provider, settings
+        from deepagents_cli.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            has_provider_credentials,
+            save_recent_model,
+        )
+
         logger.info("Switching model to %s", model_spec)
 
         if self._model_switching:
             await self._mount_message(AppMessage("Model switch already in progress."))
             return
-
-        from deepagents_cli.model_config import (
-            get_credential_env_var,
-            has_provider_credentials,
-        )
 
         self._model_switching = True
         try:
@@ -3711,7 +3900,8 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
-        from deepagents_cli.model_config import save_default_model
+        from deepagents_cli.config import detect_provider
+        from deepagents_cli.model_config import ModelSpec, save_default_model
 
         model_spec = model_spec.removeprefix(":")
 
@@ -3777,12 +3967,14 @@ async def run_textual_app(
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
+    resume_thread: str | None = None,
     initial_prompt: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3796,7 +3988,15 @@ async def run_textual_app(
         backend: Backend for file operations.
         auto_approve: Whether to start with auto-approve enabled.
         cwd: Current working directory to display.
-        thread_id: Optional thread ID for session persistence.
+        thread_id: Thread ID for the session.
+
+            `None` when `resume_thread` is provided (the TUI resolves the final
+            ID asynchronously).
+        resume_thread: Raw resume intent from `-r` flag. `'__MOST_RECENT__'` for
+            bare `-r`, a thread ID string for `-r <id>`, or `None` for new
+            sessions.
+
+            Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
@@ -3807,6 +4007,10 @@ async def run_textual_app(
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
+        model_kwargs: Kwargs for deferred `create_model()` call.
+
+            When provided, model creation runs in a background worker after
+            first paint so the splash screen appears immediately.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3818,12 +4022,14 @@ async def run_textual_app(
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,
+        resume_thread=resume_thread,
         initial_prompt=initial_prompt,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
+        model_kwargs=model_kwargs,
     )
     try:
         await app.run_async()

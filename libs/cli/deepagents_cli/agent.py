@@ -272,6 +272,39 @@ def reset_agent(
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
+MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
+"""Matches the `### Model Identity` section in the system prompt, up to the
+next heading or end of string."""
+
+
+def build_model_identity_section(
+    name: str | None,
+    provider: str | None = None,
+    context_limit: int | None = None,
+) -> str:
+    """Build the `### Model Identity` section for the system prompt.
+
+    Args:
+        name: Model identifier (e.g. `claude-opus-4-6`).
+        provider: Provider identifier (e.g. `anthropic`).
+        context_limit: Max input tokens from the model profile.
+
+    Returns:
+        The section text including the heading and trailing newline,
+        or an empty string if `name` is falsy.
+    """
+    if not name:
+        return ""
+    section = f"### Model Identity\n\nYou are running as model `{name}`"
+    if provider:
+        section += f" (provider: {provider})"
+    section += ".\n"
+    if context_limit:
+        section += f"Your context window is {context_limit:,} tokens.\n"
+    section += "\n"
+    return section
+
+
 def get_system_prompt(
     assistant_id: str,
     sandbox_type: str | None = None,
@@ -346,20 +379,11 @@ def get_system_prompt(
             "available. Never run commands that block waiting for stdin."
         )
 
-    # Build model identity section
-    model_identity_section = ""
-    if settings.model_name:
-        model_identity_section = (
-            f"### Model Identity\n\nYou are running as model `{settings.model_name}`"
-        )
-        if settings.model_provider:
-            model_identity_section += f" (provider: {settings.model_provider})"
-        model_identity_section += ".\n"
-        if settings.model_context_limit:
-            model_identity_section += (
-                f"Your context window is {settings.model_context_limit:,} tokens.\n"
-            )
-        model_identity_section += "\n"
+    model_identity_section = build_model_identity_section(
+        settings.model_name,
+        provider=settings.model_provider,
+        context_limit=settings.model_context_limit,
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:

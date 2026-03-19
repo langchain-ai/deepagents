@@ -656,6 +656,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    sanitizer: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -768,6 +769,21 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware = []
+
+    # Add sanitizer middleware (must be early — outermost wrap_tool_call)
+    if sanitizer:
+        from deepagents.middleware.sanitizer import SanitizerMiddleware
+        from deepagents.middleware.sanitizer_gitleaks import GitleaksSanitizerProvider
+
+        _SANITIZER_PROVIDERS = {
+            "gitleaks": GitleaksSanitizerProvider,
+        }
+        provider_cls = _SANITIZER_PROVIDERS.get(sanitizer)
+        if provider_cls is not None:
+            agent_middleware.insert(0, SanitizerMiddleware(providers=[provider_cls()]))
+        else:
+            logger.warning("Unknown sanitizer provider: %s — skipping", sanitizer)
+
     agent_middleware.append(ConfigurableModelMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)

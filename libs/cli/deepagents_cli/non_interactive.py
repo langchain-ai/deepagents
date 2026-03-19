@@ -687,6 +687,7 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
+    sanitizer: str | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -830,6 +831,7 @@ async def run_non_interactive(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=False,
+            sanitizer=sanitizer,
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:

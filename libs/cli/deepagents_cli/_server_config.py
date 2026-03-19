@@ -128,6 +128,7 @@ class ServerConfig:
     mcp_config_path: str | None = None
     no_mcp: bool = False
     trust_project_mcp: bool | None = None
+    sanitizer: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize fields that have canonical representations."""
@@ -174,6 +175,7 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "SANITIZER": self.sanitizer,
         }
 
     @classmethod
@@ -205,6 +207,7 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            sanitizer=_read_env_str("SANITIZER"),
         )
 
     # ------------------------------------------------------------------
@@ -229,6 +232,7 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        sanitizer: str | None = None,
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -282,6 +286,7 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            sanitizer=sanitizer,
         )
 
 

@@ -125,6 +125,9 @@ def show_help() -> None:
     console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
+    console.print(
+        "  --sanitizer PROVIDER       Enable output sanitization (e.g., 'gitleaks')"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(

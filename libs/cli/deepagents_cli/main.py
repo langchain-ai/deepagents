@@ -513,6 +513,12 @@ def parse_args() -> argparse.Namespace:
         help="Trust project-level MCP configs with stdio servers "
         "(skip interactive approval prompt)",
     )
+    parser.add_argument(
+        "--sanitizer",
+        metavar="PROVIDER",
+        help="Enable output sanitization with the given provider (e.g., 'gitleaks'). "
+        "Redacts secrets from tool output before they reach the LLM.",
+    )
 
     try:
         from importlib.metadata import (
@@ -563,6 +569,7 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    sanitizer: str | None = None,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
@@ -636,6 +643,7 @@ async def run_textual_cli_async(
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "sanitizer": sanitizer,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -1276,6 +1284,7 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    sanitizer=getattr(args, "sanitizer", None),
                 )
             )
             sys.exit(exit_code)
@@ -1378,6 +1387,7 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        sanitizer=getattr(args, "sanitizer", None),
                     )
                 )
                 return_code = result.return_code

@@ -59,7 +59,7 @@ radar-from-summary: ## Generate radar chart from evals_summary.json
 ######################
 
 # Define a variable for Python and notebook files.
-lint format: PYTHON_FILES=deepagents_harbor/ tests/
+lint format: PYTHON_FILES=deepagents_evals/ deepagents_harbor/ tests/
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 
 lint: ## Run linters and type checker
@@ -72,9 +72,9 @@ lint lint_diff:
 	fi
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
 
-type: ## Run type checker (harbor source + unit tests only)
+type: ## Run type checker (eval + harbor source + unit tests)
 type typecheck:
-	uv run --group test ty check deepagents_harbor/ tests/unit_tests/
+	uv run --group test ty check deepagents_evals/ deepagents_harbor/ tests/unit_tests/
 
 format: ## Run code formatters
 format format_diff:

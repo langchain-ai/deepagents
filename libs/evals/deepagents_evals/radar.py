@@ -61,7 +61,7 @@ _COLORS: list[str] = [
     "#be185d",  # pink
     "#854d0e",  # brown
 ]
-"""Visually distinct hex colors for up to 8 models on the radar chart."""
+"""Eight visually distinct hex colors, cycled across models on the radar chart."""
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,7 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     Raises:
         FileNotFoundError: If `path` does not exist.
         json.JSONDecodeError: If the file contains invalid JSON.
-        ValueError: If a `correctness` value is not numeric.
+        ValueError: If a score value (in `category_scores` or `correctness`) is not numeric.
     """
     import json
 

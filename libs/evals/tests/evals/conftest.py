@@ -70,6 +70,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not categories:
         return
 
+    known = {
+        m.args[0] for item in items if (m := item.get_closest_marker("eval_category")) and m.args
+    }
+    unknown = set(categories) - known
+    if unknown:
+        msg = (
+            f"Unknown --eval-category values: {sorted(unknown)}. "
+            f"Known categories in collected tests: {sorted(known)}"
+        )
+        pytest.exit(msg, returncode=1)
+
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:

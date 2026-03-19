@@ -39,7 +39,7 @@ _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 def _micro_step_ratio() -> float | None:
     """Compute sum(actual_steps) / sum(expected_steps).
 
-    Returns ``None`` when no tests specified expected step counts.
+    Returns `None` when no tests specified expected step counts.
     """
     total_expected = 0
     total_actual = 0
@@ -55,7 +55,7 @@ def _micro_step_ratio() -> float | None:
 def _micro_tool_call_ratio() -> float | None:
     """Compute sum(actual_tool_calls) / sum(expected_tool_calls).
 
-    Returns ``None`` when no tests specified expected tool call counts.
+    Returns `None` when no tests specified expected tool call counts.
     """
     total_expected = 0
     total_actual = 0
@@ -69,14 +69,14 @@ def _micro_tool_call_ratio() -> float | None:
 
 
 def _solve_rate() -> float | None:
-    """Compute solve rate: sum of per-test expected_steps / duration_s for solved tests.
+    """Compute solve rate: mean of per-test `expected_steps / duration_s` for eligible tests.
 
     For each test that passed and has both `expected_steps` and `duration_s`,
-    the per-test contribution is ``expected_steps / duration_s``. Tests that
+    the per-test contribution is `expected_steps / duration_s`. Tests that
     did not pass contribute zero. The result is the mean across all eligible
     tests.
 
-    Returns ``None`` when no tests have the required data.
+    Returns `None` when no tests have the required data.
     """
     values: list[float] = []
     for r in _EFFICIENCY_RESULTS:

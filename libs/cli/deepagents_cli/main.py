@@ -634,7 +634,10 @@ async def run_textual_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
-        thread_id: Thread ID to use (new or resumed)
+        thread_id: Thread ID for the session.
+
+            `None` when `resume_thread` is provided (the TUI resolves the final
+            ID asynchronously).
         resume_thread: Raw resume intent from `-r` flag.
 
             `'__MOST_RECENT__'` for bare `-r`, a thread ID string for `-r <id>`,

@@ -470,13 +470,18 @@ class DeepAgentsApp(App):
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
-            thread_id: Optional thread ID for session persistence
+            thread_id: Thread ID for the session.
+
+                `None` when `resume_thread` is provided (resolved asynchronously).
             resume_thread: Raw resume intent from `-r` flag.
 
                 `'__MOST_RECENT__'` for bare `-r`, a thread ID string for
                 `-r <id>`, or `None` for new sessions.
 
-                Resolved asynchronously in `_start_server_background`.
+                Resolved via `_resolve_resume_thread`
+                during `_start_server_background`.
+
+                Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
@@ -828,9 +833,10 @@ class DeepAgentsApp(App):
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
 
-        Called as the first phase of `_start_server_background` when
-        `self._resume_thread_intent` is set. Mutates `self._lc_thread_id` and
-        optionally `self._assistant_id` / `self._server_kwargs`.
+        Consumes `self._resume_thread_intent` and resolves it into a concrete
+        thread ID. Mutates `self._lc_thread_id` and optionally
+        `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
+        thread on any DB error.
         """
         from deepagents_cli.sessions import (
             find_similar_threads,
@@ -846,53 +852,63 @@ class DeepAgentsApp(App):
         if not resume:
             return
 
-        # "agent" is the default from argparse (_DEFAULT_AGENT_NAME in main.py)
+        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
+        # the CLI entry point and pulls in argparse, rich, etc. at module level.
+        # Even a deferred import drags in the full dep tree for a single
+        # string constant.
         default_agent = "agent"
 
-        if resume == "__MOST_RECENT__":
-            agent_filter = (
-                self._assistant_id if self._assistant_id != default_agent else None
-            )
-            thread_id = await get_most_recent(agent_filter)
-            if thread_id:
-                agent_name = await get_thread_agent(thread_id)
-                if agent_name:
-                    self._assistant_id = agent_name
-                    if self._server_kwargs:
-                        self._server_kwargs["assistant_id"] = agent_name
-                self._lc_thread_id = thread_id
-            else:
-                # No previous thread — fall through to new thread
-                self._lc_thread_id = generate_thread_id()
-                self.call_from_thread(
-                    self.notify,
-                    "No previous threads, starting new.",
-                    severity="warning",
+        try:
+            if resume == "__MOST_RECENT__":
+                agent_filter = (
+                    self._assistant_id if self._assistant_id != default_agent else None
                 )
-        # Specific thread ID
-        elif await thread_exists(resume):
-            self._lc_thread_id = resume
-            if self._assistant_id == default_agent:
-                agent_name = await get_thread_agent(resume)
-                if agent_name:
-                    self._assistant_id = agent_name
-                    if self._server_kwargs:
-                        self._server_kwargs["assistant_id"] = agent_name
-        else:
-            # Thread not found — notify + fall back to new thread
+                thread_id = await get_most_recent(agent_filter)
+                if thread_id:
+                    agent_name = await get_thread_agent(thread_id)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+                    self._lc_thread_id = thread_id
+                else:
+                    self._lc_thread_id = generate_thread_id()
+                    if agent_filter:
+                        msg = f"No previous threads for '{agent_filter}', starting new."
+                    else:
+                        msg = "No previous threads, starting new."
+                    self.notify(msg, severity="warning")
+            elif await thread_exists(resume):
+                self._lc_thread_id = resume
+                if self._assistant_id == default_agent:
+                    agent_name = await get_thread_agent(resume)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+            else:
+                # Thread not found — notify + fall back to new thread
+                self._lc_thread_id = generate_thread_id()
+                similar = await find_similar_threads(resume)
+                hint = f"Thread '{resume}' not found."
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                self.notify(hint, severity="warning")
+        except Exception:
+            logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
-            similar = await find_similar_threads(resume)
-            hint = f"Thread '{resume}' not found."
-            if similar:
-                hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
-            self.call_from_thread(self.notify, hint, severity="warning")
+            self.notify(
+                "Could not look up thread history. Starting new session.",
+                severity="warning",
+            )
 
-        # Update session state (created in on_mount before worker starts)
+        # Update session state if ready (may still be initializing in a
+        # concurrent worker)
         if self._session_state:
             self._session_state.thread_id = self._lc_thread_id
 
     async def _start_server_background(self) -> None:
-        """Background worker: start server + MCP preload concurrently.
+        """Background worker: resolve resume-thread intent, start server + MCP preload.
 
         Also runs deferred model creation if `model_kwargs` was provided,
         so the langchain import + init doesn't block first paint.
@@ -3972,7 +3988,10 @@ async def run_textual_app(
         backend: Backend for file operations.
         auto_approve: Whether to start with auto-approve enabled.
         cwd: Current working directory to display.
-        thread_id: Optional thread ID for session persistence.
+        thread_id: Thread ID for the session.
+
+            `None` when `resume_thread` is provided (the TUI resolves the final
+            ID asynchronously).
         resume_thread: Raw resume intent from `-r` flag. `'__MOST_RECENT__'` for
             bare `-r`, a thread ID string for `-r <id>`, or `None` for new
             sessions.

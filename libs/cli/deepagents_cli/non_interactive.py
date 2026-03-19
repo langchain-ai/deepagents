@@ -780,6 +780,20 @@ async def run_non_interactive(
         "metadata": metadata,
     }
 
+    from deepagents_cli.sanitizer_factory import create_sanitizer_provider
+    from deepagents_cli.app import sanitize_human_input
+
+    sanitizer_provider = create_sanitizer_provider(sanitizer)
+    san_result = await sanitize_human_input(message, sanitizer_provider)
+    if san_result.findings:
+        import sys
+        count = len(san_result.findings)
+        print(
+            f"\033[33mWarning: {count} secret(s) redacted from input.\033[0m",
+            file=sys.stderr,
+        )
+    message = san_result.redacted
+
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)

@@ -137,3 +137,14 @@ async def test_sanitize_human_input_provider_error_fallback():
     result = await sanitize_human_input("my secret text", provider)
     assert result.redacted == "my secret text"
     assert result.findings == []
+
+
+@pytest.mark.asyncio
+async def test_non_interactive_sanitizes_input():
+    """Non-interactive mode sanitizes the message input."""
+    from deepagents_cli.app import sanitize_human_input
+
+    provider = FakeProvider()
+    result = await sanitize_human_input("export AWS_KEY=AKIAIOSFODNN7EXAMPLE", provider)
+    assert "<REDACTED:aws-access-key>" in result.redacted
+    assert "AKIAIOSFODNN7EXAMPLE" not in result.redacted

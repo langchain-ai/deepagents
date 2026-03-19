@@ -21,14 +21,19 @@ _RESULTS: dict[str, int] = {
     "skipped": 0,
     "total": 0,
 }
+"""Aggregate pass/fail/skip/total counters across the entire session."""
 
 _DURATIONS_S: list[float] = []
+"""Wall-clock duration (seconds) of each test's `call` phase."""
 
 _EFFICIENCY_RESULTS: list[_evals_utils.EfficiencyResult] = []
+"""Per-test efficiency data (steps, tool calls) collected via the utils callback."""
 
-# Per-category tracking: populated during collection, updated during reporting.
 _NODEID_TO_CATEGORY: dict[str, str] = {}
+"""Mapping of pytest node ID to its `eval_category` mark value, built during collection."""
+
 _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
+"""Per-category pass/fail/total counters, keyed by category name."""
 
 
 def _micro_step_ratio() -> float | None:

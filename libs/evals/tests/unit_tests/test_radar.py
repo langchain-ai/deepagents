@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from deepagents_harbor.radar import (
+from deepagents_evals.radar import (
     CATEGORY_LABELS,
     EVAL_CATEGORIES,
     ModelResult,

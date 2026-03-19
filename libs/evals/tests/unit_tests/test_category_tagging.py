@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from deepagents_harbor.radar import CATEGORY_LABELS, EVAL_CATEGORIES
+from deepagents_evals.radar import CATEGORY_LABELS, EVAL_CATEGORIES
 
 # ---------------------------------------------------------------------------
 # Category definitions consistency
@@ -74,7 +74,7 @@ def test_category_scores_computation():
 
 
 def test_load_results_with_category_scores(tmp_path):
-    from deepagents_harbor.radar import load_results_from_summary
+    from deepagents_evals.radar import load_results_from_summary
 
     data = [
         {
@@ -92,7 +92,7 @@ def test_load_results_with_category_scores(tmp_path):
 
 
 def test_load_results_falls_back_to_overall(tmp_path):
-    from deepagents_harbor.radar import load_results_from_summary
+    from deepagents_evals.radar import load_results_from_summary
 
     data = [{"model": "test:model-b", "correctness": 0.72}]
     path = tmp_path / "summary.json"
@@ -103,7 +103,7 @@ def test_load_results_falls_back_to_overall(tmp_path):
 
 
 def test_load_results_empty_category_scores_falls_back(tmp_path):
-    from deepagents_harbor.radar import load_results_from_summary
+    from deepagents_evals.radar import load_results_from_summary
 
     data = [{"model": "test:model-c", "correctness": 0.60, "category_scores": {}}]
     path = tmp_path / "summary.json"

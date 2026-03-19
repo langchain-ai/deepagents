@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from deepagents_harbor.radar import (
+from deepagents_evals.radar import (
     EVAL_CATEGORIES,
     ModelResult,
     generate_radar,

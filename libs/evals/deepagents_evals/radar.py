@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure  # ty: ignore[unresolved-import]
     from matplotlib.projections.polar import PolarAxes  # ty: ignore[unresolved-import]
 
-# Eval categories corresponding to the eval test suites in libs/deepagents/tests/evals/.
-# Order determines axis placement on the chart (clockwise from top).
 EVAL_CATEGORIES: list[str] = [
     "file_operations",
     "skills",
@@ -32,8 +30,11 @@ EVAL_CATEGORIES: list[str] = [
     "tau2_airline",
     "memory_agent_bench",
 ]
+"""Canonical eval category names.
 
-# Display labels for chart axes (shorter, human-friendly).
+Order determines axis placement on the radar chart (clockwise from top).
+"""
+
 CATEGORY_LABELS: dict[str, str] = {
     "file_operations": "File Ops",
     "skills": "Skills",
@@ -48,8 +49,8 @@ CATEGORY_LABELS: dict[str, str] = {
     "tau2_airline": "Tau2 Airline",
     "memory_agent_bench": "MemoryAgentBench",
 }
+"""Human-friendly display labels for radar chart axes, keyed by category name."""
 
-# Visually distinct colors for up to 8 models.
 _COLORS: list[str] = [
     "#2563eb",  # blue
     "#dc2626",  # red
@@ -60,6 +61,7 @@ _COLORS: list[str] = [
     "#be185d",  # pink
     "#854d0e",  # brown
 ]
+"""Visually distinct hex colors for up to 8 models on the radar chart."""
 
 
 @dataclass(frozen=True)

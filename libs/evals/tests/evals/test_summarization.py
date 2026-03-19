@@ -22,8 +22,8 @@ from tests.evals.utils import AgentTrajectory, run_agent
 
 pytestmark = [pytest.mark.eval_category("summarization")]
 
-# URL for a large file that will trigger summarization
 LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/summarization.py"
+"""Pinned URL to a large source file used to trigger the summarization middleware in evals."""
 
 SYSTEM_PROMPT = dedent(
     """
@@ -48,6 +48,7 @@ SYSTEM_PROMPT = dedent(
 )
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
+"""Directory containing JSON fixture files for seeding summarization test state."""
 
 
 def _write_file(p: Path, content: str) -> None:

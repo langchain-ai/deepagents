@@ -33,8 +33,8 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 from deepagents.middleware.filesystem import (
+    CHARS_PER_TOKEN_ESTIMATE,
     EMPTY_CONTENT_WARNING,
-    NUM_CHARS_PER_TOKEN,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
@@ -1318,7 +1318,7 @@ class TestFilesystemMiddleware:
 
         class StrReadBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
-                return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
+                return "x" * (int(CHARS_PER_TOKEN_ESTIMATE * token_limit) + 1000)
 
         middleware = FilesystemMiddleware(
             backend=lambda rt: StrReadBackend(rt),  # noqa: PLW0108
@@ -1340,7 +1340,7 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, str)
         assert "Output was truncated due to size limits" in result
-        assert len(result) <= NUM_CHARS_PER_TOKEN * token_limit
+        assert len(result) <= int(CHARS_PER_TOKEN_ESTIMATE * token_limit)
 
     def test_read_file_empty_file_returns_warning(self):
         """ReadResult with empty content returns the empty-content warning."""

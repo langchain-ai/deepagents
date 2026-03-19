@@ -4,6 +4,7 @@
 import asyncio
 import concurrent.futures
 import mimetypes
+import time
 import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -19,8 +20,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 
@@ -66,9 +68,9 @@ READ_FILE_TRUNCATION_MSG = (
 )
 
 # Approximate number of characters per token for truncation calculations.
-# Using 4 chars per token as a conservative approximation (actual ratio varies by content)
-# This errs on the high side to avoid premature eviction of content that might fit
-NUM_CHARS_PER_TOKEN = 4
+# Using 3.5 chars per token as a safer approximation (actual ratio varies by content)
+# This is used for rough cuts before actual tokenization.
+CHARS_PER_TOKEN_ESTIMATE = 3.5
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -347,9 +349,9 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
 
 
 def _extract_text_from_message(message: ToolMessage) -> str:
-    """Extract text from a ToolMessage using its `content_blocks` property.
+    """Extract text from a ToolMessage.
 
-    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
+    Joins all text content and ignores non-text blocks (images, audio, etc.)
     so that binary payloads don't inflate the size measurement.
 
     Args:
@@ -358,8 +360,51 @@ def _extract_text_from_message(message: ToolMessage) -> str:
     Returns:
         Joined text from all text content blocks, or stringified content as fallback.
     """
-    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
+    if isinstance(message.content, str):
+        return message.content
+
+    if not isinstance(message.content, list):
+        return str(message.content)
+
+    texts: list[str] = []
+    for block in message.content:
+        if isinstance(block, str):
+            texts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text" and "text" in block:
+            texts.append(block["text"])
+
     return "\n".join(texts)
+
+
+class TokenBucket:
+    """Simple token bucket rate limiter."""
+
+    def __init__(self, rate: float, burst: float) -> None:
+        """Initialize the token bucket.
+
+        Args:
+            rate: Tokens per second.
+            burst: Maximum bucket size.
+        """
+        self.rate = rate  # tokens per second
+        self.burst = burst
+        self.tokens = burst
+        self.last_update = time.monotonic()
+
+    def consume(self, tokens: float = 1.0) -> bool:
+        """Consume tokens from the bucket. Returns True if successful."""
+        now = time.monotonic()
+        elapsed = now - self.last_update
+        self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+        self.last_update = now
+
+        if self.tokens >= tokens:
+            self.tokens -= tokens
+            return True
+        return False
+
+
+EXPENSIVE_TOOLS = {"ls_info", "grep_raw", "glob_info"}
 
 
 def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
@@ -446,24 +491,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         max_execute_timeout: int = 3600,
+        token_counter: Callable[[list[AnyMessage]], int] | None = None,
+        rate_limit_per_minute: float = 30.0,
+        burst_limit: float = 10.0,
     ) -> None:
-        """Initialize the filesystem middleware.
+        """Initialize filesystem middleware.
 
         Args:
-            backend: Backend for file storage and optional execution, or a factory callable.
-                Defaults to StateBackend if not provided.
-            system_prompt: Optional custom system prompt override.
-            custom_tool_descriptions: Optional custom tool descriptions override.
-            tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
-            max_execute_timeout: Maximum allowed value in seconds for per-command timeout
-                overrides on the execute tool.
-
-                Defaults to 3600 seconds (1 hour). Any per-command timeout
-                exceeding this value will be rejected with an error message.
-
-        Raises:
-            ValueError: If `max_execute_timeout` is not positive.
+            backend: Backend instance or factory for file operations.
+            system_prompt: Optional custom system prompt for the agent.
+            custom_tool_descriptions: Optional overrides for tool descriptions
+                (e.g., to provide more context about the filesystem structure).
+            tool_token_limit_before_evict: Maximum number of tokens a tool
+                result can have before it is evicted to the filesystem.
+            max_execute_timeout: Maximum timeout in seconds for shell commands.
+            token_counter: Optional function to count tokens in messages.
+                If None, uses `count_tokens_approximately`.
+            rate_limit_per_minute: Maximum number of expensive tool calls per minute.
+            burst_limit: Maximum number of expensive tool calls allowed in a short burst.
         """
+        self._rate_limiter = TokenBucket(rate=rate_limit_per_minute / 60.0, burst=burst_limit)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
@@ -475,6 +522,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._token_counter = token_counter or count_tokens_approximately
 
         self.tools = [
             self._create_ls_tool(),
@@ -566,21 +614,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_ls,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901, PLR0915
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
+        min_notice_chars = 100
 
-        def _truncate(content: str, file_path: str, limit: int) -> str:
-            lines = content.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                content = "".join(lines)
+        def _truncate(content: str) -> str:
+            # Use actual token counter if it's cheap enough, otherwise use estimate
+            if not token_limit:
+                return content
 
-            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                content = content[:max_content_length] + truncation_msg
+            # Rough cut first to avoid expensive tokenization on huge strings
+            if len(content) > CHARS_PER_TOKEN_ESTIMATE * token_limit * 2:
+                content = content[: int(CHARS_PER_TOKEN_ESTIMATE * token_limit * 2)]
+
+            # Refined truncation using token counter
+            while self._token_counter([HumanMessage(content=content)]) > token_limit:
+                # Shrink by 10% until it fits
+                content = content[: int(len(content) * 0.9)]
 
             return content
 
@@ -592,15 +644,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
-                warnings.warn(
-                    "Returning a plain `str` from `backend.read()` is deprecated. "
-                    "Return a `ReadResult` instead. Returning `str` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                # Legacy backends already format with line numbers
-                return _truncate(read_result, validated_path, limit)
+                return _handle_legacy_str_result(read_result, limit, validated_path)
 
             if read_result.error:
                 return f"Error: {read_result.error}"
@@ -612,22 +656,66 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content = read_result.file_data["content"]
 
             if file_type != "text":
-                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
-                return ToolMessage(
-                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
-                    name="read_file",
-                    tool_call_id=tool_call_id,
-                    additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
-                )
+                return _handle_media_result(content, validated_path, tool_call_id)
 
+            return _handle_text_result(content, offset, limit, validated_path)
+
+        def _handle_legacy_str_result(read_result: str, limit: int, validated_path: str) -> str:
+            warnings.warn(
+                "Returning a plain `str` from `backend.read()` is deprecated. "
+                "Return a `ReadResult` instead. Returning `str` will not be "
+                "supported in a future version.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            # Apply line limit for legacy backends
+            lines = read_result.splitlines()
+            if len(lines) > limit:
+                read_result = "\n".join(lines[:limit])
+
+            # Token-based truncation
+            truncated = _truncate(read_result)
+            if len(truncated) < len(read_result):
+                return _get_truncated_with_notice(truncated, validated_path)
+            return truncated
+
+        def _handle_media_result(content: str, validated_path: str, tool_call_id: str | None) -> ToolMessage:
+            mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+            return ToolMessage(
+                content_blocks=cast("list[ContentBlock]", [{"type": _get_file_type(validated_path), "base64": content, "mime_type": mime_type}]),
+                name="read_file",
+                tool_call_id=tool_call_id,
+                additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
+            )
+
+        def _get_truncated_with_notice(truncated: str, validated_path: str) -> str:
+            notice = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
+            # Ensure the notice fits within the token limit if possible
+            if self._tool_token_limit_before_evict:
+                limit_chars = int(CHARS_PER_TOKEN_ESTIMATE * self._tool_token_limit_before_evict)
+                # If we are already near or over the limit, we must shrink truncated content to fit notice
+                while len(truncated) + len(notice) > limit_chars and len(truncated) > min_notice_chars:
+                    truncated = truncated[: int(len(truncated) * 0.9)]
+            return truncated + notice
+
+        def _handle_text_result(content: str, offset: int, limit: int, validated_path: str) -> str:
             empty_msg = check_empty_content(content)
             if empty_msg:
                 return empty_msg
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
+
+            # Finding 3: Respect the limit on formatted lines (pagination through long lines)
+            formatted_lines = content.splitlines()
+            if len(formatted_lines) > limit:
+                content = "\n".join(formatted_lines[:limit])
+
             # We apply truncation again after formatting content as continuation lines
             # can increase line count
-            return _truncate(content, validated_path, limit)
+            truncated_content = _truncate(content)
+            if len(truncated_content) < len(content):
+                return _get_truncated_with_notice(truncated_content, validated_path)
+            return truncated_content
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -1208,6 +1296,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             A tuple of (processed_message, files_update):
             - processed_message: New ToolMessage with truncated content and file reference
             - files_update: Dict of file updates to apply to state, or None if eviction failed
+            Or None if the message is not large enough to be evicted.
 
         Note:
             Text is extracted from all text content blocks, joined, and used for both the
@@ -1221,8 +1310,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         content_str = _extract_text_from_message(message)
 
-        # Check if content exceeds eviction threshold
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+        # Estimate token count
+        msg_for_token_count = ToolMessage(content=content_str, tool_call_id=message.tool_call_id)
+        token_count = self._token_counter([msg_for_token_count])
+
+        if token_count <= self._tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem
@@ -1269,7 +1361,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         content_str = _extract_text_from_message(message)
 
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+        if len(content_str) <= CHARS_PER_TOKEN_ESTIMATE * self._tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem using async method
@@ -1418,6 +1510,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
+        # Finding 5: Rate Limiting
+        if request.tool_call["name"] in EXPENSIVE_TOOLS and not self._rate_limiter.consume():
+            return ToolMessage(
+                content=f"Error: Rate limit exceeded for tool '{request.tool_call['name']}'. Please wait before calling it again or reduce frequency of expensive tool calls.",
+                tool_call_id=request.tool_call["id"],
+                name=request.tool_call["name"],
+            )
+
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return handler(request)
 
@@ -1438,6 +1538,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
+        # Finding 5: Rate Limiting
+        if request.tool_call["name"] in EXPENSIVE_TOOLS and not self._rate_limiter.consume():
+            return ToolMessage(
+                content=f"Error: Rate limit exceeded for tool '{request.tool_call['name']}'. Please wait before calling it again or reduce frequency of expensive tool calls.",
+                tool_call_id=request.tool_call["id"],
+                name=request.tool_call["name"],
+            )
+
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return await handler(request)
 

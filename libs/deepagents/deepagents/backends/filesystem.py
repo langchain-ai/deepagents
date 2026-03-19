@@ -87,7 +87,7 @@ class FilesystemBackend(BackendProtocol):
         self,
         root_dir: str | Path | None = None,
         virtual_mode: bool | None = None,  # noqa: FBT001
-        max_file_size_mb: int = 10,
+        max_file_size_mb: float = 10,
     ) -> None:
         """Initialize filesystem backend.
 
@@ -118,9 +118,10 @@ class FilesystemBackend(BackendProtocol):
                 - Agents have unrestricted filesystem access
 
             max_file_size_mb: Maximum file size in megabytes for operations like
-                grep's Python fallback search.
+                grep's Python fallback search and reading binary files.
 
-                Files exceeding this limit are skipped during search. Defaults to 10 MB.
+                Files exceeding this limit are skipped during search or refused
+                during binary read. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         if virtual_mode is None:
@@ -136,7 +137,7 @@ class FilesystemBackend(BackendProtocol):
             )
             virtual_mode = False
         self.virtual_mode = virtual_mode
-        self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
+        self.max_file_size_bytes = int(max_file_size_mb * 1024 * 1024)
 
     def _resolve_path(self, key: str) -> Path:
         """Resolve a file path with security checks.
@@ -318,32 +319,37 @@ class FilesystemBackend(BackendProtocol):
         if not resolved_path.exists() or not resolved_path.is_file():
             return ReadResult(error=f"File '{file_path}' not found")
 
+        res = ReadResult()
         try:
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             if _get_file_type(file_path) != "text":
-                with os.fdopen(fd, "rb") as f:
-                    raw = f.read()
-                encoded = base64.standard_b64encode(raw).decode("ascii")
-                return ReadResult(file_data=create_file_data(encoded, encoding="base64"))
+                # Finding 3: Check size for binary files
+                if resolved_path.stat().st_size > self.max_file_size_bytes:
+                    os.close(fd)
+                    res.error = f"File '{file_path}' exceeds binary read limit of {self.max_file_size_bytes} bytes"
+                else:
+                    with os.fdopen(fd, "rb") as f:
+                        raw = f.read()
+                    encoded = base64.standard_b64encode(raw).decode("ascii")
+                    res.file_data = create_file_data(encoded, encoding="base64")
+            else:
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    content = f.read()
 
-            with os.fdopen(fd, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return ReadResult(file_data=create_file_data(empty_msg))
-
-            lines = content.splitlines()
-            start_idx = offset
-            end_idx = min(start_idx + limit, len(lines))
-
-            if start_idx >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-
-            selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
+                empty_msg = check_empty_content(content)
+                if empty_msg:
+                    res.file_data = create_file_data(empty_msg)
+                else:
+                    lines = content.splitlines()
+                    if offset >= len(lines):
+                        res.error = f"Line offset {offset} exceeds file length ({len(lines)} lines)"
+                    else:
+                        end_idx = min(offset + limit, len(lines))
+                        res.file_data = create_file_data("\n".join(lines[offset:end_idx]))
         except OSError as e:
-            return ReadResult(error=f"Error reading file '{file_path}': {e}")
+            res.error = f"Error reading file '{file_path}': {e}"
+
+        return res
 
     def write(
         self,

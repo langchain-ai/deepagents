@@ -23,7 +23,7 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.filesystem import CHARS_PER_TOKEN_ESTIMATE
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
@@ -1124,7 +1124,7 @@ class TestDeepAgentEndToEnd:
         read_file chunks this into 100 lines x 5000 chars = 500K chars - potential token overflow.
         This test verifies that the truncation logic prevents such overflow.
         """
-        max_reasonable_chars = TOOL_RESULT_TOKEN_LIMIT * NUM_CHARS_PER_TOKEN  # 80,000 chars
+        max_reasonable_chars = TOOL_RESULT_TOKEN_LIMIT * CHARS_PER_TOKEN_ESTIMATE  # 80,000 chars
 
         # str(dict) produces no newlines—exactly how evicted tool results are serialized
         large_dict = {"records": [{"id": i, "data": "x" * 100} for i in range(4000)]}

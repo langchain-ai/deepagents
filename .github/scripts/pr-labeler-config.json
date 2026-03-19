@@ -50,7 +50,8 @@
     "sdk": "deepagents",
     "deepagents-cli": "cli",
     "cli": "cli",
-    "harbor": "harbor",
+    "harbor": "evals",
+    "evals": "evals",
     "acp": "acp",
     "docs": "documentation",
     "infra": "infra",
@@ -72,8 +73,8 @@
       "prefix": "libs/acp/"
     },
     {
-      "label": "harbor",
-      "prefix": "libs/harbor/"
+      "label": "evals",
+      "prefix": "libs/evals/"
     },
     {
       "label": "github_actions",

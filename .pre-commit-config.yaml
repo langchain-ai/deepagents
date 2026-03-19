@@ -8,14 +8,17 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
+        exclude: libs/evals/tests/evals/tau2_airline/data/
       - id: trailing-whitespace # remove trailing whitespace from lines
-        exclude: \.ambr$
+        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/
 
   - repo: https://github.com/sirosen/texthooks
     rev: 0.6.8
     hooks:
       - id: fix-smartquotes
+        exclude: libs/evals/tests/evals/tau2_airline/data/
       - id: fix-spaces
+        exclude: libs/evals/tests/evals/tau2_airline/data/
 
   - repo: local
     hooks:
@@ -31,11 +34,11 @@ repos:
         entry: make -C libs/cli format lint
         files: ^libs/cli/
         pass_filenames: false
-      - id: harbor
-        name: format and lint harbor
+      - id: evals
+        name: format and lint evals
         language: system
-        entry: make -C libs/harbor format lint
-        files: ^libs/harbor/
+        entry: make -C libs/evals format lint
+        files: ^libs/evals/
         pass_filenames: false
       - id: acp
         name: format and lint acp

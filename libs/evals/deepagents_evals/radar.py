@@ -75,6 +75,7 @@ def generate_radar(
     title: str = "Eval Results",
     output: str | Path | None = None,
     figsize: tuple[float, float] = (10, 10),
+    _color_offset: int = 0,
 ) -> Figure:
     """Generate a radar chart comparing models across eval categories.
 
@@ -116,7 +117,7 @@ def generate_radar(
 
     # Plot each model as a filled polygon.
     for idx, result in enumerate(results):
-        color = _COLORS[idx % len(_COLORS)]
+        color = _COLORS[(idx + _color_offset) % len(_COLORS)]
         values = [result.scores.get(c, 0.0) for c in cats]
         values.append(values[0])  # close polygon
 
@@ -182,7 +183,7 @@ def generate_individual_radars(
     out.mkdir(parents=True, exist_ok=True)
 
     paths: list[Path] = []
-    for result in results:
+    for idx, result in enumerate(results):
         name = _short_model_name(result.model)
         safe = _safe_filename(result.model)
         dest = out / f"{safe}.png"
@@ -192,6 +193,7 @@ def generate_individual_radars(
             title=f"{title_prefix} — {name}",
             output=dest,
             figsize=figsize,
+            _color_offset=idx,
         )
         paths.append(dest)
     return paths

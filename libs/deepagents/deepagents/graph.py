@@ -32,6 +32,10 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.tool_search import (
+    ToolSearchMiddleware,
+    create_search_tools_tool,
+)
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -281,6 +285,15 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    # Tool Bloat Protection (Finding 22)
+    # If the tool count is high, we use a disclosure mechanism to save context.
+    tool_search_threshold = 20
+    if tools and len(tools) > tool_search_threshold:
+        search_tools_tool = create_search_tools_tool(list(tools))
+        # Add search_tools to the actual tools passed to create_agent
+        tools = [*list(tools), search_tools_tool]
+        deepagent_middleware.append(ToolSearchMiddleware(all_tools=tools))
 
     # Combine system_prompt with BASE_AGENT_PROMPT
     if system_prompt is None:

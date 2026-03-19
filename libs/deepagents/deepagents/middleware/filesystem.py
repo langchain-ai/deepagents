@@ -982,7 +982,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
         def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
-            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            command: Annotated[
+                str,
+                "Shell command to execute in the sandbox environment. If the command includes a path parameter, please prefer using use relative path, such as 'xx/xxx'.",
+            ],
             runtime: ToolRuntime[None, FilesystemState],
             timeout: Annotated[
                 int | None,
@@ -1036,7 +1039,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return "".join(parts)
 
         async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
-            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            command: Annotated[
+                str,
+                "Shell command to execute in the sandbox environment. If the command includes a path parameter, please prefer using use relative path, such as 'xx/xxx'.",
+            ],
             runtime: ToolRuntime[None, FilesystemState],
             # ASYNC109 - timeout is a semantic parameter forwarded to the
             # backend's implementation, not an asyncio.timeout() contract.

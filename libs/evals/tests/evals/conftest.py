@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from langchain.chat_models import init_chat_model
 from langchain_baseten import ChatBaseten
-from langchain_openai import ChatOpenAI
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -123,12 +122,6 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 
 @pytest.fixture
 def model(model_name: str) -> BaseChatModel:
-    if model_name == "nvidia/nemotron-3-super-120b-a12b":
-        return ChatOpenAI(
-            model="private/nvidia/nemotron-3-super-120b-a12b",
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=os.environ["NVIDIA_API_KEY"],
-        )
     if model_name.startswith("baseten:"):
         return ChatBaseten(
             model=model_name.removeprefix("baseten:"),

@@ -35,8 +35,10 @@ dependencies = [
     "langchain-google-genai",
     "langchain-groq",
     "langchain-mistralai",
+    "langchain-nvidia-ai-endpoints",
     "langchain-ollama",
     "langchain-openai>=1.0.0",
+    "langchain-openrouter",
     "langchain-xai",
     # Eval-specific dependencies
     "datasets>=3.0.0",

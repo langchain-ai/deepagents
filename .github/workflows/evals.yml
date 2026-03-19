@@ -94,7 +94,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
@@ -267,3 +267,73 @@ jobs:
         with:
           name: radar-charts
           path: charts/
+
+      - name: "🖼️ Publish charts to eval-assets branch"
+        id: publish-charts
+        if: hashFiles('charts/radar.png') != ''
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}"
+
+          # Set up a temp workdir so we don't disturb the main checkout.
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # Fetch eval-assets if it exists; otherwise start an orphan branch.
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+
+          # Copy charts into run-specific directory.
+          mkdir -p "${asset_dir}"
+          cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+
+          git add "${asset_dir}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+
+          # Expose base URL for the summary step.
+          base="https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}"
+          echo "base_url=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append charts to summary"
+        if: steps.publish-charts.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
+        run: |
+          {
+            echo ""
+            echo "## Radar charts"
+            echo ""
+            echo "### Combined"
+            echo ""
+            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            echo ""
+
+            if [ -d charts/individual ]; then
+              echo "### Per-model"
+              echo ""
+              for img in charts/individual/*.png; do
+                name="$(basename "$img" .png)"
+                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

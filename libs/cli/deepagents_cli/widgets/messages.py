@@ -13,15 +13,14 @@ from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
 from textual.content import Content
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from deepagents_cli.config import (
     COLORS,
     MODE_DISPLAY_GLYPHS,
     PREFIX_TO_MODE,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
     from textual.timer import Timer
+    from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,7 @@ class UserMessage(_TimestampClickMixin, Static):
         """Set border style based on charset mode and content prefix."""
         mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
         color = _mode_color(mode)
-        border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
+        border_type = "ascii" if is_ascii_mode() else "wide"
         self.styles.border_left = (border_type, color)
 
     def compose(self) -> ComposeResult:
@@ -250,7 +250,7 @@ class QueuedUserMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border_left = ("ascii", "#6b7280")
 
     def compose(self) -> ComposeResult:
@@ -308,10 +308,14 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         Yields:
             Markdown widget for rendering assistant content.
         """
+        from textual.widgets import Markdown
+
         yield Markdown("", id="assistant-content")
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
+        from textual.widgets import Markdown
+
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def _get_markdown(self) -> Markdown:
@@ -321,6 +325,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The Markdown widget for this message.
         """
         if self._markdown is None:
+            from textual.widgets import Markdown
+
             self._markdown = self.query_one("#assistant-content", Markdown)
         return self._markdown
 
@@ -331,6 +337,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The MarkdownStream instance for streaming content.
         """
         if self._stream is None:
+            from textual.widgets import Markdown
+
             self._stream = Markdown.get_stream(self._get_markdown())
         return self._stream
 
@@ -515,7 +523,7 @@ class ToolCallMessage(Vertical):
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border_left = ("ascii", "#3b3b3b")
 
         self._status_widget = self.query_one("#status", Static)
@@ -748,6 +756,18 @@ class ToolCallMessage(Vertical):
         formatter = formatters.get(self._tool_name)
         if formatter:
             return formatter(output, is_preview=is_preview)
+
+        if is_preview:
+            # Fallback for unknown tools: use generic truncation
+            lines = output.split("\n")
+            if len(lines) > self._PREVIEW_LINES:
+                return self._format_lines_output(lines, is_preview=True)
+            if len(output) > self._PREVIEW_CHARS:
+                truncated = output[: self._PREVIEW_CHARS]
+                truncation = f"{len(output) - self._PREVIEW_CHARS} more chars"
+                return FormattedOutput(
+                    content=Content(truncated), truncation=truncation
+                )
 
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
@@ -1299,7 +1319,7 @@ class DiffMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "cyan")
 
 
@@ -1333,7 +1353,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border_left = ("ascii", "red")
 
 

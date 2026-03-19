@@ -2524,7 +2524,8 @@ class TestBuildThreadMessage:
     async def test_plain_text_when_tracing_not_configured(self) -> None:
         """Returns plain string when LangSmith URL is not available."""
         app = DeepAgentsApp()
-        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=None):
+        target = "deepagents_cli.config.build_langsmith_thread_url"
+        with patch(target, return_value=None):
             result = await app._build_thread_message("Resumed thread", "tid-123")
 
         assert result == "Resumed thread: tid-123"
@@ -2537,7 +2538,8 @@ class TestBuildThreadMessage:
 
         app = DeepAgentsApp()
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
-        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=url):
+        target = "deepagents_cli.config.build_langsmith_thread_url"
+        with patch(target, return_value=url):
             result = await app._build_thread_message("Resumed thread", "tid-123")
 
         assert isinstance(result, Content)
@@ -2567,7 +2569,7 @@ class TestBuildThreadMessage:
         """Returns plain string when URL resolution raises an exception."""
         app = DeepAgentsApp()
         with patch(
-            "deepagents_cli.app.build_langsmith_thread_url",
+            "deepagents_cli.config.build_langsmith_thread_url",
             side_effect=OSError("network error"),
         ):
             result = await app._build_thread_message("Resumed thread", "t-1")

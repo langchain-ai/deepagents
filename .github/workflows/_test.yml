@@ -24,6 +24,7 @@ permissions:
 
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   build:
@@ -47,7 +48,7 @@ jobs:
 
       - name: "📦 Install Test Dependencies"
         shell: bash
-        run: uv sync --group test --locked
+        run: uv sync --group test
 
       - name: "🧪 Run Unit Tests"
         shell: bash
@@ -55,9 +56,9 @@ jobs:
           RUN_SANDBOX_TESTS: "true"
         run: |
           if [ "${{ inputs.coverage }}" = "false" ]; then
-            make test COV_ARGS=
+            make test COV_ARGS= PYTEST_EXTRA=-q
           else
-            make test
+            make test PYTEST_EXTRA=-q
           fi
 
       - name: "🧹 Verify Clean Working Directory"

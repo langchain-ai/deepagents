@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import Settings
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",
@@ -37,7 +37,7 @@ class TestReloadFromEnvironment:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
 
@@ -142,7 +142,7 @@ class TestReloadFromEnvironment:
         mock_load = MagicMock(return_value=False)
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
@@ -181,7 +181,7 @@ class TestReloadErrorPaths:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
 
@@ -210,7 +210,9 @@ class TestReloadErrorPaths:
             msg = "No such file or directory"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("deepagents_cli.config._find_project_root", _raise_oserror)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root", _raise_oserror
+        )
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.project_root == original_root

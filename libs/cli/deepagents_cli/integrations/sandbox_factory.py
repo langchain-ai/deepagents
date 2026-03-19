@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
+    from langsmith.sandbox import SandboxTemplate
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -199,12 +200,11 @@ def _import_provider_module(
         raise ImportError(msg) from exc
 
 
-# Default template configuration
-DEFAULT_TEMPLATE_NAME = "deepagents-cli"
-DEFAULT_TEMPLATE_IMAGE = "python:3"
+_LANGSMITH_DEFAULT_TEMPLATE = "deepagents-cli"
+_LANGSMITH_DEFAULT_IMAGE = "python:3"
 
 
-class LangSmithProvider(SandboxProvider):
+class _LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -219,13 +219,13 @@ class LangSmithProvider(SandboxProvider):
         Raises:
             ValueError: If LANGSMITH_API_KEY environment variable not set
         """
-        from langsmith import sandbox
+        from langsmith.sandbox import SandboxClient
 
         self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
         if not self._api_key:
             msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
+        self._client: SandboxClient = SandboxClient(api_key=self._api_key)
 
     def get_or_create(
         self,
@@ -246,12 +246,14 @@ class LangSmithProvider(SandboxProvider):
             **kwargs: Additional LangSmith-specific parameters
 
         Returns:
-            LangSmithBackend instance
+            LangSmithSandbox instance
 
         Raises:
             RuntimeError: If sandbox connection or startup fails
             TypeError: If unsupported keyword arguments are provided
         """
+        from deepagents.backends.langsmith import LangSmithSandbox
+
         if kwargs:
             msg = f"Received unsupported arguments: {list(kwargs.keys())}"
             raise TypeError(msg)
@@ -262,7 +264,7 @@ class LangSmithProvider(SandboxProvider):
             except Exception as e:
                 msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
                 raise RuntimeError(msg) from e
-            return LangSmithBackend(sandbox)
+            return LangSmithSandbox(sandbox)
 
         resolved_template_name, resolved_image_name = self._resolve_template(
             template, template_image
@@ -298,7 +300,7 @@ class LangSmithProvider(SandboxProvider):
             msg = f"LangSmith sandbox failed to start within {timeout} seconds"
             raise RuntimeError(msg)
 
-        return LangSmithBackend(sandbox)
+        return LangSmithSandbox(sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
         """Delete a LangSmith sandbox.
@@ -320,9 +322,9 @@ class LangSmithProvider(SandboxProvider):
             Tuple of (template_name, template_image). Always returns values,
             using defaults if not provided.
         """
-        resolved_image = template_image or DEFAULT_TEMPLATE_IMAGE
+        resolved_image = template_image or _LANGSMITH_DEFAULT_IMAGE
         if template is None:
-            return DEFAULT_TEMPLATE_NAME, resolved_image
+            return _LANGSMITH_DEFAULT_TEMPLATE, resolved_image
         if isinstance(template, str):
             return template, resolved_image
         # SandboxTemplate object - extract image if not provided
@@ -340,6 +342,8 @@ class LangSmithProvider(SandboxProvider):
         Raises:
             RuntimeError: If template check or creation fails
         """
+        from langsmith.sandbox import ResourceNotFoundError
+
         try:
             self._client.get_template(template_name)
         except ResourceNotFoundError as e:
@@ -601,9 +605,7 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     if provider_name == "daytona":
         return _DaytonaProvider()
     if provider_name == "langsmith":
-        from deepagents_cli.integrations.langsmith import LangSmithProvider
-
-        return LangSmithProvider()
+        return _LangSmithProvider()
     if provider_name == "modal":
         return _ModalProvider()
     if provider_name == "runloop":

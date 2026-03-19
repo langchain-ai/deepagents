@@ -773,22 +773,11 @@ def create_cli_agent(
     # Add sanitizer middleware (must be early — outermost wrap_tool_call)
     if sanitizer:
         from deepagents.middleware.sanitizer import SanitizerMiddleware
-        from deepagents.middleware.sanitizer_gitleaks import GitleaksSanitizerProvider
+        from deepagents_cli.sanitizer_factory import create_sanitizer_provider
 
-        _SANITIZER_PROVIDERS = {
-            "gitleaks": GitleaksSanitizerProvider,
-        }
-        provider_cls = _SANITIZER_PROVIDERS.get(sanitizer)
-        if provider_cls is None:
-            logger.warning("Unknown sanitizer provider: %s — skipping", sanitizer)
-        else:
-            try:
-                agent_middleware.insert(0, SanitizerMiddleware(providers=[provider_cls()]))
-            except FileNotFoundError:
-                logger.warning(
-                    "Sanitizer '%s' binary not found in PATH — install it or remove --sanitizer flag",
-                    sanitizer,
-                )
+        provider = create_sanitizer_provider(sanitizer)
+        if provider is not None:
+            agent_middleware.insert(0, SanitizerMiddleware(providers=[provider]))
 
     agent_middleware.append(ConfigurableModelMiddleware())
 

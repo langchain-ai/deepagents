@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypedDict, cast, runt
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.callbacks import dispatch_custom_event
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -21,7 +22,6 @@ if TYPE_CHECKING:
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.messages.content import ContentBlock
     from langchain_core.tools import BaseTool
-    from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,36 @@ class SanitizerMiddleware(AgentMiddleware):
 
         return msg
 
+    def _sanitize_command(self, command: Command[Any], tool_name: str) -> Command[Any]:
+        """Sanitize ToolMessage instances nested in a Command's update (sync)."""
+        update = command.update
+        if update is None:
+            return command
+        messages = update.get("messages")
+        if not messages:
+            return command
+        new_messages = [
+            self._apply_to_toolmessage(msg, tool_name) if isinstance(msg, ToolMessage) else msg
+            for msg in messages
+        ]
+        return Command(update={**update, "messages": new_messages})
+
+    async def _asanitize_command(self, command: Command[Any], tool_name: str) -> Command[Any]:
+        """Sanitize ToolMessage instances nested in a Command's update (async)."""
+        update = command.update
+        if update is None:
+            return command
+        messages = update.get("messages")
+        if not messages:
+            return command
+        new_messages = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                new_messages.append(await self._aapply_to_toolmessage(msg, tool_name))
+            else:
+                new_messages.append(msg)
+        return Command(update={**update, "messages": new_messages})
+
     def _should_process(self, tool_name: str) -> bool:
         """Return True if this tool's output should be sanitized."""
         if not self._target_tools:
@@ -223,6 +253,9 @@ class SanitizerMiddleware(AgentMiddleware):
         if isinstance(tool_result, ToolMessage):
             return self._apply_to_toolmessage(tool_result, tool_name)
 
+        if isinstance(tool_result, Command):
+            return self._sanitize_command(tool_result, tool_name)
+
         return tool_result
 
     async def awrap_tool_call(
@@ -239,5 +272,8 @@ class SanitizerMiddleware(AgentMiddleware):
 
         if isinstance(tool_result, ToolMessage):
             return await self._aapply_to_toolmessage(tool_result, tool_name)
+
+        if isinstance(tool_result, Command):
+            return await self._asanitize_command(tool_result, tool_name)
 
         return tool_result

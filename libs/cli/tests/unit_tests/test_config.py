@@ -1763,3 +1763,39 @@ class TestDetectProvider:
             assert detect_provider("GPT-4o") == "openai"
         finally:
             settings.anthropic_api_key = None
+
+
+class TestLazyModuleAttributes:
+    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+
+    def test_getattr_returns_settings(self) -> None:
+        """Module __getattr__ resolves 'settings' to a Settings instance."""
+        from deepagents_cli.config import _get_settings
+
+        result = _get_settings()
+        assert isinstance(result, Settings)
+
+    def test_getattr_returns_console(self) -> None:
+        """Module __getattr__ resolves 'console' to a Console instance."""
+        from rich.console import Console
+
+        from deepagents_cli.config import _get_console
+
+        result = _get_console()
+        assert isinstance(result, Console)
+
+    def test_getattr_raises_for_unknown(self) -> None:
+        """Module __getattr__ raises AttributeError for unknown names."""
+        import deepagents_cli.config as config_mod
+
+        with pytest.raises(AttributeError, match="no attribute"):
+            getattr(config_mod, "nonexistent_attr_xyz")  # noqa: B009  # intentional __getattr__ test
+
+    def test_ensure_bootstrap_is_idempotent(self) -> None:
+        """_ensure_bootstrap is a no-op on second call."""
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # First call already ran (settings was imported above).
+        # Calling again should be a harmless no-op.
+        _ensure_bootstrap()
+        assert isinstance(settings, Settings)

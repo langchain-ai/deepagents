@@ -1058,10 +1058,10 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Note: LANGSMITH_PROJECT is already overridden in config.py
-    # (before LangChain imports). This ensures agent traces use
-    # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
-    # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+    # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
+    # _ensure_bootstrap() (triggered on first access of `settings`).
+    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
@@ -1085,10 +1085,12 @@ def cli_main() -> None:
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
 
-    from deepagents_cli.config import console, settings
-
     try:
         args = parse_args()
+
+        # Import console/settings AFTER arg parsing so headless fast-paths
+        # (--help, --version) never pay the config bootstrap cost.
+        from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -1491,8 +1493,12 @@ def cli_main() -> None:
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C - suppress ugly traceback
-        console.print("\n\n[yellow]Interrupted[/yellow]")
+        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # `console` may not be bound if Ctrl+C arrives during config import.
+        try:
+            console.print("\n\n[yellow]Interrupted[/yellow]")
+        except NameError:
+            sys.stderr.write("\n\nInterrupted\n")
         sys.exit(0)
 
 

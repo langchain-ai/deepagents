@@ -34,26 +34,14 @@ from deepagents_cli._session_stats import (
     SpinnerStatus,
     format_token_count,
 )
-from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.command_registry import (
-    ALWAYS_IMMEDIATE,
-    BYPASS_WHEN_CONNECTING,
-    IMMEDIATE_UI,
-    SIDE_EFFECT_FREE,
-)
-from deepagents_cli.config import (
-    DOCS_URL,
-    SHELL_TOOL_NAMES,
-    build_langsmith_thread_url,
-    create_model,
-    detect_provider,
-    is_ascii_mode,
-    is_shell_command_allowed,
-    newline_shortcut,
-    settings,
-)
-from deepagents_cli.hooks import dispatch_hook
-from deepagents_cli.model_config import ModelSpec, save_recent_model
+
+# Only is_ascii_mode is needed before first paint (on_mount scrollbar config).
+# All other config imports — settings, create_model, detect_provider, etc. — are
+# deferred to local imports at their call sites since they are only accessed
+# after user interaction begins.
+from deepagents_cli._version import DOCS_URL
+from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.prompts import REMEMBER_PROMPT
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -374,121 +362,7 @@ _COMMAND_URLS: dict[str, str] = {
     "/docs": DOCS_URL,
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
-
-# Prompt for /remember command - triggers agent to review conversation and update
-# memory/skills
-REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
-
-## Step 1: Identify Best Practices and Key Learnings
-
-Scan the conversation for:
-
-### Best Practices (highest priority)
-- **Patterns that worked well** - approaches, techniques, or solutions we found effective
-- **Anti-patterns to avoid** - mistakes, gotchas, or approaches that caused problems
-- **Quality standards** - criteria we established for good code, documentation, or processes
-- **Decision rationale** - why we chose one approach over another
-
-### Other Valuable Knowledge
-- Coding conventions and style preferences
-- Project architecture decisions
-- Workflows and processes we developed
-- Tools, libraries, or techniques worth remembering
-- Feedback I gave about your behavior or outputs
-
-## Step 2: Decide Where to Store Each Learning
-
-For each best practice or learning, choose the right destination:
-
-### -> Memory (AGENTS.md) for preferences and guidelines
-Use memory when the knowledge is:
-- A preference or guideline (not a multi-step process)
-- Something to always keep in mind
-- A simple rule or pattern
-
-**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
-**Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
-
-### -> Skill for reusable workflows and methodologies
-**Create a skill when** we developed:
-- A multi-step process worth reusing
-- A methodology for a specific type of task
-- A workflow with best practices baked in
-- A procedure that should be followed consistently
-
-Skills are more powerful than memory entries because they can encode **how** to do something well, not just **what** to remember.
-
-## Step 3: Create Skills for Significant Best Practices
-
-If we established best practices around a workflow or process, capture them in a skill.
-
-**Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
-
-### Skill Location
-`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
-
-### Skill Structure
-```
-skill-name/
-├── SKILL.md          (required - main instructions with best practices)
-├── scripts/          (optional - executable code)
-├── references/       (optional - detailed documentation)
-└── assets/           (optional - templates, examples)
-```
-
-### SKILL.md Format
-```markdown
----
-name: skill-name
-description: "What this skill does AND when to use it. Include triggers like 'when the user asks to X' or 'when working with Y'. This description determines when the skill activates."
----
-
-# Skill Name
-
-## Overview
-Brief explanation of what this skill accomplishes.
-
-## Best Practices
-Capture the key best practices upfront:
-- Best practice 1: explanation
-- Best practice 2: explanation
-
-## Process
-Step-by-step instructions (imperative form):
-1. First, do X
-2. Then, do Y
-3. Finally, do Z
-
-## Common Pitfalls
-- Pitfall to avoid and why
-- Another anti-pattern we discovered
-```
-
-### Key Principles
-1. **Encode best practices prominently** - Put them near the top so they guide the entire workflow
-2. **Concise is key** - Only include non-obvious knowledge. Every paragraph should justify its token cost.
-3. **Clear triggers** - The description determines when the skill activates. Be specific.
-4. **Imperative form** - Write as commands: "Create a file" not "You should create a file"
-5. **Include anti-patterns** - What NOT to do is often as valuable as what to do
-
-## Step 4: Update Memory for Simpler Learnings
-
-For preferences, guidelines, and simple rules that don't warrant a full skill:
-
-```markdown
-## Best Practices
-- When doing X, always Y because Z
-- Avoid A because it leads to B
-```
-
-Use `edit_file` to update existing files or `write_file` to create new ones.
-
-## Step 5: Summarize Changes
-
-List what you captured and where you stored it:
-- Skills created (with key best practices encoded)
-- Memory entries added (with location)
-"""  # noqa: E501
+"""Slash-command to URL mapping for commands that just open a browser."""
 
 
 class DeepAgentsApp(App):
@@ -720,6 +594,12 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        # Move all objects allocated during import/compose into the permanent
+        # generation so the cyclic GC skips them during first-paint rendering.
+        import gc
+
+        gc.freeze()
+
         chat = self.query_one("#chat", VerticalScroll)
         chat.anchor()
         if is_ascii_mode():
@@ -986,9 +866,23 @@ class DeepAgentsApp(App):
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
         """
+        # Internal modules moved from top-level to local imports — a failure
+        # here indicates a packaging or code bug, not a missing optional dep, so
+        # we let the exception propagate (the worker catches it and logs
+        # at WARNING).
+        from deepagents_cli.clipboard import (
+            copy_selection_to_clipboard,  # noqa: F401
+        )
+        from deepagents_cli.command_registry import ALWAYS_IMMEDIATE  # noqa: F401
+        from deepagents_cli.config import settings  # noqa: F401
+        from deepagents_cli.hooks import dispatch_hook  # noqa: F401
+        from deepagents_cli.model_config import ModelSpec  # noqa: F401
+
         try:
-            # Heavy deps deferred from textual_adapter / tool_display —
-            # hit on first message send and first tool approval
+            # Heavy third-party deps deferred from textual_adapter /
+            # tool_display — hit on first message send and first tool
+            # approval. Best-effort: missing optional deps should not block the
+            # TUI from rendering.
             from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
             from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
                 ApproveDecision,
@@ -1269,6 +1163,12 @@ class DeepAgentsApp(App):
         Returns:
             A Future that resolves to the user's decision.
         """
+        from deepagents_cli.config import (
+            SHELL_TOOL_NAMES,
+            is_shell_command_allowed,
+            settings,
+        )
+
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
@@ -1577,6 +1477,12 @@ class DeepAgentsApp(App):
         Returns:
             `True` if the command should bypass the busy-state queue.
         """
+        from deepagents_cli.command_registry import (
+            BYPASS_WHEN_CONNECTING,
+            IMMEDIATE_UI,
+            SIDE_EFFECT_FREE,
+        )
+
         cmd = value.split(maxsplit=1)[0] if value else ""
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
@@ -1594,9 +1500,13 @@ class DeepAgentsApp(App):
         # Reset quit pending state on any input
         self._quit_pending = False
 
+        from deepagents_cli.hooks import dispatch_hook
+
         await dispatch_hook("user.prompt", {})
 
         # /quit and /q always execute immediately, even mid-thread-switch.
+        from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
+
         if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
             self.exit()
             return
@@ -1877,6 +1787,8 @@ class DeepAgentsApp(App):
         Returns:
             `Content` with a clickable thread ID, or a plain string.
         """
+        from deepagents_cli.config import build_langsmith_thread_url
+
         try:
             url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
@@ -1902,6 +1814,8 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
+        from deepagents_cli.config import build_langsmith_thread_url
+
         await self._mount_message(UserMessage(command))
         if not self._session_state:
             await self._mount_message(AppMessage("No active session."))
@@ -1936,6 +1850,8 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
+        from deepagents_cli.config import newline_shortcut, settings
+
         cmd = command.lower().strip()
 
         if cmd in {"/quit", "/q"}:
@@ -2203,6 +2119,8 @@ class DeepAgentsApp(App):
             A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
+        from deepagents_cli.config import create_model, settings
+
         try:
             from deepagents.middleware.summarization import (
                 compute_summarization_defaults,
@@ -2226,6 +2144,7 @@ class DeepAgentsApp(App):
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
+        from deepagents_cli.config import settings
         from deepagents_cli.offload import (
             OffloadModelError,
             OffloadThresholdNotMet,
@@ -2261,6 +2180,8 @@ class DeepAgentsApp(App):
         # Prevent concurrent user input while offload modifies state
         self._agent_running = True
         try:
+            from deepagents_cli.hooks import dispatch_hook
+
             await dispatch_hook("context.offload", {})
             # Keep old hook name for backward compatibility
             await dispatch_hook("context.compact", {})
@@ -3383,6 +3304,8 @@ class DeepAgentsApp(App):
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard on mouse release."""
+        from deepagents_cli.clipboard import copy_selection_to_clipboard
+
         copy_selection_to_clipboard(self)
 
     # =========================================================================
@@ -3401,6 +3324,7 @@ class DeepAgentsApp(App):
         """
         from functools import partial
 
+        from deepagents_cli.config import settings
         from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
         def handle_result(result: tuple[str, str] | None) -> None:
@@ -3644,16 +3568,19 @@ class DeepAgentsApp(App):
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
+        from deepagents_cli.config import create_model, detect_provider, settings
+        from deepagents_cli.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            has_provider_credentials,
+            save_recent_model,
+        )
+
         logger.info("Switching model to %s", model_spec)
 
         if self._model_switching:
             await self._mount_message(AppMessage("Model switch already in progress."))
             return
-
-        from deepagents_cli.model_config import (
-            get_credential_env_var,
-            has_provider_credentials,
-        )
 
         self._model_switching = True
         try:
@@ -3763,7 +3690,8 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
-        from deepagents_cli.model_config import save_default_model
+        from deepagents_cli.config import detect_provider
+        from deepagents_cli.model_config import ModelSpec, save_default_model
 
         model_spec = model_spec.removeprefix(":")
 

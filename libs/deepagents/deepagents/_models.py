@@ -6,6 +6,7 @@ from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+from langchain_core.rate_limiters import InMemoryRateLimiter
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -16,6 +17,9 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     String models are resolved via `init_chat_model`. OpenAI models
     (prefixed with `openai:`) default to the Responses API.
 
+    Adds an `InMemoryRateLimiter` by default if the model supports it and
+    no rate limiter is already configured.
+
     Args:
         model: Model string or pre-configured model instance.
 
@@ -23,10 +27,22 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
         Resolved `BaseChatModel` instance.
     """
     if isinstance(model, BaseChatModel):
-        return model
-    if model.startswith("openai:"):
-        return init_chat_model(model, use_responses_api=True)
-    return init_chat_model(model)
+        resolved = model
+    elif model.startswith("openai:"):
+        resolved = init_chat_model(model, use_responses_api=True)
+    else:
+        resolved = init_chat_model(model)
+
+    # Add a default rate limiter to protect against provider tier limits.
+    # Default: 1 request per second with a burst capacity of 10.
+    if hasattr(resolved, "rate_limiter") and resolved.rate_limiter is None:
+        resolved.rate_limiter = InMemoryRateLimiter(
+            requests_per_second=1.0,
+            check_every_n_seconds=0.1,
+            max_bucket_size=10.0,
+        )
+
+    return resolved
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:

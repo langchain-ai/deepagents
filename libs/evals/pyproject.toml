@@ -79,6 +79,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["deepagents_harbor*", "deepagents_evals*"]
 
+[tool.setuptools.package-data]
+deepagents_evals = ["categories.json"]
+
 [tool.uv]
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",

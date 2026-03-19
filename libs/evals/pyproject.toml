@@ -76,7 +76,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deepagents_harbor*"]
+include = ["deepagents_harbor*", "deepagents_evals*"]
 
 [tool.uv]
 required-environments = [
@@ -159,7 +159,7 @@ ban-relative-imports = "all"
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_harbor"]
+known-first-party = ["deepagents_evals", "deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

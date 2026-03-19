@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
     from langchain_core.language_models import BaseChatModel
 
+pytestmark = [pytest.mark.eval_category("memory")]
+
 
 @pytest.mark.langsmith
 def test_memory_basic_recall(model: BaseChatModel) -> None:
@@ -87,7 +89,9 @@ instead (e.g., "/config_api.txt") without asking for confirmation.
                 tool_call_requests=1,
                 tool_calls=[
                     tool_call(
-                        name="write_file", step=1, args_contains={"file_path": "/config_api.txt"}
+                        name="write_file",
+                        step=1,
+                        args_contains={"file_path": "/config_api.txt"},
                     )
                 ],
             )
@@ -257,7 +261,10 @@ def test_memory_updates_user_formatting_preference(model: BaseChatModel) -> None
             .expect(
                 tool_call_requests=1,
                 tool_calls=[
-                    tool_call(name="edit_file", args_contains={"file_path": "/project/AGENTS.md"})
+                    tool_call(
+                        name="edit_file",
+                        args_contains={"file_path": "/project/AGENTS.md"},
+                    )
                 ],
             )
         ),
@@ -265,7 +272,9 @@ def test_memory_updates_user_formatting_preference(model: BaseChatModel) -> None
 
 
 @pytest.mark.langsmith
-def test_memory_missing_file_graceful_without_claiming_context(model: BaseChatModel) -> None:
+def test_memory_missing_file_graceful_without_claiming_context(
+    model: BaseChatModel,
+) -> None:
     """Agent handles a missing memory file without inventing its contents."""
     agent = create_deep_agent(
         model=model,

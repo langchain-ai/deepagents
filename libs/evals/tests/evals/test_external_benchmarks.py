@@ -16,6 +16,7 @@ from tests.evals.external_benchmarks import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+pytestmark = [pytest.mark.eval_category("external_benchmarks")]
 
 # ---------------------------------------------------------------------------
 # Focused hard-set: 15 examples across 3 benchmarks

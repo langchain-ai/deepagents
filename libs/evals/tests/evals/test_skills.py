@@ -7,6 +7,7 @@ from deepagents import create_deep_agent
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
 from tests.evals.utils import (
     TrajectoryScorer,
     file_contains,
@@ -16,6 +17,8 @@ from tests.evals.utils import (
     run_agent,
     tool_call,
 )
+
+pytestmark = [pytest.mark.eval_category("skills")]
 
 
 def _skill_content(name: str, description: str, body: str) -> str:

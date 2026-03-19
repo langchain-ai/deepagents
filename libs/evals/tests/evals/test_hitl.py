@@ -15,6 +15,8 @@ from langgraph.types import Command
 
 from tests.evals.utils import run_agent
 
+pytestmark = [pytest.mark.eval_category("hitl")]
+
 
 @tool(description="Use this tool to get the weather")
 def get_weather(location: str) -> str:
@@ -95,7 +97,8 @@ def test_hitl_agent(model: BaseChatModel) -> None:
 
     # Resume with approvals - this continues from the interrupted state
     result = agent.invoke(
-        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}), config=config
+        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}),
+        config=config,
     )
 
     # Verify all tool results are present after approval
@@ -157,7 +160,8 @@ def test_subagent_with_hitl(model: BaseChatModel) -> None:
 
     # Resume with approvals
     _ = agent.invoke(
-        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}), config=config
+        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}),
+        config=config,
     )
 
     # Verify no more interrupts after approval
@@ -233,7 +237,8 @@ def test_subagent_with_custom_interrupt_on(model: BaseChatModel) -> None:
 
     # Resume with approvals
     _ = agent.invoke(
-        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}), config=config
+        Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]}),
+        config=config,
     )
 
     # Verify no more interrupts after approval

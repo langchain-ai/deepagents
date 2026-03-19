@@ -58,9 +58,7 @@ def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:
     return task_to_solution
 
 
-def find_task_directory(
-    trial_dir: Path, task_name: str, task_source: str
-) -> Optional[Path]:
+def find_task_directory(trial_dir: Path, task_name: str, task_source: str) -> Optional[Path]:
     """Find the task directory for a given trial.
 
     Args:
@@ -142,9 +140,7 @@ def extract_task_metadata(trial_dir: Path) -> dict:
                 metadata["task_name"] = config.get("task", {}).get("path", "")
                 metadata["task_source"] = config.get("task", {}).get("source", "")
                 metadata["git_url"] = config.get("task", {}).get("git_url", "")
-                metadata["git_commit_id"] = config.get("task", {}).get(
-                    "git_commit_id", ""
-                )
+                metadata["git_commit_id"] = config.get("task", {}).get("git_commit_id", "")
         except Exception:
             pass
 
@@ -155,9 +151,7 @@ def extract_task_metadata(trial_dir: Path) -> dict:
             with open(result_path, "r") as f:
                 result = json.load(f)
                 metadata["reward"] = (
-                    result.get("verifier_result", {})
-                    .get("rewards", {})
-                    .get("reward", 0.0)
+                    result.get("verifier_result", {}).get("rewards", {}).get("reward", 0.0)
                 )
                 metadata["started_at"] = result.get("started_at", "")
                 metadata["finished_at"] = result.get("finished_at", "")
@@ -334,9 +328,7 @@ async def analyze_trial(
                 exception_text = exception_path.read_text()
             except UnicodeDecodeError:
                 try:
-                    exception_text = exception_path.read_bytes().decode(
-                        "utf-8", errors="replace"
-                    )
+                    exception_text = exception_path.read_bytes().decode("utf-8", errors="replace")
                 except OSError:
                     print(f"  Warning: Could not read {exception_path}")
             except OSError as exc:
@@ -409,15 +401,11 @@ def print_summary(trials: list[Trial]) -> None:
     if trials:
         complete_trials = completed + failed
         if complete_trials > 0:
-            print(
-                f"\nSuccess rate (excluding pending): {format_ci(completed, complete_trials)}"
-            )
+            print(f"\nSuccess rate (excluding pending): {format_ci(completed, complete_trials)}")
 
         total_trials = len(trials)
         if total_trials > 0:
-            print(
-                f"Success rate (of all trials):     {format_ci(completed, total_trials)}"
-            )
+            print(f"Success rate (of all trials):     {format_ci(completed, total_trials)}")
 
         # MDE for comparing two runs at this sample size
         if complete_trials > 0:
@@ -437,9 +425,7 @@ def print_summary(trials: list[Trial]) -> None:
             category_counts[cat] = category_counts.get(cat, 0) + 1
 
         infra_count = sum(
-            1
-            for t in failed_trials
-            if t.failure_category and t.failure_category.is_infrastructure
+            1 for t in failed_trials if t.failure_category and t.failure_category.is_infrastructure
         )
         capability_count = category_counts.get("capability", 0)
         unknown_count = category_counts.get("unknown", 0)
@@ -467,9 +453,7 @@ def print_summary(trials: list[Trial]) -> None:
         if trial.tool_usage:
             trials_with_tools += 1
             for tool_name, count in trial.tool_usage.items():
-                overall_tool_usage[tool_name] = (
-                    overall_tool_usage.get(tool_name, 0) + count
-                )
+                overall_tool_usage[tool_name] = overall_tool_usage.get(tool_name, 0) + count
 
     if overall_tool_usage:
         print(f"\n{'=' * 80}")
@@ -478,9 +462,7 @@ def print_summary(trials: list[Trial]) -> None:
         print(f"Trials with tool usage data: {trials_with_tools}/{len(trials)}")
         print("\nTool usage across all trials:")
         # Sort by usage count (descending) then alphabetically
-        sorted_overall_tools = sorted(
-            overall_tool_usage.items(), key=lambda x: (-x[1], x[0])
-        )
+        sorted_overall_tools = sorted(overall_tool_usage.items(), key=lambda x: (-x[1], x[0]))
         for tool_name, count in sorted_overall_tools:
             print(f"  {tool_name}: {count}")
 
@@ -500,9 +482,7 @@ def print_summary(trials: list[Trial]) -> None:
         if trial.status == TrialStatus.COMPLETED:
             status = "✓ COMPLETED"
         elif trial.status == TrialStatus.FAILED:
-            cat_label = (
-                f" [{trial.failure_category.value}]" if trial.failure_category else ""
-            )
+            cat_label = f" [{trial.failure_category.value}]" if trial.failure_category else ""
             status = f"✗ FAILED{cat_label}"
         else:
             status = "⋯ PENDING"
@@ -524,9 +504,7 @@ def print_summary(trials: list[Trial]) -> None:
                 exception_content = trial.exception_path.read_text()
                 # Show last 100 characters
                 exception_snippet = (
-                    exception_content[-100:]
-                    if len(exception_content) > 100
-                    else exception_content
+                    exception_content[-100:] if len(exception_content) > 100 else exception_content
                 )
                 print(f"  Exception: ...{exception_snippet}")
             except Exception:
@@ -536,9 +514,7 @@ def print_summary(trials: list[Trial]) -> None:
         if trial.tool_usage:
             # Sort tools by usage count (descending) then alphabetically
             sorted_tools = sorted(trial.tool_usage.items(), key=lambda x: (-x[1], x[0]))
-            tool_summary = ", ".join(
-                [f"{tool}: {count}" for tool, count in sorted_tools]
-            )
+            tool_summary = ", ".join([f"{tool}: {count}" for tool, count in sorted_tools])
             print(f"  Tool usage: {tool_summary}")
 
 
@@ -638,9 +614,7 @@ If clear from the trajectory, suggest:
 """  # noqa: E501
 
 
-async def analyze_failed_trial(
-    trial: Trial, analyze_pending: bool = False
-) -> Optional[str]:
+async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> Optional[str]:
     """
     Run deep agent analysis on a failed or pending trial trajectory.
 
@@ -684,16 +658,18 @@ async def analyze_failed_trial(
 
     # Add reference solution if available
     if solution_content:
-        user_message += f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
+        user_message += (
+            f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
+        )
     else:
         user_message += "**REFERENCE SOLUTION:** Not provided\n\n"
 
-    user_message += f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
+    user_message += (
+        f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
+    )
 
     # Run the deep agent analysis
-    result = analysis_agent.invoke(
-        {"messages": [{"role": "user", "content": user_message}]}
-    )
+    result = analysis_agent.invoke({"messages": [{"role": "user", "content": user_message}]})
 
     # Extract the analysis from the response
     analysis = result["messages"][-1].content
@@ -790,9 +766,7 @@ async def write_trial_analysis(
 
 async def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Analyze job trials from a jobs directory"
-    )
+    parser = argparse.ArgumentParser(description="Analyze job trials from a jobs directory")
     parser.add_argument(
         "jobs_dir",
         type=Path,

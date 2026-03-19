@@ -47,6 +47,9 @@ def _make_runtime_with_job(
     run_id: str = "run_xyz",
     status: str = "running",
     tool_call_id: str = "tc_test",
+    created_at: str = "2024-01-15T10:30:00Z",
+    last_checked_at: str = "2024-01-15T10:30:00Z",
+    last_updated_at: str = "2024-01-15T10:30:00Z",
 ) -> ToolRuntime:
     """Create a runtime with a single tracked job in state."""
     jobs: dict[str, AsyncSubAgentJob] = {
@@ -56,6 +59,9 @@ def _make_runtime_with_job(
             "thread_id": job_id,
             "run_id": run_id,
             "status": status,
+            "created_at": created_at,
+            "last_checked_at": last_checked_at,
+            "last_updated_at": last_updated_at,
         },
     }
     return ToolRuntime(
@@ -267,6 +273,9 @@ class TestCheckTool:
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
                 "status": "running",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
         }
         return ToolRuntime(
@@ -366,6 +375,9 @@ class TestUpdateTool:
                 "thread_id": "thread_abc",
                 "run_id": "run_old",
                 "status": "running",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
         }
         rt = ToolRuntime(
@@ -429,6 +441,9 @@ class TestListJobsTool:
                 "thread_id": "t1",
                 "run_id": "r1",
                 "status": "running",  # stale — SDK will return "success"
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
                 "job_id": "t2",
@@ -436,6 +451,9 @@ class TestListJobsTool:
                 "thread_id": "t2",
                 "run_id": "r2",
                 "status": "running",
+                "created_at": "2024-01-15T10:31:00Z",
+                "last_checked_at": "2024-01-15T10:31:00Z",
+                "last_updated_at": "2024-01-15T10:31:00Z",
             },
         }
         rt = ToolRuntime(
@@ -473,6 +491,9 @@ class TestListJobsTool:
                 "thread_id": "t1",
                 "run_id": "r1",
                 "status": "cancelled",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
                 "job_id": "t2",
@@ -480,6 +501,9 @@ class TestListJobsTool:
                 "thread_id": "t2",
                 "run_id": "r2",
                 "status": "success",
+                "created_at": "2024-01-15T10:31:00Z",
+                "last_checked_at": "2024-01-15T10:31:00Z",
+                "last_updated_at": "2024-01-15T10:31:00Z",
             },
             "t3": {
                 "job_id": "t3",
@@ -487,6 +511,9 @@ class TestListJobsTool:
                 "thread_id": "t3",
                 "run_id": "r3",
                 "status": "error",
+                "created_at": "2024-01-15T10:32:00Z",
+                "last_checked_at": "2024-01-15T10:32:00Z",
+                "last_updated_at": "2024-01-15T10:32:00Z",
             },
         }
         rt = ToolRuntime(
@@ -521,6 +548,9 @@ class TestListJobsTool:
                 "thread_id": "t1",
                 "run_id": "r1",
                 "status": "running",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
                 "job_id": "t2",
@@ -528,6 +558,9 @@ class TestListJobsTool:
                 "thread_id": "t2",
                 "run_id": "r2",
                 "status": "success",
+                "created_at": "2024-01-15T10:31:00Z",
+                "last_checked_at": "2024-01-15T10:31:00Z",
+                "last_updated_at": "2024-01-15T10:31:00Z",
             },
         }
         rt = ToolRuntime(
@@ -603,6 +636,9 @@ class TestAsyncTools:
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
                 "status": "running",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
         }
         rt = ToolRuntime(
@@ -639,6 +675,9 @@ class TestAsyncTools:
                 "thread_id": "thread_abc",
                 "run_id": "run_old",
                 "status": "running",
+                "created_at": "2024-01-15T10:30:00Z",
+                "last_checked_at": "2024-01-15T10:30:00Z",
+                "last_updated_at": "2024-01-15T10:30:00Z",
             },
         }
         rt = ToolRuntime(

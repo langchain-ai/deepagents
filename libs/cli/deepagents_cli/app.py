@@ -626,30 +626,33 @@ class DeepAgentsApp(App):
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
 
-        # Defer everything else until after the first frame renders so the
-        # user sees the splash screen instantly.
-        self.call_after_refresh(self._post_paint_init)
+        # Resolve git branch right after first paint — highest priority
+        # deferred item since it's visible in the status bar.
+        self.call_after_refresh(self._resolve_git_branch_and_continue)
 
-    async def _post_paint_init(self) -> None:
-        """Run after the first frame renders.
+    async def _resolve_git_branch_and_continue(self) -> None:
+        """Resolve git branch immediately, then fire remaining init workers.
 
-        Houses git-branch detection, session state creation, background
-        workers, and optional-tool checks.
+        Called via `call_after_refresh` so it runs right after first paint.
+        The branch subprocess gets a thread before the heavy workers
+        (model creation, server start) saturate I/O.
         """
-        # Git branch — runs in a thread to avoid blocking the event loop,
-        # renders on the next frame (~11ms subprocess).
         from deepagents_cli.textual_adapter import _get_git_branch
 
+        branch = await asyncio.to_thread(_get_git_branch) or ""
         if self._status_bar:
-            self._status_bar.branch = await asyncio.to_thread(_get_git_branch) or ""
+            self._status_bar.branch = branch
 
-        # Create session state (imports deepagents_cli.sessions)
-        self._session_state = TextualSessionState(
-            auto_approve=self._auto_approve,
-            thread_id=self._lc_thread_id,
-        )
+        # Now kick off everything else
+        await self._post_paint_init()
 
-        # Create token tracker that updates status bar
+    async def _post_paint_init(self) -> None:
+        """Fire background workers for remaining startup work.
+
+        Everything here is non-blocking: workers and thread-offloaded calls
+        so the UI stays responsive.
+        """
+        # Create token tracker (lightweight, no imports)
         self._token_tracker = TextualTokenTracker(
             self._update_tokens, self._hide_tokens
         )
@@ -658,7 +661,10 @@ class DeepAgentsApp(App):
         if self._agent:
             self._init_agent_adapter()
 
-        # Deferred server startup: run in background while TUI is visible
+        # Fire-and-forget workers — none of these block the event loop.
+        self.run_worker(self._init_session_state, exclusive=True, group="session-init")
+
+        # Server startup (model creation + server process)
         if self._server_kwargs is not None:
             self.run_worker(
                 self._start_server_background,
@@ -674,34 +680,19 @@ class DeepAgentsApp(App):
                 group="startup-update-check",
             )
 
-        # Prewarm deferred widget imports in a thread so first use is instant
+        # Prewarm deferred widget imports in a thread
         self.run_worker(
             asyncio.to_thread(self._prewarm_deferred_imports),
             exclusive=True,
             group="startup-import-prewarm",
         )
 
-        # Warn about missing optional tools (advisory only — never block startup)
-        try:
-            from deepagents_cli.main import (
-                check_optional_tools,
-                format_tool_warning_tui,
-            )
-        except ImportError:
-            logger.warning(
-                "Could not import optional tools checker; skipping tool warnings",
-                exc_info=True,
-            )
-        else:
-            try:
-                for tool in check_optional_tools():
-                    self.notify(
-                        format_tool_warning_tui(tool),
-                        severity="warning",
-                        timeout=15,
-                    )
-            except Exception:
-                logger.debug("Failed to check for optional tools", exc_info=True)
+        # Optional tool warnings in a thread (shutil.which is sync I/O)
+        self.run_worker(
+            self._check_optional_tools_background,
+            exclusive=True,
+            group="startup-tool-check",
+        )
 
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
@@ -718,6 +709,44 @@ class DeepAgentsApp(App):
                 self.call_after_refresh(
                     lambda: asyncio.create_task(self._load_thread_history())
                 )
+
+    async def _init_session_state(self) -> None:
+        """Create session state in a thread (imports deepagents_cli.sessions)."""
+
+        def _create() -> TextualSessionState:
+            return TextualSessionState(
+                auto_approve=self._auto_approve,
+                thread_id=self._lc_thread_id,
+            )
+
+        self._session_state = await asyncio.to_thread(_create)
+
+    async def _check_optional_tools_background(self) -> None:
+        """Check for optional tools in a thread and notify if missing."""
+        try:
+            from deepagents_cli.main import (
+                check_optional_tools,
+                format_tool_warning_tui,
+            )
+        except ImportError:
+            logger.warning(
+                "Could not import optional tools checker",
+                exc_info=True,
+            )
+            return
+
+        try:
+            missing = await asyncio.to_thread(check_optional_tools)
+        except Exception:
+            logger.debug("Failed to check for optional tools", exc_info=True)
+            return
+
+        for tool in missing:
+            self.notify(
+                format_tool_warning_tui(tool),
+                severity="warning",
+                timeout=15,
+            )
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""

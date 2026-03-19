@@ -79,6 +79,42 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
+def _get_default_middleware(
+    model: BaseChatModel,
+    backend: BackendProtocol | BackendFactory,
+    *,
+    skills: list[str] | None = None,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Build the default middleware stack for an agent.
+
+    Args:
+        model: The model instance being used.
+        backend: The backend being used.
+        skills: Optional list of skill source paths.
+
+    Returns:
+        List of configured middleware.
+    """
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+        create_summarization_middleware(model, backend),
+    ]
+
+    # Only add caching for Anthropic models
+    if isinstance(model, ChatAnthropic):
+        middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+
+    # Patch tool calls is only useful for models that support tool calling
+    if hasattr(model, "bind_tools"):
+        middleware.append(PatchToolCallsMiddleware())
+
+    if skills is not None:
+        middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+
+    return middleware
+
+
 def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -194,15 +230,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    gp_middleware = _get_default_middleware(model, backend, skills=skills)
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
@@ -224,17 +252,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             subagent_model = spec.get("model", model)
             subagent_model = resolve_model(subagent_model)
 
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
-                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-                PatchToolCallsMiddleware(),
-            ]
-            subagent_skills = spec.get("skills")
-            if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            # Build middleware: base stack + user's middleware
+            subagent_middleware = _get_default_middleware(subagent_model, backend, skills=spec.get("skills"))
             subagent_middleware.extend(spec.get("middleware", []))
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
@@ -261,18 +280,21 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    deepagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=all_subagents,
-            ),
-            create_summarization_middleware(model, backend),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
+
+    deepagent_middleware.append(FilesystemMiddleware(backend=backend))
+    deepagent_middleware.append(
+        SubAgentMiddleware(
+            backend=backend,
+            subagents=all_subagents,
+        )
     )
+    deepagent_middleware.append(create_summarization_middleware(model, backend))
+
+    # Only add caching for Anthropic models
+    if isinstance(model, ChatAnthropic):
+        deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+
+    deepagent_middleware.append(PatchToolCallsMiddleware())
 
     if async_subagents:
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))

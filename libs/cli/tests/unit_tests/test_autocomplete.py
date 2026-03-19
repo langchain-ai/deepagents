@@ -481,10 +481,10 @@ class TestSlashCommandControllerUpdateCommands:
     """Tests for SlashCommandController.update_commands()."""
 
     @pytest.fixture
-    def mock_view(self):
+    def mock_view(self) -> MagicMock:
         return MagicMock()
 
-    def test_update_replaces_commands(self, mock_view):
+    def test_update_replaces_commands(self, mock_view: MagicMock) -> None:
         """update_commands() replaces the internal commands list."""
         initial = [("/help", "Show help", "")]
         controller = SlashCommandController(initial, mock_view)
@@ -501,7 +501,7 @@ class TestSlashCommandControllerUpdateCommands:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/skill:web-research" in s[0] for s in suggestions)
 
-    def test_update_resets_suggestions(self, mock_view):
+    def test_update_resets_suggestions(self, mock_view: MagicMock) -> None:
         """update_commands() clears any active suggestions."""
         commands = [("/help", "Show help", "")]
         controller = SlashCommandController(commands, mock_view)
@@ -511,7 +511,7 @@ class TestSlashCommandControllerUpdateCommands:
         controller.update_commands([("/quit", "Exit", "")])
         mock_view.clear_completion_suggestions.assert_called()
 
-    def test_skill_commands_fuzzy_match(self, mock_view):
+    def test_skill_commands_fuzzy_match(self, mock_view: MagicMock) -> None:
         """Skill commands match via hidden keywords."""
         commands = [
             ("/help", "Show help", ""),

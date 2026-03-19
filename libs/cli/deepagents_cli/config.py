@@ -1017,8 +1017,8 @@ class Settings:
     def get_user_claude_skills_dir() -> Path:
         """Get user-level `~/.claude/skills/` directory (experimental).
 
-        Scans Claude Code's skill directory as a convenience bridge for
-        cross-tool skill sharing. This is experimental and may be removed.
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
 
         Returns:
             Path to `~/.claude/skills/`
@@ -1028,8 +1028,8 @@ class Settings:
     def get_project_claude_skills_dir(self) -> Path | None:
         """Get project-level `.claude/skills/` directory (experimental).
 
-        Scans Claude Code's project skill directory as a convenience bridge
-        for cross-tool skill sharing. This is experimental and may be removed.
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
 
         Returns:
             Path to `{project_root}/.claude/skills/`, or `None` if not in a project.

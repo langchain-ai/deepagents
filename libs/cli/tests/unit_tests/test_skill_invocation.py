@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents_cli.command_registry import build_skill_commands
+from deepagents_cli.command_registry import build_skill_commands, parse_skill_command
 from deepagents_cli.skills.load import load_skill_content
 
 if TYPE_CHECKING:
@@ -117,48 +117,29 @@ class TestBuildSkillCommands:
 
 
 class TestSkillCommandParsing:
-    """Test the /skill:<name> parsing logic extracted from _handle_skill_command."""
-
-    @staticmethod
-    def _parse_skill_command(command: str) -> tuple[str, str]:
-        """Extract skill name and args from a /skill: command.
-
-        Mirrors the parsing logic in app.py::_handle_skill_command.
-
-        Returns:
-            Tuple of (skill_name, args).
-        """
-        after_prefix = command[len("/skill:") :].strip()
-        parts = after_prefix.split(maxsplit=1)
-        if not parts or not parts[0]:
-            return "", ""
-        skill_name = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
-        return skill_name, args
+    """Test parse_skill_command() from command_registry."""
 
     def test_name_only(self) -> None:
-        name, args = self._parse_skill_command("/skill:web-research")
+        name, args = parse_skill_command("/skill:web-research")
         assert name == "web-research"
         assert args == ""
 
     def test_name_with_args(self) -> None:
-        name, args = self._parse_skill_command(
-            "/skill:web-research find quantum computing"
-        )
+        name, args = parse_skill_command("/skill:web-research find quantum computing")
         assert name == "web-research"
         assert args == "find quantum computing"
 
     def test_empty_skill_prefix(self) -> None:
-        name, args = self._parse_skill_command("/skill:")
+        name, args = parse_skill_command("/skill:")
         assert name == ""
         assert args == ""
 
     def test_name_with_spaces(self) -> None:
-        name, args = self._parse_skill_command("/skill:  web-research  some args ")
+        name, args = parse_skill_command("/skill:  web-research  some args ")
         assert name == "web-research"
         assert args == "some args"
 
     def test_case_normalization(self) -> None:
-        name, args = self._parse_skill_command("/skill:Web-Research")
+        name, args = parse_skill_command("/skill:Web-Research")
         assert name == "web-research"
         assert args == ""

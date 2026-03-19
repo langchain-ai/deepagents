@@ -840,8 +840,18 @@ class DeepAgentsApp(App):
                 merged = list(SLASH_COMMANDS) + skill_commands
                 self._chat_input.update_slash_commands(merged)
                 self._discovered_skill_commands = skill_commands
+        except OSError:
+            logger.debug(
+                "Filesystem error during skill discovery for assistant %r",
+                assistant_id,
+                exc_info=True,
+            )
         except Exception:
-            logger.warning("Skill discovery for autocomplete failed", exc_info=True)
+            logger.warning(
+                "Unexpected error during skill discovery for assistant %r",
+                assistant_id,
+                exc_info=True,
+            )
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
@@ -2340,25 +2350,22 @@ class DeepAgentsApp(App):
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
 
-        Reads the full SKILL.md body and sends it as a user message to the
-        agent, along with any user-provided arguments.
+        Reads the full SKILL.md body, wraps it in a prompt envelope with any
+        user-provided arguments, and sends the composed message to the agent.
 
         Args:
             command: The full command string (e.g., `/skill:web-research find X`).
         """
+        from deepagents_cli.command_registry import parse_skill_command
         from deepagents_cli.config import settings
         from deepagents_cli.skills.load import list_skills, load_skill_content
 
-        # Parse: /skill:<name> [args...]
-        after_prefix = command[len("/skill:") :].strip()
-        parts = after_prefix.split(maxsplit=1)
-        if not parts or not parts[0]:
+        skill_name, args = parse_skill_command(command)
+        if not skill_name:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
             return
 
-        skill_name = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
         assistant_id = self._assistant_id or "agent"
 
         def _find_skill() -> tuple[str | None, str | None]:
@@ -2377,7 +2384,18 @@ class DeepAgentsApp(App):
                     return skill["name"], content
             return None, None
 
-        found_name, content = await asyncio.to_thread(_find_skill)
+        try:
+            found_name, content = await asyncio.to_thread(_find_skill)
+        except Exception:
+            logger.warning("Error searching for skill %r", skill_name, exc_info=True)
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"Error loading skill: {skill_name}. "
+                    "Check the skill's SKILL.md file for syntax errors."
+                )
+            )
+            return
 
         if found_name is None:
             await self._mount_message(UserMessage(command))
@@ -2387,7 +2405,11 @@ class DeepAgentsApp(App):
         if content is None:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                AppMessage(f"Could not read content for skill: {skill_name}")
+                AppMessage(
+                    f"Could not read content for skill: {skill_name}. "
+                    "Check that the SKILL.md file exists, is readable, "
+                    "and is saved as UTF-8."
+                )
             )
             return
 

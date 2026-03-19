@@ -32,7 +32,8 @@ class ExtendedSkillMetadata(SkillMetadata):
     """Extended skill metadata for CLI display, adds source tracking.
 
     Attributes:
-        source: Origin of the skill. One of `'built-in'`, `'user'`, or `'project'`.
+        source: Origin of the skill. One of `'built-in'`, `'user'`, `'project'`,
+            or `'claude (experimental)'`.
     """
 
     source: str
@@ -265,7 +266,7 @@ def load_skill_content(skill_path: str) -> str | None:
     Returns:
         Full text content of the SKILL.md file, or `None` on read failure.
     """
-    from pathlib import Path as _Path
+    from pathlib import Path as _Path  # alias to avoid shadowing TYPE_CHECKING import
 
     path = _Path(skill_path)
     try:

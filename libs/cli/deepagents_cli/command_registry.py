@@ -205,6 +205,27 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
 """`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
 
 
+def parse_skill_command(command: str) -> tuple[str, str]:
+    """Extract skill name and args from a `/skill:<name>` command.
+
+    Args:
+        command: The full command string (e.g., `/skill:web-research find X`).
+
+    Returns:
+        Tuple of `(skill_name, args)`.
+
+            Both are empty strings when the command has no skill name after
+            the prefix.
+    """
+    after_prefix = command[len("/skill:") :].strip()
+    parts = after_prefix.split(maxsplit=1)
+    if not parts or not parts[0]:
+        return "", ""
+    skill_name = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+    return skill_name, args
+
+
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
 ) -> list[tuple[str, str, str]]:

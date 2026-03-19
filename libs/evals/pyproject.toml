@@ -45,6 +45,11 @@ dependencies = [
     "tiktoken>=0.8.0",
 ]
 
+[project.optional-dependencies]
+charts = [
+    "matplotlib>=3.9.0",
+]
+
 [dependency-groups]
 test = [
     "pytest>=8.4.2",

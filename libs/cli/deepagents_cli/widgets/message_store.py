@@ -33,6 +33,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_expanded",
         "is_streaming",
         "height_hint",
+        "checkpoint_id",
     }
 )
 
@@ -114,6 +115,12 @@ class MessageData:
     chunks and should not be pruned or re-hydrated.
     """
 
+    checkpoint_id: str | None = None
+    """LangGraph checkpoint ID associated with the state AFTER this message.
+
+    Used for thread branching to resume a conversation from a specific point.
+    """
+
     height_hint: int | None = None
     """Cached widget height in terminal rows for scroll position estimation.
 
@@ -153,49 +160,48 @@ class MessageData:
             UserMessage,
         )
 
+        if self.type == MessageType.APP:
+            return AppMessage(self.content, id=self.id)
+
+        # Common field assignments for all reconstructed widgets
+        widget = None
         match self.type:
             case MessageType.USER:
-                return UserMessage(self.content, id=self.id)
-
+                widget = UserMessage(self.content, id=self.id)
             case MessageType.ASSISTANT:
-                return AssistantMessage(self.content, id=self.id)
-
+                widget = AssistantMessage(self.content, id=self.id)
             case MessageType.TOOL:
                 widget = ToolCallMessage(
                     self.tool_name or "unknown",
                     self.tool_args,
                     id=self.id,
                 )
-                # Deferred state is restored automatically during on_mount
-                # via _restore_deferred_state
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
                 widget._deferred_expanded = self.tool_expanded
-                return widget
-
             case MessageType.ERROR:
-                return ErrorMessage(self.content, id=self.id)
-
+                widget = ErrorMessage(self.content, id=self.id)
             case MessageType.APP:
-                return AppMessage(self.content, id=self.id)
-
+                widget = AppMessage(self.content, id=self.id)
             case MessageType.SUMMARIZATION:
-                return SummarizationMessage(self.content, id=self.id)
-
+                widget = SummarizationMessage(self.content, id=self.id)
             case MessageType.DIFF:
-                return DiffMessage(
+                widget = DiffMessage(
                     self.content,
                     file_path=self.diff_file_path or "",
                     id=self.id,
                 )
-
             case _:
                 logger.warning(
                     "Unknown MessageType %r for message %s, falling back to AppMessage",
                     self.type,
                     self.id,
                 )
-                return AppMessage(self.content, id=self.id)
+                widget = AppMessage(self.content, id=self.id)
+
+        if widget:
+            widget._checkpoint_id = self.checkpoint_id
+        return widget
 
     @classmethod
     def from_widget(cls, widget: Widget) -> MessageData:
@@ -220,12 +226,14 @@ class MessageData:
         )
 
         widget_id = widget.id or f"msg-{uuid.uuid4().hex[:8]}"
+        checkpoint_id = getattr(widget, "_checkpoint_id", None)
 
         if isinstance(widget, UserMessage):
             return cls(
                 type=MessageType.USER,
                 content=widget._content,
                 id=widget_id,
+                checkpoint_id=checkpoint_id,
             )
 
         if isinstance(widget, AssistantMessage):
@@ -234,6 +242,7 @@ class MessageData:
                 content=widget._content,
                 id=widget_id,
                 is_streaming=widget._stream is not None,
+                checkpoint_id=checkpoint_id,
             )
 
         if isinstance(widget, ToolCallMessage):
@@ -257,6 +266,7 @@ class MessageData:
                 tool_status=tool_status,
                 tool_output=widget._output,
                 tool_expanded=widget._expanded,
+                checkpoint_id=checkpoint_id,
             )
 
         if isinstance(widget, ErrorMessage):
@@ -264,6 +274,7 @@ class MessageData:
                 type=MessageType.ERROR,
                 content=widget._content,
                 id=widget_id,
+                checkpoint_id=checkpoint_id,
             )
 
         # Check specialized subclasses before AppMessage so we keep their type
@@ -274,6 +285,7 @@ class MessageData:
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+                checkpoint_id=checkpoint_id,
             )
 
         if isinstance(widget, SummarizationMessage):
@@ -281,6 +293,7 @@ class MessageData:
                 type=MessageType.SUMMARIZATION,
                 content=str(widget._content),
                 id=widget_id,
+                checkpoint_id=checkpoint_id,
             )
 
         if isinstance(widget, AppMessage):
@@ -288,6 +301,7 @@ class MessageData:
                 type=MessageType.APP,
                 content=str(widget._content),
                 id=widget_id,
+                checkpoint_id=checkpoint_id,
             )
 
         logger.warning(
@@ -299,6 +313,7 @@ class MessageData:
             type=MessageType.APP,
             content=f"[Unknown widget: {type(widget).__name__}]",
             id=widget_id,
+            checkpoint_id=checkpoint_id,
         )
 
 

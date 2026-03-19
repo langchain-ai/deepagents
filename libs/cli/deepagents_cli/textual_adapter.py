@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -280,8 +281,11 @@ class TextualUIAdapter:
     Textual UI, allowing streaming output to be rendered as widgets.
     """
 
-    _mount_message: Callable[..., Awaitable[None]]
-    """Async callback to mount a message widget to the chat."""
+    _mount_message_handler: Callable[..., Awaitable[None]]
+    """Async callback to mount a message widget to the chat.
+
+    Internal only, use `_mount_message`.
+    """
 
     _update_status: Callable[[str], None]
     """Callback to update the status bar text."""
@@ -317,8 +321,14 @@ class TextualUIAdapter:
     _sync_message_content: Callable[[str, str], None] | None
     """Callback to sync final message content back to the store after streaming."""
 
+    _sync_message_checkpoint: Callable[[str, str], None] | None
+    """Callback to sync checkpoint ID to a message in the store."""
+
     _current_tool_messages: dict[str, ToolCallMessage]
     """Map of tool call IDs to their message widgets."""
+
+    _turn_message_ids: list[str] = field(default_factory=list, init=False)
+    """IDs of messages created during the current agent turn."""
 
     _token_tracker: Any
     """Token usage tracker for displaying counts."""
@@ -332,6 +342,7 @@ class TextualUIAdapter:
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        sync_message_checkpoint: Callable[[str, str], None] | None = None,
         request_ask_user: (
             Callable[
                 [list[Question]],
@@ -354,21 +365,35 @@ class TextualUIAdapter:
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
                 message store after streaming completes.
+            sync_message_checkpoint: Callback to resolve a message ID to its
+                corresponding checkpoint for thread branching.
             request_ask_user: Async callable that displays an `ask_user` widget
                 and returns a `Future` resolving to user answers.
         """
-        self._mount_message = mount_message
+        self._mount_message_handler = mount_message
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
+        self._sync_message_checkpoint = sync_message_checkpoint
         self._request_ask_user = request_ask_user
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
+        self._turn_message_ids = []
         self._token_tracker: Any = None
+
+    async def _mount_message(self, widget: Any) -> None:  # noqa: ANN401
+        """Mount a message widget and record its ID for the current turn.
+
+        Args:
+            widget: The message widget to mount.
+        """
+        await self._mount_message_handler(widget)
+        if hasattr(widget, "id") and widget.id:
+            self._turn_message_ids.append(widget.id)
 
     def set_token_tracker(self, tracker: Any) -> None:  # noqa: ANN401  # Dynamic tracker type from Textual
         """Set the token tracker for usage tracking."""
@@ -547,6 +572,9 @@ async def execute_task_textual(
     captured_output_tokens = 0
     turn_stats = SessionStats()
     start_time = time.monotonic()
+
+    # Clear message tracking for the new turn
+    adapter._turn_message_ids.clear()
 
     # Show spinner
     if adapter._set_spinner:
@@ -1325,10 +1353,21 @@ async def execute_task_textual(
                 adapter._token_tracker.show()  # Restore previous value
         return turn_stats
 
-    # Update token tracker and return stats
-    turn_stats.wall_time_seconds = time.monotonic() - start_time
-    if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
+        # Update token tracker and return stats
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+
+    # Sync final checkpoint ID to all messages created in this turn
+    if adapter._sync_message_checkpoint:
+        try:
+            state = await agent.aget_state(config)
+            # LangGraph state.config contains the checkpoint_id in configurable
+            checkpoint_id = state.config.get("configurable", {}).get("checkpoint_id")
+            if checkpoint_id:
+                for msg_id in adapter._turn_message_ids:
+                    adapter._sync_message_checkpoint(msg_id, checkpoint_id)
+        except Exception:
+            logger.debug("Failed to sync checkpoint ID to turn messages", exc_info=True)
+
     return turn_stats
 
 

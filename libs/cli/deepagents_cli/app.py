@@ -555,6 +555,7 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         self._thread_switching = False
         self._model_switching = False
+        self._last_selected_message_id: str | None = None
         # Deferred actions executed after the current busy state resolves
         self._deferred_actions: list[DeferredAction] = []
         # Message virtualization store
@@ -814,6 +815,7 @@ class DeepAgentsApp(App):
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
+            sync_message_checkpoint=self._sync_message_checkpoint,
             request_ask_user=self._request_ask_user,
         )
         if self._token_tracker:
@@ -2144,6 +2146,8 @@ class DeepAgentsApp(App):
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
+        elif cmd.startswith("/branch"):
+            await self._handle_branch_command(command)
         elif cmd == "/threads":
             await self._show_thread_selector()
         elif cmd == "/trace":
@@ -3082,6 +3086,63 @@ class DeepAgentsApp(App):
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
 
+    # =========================================================================
+    # Thread Management & Branching
+    # =========================================================================
+
+    async def _handle_branch_command(self, command: str) -> None:
+        """Handle /branch command to create a conversation branch.
+
+        Args:
+            command: The full command string.
+        """
+        await self._mount_message(UserMessage(command))
+
+        # Determine target message ID
+        parts = command.strip().split()
+        target_id = parts[1] if len(parts) > 1 else self._last_selected_message_id
+
+        if not target_id:
+            # Fallback to last message with a checkpoint
+            for msg in reversed(self._message_store.get_all_messages()):
+                if msg.checkpoint_id:
+                    target_id = msg.id
+                    break
+
+        if not target_id:
+            await self._mount_message(
+                AppMessage("No message selected or found to branch from.")
+            )
+            return
+
+        message = self._message_store.get_message(target_id)
+        if not message or not message.checkpoint_id:
+            await self._mount_message(
+                AppMessage(f"Message '{target_id}' has no associated checkpoint.")
+            )
+            return
+
+        try:
+            # Branched from session_state.thread_id
+            from typing import cast
+
+            from deepagents_cli.sessions import fork_thread
+
+            session_state = cast("TextualSessionState", self._session_state)
+            new_thread_id = await fork_thread(
+                session_state.thread_id, message.checkpoint_id
+            )
+
+            await self._mount_message(
+                AppMessage(f"Branched into new thread: [bold]{new_thread_id}[/bold]")
+            )
+            # Switch to the new thread
+            await self._resume_thread(new_thread_id)
+
+        except Exception as e:
+            logger.exception("Failed to branch thread")
+            await self._mount_message(AppMessage(f"Branching failed: {e}"))
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -3093,9 +3154,6 @@ class DeepAgentsApp(App):
     def _sync_message_content(self, message_id: str, content: str) -> None:
         """Sync final message content back to the store after streaming.
 
-        Called when streaming finishes so the store holds the full text
-        instead of the empty string captured at mount time.
-
         Args:
             message_id: The ID of the message to update.
             content: The final content after streaming.
@@ -3103,8 +3161,11 @@ class DeepAgentsApp(App):
         self._message_store.update_message(
             message_id,
             content=content,
-            is_streaming=False,
         )
+
+    def _sync_message_checkpoint(self, message_id: str, checkpoint_id: str) -> None:
+        """Update a message's checkpoint ID in the store."""
+        self._message_store.update_message(message_id, checkpoint_id=checkpoint_id)
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
@@ -3503,8 +3564,20 @@ class DeepAgentsApp(App):
             return
         self._chat_input.focus_input()
 
-    def on_click(self, _event: Click) -> None:
+    def on_click(self, event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""
+        # Record the last clicked message ID for commands like /branch
+        widget = event.widget
+        while widget:
+            if (
+                hasattr(widget, "id")
+                and widget.id
+                and (widget.id.startswith(("msg-", "asst-", "tool-", "err-")))
+            ):
+                self._last_selected_message_id = widget.id
+                break
+            widget = widget.parent
+
         if not self._chat_input:
             return
         # Don't steal focus from approval or ask_user widgets

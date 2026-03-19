@@ -152,15 +152,19 @@ class UserMessage(_TimestampClickMixin, Static):
     }
     """
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self, content: str, *, checkpoint_id: str | None = None, **kwargs: Any
+    ) -> None:
         """Initialize a user message.
 
         Args:
             content: The message content
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._checkpoint_id = checkpoint_id
 
     def on_mount(self) -> None:
         """Set border style based on charset mode and content prefix."""
@@ -238,15 +242,19 @@ class QueuedUserMessage(Static):
     }
     """
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self, content: str, *, checkpoint_id: str | None = None, **kwargs: Any
+    ) -> None:
         """Initialize a queued user message.
 
         Args:
             content: The message content
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._checkpoint_id = checkpoint_id
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
@@ -290,15 +298,19 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     }
     """
 
-    def __init__(self, content: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self, content: str = "", *, checkpoint_id: str | None = None, **kwargs: Any
+    ) -> None:
         """Initialize an assistant message.
 
         Args:
             content: Initial markdown content
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._checkpoint_id = checkpoint_id
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
 
@@ -459,6 +471,8 @@ class ToolCallMessage(Vertical):
         self,
         tool_name: str,
         args: dict[str, Any] | None = None,
+        *,
+        checkpoint_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize a tool call message.
@@ -466,11 +480,13 @@ class ToolCallMessage(Vertical):
         Args:
             tool_name: Name of the tool being called
             args: Tool arguments (optional)
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._tool_name = tool_name
         self._args = args or {}
+        self._checkpoint_id = checkpoint_id
         self._status = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
@@ -1289,17 +1305,26 @@ class DiffMessage(_TimestampClickMixin, Static):
     }
     """
 
-    def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        diff_content: str,
+        file_path: str = "",
+        *,
+        checkpoint_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a diff message.
 
         Args:
-            diff_content: The unified diff content
-            file_path: Path to the file being modified
+            diff_content: The unified diff text
+            file_path: Optional path to the file being changed
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
+        self._checkpoint_id = checkpoint_id
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -1337,17 +1362,21 @@ class ErrorMessage(_TimestampClickMixin, Static):
     }
     """
 
-    def __init__(self, error: str, **kwargs: Any) -> None:
+    def __init__(
+        self, content: str, *, checkpoint_id: str | None = None, **kwargs: Any
+    ) -> None:
         """Initialize an error message.
 
         Args:
-            error: The error message
+            content: The error message text
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         # Store raw content for serialization
-        self._content = error
+        self._content = content
+        self._checkpoint_id = checkpoint_id
         super().__init__(
-            Content.from_markup("[bold red]Error: [/bold red]$err", err=error),
+            Content.from_markup("[bold red]Error: [/bold red]$err", err=content),
             **kwargs,
         )
 
@@ -1376,19 +1405,23 @@ class AppMessage(Static):
     }
     """
 
-    def __init__(self, message: str | Content, **kwargs: Any) -> None:
-        """Initialize a system message.
+    def __init__(
+        self, content: str | Content, *, checkpoint_id: str | None = None, **kwargs: Any
+    ) -> None:
+        """Initialize an app message.
 
         Args:
-            message: The system message as a string or pre-styled `Content`.
+            content: The message content
+            checkpoint_id: Optional LangGraph checkpoint ID
             **kwargs: Additional arguments passed to parent
         """
         # Store raw content for serialization
-        self._content = message
+        self._content = content
+        self._checkpoint_id = checkpoint_id
         rendered = (
-            message
-            if isinstance(message, Content)
-            else Content.styled(message, "dim italic")
+            content
+            if isinstance(content, Content)
+            else Content.styled(content, "dim italic")
         )
         super().__init__(rendered, **kwargs)
 

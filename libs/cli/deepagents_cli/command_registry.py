@@ -52,6 +52,13 @@ class SlashCommand:
 
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
+        name="/branch",
+        description="Branch current conversation from a specific message",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="fork thread",
+        aliases=("/thread",),
+    ),
+    SlashCommand(
         name="/changelog",
         description="Open changelog in browser",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

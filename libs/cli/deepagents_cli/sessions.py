@@ -1006,6 +1006,79 @@ async def delete_thread(thread_id: str) -> bool:
         return deleted
 
 
+async def fork_thread(source_thread_id: str, checkpoint_id: str) -> str:
+    """Create a new thread as a branch of an existing thread at a specific checkpoint.
+
+    Copies all checkpoints and writes from the source thread up to and including
+    the specified checkpoint into a new thread ID.
+
+    Args:
+        source_thread_id: ID of the thread to branch from.
+        checkpoint_id: The specific checkpoint ID to branch at.
+
+    Returns:
+        The new thread_id.
+
+    Raises:
+        ValueError: If source thread or checkpoint not found.
+    """
+    new_thread_id = generate_thread_id()
+
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            msg = "Table 'checkpoints' not found"
+            raise ValueError(msg)
+
+        # Check if source checkpoint exists
+        async with conn.execute(
+            "SELECT 1 FROM checkpoints WHERE thread_id = ? "
+            "AND checkpoint_id = ? LIMIT 1",
+            (source_thread_id, checkpoint_id),
+        ) as cursor:
+            if not await cursor.fetchone():
+                msg = (
+                    f"Checkpoint {checkpoint_id} not found in thread {source_thread_id}"
+                )
+                raise ValueError(msg)
+
+        # Copy checkpoints up to the specified one
+        # Note: LangGraph checkpoint_id typically increases or uses timestamps,
+        # but even if it doesn't, we should copy the chain.
+        # For simplicity in this monorepo's current usage, we assume standard ordering.
+        await conn.execute(
+            """
+            INSERT INTO checkpoints (
+                thread_id, checkpoint_id, type, checkpoint, metadata
+            )
+            SELECT ?, checkpoint_id, type, checkpoint, metadata
+            FROM checkpoints
+            WHERE thread_id = ? AND checkpoint_id <= ?
+            """,
+            (new_thread_id, source_thread_id, checkpoint_id),
+        )
+
+        # Copy associated writes if the table exists
+        if await _table_exists(conn, "writes"):
+            await conn.execute(
+                """
+                INSERT INTO writes (
+                    thread_id, checkpoint_id, task_id, idx, channel, type, value
+                )
+                SELECT ?, checkpoint_id, task_id, idx, channel, type, value
+                FROM writes
+                WHERE thread_id = ? AND checkpoint_id <= ?
+                """,
+                (new_thread_id, source_thread_id, checkpoint_id),
+            )
+
+        await conn.commit()
+
+    logger.info(
+        "Forked thread %s into %s at %s", source_thread_id, new_thread_id, checkpoint_id
+    )
+    return new_thread_id
+
+
 @asynccontextmanager
 async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
     """Get AsyncSqliteSaver for the global database.

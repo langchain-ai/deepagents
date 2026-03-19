@@ -67,6 +67,7 @@ on:
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:deepseek-v3.2:cloud"
           - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.7"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:deepseek-ai/DeepSeek-V3.2"
@@ -92,6 +93,7 @@ concurrency:
 
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   prep:
@@ -149,7 +151,7 @@ jobs:
           working-directory: libs/deepagents
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals --locked
+        run: uv sync --group test --group evals
 
       - name: "📊 Run Evals"
         run: make evals

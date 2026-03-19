@@ -902,6 +902,7 @@ def run_agent(
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
+    eval_metadata: dict[str, object] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
 
@@ -912,6 +913,7 @@ def run_agent(
         initial_files: Optional initial files to seed the agent with.
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
+        eval_metadata: Optional metadata to attach to the logged inputs.
 
     Returns:
         The resulting ``AgentTrajectory``.
@@ -932,6 +934,8 @@ def run_agent(
 
     logged_inputs = dict(invoke_inputs)
     logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
+    if eval_metadata is not None:
+        logged_inputs["eval_metadata"] = eval_metadata
 
     t.log_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)

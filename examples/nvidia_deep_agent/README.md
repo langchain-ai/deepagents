@@ -24,7 +24,8 @@ create_deep_agent (orchestrator: frontier model)
     |       AGENTS.md    Persistent agent instructions (self-improving)
     |
     |-- backend: Modal Sandbox (GPU or CPU, switchable at runtime)
-            Agent writes scripts via write_file, runs them via execute tool
+            Skills + memory uploaded on sandbox creation
+            Agent reads/writes/executes directly inside the sandbox
 ```
 
 **Why multi-model?** The frontier model handles planning, synthesis, and code generation where reasoning quality matters. Nemotron Super handles the volume work (web research) where speed and cost matter.
@@ -175,7 +176,7 @@ The agent has persistent memory via `AGENTS.md`, loaded at startup through the `
 
 For example, if the data-processor-agent discovers that `cudf.DataFrame.interpolate()` isn't implemented, it updates `skills/cudf-analytics/SKILL.md` with a "Known Limitations" note so it won't repeat the mistake.
 
-Memory and skills are stored on the **local filesystem** via `FilesystemBackend`, so agent improvements are committed directly to your repo. See `src/backend.py` for the backend configuration.
+Memory and skills are uploaded into the **sandbox** on creation via `upload_files`. The agent reads and edits them directly inside the sandbox; changes persist for the sandbox's lifetime. In production, swap the local file reads in `_seed_sandbox` for your storage layer (S3, database, etc.). See `src/backend.py` for the backend configuration.
 
 ## Adapting to Your Domain
 
@@ -196,4 +197,3 @@ For a full enterprise deployment with NeMo Agent Toolkit, evaluation harnesses, 
 - [NVIDIA NIM](https://build.nvidia.com/)
 - [Modal](https://modal.com)
 - [The Two Patterns for Agent Sandboxes](https://blog.langchain.com/the-two-patterns-by-which-agents-connect-sandboxes/)
-

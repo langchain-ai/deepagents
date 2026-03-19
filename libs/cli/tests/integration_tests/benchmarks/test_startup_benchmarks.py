@@ -43,6 +43,12 @@ import pytest
 # the purpose of the deferred-import optimisation.
 HEAVY_MODULES = frozenset(
     {
+        # SDK — importing these pulls in large dependency trees
+        "deepagents",
+        "deepagents._models",
+        "deepagents.backends",
+        "deepagents.backends.utils",
+        # langchain / langgraph stack
         "langchain",
         "langchain.chat_models",
         "langchain_core",
@@ -51,6 +57,8 @@ HEAVY_MODULES = frozenset(
         "langchain_core.runnables",
         "langchain_openai",
         "langchain_anthropic",
+        "langgraph",
+        # CLI runtime modules (deferred to agent.py)
         "deepagents_cli.agent",
         "deepagents_cli.sessions",
         "deepagents_cli.integrations.sandbox_factory",
@@ -130,12 +138,22 @@ class TestImportIsolation:
             "from deepagents_cli.main import check_cli_dependencies",
             "import deepagents_cli.ui",
             "import deepagents_cli.skills.commands",
+            "from deepagents_cli._cli_context import CLIContext",
+            "import deepagents_cli._ask_user_types",
+            "import deepagents_cli.textual_adapter",
+            "import deepagents_cli.tool_display",
+            "import deepagents_cli.file_ops",
         ],
         ids=[
             "main.parse_args",
             "main.check_cli_dependencies",
             "ui",
             "skills.commands",
+            "_cli_context.CLIContext",
+            "_ask_user_types",
+            "textual_adapter",
+            "tool_display",
+            "file_ops",
         ],
     )
     def test_no_heavy_imports_on_lightweight_path(self, import_stmt: str) -> None:
@@ -293,9 +311,22 @@ class TestDeferredImportsWork:
             f"Cannot import `deepagents_cli.sessions`:\n{result.stderr}"
         )
 
-    def test_tool_display_loads_sdk_backends(self) -> None:
-        """`tool_display` should load SDK backends."""
-        loaded = _get_loaded_modules("import deepagents_cli.tool_display")
-        assert "deepagents.backends" in loaded, (
-            "`tool_display` should import SDK `backends` for `DEFAULT_EXECUTE_TIMEOUT`"
+    def test_configurable_model_middleware_loads_langchain(self) -> None:
+        """Accessing `ConfigurableModelMiddleware` should trigger langchain import."""
+        loaded = _get_loaded_modules(
+            "from deepagents_cli.configurable_model import ConfigurableModelMiddleware"
+        )
+        langchain_modules = {m for m in loaded if m.startswith("langchain")}
+        assert langchain_modules, (
+            "Accessing `ConfigurableModelMiddleware` should load langchain modules"
+        )
+
+    def test_ask_user_middleware_loads_langchain(self) -> None:
+        """Accessing `AskUserMiddleware` should trigger langchain import."""
+        loaded = _get_loaded_modules(
+            "from deepagents_cli.ask_user import AskUserMiddleware"
+        )
+        langchain_modules = {m for m in loaded if m.startswith("langchain")}
+        assert langchain_modules, (
+            "Accessing `AskUserMiddleware` should load langchain modules"
         )

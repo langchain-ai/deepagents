@@ -1,7 +1,8 @@
-"""Backend configuration: Modal sandbox + FilesystemBackend for memory/skills."""
+"""Backend configuration: Modal sandbox with skills/memory uploaded on creation."""
+
+from pathlib import Path
 
 import modal
-from deepagents.backends import CompositeBackend, FilesystemBackend
 from langchain_modal import ModalSandbox
 
 # --- Sandbox ---
@@ -25,21 +26,60 @@ cpu_image = modal.Image.debian_slim().pip_install(
     "pandas", "numpy", "scipy", "scikit-learn", "matplotlib", "seaborn"
 )
 
+SKILLS_DIR = Path("skills")
+MEMORY_FILE = Path("src/AGENTS.md")
+
+
+# --- Helpers ---
+
+def _seed_sandbox(backend: ModalSandbox) -> None:
+    """Upload local skill and memory files into a freshly created sandbox.
+
+    In production, replace the local file reads with your storage layer
+    (S3, database, etc.).
+    """
+    files: list[tuple[str, bytes]] = []
+
+    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        files.append(
+            (f"/skills/{skill_dir.name}/SKILL.md", skill_md.read_bytes())
+        )
+
+    if MEMORY_FILE.exists():
+        files.append(("/memory/AGENTS.md", MEMORY_FILE.read_bytes()))
+
+    if not files:
+        return
+
+    # Create parent directories inside the sandbox, then upload
+    dirs = sorted({str(Path(p).parent) for p, _ in files})
+    backend.execute(f"mkdir -p {' '.join(dirs)}")
+    backend.upload_files(files)
+
 
 # --- Backend Factory ---
 
 def create_backend(runtime):
-    """Create a CompositeBackend: Modal sandbox + filesystem for memory/skills.
+    """Create a ModalSandbox backend with skills and memory pre-loaded.
 
-    Memory and skills are stored on the local filesystem via FilesystemBackend.
-    The agent can read and edit these files directly, and changes persist
-    across restarts (useful for committing agent improvements back to git).
+    On first sandbox creation, skill and memory files are uploaded from the
+    local filesystem into the sandbox. The agent reads and edits them directly
+    inside the sandbox; changes persist for the sandbox's lifetime.
+
+    In production, swap the local file reads in `_seed_sandbox` for your
+    storage layer (S3, database, etc.).
     """
     ctx = runtime.context or {}
     sandbox_type = ctx.get("sandbox_type", "gpu")
     use_gpu = sandbox_type == "gpu"
     sandbox_name = f"{MODAL_SANDBOX_NAME}-{sandbox_type}"
 
+    created = False
     try:
         sandbox = modal.Sandbox.from_name(MODAL_SANDBOX_NAME, sandbox_name)
     except modal.exception.NotFoundError:
@@ -56,11 +96,9 @@ def create_backend(runtime):
         else:
             create_kwargs["image"] = cpu_image
         sandbox = modal.Sandbox.create(**create_kwargs)
+        created = True
 
-    return CompositeBackend(
-        default=ModalSandbox(sandbox=sandbox),
-        routes={
-            "/memory/": FilesystemBackend(root_dir="./src", virtual_mode=True),
-            "/skills/": FilesystemBackend(root_dir="./skills", virtual_mode=True),
-        },
-    )
+    backend = ModalSandbox(sandbox=sandbox)
+    if created:
+        _seed_sandbox(backend)
+    return backend

@@ -28,32 +28,32 @@ from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
+from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._session_stats import (
+    SessionStats,
+    SpinnerStatus,
+    format_token_count,
+)
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.command_registry import (
+    ALWAYS_IMMEDIATE,
+    BYPASS_WHEN_CONNECTING,
+    IMMEDIATE_UI,
+    SIDE_EFFECT_FREE,
+)
 from deepagents_cli.config import (
     DOCS_URL,
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     create_model,
     detect_provider,
+    is_ascii_mode,
     is_shell_command_allowed,
     newline_shortcut,
     settings,
 )
-from deepagents_cli.configurable_model import CLIContext
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.model_config import ModelSpec, save_recent_model
-from deepagents_cli.textual_adapter import (
-    SessionStats,
-    SpinnerStatus,
-    TextualUIAdapter,
-    _get_git_branch,
-    execute_task_textual,
-    format_token_count,
-)
-from deepagents_cli.widgets.approval import ApprovalMenu
-from deepagents_cli.widgets.ask_user import AskUserMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -70,19 +70,14 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
-from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
-from deepagents_cli.widgets.thread_selector import (
-    DeleteThreadConfirmScreen,
-    ThreadSelectorScreen,
-)
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from deepagents.backends import CompositeBackend
     from langchain_core.runnables import RunnableConfig
@@ -93,10 +88,13 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
+    from deepagents_cli.textual_adapter import TextualUIAdapter
+    from deepagents_cli.widgets.approval import ApprovalMenu
+    from deepagents_cli.widgets.ask_user import AskUserMenu
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -270,15 +268,28 @@ typing before showing the approval widget regardless."""
 
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
-    """Represents a queued user message awaiting processing.
-
-    Attributes:
-        text: The message text content.
-        mode: The input mode that determines message routing.
-    """
+    """Represents a queued user message awaiting processing."""
 
     text: str
+    """The message text content."""
+
     mode: InputMode
+    """The input mode that determines message routing."""
+
+
+DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output"]
+"""Valid `DeferredAction.kind` values for type-checked deduplication."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeferredAction:
+    """An action deferred until the current busy state resolves."""
+
+    kind: DeferredActionKind
+    """Identity key for deduplication — one of `DeferredActionKind`."""
+
+    execute: Callable[[], Awaitable[None]]
+    """Async callable that performs the actual work."""
 
 
 class TextualTokenTracker:
@@ -651,6 +662,8 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         self._thread_switching = False
         self._model_switching = False
+        # Deferred actions executed after the current busy state resolves
+        self._deferred_actions: list[DeferredAction] = []
         # Message virtualization store
         self._message_store = MessageStore()
         # Lazily imported here to avoid pulling image dependencies into
@@ -709,7 +722,7 @@ class DeepAgentsApp(App):
         """Initialize components after mount."""
         chat = self.query_one("#chat", VerticalScroll)
         chat.anchor()
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             chat.styles.scrollbar_size_vertical = 0
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -720,6 +733,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
 
         # Set git branch in status bar
+        from deepagents_cli.textual_adapter import _get_git_branch
+
         self._status_bar.branch = _get_git_branch() or ""
 
         # Create session state
@@ -752,6 +767,13 @@ class DeepAgentsApp(App):
                 exclusive=True,
                 group="startup-update-check",
             )
+
+        # Prewarm deferred widget imports in a thread so first use is instant
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
@@ -796,6 +818,8 @@ class DeepAgentsApp(App):
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
+        from deepagents_cli.textual_adapter import TextualUIAdapter
+
         self._ui_adapter = TextualUIAdapter(
             mount_message=self._mount_message,
             update_status=self._update_status,
@@ -902,6 +926,26 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._load_thread_history())
             )
 
+        # Drain deferred actions (e.g. model/thread switch queued during connection)
+        # if the agent is not actively running. Wrapped in a helper so that
+        # exceptions are logged rather than becoming unhandled task errors.
+        if self._deferred_actions and not self._agent_running:
+
+            async def _safe_drain() -> None:
+                try:
+                    await self._maybe_drain_deferred()
+                except Exception:
+                    logger.exception("Unhandled error while draining deferred actions")
+                    with suppress(Exception):
+                        await self._mount_message(
+                            ErrorMessage(
+                                "A deferred action failed during startup. "
+                                "You may need to retry the operation."
+                            )
+                        )
+
+            self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
+
         # Drain any messages the user typed while the server was starting.
         # (If an initial prompt exists, its cleanup path will drain the queue.)
         if self._pending_messages and not (
@@ -933,6 +977,37 @@ class DeepAgentsApp(App):
             for w in self._queued_widgets:
                 w.remove()
             self._queued_widgets.clear()
+        self._deferred_actions.clear()
+
+    @staticmethod
+    def _prewarm_deferred_imports() -> None:
+        """Background-load modules deferred from the startup path.
+
+        Populates `sys.modules` so the first user-triggered inline import
+        is a cheap dict lookup instead of a cold module load.
+        """
+        try:
+            # Heavy deps deferred from textual_adapter / tool_display —
+            # hit on first message send and first tool approval
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                ApproveDecision,
+            )
+            from langchain_core.messages import AIMessage  # noqa: F401
+            from langgraph.types import Command  # noqa: F401
+
+            # Widgets deferred from app.py module level
+            from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+            from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+            from deepagents_cli.widgets.model_selector import (
+                ModelSelectorScreen,  # noqa: F401
+            )
+            from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+                DeleteThreadConfirmScreen,
+                ThreadSelectorScreen,
+            )
+        except Exception:
+            logger.debug("Could not prewarm deferred imports", exc_info=True)
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""
@@ -1103,6 +1178,8 @@ class DeepAgentsApp(App):
             container: The `#messages` container to mount into.
             widget: The widget to mount.
         """
+        if not container.is_attached:
+            return
         first_queued = self._queued_widgets[0] if self._queued_widgets else None
         if first_queued is not None and first_queued.parent is container:
             try:
@@ -1238,6 +1315,8 @@ class DeepAgentsApp(App):
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
@@ -1422,6 +1501,8 @@ class DeepAgentsApp(App):
                     break
                 await asyncio.sleep(0.1)
 
+        from deepagents_cli.widgets.ask_user import AskUserMenu
+
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
         menu.set_future(result_future)
@@ -1487,6 +1568,24 @@ class DeepAgentsApp(App):
             logger.warning("Unrecognized input mode %r, treating as normal", mode)
             await self._handle_user_message(value)
 
+    def _can_bypass_queue(self, value: str) -> bool:
+        """Check if a slash command can skip the message queue.
+
+        Args:
+            value: The lowered, stripped command string (e.g. `/model`).
+
+        Returns:
+            `True` if the command should bypass the busy-state queue.
+        """
+        cmd = value.split(maxsplit=1)[0] if value else ""
+        if cmd in BYPASS_WHEN_CONNECTING:
+            return self._connecting and not (self._agent_running or self._shell_running)
+        if cmd in IMMEDIATE_UI:
+            # Only bare form (no args) bypasses — /model opens selector,
+            # /model <name> does a direct switch that shouldn't race with agent.
+            return value == cmd
+        return cmd in SIDE_EFFECT_FREE
+
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
@@ -1496,6 +1595,11 @@ class DeepAgentsApp(App):
         self._quit_pending = False
 
         await dispatch_hook("user.prompt", {})
+
+        # /quit and /q always execute immediately, even mid-thread-switch.
+        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
+            self.exit()
+            return
 
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
@@ -1510,6 +1614,9 @@ class DeepAgentsApp(App):
         # instead of processing. Messages queued during connection are drained
         # once the server is ready (see on_deep_agents_app_server_ready).
         if self._agent_running or self._shell_running or self._connecting:
+            if mode == "command" and self._can_bypass_queue(value.lower().strip()):
+                await self._process_message(value, mode)
+                return
             self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -1661,6 +1768,17 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during shell cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation."
+                    )
+                )
         await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
@@ -1708,13 +1826,39 @@ class DeepAgentsApp(App):
     async def _open_url_command(self, command: str, cmd: str) -> None:
         """Open a URL in the browser and display a clickable link.
 
+        The browser opens immediately regardless of busy state. When the app is
+        busy, a queued indicator is shown and the real chat output (user echo
+        + clickable link) replaces it after the current task finishes.
+
         Args:
             command: The raw command text (displayed as user message).
             cmd: The normalized slash command used to look up the URL.
         """
         url = _COMMAND_URLS[cmd]
-        await self._mount_message(UserMessage(command))
         webbrowser.open(url)
+
+        if self._agent_running or self._shell_running:
+            queued_widget = QueuedUserMessage(command)
+            self._queued_widgets.append(queued_widget)
+            await self._mount_message(queued_widget)
+
+            async def _mount_output() -> None:
+                # Remove the ephemeral queued widget, then mount real output.
+                if queued_widget in self._queued_widgets:
+                    self._queued_widgets.remove(queued_widget)
+                with suppress(Exception):
+                    await queued_widget.remove()
+                await self._mount_message(UserMessage(command))
+                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
+                await self._mount_message(AppMessage(link))
+
+            # Append directly — no dedup; each URL command gets its own output.
+            self._deferred_actions.append(
+                DeferredAction(kind="chat_output", execute=_mount_output)
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
         link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
@@ -2245,6 +2389,8 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        from deepagents_cli.textual_adapter import execute_task_textual
+
         turn_stats: SessionStats | None = None
         try:
             turn_stats = await execute_task_textual(
@@ -2267,7 +2413,12 @@ class DeepAgentsApp(App):
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
-            await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            try:
+                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            except Exception:
+                logger.debug(
+                    "Could not mount error message (app closing?)", exc_info=True
+                )
         finally:
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
@@ -2324,6 +2475,18 @@ class DeepAgentsApp(App):
         # Ensure token display is restored (in case of early cancellation)
         if self._token_tracker:
             self._token_tracker.show()
+
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation."
+                    )
+                )
 
         # Process next message from queue if any
         await self._process_next_from_queue()
@@ -2721,6 +2884,12 @@ class DeepAgentsApp(App):
         except NoMatches:
             return
 
+        # During shutdown (e.g. Ctrl+D mid-stream) the container may still
+        # be in the DOM tree but already detached, so mount() would raise
+        # MountError. Bail out silently — the app is exiting anyway.
+        if not messages.is_attached:
+            return
+
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         # Ensure the widget's DOM id matches the store id so that
@@ -2820,11 +2989,52 @@ class DeepAgentsApp(App):
             )
 
     def _discard_queue(self) -> None:
-        """Clear pending messages and remove queued widgets from the DOM."""
+        """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
         for w in self._queued_widgets:
             w.remove()
         self._queued_widgets.clear()
+        self._deferred_actions.clear()
+
+    def _defer_action(self, action: DeferredAction) -> None:
+        """Queue a deferred action, replacing any existing action of the same kind.
+
+        Last-write-wins: if the user selects a model twice while busy, only the
+        final selection runs.
+
+        Args:
+            action: The deferred action to queue.
+        """
+        self._deferred_actions = [
+            a for a in self._deferred_actions if a.kind != action.kind
+        ]
+        self._deferred_actions.append(action)
+
+    async def _maybe_drain_deferred(self) -> None:
+        """Drain deferred actions unless a server connection is still in progress."""
+        if not self._connecting:
+            await self._drain_deferred_actions()
+
+    async def _drain_deferred_actions(self) -> None:
+        """Execute deferred actions queued while busy (e.g. model/thread switch)."""
+        while self._deferred_actions:
+            action = self._deferred_actions.pop(0)
+            try:
+                await action.execute()
+            except Exception:
+                logger.exception(
+                    "Failed to execute deferred action %r (callable=%r)",
+                    action.kind,
+                    action.execute,
+                )
+                label = action.kind.replace("_", " ")
+                with suppress(Exception):
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Deferred {label} failed unexpectedly. "
+                            "You may need to retry the operation."
+                        )
+                    )
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
         """Discard the message queue and cancel an active worker.
@@ -2902,6 +3112,8 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If agent is running, interrupt it
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if (
             isinstance(self.screen, ThreadSelectorScreen)
             and self.screen.is_delete_confirmation_open
@@ -2947,6 +3159,11 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
@@ -3009,6 +3226,8 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
@@ -3182,17 +3401,34 @@ class DeepAgentsApp(App):
         """
         from functools import partial
 
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                self.call_later(
-                    partial(
-                        self._switch_model,
-                        model_spec,
-                        extra_kwargs=extra_kwargs,
+                if self._agent_running or self._shell_running or self._connecting:
+                    self._defer_action(
+                        DeferredAction(
+                            kind="model_switch",
+                            execute=partial(
+                                self._switch_model,
+                                model_spec,
+                                extra_kwargs=extra_kwargs,
+                            ),
+                        )
                     )
-                )
+                    self.notify(
+                        "Model will switch after current task completes.", timeout=3
+                    )
+                else:
+                    self.call_later(
+                        partial(
+                            self._switch_model,
+                            model_spec,
+                            extra_kwargs=extra_kwargs,
+                        )
+                    )
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
@@ -3218,7 +3454,10 @@ class DeepAgentsApp(App):
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
+        from functools import partial
+
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
@@ -3228,7 +3467,18 @@ class DeepAgentsApp(App):
         def handle_result(result: str | None) -> None:
             """Handle the thread selector result."""
             if result is not None:
-                self.call_later(self._resume_thread, result)
+                if self._agent_running or self._shell_running or self._connecting:
+                    self._defer_action(
+                        DeferredAction(
+                            kind="thread_switch",
+                            execute=partial(self._resume_thread, result),
+                        )
+                    )
+                    self.notify(
+                        "Thread will switch after current task completes.", timeout=3
+                    )
+                else:
+                    self.call_later(self._resume_thread, result)
             if self._chat_input:
                 self._chat_input.focus_input()
 
@@ -3558,18 +3808,17 @@ class DeepAgentsApp(App):
 
 @dataclass(frozen=True)
 class AppResult:
-    """Result from running the Textual application.
-
-    Attributes:
-        return_code: Exit code (0 for success, non-zero for error).
-        thread_id: The final thread ID at shutdown. May differ from the
-            initial thread ID if the user switched threads via `/threads`.
-        session_stats: Cumulative usage stats across all turns in the session.
-    """
+    """Result from running the Textual application."""
 
     return_code: int
+    """Exit code (0 for success, non-zero for error)."""
+
     thread_id: str | None
+    """The final thread ID at shutdown. May differ from the initial thread ID if
+    the user switched threads via `/threads`."""
+
     session_stats: SessionStats = field(default_factory=SessionStats)
+    """Cumulative usage stats across all turns in the session."""
 
 
 async def run_textual_app(

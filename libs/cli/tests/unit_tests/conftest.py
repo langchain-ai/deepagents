@@ -1,8 +1,14 @@
 """Shared fixtures for CLI unit tests."""
 
+from __future__ import annotations
+
 import contextlib
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -46,3 +52,17 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEEPAGENTS_LANGSMITH_PROJECT",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect ChatInput history to a temp file.
+
+    Without this, every test that mounts a ``ChatInput`` widget writes to the
+    real ``~/.deepagents/history.jsonl``, causing duplicate/stale entries that
+    persist across test runs and branch switches.
+    """
+    monkeypatch.setattr(
+        "deepagents_cli.widgets.chat_input._default_history_path",
+        lambda: tmp_path / "history.jsonl",
+    )

@@ -82,8 +82,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 150
-# Exclude any files that shouldn't be linted
-exclude = []
+# Vendored BFCL benchmark files — skip both lint and format
+exclude = ["tests/evals/data/bfcl_apis"]
+force-exclude = true
 
 [tool.ruff.format]
 docstring-code-format = true  # Formats code blocks in docstrings
@@ -101,6 +102,7 @@ ignore = [
     "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true

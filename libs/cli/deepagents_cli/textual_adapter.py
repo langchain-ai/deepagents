@@ -8,32 +8,37 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        EditDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command, Interrupt
     from rich.console import Console
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from langchain.agents.middleware.human_in_the_loop import (
-    ApproveDecision,
-    EditDecision,
-    HITLRequest,
-    RejectDecision,
-)
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
+from deepagents_cli._ask_user_types import AskUserRequest
+from deepagents_cli._cli_context import CLIContext  # noqa: TC001
 from deepagents_cli._debug import configure_debug_logging
-from deepagents_cli.ask_user import AskUserRequest
+from deepagents_cli._session_stats import (
+    ModelStats as ModelStats,
+    SessionStats as SessionStats,
+    SpinnerStatus as SpinnerStatus,
+    format_token_count as format_token_count,
+)
 from deepagents_cli.config import settings
-from deepagents_cli.configurable_model import CLIContext  # noqa: TC001
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -53,107 +58,45 @@ configure_debug_logging(logger)
 _git_branch_cache: dict[str, str | None] = {}
 """Cache git-branch lookups by current working directory."""
 
-SpinnerStatus = Literal["Thinking", "Offloading"] | None
-"""Valid spinner display states, or `None` to hide."""
+_hitl_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the HITL request validator."""
 
 
-@dataclass
-class ModelStats:
-    """Token stats for a single model within a session.
+def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
+    """Return a cached `TypeAdapter(HITLRequest)`.
 
-    Attributes:
-        request_count: Number of LLM API requests made to this model.
-        input_tokens: Cumulative input tokens sent to this model.
-        output_tokens: Cumulative output tokens received from this model.
-    """
-
-    request_count: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
-@dataclass
-class SessionStats:
-    """Stats accumulated over a single agent turn (or full session).
-
-    Attributes:
-        request_count: Total LLM API requests made (each chunk with
-            usage_metadata counts as one completed request).
-        input_tokens: Cumulative input tokens across all LLM requests.
-        output_tokens: Cumulative output tokens across all LLM requests.
-        wall_time_seconds: Wall-clock duration from stream start to end.
-        per_model: Per-model breakdown keyed by model name.
-            Populated only when `record_request` receives a non-empty
-            `model_name`. Empty dict means no named-model requests were
-            recorded; `print_usage_table` omits the model table in that case and
-            shows only the wall-time line (if applicable).
-    """
-
-    request_count: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    wall_time_seconds: float = 0.0
-    per_model: dict[str, ModelStats] = field(default_factory=dict)
-
-    def record_request(
-        self,
-        model_name: str,
-        input_toks: int,
-        output_toks: int,
-    ) -> None:
-        """Accumulate token counts for one completed LLM request.
-
-        Updates both the session totals and the per-model breakdown.
-
-        Args:
-            model_name: The model that served this request (used as the
-                per-model key). Pass an empty string to skip the per-model
-                breakdown for this request.
-            input_toks: Input tokens for this request.
-            output_toks: Output tokens for this request.
-        """
-        self.request_count += 1
-        self.input_tokens += input_toks
-        self.output_tokens += output_toks
-        if model_name:
-            entry = self.per_model.setdefault(model_name, ModelStats())
-            entry.request_count += 1
-            entry.input_tokens += input_toks
-            entry.output_tokens += output_toks
-
-    def merge(self, other: SessionStats) -> None:
-        """Merge another `SessionStats` into this one (mutates *self*).
-
-        Used to accumulate per-turn stats into a session-level total.
-
-        Args:
-            other: The stats to fold in.
-        """
-        self.request_count += other.request_count
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.wall_time_seconds += other.wall_time_seconds
-        for model, ms in other.per_model.items():
-            entry = self.per_model.setdefault(model, ModelStats())
-            entry.request_count += ms.request_count
-            entry.input_tokens += ms.input_tokens
-            entry.output_tokens += ms.output_tokens
-
-
-def format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
+    Avoids re-compiling the pydantic schema on every `execute_task_textual` call.
 
     Args:
-        count: Number of tokens.
+        hitl_request_type: The `HITLRequest` class (passed in because
+            it is imported locally by the caller).
 
     Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+        Shared `TypeAdapter` instance.
     """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
+    global _hitl_adapter_cache  # noqa: PLW0603
+    if _hitl_adapter_cache is None:
+        _hitl_adapter_cache = TypeAdapter(hitl_request_type)
+    return _hitl_adapter_cache
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
+    """
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
 
 
 def print_usage_table(
@@ -220,13 +163,17 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        console.print(
+            f"Agent active  {_format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )
 
 
-# Type alias matching HITLResponse["decisions"] element type
-HITLDecision = ApproveDecision | EditDecision | RejectDecision
+if TYPE_CHECKING:
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
-_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
 
@@ -459,6 +406,8 @@ def _build_interrupted_ai_message(
     Returns:
         AIMessage with accumulated content and tool calls, or None if empty.
     """
+    from langchain_core.messages import AIMessage
+
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
 
@@ -542,6 +491,16 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(
         parse_file_mentions, user_input
@@ -681,7 +640,7 @@ async def execute_task_textual(
                                 else:
                                     try:
                                         validated_request = (
-                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                            hitl_request_adapter.validate_python(iv)
                                         )
                                         pending_interrupts[interrupt_obj.id] = (
                                             validated_request
@@ -745,7 +704,7 @@ async def execute_task_textual(
                                 "Failed to mount summarization notification",
                                 exc_info=True,
                             )
-                        if adapter._set_spinner:
+                        if adapter._set_spinner and not adapter._current_tool_messages:
                             await adapter._set_spinner("Thinking")
 
                     if isinstance(message, HumanMessage):
@@ -768,14 +727,12 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow spinner after tool result
-                        if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
-
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
-                            tool_msg = adapter._current_tool_messages[tool_id]
+                            # Pop before widget calls so the dict drains even
+                            # if set_success/set_error raises.
+                            tool_msg = adapter._current_tool_messages.pop(tool_id)
                             output_str = str(tool_content) if tool_content else ""
                             if tool_status == "success":
                                 tool_msg.set_success(output_str)
@@ -785,8 +742,19 @@ async def execute_task_textual(
                                     "tool.error",
                                     {"tool_names": [tool_msg._tool_name]},
                                 )
-                            # Clean up - remove from tracking dict after status update
-                            adapter._current_tool_messages.pop(tool_id, None)
+                        elif tool_id:
+                            logger.debug(
+                                "ToolMessage tool_call_id=%s not in "
+                                "_current_tool_messages; spinner gating "
+                                "may be stale",
+                                tool_id,
+                            )
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active).
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -1006,7 +974,7 @@ async def execute_task_textual(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
-                if adapter._set_spinner:
+                if adapter._set_spinner and not adapter._current_tool_messages:
                     await adapter._set_spinner("Thinking")
 
             # Flush any remaining text from all namespaces

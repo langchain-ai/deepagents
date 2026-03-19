@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.widgets.autocomplete import (
     MAX_SUGGESTIONS,
-    SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
     MultiCompletionManager,

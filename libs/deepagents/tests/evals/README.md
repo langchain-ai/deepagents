@@ -17,7 +17,7 @@ LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test --group evals pytest t
 LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test --group evals pytest tests/evals/test_file_operations.py
 ```
 
-Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepagents-evals` test suite. Set `--evals-report-file <path>` (or `DEEPAGENTS_EVALS_REPORT_FILE`) to also write a JSON summary.
+Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepagents-evals` test suite (under Experiments tab). Set `--evals-report-file <path>` (or `DEEPAGENTS_EVALS_REPORT_FILE`) to also write a JSON summary.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepa
 Each eval uses a `TrajectoryScorer` with two assertion tiers:
 
 - ✅ **Success assertions** (`.success(...)`) are correctness checks that **hard-fail** the test.
-  - Examples: `final_text_contains`, `file_equals`
+  - Examples: `final_text_contains`, `file_equals`, `llm_judge`
 - 📈 **Efficiency assertions** (`.expect(...)`) are trajectory-shape expectations that are **logged but never fail**.
   - Examples: expected step count, expected tool calls.
 
@@ -45,9 +45,15 @@ scorer = (
 | File | Purpose |
 |---|---|
 | `utils.py` | Core framework: `AgentTrajectory`, assertion classes, `TrajectoryScorer`, `run_agent` entry point |
+| `llm_judge.py` | LLM-as-judge `SuccessAssertion` — grades agent answers against human-readable criteria |
 | `conftest.py` | pytest fixtures: `--model` CLI option, `model` / `model_name` fixtures, LangSmith metadata |
+| `external_benchmarks.py` | Runner logic for curated external benchmarks (FRAMES, Nexus, BFCL v3) with state-comparison scoring |
+| `memory_agent_bench/` | MemoryAgentBench (ICLR 2026) runner: configs, data loading, and evaluation utils |
 | `pytest_reporter.py` | Custom pytest plugin: collects efficiency data and prints/writes a summary report |
 | `fixtures/` | Static test data |
+| `data/benchmark_samples/` | Curated case data for external benchmarks |
+| `data/bfcl_apis/` | Stateful Python API implementations for BFCL v3 tool-calling evals |
+| `tau2_airline/` | τ²-bench airline domain: task data, database state, policy, domain models, evaluation, and multi-turn runner (derived from [sierra-research/tau-bench](https://github.com/sierra-research/tau-bench), MIT License) |
 
 ### Test suites
 
@@ -57,10 +63,16 @@ scorer = (
 | `test_skills.py` | Skill discovery, reading, and application from `SKILL.md` files |
 | `test_hitl.py` | Human-in-the-loop via `interrupt_on` approvals, subagent HITL, custom interrupt configs |
 | `test_memory.py` | Memory recall and behavior guidance from `AGENTS.md` files, preference persistence, composite backends |
+| `test_memory_multiturn.py` | Multi-turn memory: implicit preference extraction, explicit remember instructions, transient info filtering |
 | `test_summarization.py` | Summarization middleware triggers, post-summarization task continuation, history offload to filesystem |
 | `test_subagents.py` | Subagent delegation behavior |
 | `test_system_prompt.py` | System prompt adherence |
 | `test_tool_usage_relational.py` | Multi-step tool chaining with dependent data lookups (user -> location -> weather) |
+| `test_tool_selection.py` | Picking the right tool from intent (direct, indirect, multi-step) with independent mock tools |
+| `test_followup_quality.py` | Followup question relevance for underspecified requests (LLM judge) |
+| `test_external_benchmarks.py` | Curated hard cases from FRAMES (multi-hop retrieval), Nexus (nested function composition), and BFCL v3 (multi-turn stateful tool calling) |
+| `memory_agent_bench/test_memory_agent_bench.py` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
+| `tau2_airline/test_tau2_airline.py` | [τ²-bench](https://github.com/sierra-research/tau-bench) airline tasks: multi-turn agent-user conversations scored on DB state accuracy and communicate info |
 
 ## Writing a new eval
 
@@ -84,6 +96,19 @@ def test_example(model: BaseChatModel) -> None:
             .success(final_text_contains("4"))
         ),
     )
+```
+
+For semantic grading where substring matching is insufficient, use the LLM judge:
+
+```python
+from tests.evals.llm_judge import llm_judge
+
+scorer = TrajectoryScorer().success(
+    llm_judge(
+        "The answer mentions the capital of France is Paris.",
+        "The tone is conversational, not robotic.",
+    )
+)
 ```
 
 ## Report output

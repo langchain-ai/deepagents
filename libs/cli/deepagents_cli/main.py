@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
-import functools
 import importlib.util
 import json
 import logging
@@ -76,6 +75,45 @@ _RIPGREP_SUPPRESS_HINT = (
 )
 
 
+def _ripgrep_install_hint() -> str:
+    """Return a platform-specific install command for ripgrep.
+
+    Falls back to the GitHub URL when the platform isn't recognized.
+    """
+    plat = sys.platform
+    if plat == "darwin":
+        if shutil.which("brew"):
+            return "brew install ripgrep"
+        if shutil.which("port"):
+            return "sudo port install ripgrep"
+    elif plat == "linux":
+        if shutil.which("apt-get"):
+            return "sudo apt-get install ripgrep"
+        if shutil.which("dnf"):
+            return "sudo dnf install ripgrep"
+        if shutil.which("pacman"):
+            return "sudo pacman -S ripgrep"
+        if shutil.which("zypper"):
+            return "sudo zypper install ripgrep"
+        if shutil.which("apk"):
+            return "sudo apk add ripgrep"
+        if shutil.which("nix-env"):
+            return "nix-env -iA nixpkgs.ripgrep"
+    elif plat == "win32":
+        if shutil.which("choco"):
+            return "choco install ripgrep"
+        if shutil.which("scoop"):
+            return "scoop install ripgrep"
+        if shutil.which("winget"):
+            return "winget install BurntSushi.ripgrep"
+    # Cross-platform fallbacks
+    if shutil.which("cargo"):
+        return "cargo install ripgrep"
+    if shutil.which("conda"):
+        return "conda install -c conda-forge ripgrep"
+    return _RIPGREP_URL
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -108,27 +146,31 @@ def format_tool_warning_tui(tool: str) -> str:
         Plain-text warning suitable for `App.notify`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {_RIPGREP_URL}\n\n"
+            f"\nInstall: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}"
         )
     return f"{tool} is not installed."
 
 
 def format_tool_warning_cli(tool: str) -> str:
-    """Format a missing-tool warning for non-interactive Rich console output.
+    """Format a missing-tool warning for non-interactive console output.
 
     Args:
         tool: Name of the missing tool.
 
     Returns:
-        Rich-markup string suitable for `console.print`.
+        Warning string suitable for `console.print`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
+        if hint.startswith("http"):
+            hint = f"[link={hint}]{hint}[/link]"
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
+            f"Install: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}\n"
         )
     return f"{tool} is not installed."
@@ -194,15 +236,6 @@ def parse_args() -> argparse.Namespace:
     """
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
-    from deepagents_cli.ui import (
-        build_help_parent,
-        show_help,
-        show_list_help,
-        show_reset_help,
-        show_threads_delete_help,
-        show_threads_help,
-        show_threads_list_help,
-    )
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -254,9 +287,21 @@ def parse_args() -> argparse.Namespace:
 
         return _ShowHelp
 
-    help_parent = functools.partial(
-        build_help_parent, make_help_action=_make_help_action
-    )
+    # Lazy wrapper: defers `ui` import until the help action fires (i.e.,
+    # only when the user passes `-h`). This avoids pulling in Rich and config at
+    # parse time for the common non-help path.
+    def _lazy_help(fn_name: str) -> Callable[[], None]:
+        def _show() -> None:
+            from deepagents_cli import ui
+
+            getattr(ui, fn_name)()
+
+        return _show
+
+    def help_parent(help_fn: Callable[[], None]) -> list[argparse.ArgumentParser]:
+        parent = argparse.ArgumentParser(add_help=False)
+        parent.add_argument("-h", "--help", action=_make_help_action(help_fn))
+        return [parent]
 
     parser = argparse.ArgumentParser(
         description=("Deep Agents - AI Coding Assistant"),
@@ -269,14 +314,14 @@ def parse_args() -> argparse.Namespace:
         "help",
         help="Show help information",
         add_help=False,
-        parents=help_parent(show_help),
+        parents=help_parent(_lazy_help("show_help")),
     )
 
     subparsers.add_parser(
         "list",
         help="List all available agents",
         add_help=False,
-        parents=help_parent(show_list_help),
+        parents=help_parent(_lazy_help("show_list_help")),
     )
     add_json_output_arg(subparsers.choices["list"])
 
@@ -284,7 +329,7 @@ def parse_args() -> argparse.Namespace:
         "reset",
         help="Reset an agent",
         add_help=False,
-        parents=help_parent(show_reset_help),
+        parents=help_parent(_lazy_help("show_reset_help")),
     )
     add_json_output_arg(reset_parser)
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
@@ -302,7 +347,7 @@ def parse_args() -> argparse.Namespace:
         "threads",
         help="Manage conversation threads",
         add_help=False,
-        parents=help_parent(show_threads_help),
+        parents=help_parent(_lazy_help("show_threads_help")),
     )
     add_json_output_arg(threads_parser)
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
@@ -312,7 +357,7 @@ def parse_args() -> argparse.Namespace:
         aliases=["ls"],
         help="List threads",
         add_help=False,
-        parents=help_parent(show_threads_list_help),
+        parents=help_parent(_lazy_help("show_threads_list_help")),
     )
     add_json_output_arg(threads_list)
     threads_list.add_argument(
@@ -354,7 +399,7 @@ def parse_args() -> argparse.Namespace:
         "delete",
         help="Delete a thread",
         add_help=False,
-        parents=help_parent(show_threads_delete_help),
+        parents=help_parent(_lazy_help("show_threads_delete_help")),
     )
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
@@ -546,7 +591,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-h",
         "--help",
-        action=_make_help_action(show_help),
+        action=_make_help_action(_lazy_help("show_help")),
     )
 
     return parser.parse_args()
@@ -1262,6 +1307,18 @@ def cli_main() -> None:
                         )
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    sys.exit(1)
+
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -1358,6 +1415,18 @@ def cli_main() -> None:
             # Generate new thread ID if not resuming
             if thread_id is None:
                 thread_id = generate_thread_id()
+
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    sys.exit(1)
 
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(

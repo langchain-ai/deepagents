@@ -135,10 +135,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             prompt.
 
             If a string, it's concatenated with the base prompt.
-        middleware: Additional middleware to apply after the standard middleware stack
+        middleware: Additional middleware to apply after the base stack
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
-            `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
-            `PatchToolCallsMiddleware`).
+            `SummarizationMiddleware`, `PatchToolCallsMiddleware`) but before
+            `AnthropicPromptCachingMiddleware` and `MemoryMiddleware`.
         subagents: Optional subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -291,6 +291,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     if middleware:
         deepagent_middleware.extend(middleware)
+    # Caching + memory after all other middleware so memory updates don't
+    # invalidate the Anthropic prompt cache prefix.
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))

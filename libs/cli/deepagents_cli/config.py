@@ -553,6 +553,7 @@ class Settings:
     anthropic_api_key: str | None
     google_api_key: str | None
     nvidia_api_key: str | None
+    siliconflow_api_key: str | None
     tavily_api_key: str | None
 
     # Google Cloud configuration (for VertexAI)
@@ -588,6 +589,7 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or None
         google_key = os.environ.get("GOOGLE_API_KEY") or None
         nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
+        siliconflow_key = os.environ.get("SILICONFLOW_API_KEY") or None
         tavily_key = os.environ.get("TAVILY_API_KEY") or None
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
@@ -613,6 +615,7 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             nvidia_api_key=nvidia_key,
+            siliconflow_api_key=siliconflow_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -646,6 +649,7 @@ class Settings:
             "anthropic_api_key",
             "google_api_key",
             "nvidia_api_key",
+            "siliconflow_api_key",
             "tavily_api_key",
         }
         reloadable_fields = (
@@ -653,6 +657,7 @@ class Settings:
             "anthropic_api_key",
             "google_api_key",
             "nvidia_api_key",
+            "siliconflow_api_key",
             "tavily_api_key",
             "google_cloud_project",
             "deepagents_langchain_project",
@@ -686,6 +691,7 @@ class Settings:
             "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY") or None,
             "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
             "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
+            "siliconflow_api_key": os.environ.get("SILICONFLOW_API_KEY") or None,
             "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
             "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
             "deepagents_langchain_project": os.environ.get(
@@ -745,6 +751,11 @@ class Settings:
     def has_nvidia(self) -> bool:
         """Check if NVIDIA API key is configured."""
         return self.nvidia_api_key is not None
+
+    @property
+    def has_siliconflow(self) -> bool:
+        """Check if SiliconFlow API key is configured."""
+        return self.siliconflow_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -1417,11 +1428,13 @@ def _get_default_model_spec() -> str:
         return "google_vertexai:gemini-3.1-pro-preview"
     if settings.has_nvidia:
         return "nvidia:nvidia/nemotron-3-super-120b-a12b"
+    if settings.has_siliconflow:
+        return "siliconflow:Pro/MiniMaxAI/MiniMax-M2.5"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "GOOGLE_CLOUD_PROJECT, NVIDIA_API_KEY, or SILICONFLOW_API_KEY"
     )
     raise ModelConfigError(msg)
 
@@ -1496,6 +1509,10 @@ def _get_provider_kwargs(
 
     if provider == "openrouter":
         _apply_openrouter_defaults(result)
+
+    if provider == "siliconflow":
+        result.setdefault("base_url", "https://api.siliconflow.cn/v1")
+        result.setdefault("temperature", 0.2)
 
     return result
 
@@ -1778,7 +1795,19 @@ def create_model(
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
+    # For siliconflow provider with langchain-siliconflow installed, use ChatSiliconFlow
+    # Otherwise fall back to openai with base_url for OpenAI-compatible API
+    if provider == "siliconflow" and not class_path:
+        try:
+            from langchain_siliconflow import ChatSiliconFlow
+            model = ChatSiliconFlow(model=model_name, **kwargs)
+            provider = "siliconflow"
+        except ImportError:
+            # Fall back to openai provider with siliconflow base_url
+            kwargs.setdefault("base_url", "https://api.siliconflow.cn/v1")
+            model = _create_model_via_init(model_name, "openai", kwargs)
+            provider = "siliconflow"
+    elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)

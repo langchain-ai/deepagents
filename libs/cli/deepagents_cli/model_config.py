@@ -200,6 +200,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
     "together": "TOGETHER_API_KEY",
     "xai": "XAI_API_KEY",
 }

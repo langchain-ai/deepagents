@@ -1,5 +1,5 @@
 # ruff: noqa: E501  # Long prompt strings
-"""Prompt constants used by slash commands."""
+"""Prompt constants for slash commands."""
 
 REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
 

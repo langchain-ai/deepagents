@@ -38,7 +38,6 @@ from deepagents_cli._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_cli.config import settings
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -781,7 +780,9 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
-                            active_model = settings.model_name or ""
+                            from deepagents_cli.config import settings as _settings
+
+                            active_model = _settings.model_name or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(

@@ -18,8 +18,9 @@ __all__ = [
 def __getattr__(name: str) -> Callable[[], None]:
     """Lazy import for `cli_main` to avoid loading `main.py` at package import.
 
-    `main.py` pulls in `asyncio` and stdlib modules that aren't needed
-    when submodules like `config` or `widgets` are imported directly.
+    `main.py` pulls in `argparse`, signal handling, and other startup machinery
+    that isn't needed when submodules like `config` or `widgets` are
+    imported directly.
 
     Returns:
         The requested callable.

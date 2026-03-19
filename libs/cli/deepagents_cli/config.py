@@ -59,7 +59,7 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
                 return candidate
         except OSError:
             logger.warning("Could not inspect .env candidate %s", candidate)
-            return None
+            continue
     return None
 
 
@@ -119,6 +119,12 @@ def _ensure_bootstrap() -> None:
         deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
         if deepagents_project:
             os.environ["LANGSMITH_PROJECT"] = deepagents_project
+    except Exception:
+        logger.warning(
+            "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
+            "may be missing. The CLI will proceed with environment as-is.",
+            exc_info=True,
+        )
     finally:
         _bootstrap_done = True
 
@@ -1235,8 +1241,8 @@ def get_langsmith_project_name() -> str | None:
     When both are present, resolves the project name with priority:
     `settings.deepagents_langchain_project` (from
     `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
-    environment (note: this may already have been overridden at import
-    time to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+    environment (note: this may already have been overridden at bootstrap time
+    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
@@ -1959,7 +1965,14 @@ def _get_settings() -> Settings:
     if cached is not None:
         return cached
     _ensure_bootstrap()
-    inst = Settings.from_environment(start_path=_bootstrap_start_path)
+    try:
+        inst = Settings.from_environment(start_path=_bootstrap_start_path)
+    except Exception:
+        logger.exception(
+            "Failed to initialize settings from environment (start_path=%s)",
+            _bootstrap_start_path,
+        )
+        raise
     globals()["settings"] = inst
     return inst
 

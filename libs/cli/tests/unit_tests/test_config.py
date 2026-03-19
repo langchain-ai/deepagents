@@ -1799,3 +1799,31 @@ class TestLazyModuleAttributes:
         # Calling again should be a harmless no-op.
         _ensure_bootstrap()
         assert isinstance(settings, Settings)
+
+    def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
+        """_ensure_bootstrap sets flag even when the try body raises."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # Reset flag so bootstrap will re-enter
+        original = config_mod._bootstrap_done
+        config_mod._bootstrap_done = False
+
+        try:
+            with patch(
+                "deepagents_cli.config._load_dotenv", side_effect=RuntimeError("boom")
+            ):
+                _ensure_bootstrap()  # should warn, not raise
+
+            # Flag must be set even after failure
+            assert config_mod._bootstrap_done is True
+        finally:
+            config_mod._bootstrap_done = original
+
+    def test_get_settings_returns_same_instance(self) -> None:
+        """_get_settings caches in globals — two calls return the same object."""
+        from deepagents_cli.config import _get_settings
+
+        a = _get_settings()
+        b = _get_settings()
+        assert a is b

@@ -1093,8 +1093,8 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
-        # Import console/settings AFTER arg parsing so headless fast-paths
-        # (--help, --version) never pay the config bootstrap cost.
+        # Import console/settings AFTER arg parsing so --help (which exits
+        # inside parse_args) never pays the settings bootstrap cost.
         from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None

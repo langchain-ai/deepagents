@@ -981,19 +981,21 @@ class DeepAgentsApp(App):
             )
             from langchain_core.messages import AIMessage  # noqa: F401
             from langgraph.types import Command  # noqa: F401
-
-            # Widgets deferred from app.py module level
-            from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
-            from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
-            from deepagents_cli.widgets.model_selector import (
-                ModelSelectorScreen,  # noqa: F401
-            )
-            from deepagents_cli.widgets.thread_selector import (  # noqa: F401
-                DeleteThreadConfirmScreen,
-                ThreadSelectorScreen,
-            )
         except Exception:
-            logger.debug("Could not prewarm deferred imports", exc_info=True)
+            logger.warning("Could not prewarm third-party imports", exc_info=True)
+
+        # Widgets deferred from app.py module level — a failure here indicates
+        # a packaging or code bug (same as the block above), so we let
+        # exceptions propagate.
+        from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
+        from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+        from deepagents_cli.widgets.model_selector import (
+            ModelSelectorScreen,  # noqa: F401
+        )
+        from deepagents_cli.widgets.thread_selector import (  # noqa: F401
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
 
     async def _prewarm_threads_cache(self) -> None:  # noqa: PLR6301  # Worker hook kept as instance method
         """Prewarm thread selector cache without blocking app startup."""

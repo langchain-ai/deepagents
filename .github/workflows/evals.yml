@@ -114,8 +114,6 @@ jobs:
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
-          BRANCH: ${{ github.ref_name }}
-          ACTOR: ${{ github.actor }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -123,10 +121,23 @@ jobs:
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Resolved** | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`eval_categories\` | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch | \`${BRANCH}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Triggered by | \`${ACTOR}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Build eval_categories as a bullet list
+          if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
+            echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            bullets=""
+            IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              bullets="${bullets}<li><code>${cat}</code></li>"
+            done
+            echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

@@ -98,6 +98,8 @@ if TYPE_CHECKING:
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
 
+    from deepagents.middleware.sanitizer import SanitizeFinding, SanitizerProvider
+
 # iTerm2 Cursor Guide Workaround
 # ===============================
 # iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
@@ -572,6 +574,7 @@ class DeepAgentsApp(App):
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
+        sanitizer: SanitizerProvider | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -615,6 +618,7 @@ class DeepAgentsApp(App):
         self._server_proc = server_proc
         self._server_kwargs = server_kwargs
         self._mcp_preload_kwargs = mcp_preload_kwargs
+        self._sanitizer = sanitizer
         self._connecting = server_kwargs is not None
         # Extract sandbox type from server kwargs for trace metadata.
         # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
@@ -3586,6 +3590,7 @@ async def run_textual_app(
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
+    sanitizer: SanitizerProvider | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -3627,6 +3632,7 @@ async def run_textual_app(
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
+        sanitizer=sanitizer,
     )
     try:
         await app.run_async()

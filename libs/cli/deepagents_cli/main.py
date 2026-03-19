@@ -628,6 +628,10 @@ async def run_textual_cli_async(
     # not only after an explicit /model switch.
     save_recent_model(f"{result.provider}:{result.model_name}")
 
+    from deepagents_cli.sanitizer_factory import create_sanitizer_provider
+
+    sanitizer_provider = create_sanitizer_provider(sanitizer)
+
     from deepagents_cli.app import AppResult
 
     # Build kwargs for deferred server startup (runs inside the TUI)
@@ -665,6 +669,7 @@ async def run_textual_cli_async(
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
+            sanitizer=sanitizer_provider,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)

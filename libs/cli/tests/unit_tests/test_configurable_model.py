@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli.agent import build_model_identity_section
 from deepagents_cli.configurable_model import (
     ConfigurableModelMiddleware,
     _is_anthropic_model,
@@ -28,16 +29,20 @@ def _make_request(
     model: BaseChatModel,
     context: CLIContext | None = None,
     model_settings: dict[str, Any] | None = None,
+    system_prompt: str | None = None,
 ) -> ModelRequest:
     """Create a ModelRequest with a runtime that carries CLIContext."""
     runtime = SimpleNamespace(context=context)
-    return ModelRequest(
-        model=model,
-        messages=[HumanMessage(content="hi")],
-        tools=[],
-        runtime=cast("Any", runtime),
-        model_settings=model_settings,
-    )
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [HumanMessage(content="hi")],
+        "tools": [],
+        "runtime": cast("Any", runtime),
+        "model_settings": model_settings,
+    }
+    if system_prompt is not None:
+        kwargs["system_prompt"] = system_prompt
+    return ModelRequest(**kwargs)
 
 
 def _make_response() -> ModelResponse[Any]:
@@ -45,9 +50,20 @@ def _make_response() -> ModelResponse[Any]:
     return ModelResponse(result=[AIMessage(content="response")])
 
 
-def _make_model_result(model: MagicMock) -> SimpleNamespace:
-    """Create a mock ModelResult with a .model attribute."""
-    return SimpleNamespace(model=model)
+def _make_model_result(
+    model: MagicMock,
+    *,
+    model_name: str = "",
+    provider: str = "",
+    context_limit: int | None = None,
+) -> SimpleNamespace:
+    """Create a mock ModelResult with model metadata."""
+    return SimpleNamespace(
+        model=model,
+        model_name=model_name or model.model_name,
+        provider=provider,
+        context_limit=context_limit,
+    )
 
 
 _PATCH_CREATE = "deepagents_cli.config.create_model"
@@ -442,3 +458,114 @@ class TestModelParams:
 
         await _mw.awrap_model_call(request, handler)
         assert captured[0].model_settings == {"temperature": 0.3}
+
+
+class TestModelIdentityPatch:
+    """System prompt Model Identity section is updated on model swap."""
+
+    _OLD_PROMPT = (
+        "Some preamble.\n\n---\n\n"
+        "### Model Identity\n\n"
+        "You are running as model `claude-opus-4-6` (provider: anthropic).\n"
+        "Your context window is 200,000 tokens.\n\n"
+        "### Skills Directory\n\nYour skills are stored at: `/tmp/skills`\n"
+    )
+
+    def test_identity_replaced_on_swap(self) -> None:
+        override = _make_model("gpt-4o")
+        result = _make_model_result(
+            override, model_name="gpt-4o", provider="openai", context_limit=128_000
+        )
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            system_prompt=self._OLD_PROMPT,
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=result):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert "`gpt-4o`" in prompt
+        assert "(provider: openai)" in prompt
+        assert "128,000 tokens" in prompt
+        assert "`claude-opus-4-6`" not in prompt
+        # Surrounding content must survive the replacement
+        assert "Some preamble." in prompt
+        assert "### Skills Directory" in prompt
+        assert "`/tmp/skills`" in prompt
+
+    def test_no_identity_section_left_unchanged(self) -> None:
+        """Prompt without identity section is not modified."""
+        bare_prompt = "You are a helpful assistant.\n\n### Skills Directory\n"
+        override = _make_model("gpt-4o")
+        result = _make_model_result(override, model_name="gpt-4o", provider="openai")
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+            system_prompt=bare_prompt,
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=result):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].system_prompt == bare_prompt
+
+    def test_no_system_prompt_skips_patch(self) -> None:
+        """When system_prompt is None, no patching is attempted."""
+        override = _make_model("gpt-4o")
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="openai:gpt-4o"),
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is override
+
+    def test_identity_at_end_of_prompt(self) -> None:
+        """Identity section at the very end (no trailing ###) is still replaced."""
+        prompt = (
+            "Preamble.\n\n### Model Identity\n\nYou are running as model `old`.\n\n"
+        )
+        override = _make_model("gpt-4o")
+        result = _make_model_result(override, model_name="gpt-4o", provider="openai")
+        request = _make_request(
+            _make_model("old"),
+            context=CLIContext(model="openai:gpt-4o"),
+            system_prompt=prompt,
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=result):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        patched = captured[0].system_prompt
+        assert patched is not None
+        assert "`gpt-4o`" in patched
+        assert "`old`" not in patched
+        assert "Preamble." in patched
+
+    def test_identity_without_context_limit(self) -> None:
+        result = build_model_identity_section("gpt-4o", provider="openai")
+        assert "`gpt-4o`" in result
+        assert "(provider: openai)" in result
+        assert "context window" not in result
+
+    def test_identity_without_provider(self) -> None:
+        result = build_model_identity_section("local-llama", context_limit=4096)
+        assert "`local-llama`" in result
+        assert "provider" not in result
+        assert "4,096 tokens" in result
+
+    def test_identity_no_model_name(self) -> None:
+        assert build_model_identity_section(None) == ""

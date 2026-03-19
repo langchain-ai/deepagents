@@ -102,6 +102,25 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models }}
+          MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
+          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Resolved** | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${BRANCH}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | \`${ACTOR}\` |" >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
@@ -122,7 +141,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: libs/deepagents
+        working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -146,12 +165,12 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals
+        run: uv sync --group test
 
       - name: "📊 Run Evals"
         run: make evals
@@ -161,7 +180,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: evals-report-${{ strategy.job-index }}
-          path: libs/deepagents/evals_report.json
+          path: libs/evals/evals_report.json
           if-no-files-found: error
 
   aggregate:
@@ -181,9 +200,9 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals-aggregate
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "🧾 Write summary"
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py

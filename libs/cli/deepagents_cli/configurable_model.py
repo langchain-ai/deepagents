@@ -75,7 +75,8 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
 
         logger.debug("Overriding model to %s", model)
         try:
-            new_model = create_model(model).model
+            model_result = create_model(model)
+            new_model = model_result.model
         except ModelConfigError:
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
@@ -107,6 +108,35 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
             overrides["model_settings"] = {
                 k: v for k, v in settings.items() if k not in dropped
             }
+
+    # Patch the Model Identity section in the system prompt so the new model
+    # sees its own name/provider/context-limit, not the original's.
+    # We read metadata from model_result (not the CLI settings singleton)
+    # because the middleware runs in the server subprocess where settings
+    # are never updated by /model.
+    if new_model is not None and request.system_prompt:
+        from deepagents_cli.agent import (
+            MODEL_IDENTITY_RE,
+            build_model_identity_section,
+        )
+
+        prompt = request.system_prompt
+        new_identity = build_model_identity_section(
+            model_result.model_name,
+            provider=model_result.provider,
+            context_limit=model_result.context_limit,
+        )
+        patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
+        if patched != prompt:
+            overrides["system_prompt"] = patched
+        elif "### Model Identity" in prompt:
+            logger.warning(
+                "System prompt contains '### Model Identity' but regex "
+                "did not match; identity section was NOT updated for "
+                "model '%s'. The regex may be out of sync with the "
+                "prompt template.",
+                model_result.model_name,
+            )
 
     return request.override(**overrides)
 

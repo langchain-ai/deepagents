@@ -62,19 +62,23 @@
   "fileRules": [
     {
       "label": "deepagents",
-      "prefix": "libs/deepagents/"
+      "prefix": "libs/deepagents/",
+      "skipExcludedFiles": true
     },
     {
       "label": "cli",
-      "prefix": "libs/cli/"
+      "prefix": "libs/cli/",
+      "skipExcludedFiles": true
     },
     {
       "label": "acp",
-      "prefix": "libs/acp/"
+      "prefix": "libs/acp/",
+      "skipExcludedFiles": true
     },
     {
       "label": "evals",
-      "prefix": "libs/evals/"
+      "prefix": "libs/evals/",
+      "skipExcludedFiles": true
     },
     {
       "label": "github_actions",

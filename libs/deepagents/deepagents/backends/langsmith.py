@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 class LangSmithSandbox(BaseSandbox):
-    """LangSmith sandbox implementation conforming to SandboxBackendProtocol.
+    """LangSmith sandbox implementation conforming to `SandboxBackendProtocol`.
 
-    This implementation inherits all file operation methods from BaseSandbox
+    This implementation inherits all file operation methods from `BaseSandbox`
     and only implements the execute() method using LangSmith's API.
     """
 
@@ -51,7 +51,7 @@ class LangSmithSandbox(BaseSandbox):
                 `langsmith[sandbox]` extra is installed.
 
         Returns:
-            ExecuteResponse containing output, exit code, and truncation flag.
+            `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
         result = self._sandbox.run(command, timeout=effective_timeout)
@@ -76,8 +76,9 @@ class LangSmithSandbox(BaseSandbox):
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order.
+            List of `FileDownloadResponse` objects, one per input path.
+
+                Response order matches input order.
         """
         from langsmith.sandbox import ResourceNotFoundError, SandboxClientError  # noqa: PLC0415
 
@@ -104,11 +105,12 @@ class LangSmithSandbox(BaseSandbox):
         success — individual uploads may fail without affecting others.
 
         Args:
-            files: List of (path, content) tuples to upload.
+            files: List of `(path, content)` tuples to upload.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of `FileUploadResponse` objects, one per input file.
+
+                Response order matches input order.
         """
         from langsmith.sandbox import SandboxClientError  # noqa: PLC0415
 

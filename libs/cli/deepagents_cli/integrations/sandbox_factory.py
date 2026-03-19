@@ -77,6 +77,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
 }
+"""Map of sandbox provider names to their default working directories."""
 
 
 @contextmanager
@@ -88,15 +89,17 @@ def create_sandbox(
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
-    This is the unified interface for sandbox creation using the provider abstraction.
+    This is the unified interface for sandbox creation using the
+    provider abstraction.
 
     Args:
-        provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider (`'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        SandboxBackendProtocol instance
+        `SandboxBackendProtocol` instance
     """
     # Get provider instance
     provider_obj = _get_provider(provider)
@@ -152,7 +155,8 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider name (`'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
 
     Returns:
         Default working directory path as string
@@ -181,7 +185,7 @@ def _import_provider_module(
 
     Args:
         module_name: Python module name to import.
-        provider: Sandbox provider name (e.g. "daytona").
+        provider: Sandbox provider name (e.g. `'daytona'`).
         package: PyPI package name exposed by the CLI extra.
 
     Returns:
@@ -201,7 +205,10 @@ def _import_provider_module(
 
 
 _LANGSMITH_DEFAULT_TEMPLATE = "deepagents-cli"
+"""Default LangSmith sandbox template name used when no template is specified."""
+
 _LANGSMITH_DEFAULT_IMAGE = "python:3"
+"""Default Docker image for LangSmith sandboxes when no image is provided."""
 
 
 class _LangSmithProvider(SandboxProvider):
@@ -214,10 +221,10 @@ class _LangSmithProvider(SandboxProvider):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key (defaults to LANGSMITH_API_KEY env var)
+            api_key: LangSmith API key (defaults to `LANGSMITH_API_KEY` env var)
 
         Raises:
-            ValueError: If LANGSMITH_API_KEY environment variable not set
+            ValueError: If `LANGSMITH_API_KEY` environment variable not set
         """
         from langsmith.sandbox import SandboxClient
 
@@ -240,13 +247,13 @@ class _LangSmithProvider(SandboxProvider):
 
         Args:
             sandbox_id: Optional existing sandbox name to reuse
-            timeout: Timeout in seconds for sandbox startup (default: 180)
+            timeout: Timeout in seconds for sandbox startup
             template: Template name for the sandbox
             template_image: Docker image for the template
             **kwargs: Additional LangSmith-specific parameters
 
         Returns:
-            LangSmithSandbox instance
+            `LangSmithSandbox` instance
 
         Raises:
             RuntimeError: If sandbox connection or startup fails
@@ -319,8 +326,9 @@ class _LangSmithProvider(SandboxProvider):
         """Resolve template name and image from kwargs.
 
         Returns:
-            Tuple of (template_name, template_image). Always returns values,
-            using defaults if not provided.
+            Tuple of `(template_name, template_image)`.
+
+                Always returns values, using defaults if not provided.
         """
         resolved_image = template_image or _LANGSMITH_DEFAULT_IMAGE
         if template is None:
@@ -397,10 +405,10 @@ class _DaytonaProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            DaytonaSandbox instance.
+            `DaytonaSandbox` instance.
 
         Raises:
-            NotImplementedError: If sandbox_id is provided.
+            NotImplementedError: If `sandbox_id` is provided.
             RuntimeError: If the sandbox fails to start.
         """
         daytona_backend = _import_provider_module(
@@ -471,7 +479,7 @@ class _ModalProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            ModalSandbox instance.
+            `ModalSandbox` instance.
 
         Raises:
             RuntimeError: If the sandbox fails to start.
@@ -547,11 +555,11 @@ class _RunloopProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            RunloopSandbox instance.
+            `RunloopSandbox` instance.
 
         Raises:
             RuntimeError: If the devbox fails to start.
-            SandboxNotFoundError: If sandbox_id does not exist.
+            SandboxNotFoundError: If `sandbox_id` does not exist.
         """
         runloop_backend = _import_provider_module(
             "langchain_runloop",
@@ -591,16 +599,17 @@ class _RunloopProvider(SandboxProvider):
 
 
 def _get_provider(provider_name: str) -> SandboxProvider:
-    """Get a SandboxProvider instance for the specified provider (internal).
+    """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
+        provider_name: Name of the provider (`'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
 
     Returns:
-        SandboxProvider instance
+        `SandboxProvider` instance
 
     Raises:
-        ValueError: If provider_name is unknown.
+        ValueError: If `provider_name` is unknown.
     """
     if provider_name == "daytona":
         return _DaytonaProvider()

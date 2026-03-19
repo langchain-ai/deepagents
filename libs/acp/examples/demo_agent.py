@@ -13,6 +13,8 @@ from acp.schema import (
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from dotenv import load_dotenv
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
 from langgraph.prebuilt import ToolRuntime
@@ -73,6 +75,13 @@ async def _serve_example_agent() -> None:
             )
 
         return create_deep_agent(
+            model=ChatAnthropic(
+                model_name="claude-opus-4-6",
+                max_tokens=20000,
+            ),
+            # model=ChatOpenAI(
+            #     model_name="gpt-5.4",
+            # ),
             checkpointer=checkpointer,
             backend=create_backend,
             interrupt_on=interrupt_config,

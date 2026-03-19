@@ -41,7 +41,7 @@ from deepagents_cli._session_stats import (
 # deferred to local imports at their call sites since they are only accessed
 # after user interaction begins.
 from deepagents_cli._version import DOCS_URL
-from deepagents_cli.config import SessionState, is_ascii_mode
+from deepagents_cli.config import ConversationContext, SessionState, is_ascii_mode
 from deepagents_cli.prompts import REMEMBER_PROMPT
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -146,6 +146,25 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
+
+
+def _build_step_into_prompt(ctx: ConversationContext) -> str:
+    """Build the initial prompt for a stepped-into subagent session.
+
+    Returns:
+        The formatted prompt string with task description and instructions.
+    """
+    return (
+        f"{ctx.task_description}\n\n---\n"
+        "**Interactive Session Info:**\n"
+        "This is an interactive session. The user has stepped "
+        "into this conversation to work with you directly.\n"
+        f"A summary file has been created at: `{ctx.summary_path}`\n"
+        'When the user asks you to "add to the summary" or '
+        '"update the summary", edit that file.\n'
+        "The summary will be returned to the parent conversation "
+        "when the user types `/return`."
+    )
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -2384,9 +2403,7 @@ class DeepAgentsApp(App):
             is_current = i == len(self._session_state.context_stack) - 1
             marker = " <-- current" if is_current else ""
             if ctx.subagent_type == "root":
-                lines.append(
-                    f"  [{i}] root (main conversation){marker}"
-                )
+                lines.append(f"  [{i}] root (main conversation){marker}")
             else:
                 max_preview_len = 40
                 task_preview = (
@@ -2394,9 +2411,7 @@ class DeepAgentsApp(App):
                     if len(ctx.task_description) > max_preview_len
                     else ctx.task_description
                 )
-                lines.append(
-                    f"  [{i}] **{ctx.subagent_type}**{marker}"
-                )
+                lines.append(f"  [{i}] **{ctx.subagent_type}**{marker}")
                 if task_preview:
                     lines.append(f'      task: "{task_preview}"')
 
@@ -2421,9 +2436,13 @@ class DeepAgentsApp(App):
                     f"[{ctx.subagent_type}:{self._session_state.depth}] >"
                 )
                 if self._subagent_banner:
+                    stack_names = [
+                        c.subagent_type for c in self._session_state.context_stack
+                    ]
                     self._subagent_banner.show(
                         subagent_type=ctx.subagent_type,
                         depth=self._session_state.depth,
+                        context_stack=stack_names,
                     )
             else:
                 prompt_widget.update(">")
@@ -2663,7 +2682,7 @@ class DeepAgentsApp(App):
         from deepagents_cli.textual_adapter import execute_task_textual
 
         turn_stats: SessionStats | None = None
-        step_into_pushed = False
+        depth_before_step_into = self._session_state.depth if self._session_state else 0
         try:
             result = await execute_task_textual(
                 user_input=message,
@@ -2681,40 +2700,31 @@ class DeepAgentsApp(App):
             )
             turn_stats = result.stats
 
-            # Handle step-into if user chose to enter a subagent
-            if result.step_into_context and self._session_state:
+            # Handle step-into: loop supports recursive nesting
+            # (subagent spawns another subagent the user also steps into).
+            while result.step_into_context and self._session_state:
                 ctx = result.step_into_context
                 self._session_state.push_context(ctx)
-                step_into_pushed = True
                 self._update_prompt_indicator()
 
-                # Build initial prompt with task description
-                initial_prompt = (
-                    f"{ctx.task_description}\n\n---\n"
-                    "**Interactive Session Info:**\n"
-                    "This is an interactive session. The user has stepped "
-                    "into this conversation to work with you directly.\n"
-                    f"A summary file has been created at: `{ctx.summary_path}`\n"
-                    'When the user asks you to "add to the summary" or '
-                    '"update the summary", edit that file.\n'
-                    "The summary will be returned to the parent conversation "
-                    "when the user types `/return`."
-                )
-
-                # Invoke the agent with the task in the new context
-                await execute_task_textual(
-                    user_input=initial_prompt,
+                prompt = _build_step_into_prompt(ctx)
+                result = await execute_task_textual(
+                    user_input=prompt,
                     agent=self._agent,
                     assistant_id=self._assistant_id,
                     session_state=self._session_state,
                     adapter=self._ui_adapter,
                     backend=self._backend,
+                    image_tracker=self._image_tracker,
+                    sandbox_type=self._sandbox_type,
+                    context=CLIContext(
+                        model=self._model_override,
+                        model_params=self._model_params_override or {},
+                    ),
                 )
 
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
-            # Ensure any in-flight tool calls don't remain stuck in "Running..."
-            # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
             try:
@@ -2723,13 +2733,10 @@ class DeepAgentsApp(App):
                 logger.debug(
                     "Could not mount error message (app closing?)", exc_info=True
                 )
-            # Pop context if we pushed one to avoid stuck state
-            if (
-                step_into_pushed
-                and self._session_state
-                and self._session_state.depth > 0
-            ):
-                self._session_state.pop_context()
+            # Pop all contexts pushed during step-into to avoid stuck state
+            if self._session_state:
+                while self._session_state.depth > depth_before_step_into:
+                    self._session_state.pop_context()
                 self._update_prompt_indicator()
         finally:
             # Clean up loading widget and agent state
@@ -3625,9 +3632,9 @@ class DeepAgentsApp(App):
             self._pending_approval_widget.action_select_step_into()
 
     def action_approval_auto_when_task(self) -> None:
-        """Handle '4' in approval menu — auto-approve (task tool with 4 options)."""
+        """Handle '4' in approval menu — reject (task tool with 4 options)."""
         if self._pending_approval_widget:
-            self._pending_approval_widget.action_select_auto_when_task()
+            self._pending_approval_widget.action_select_reject_when_task()
 
     def action_approval_no(self) -> None:
         """Handle no/n in approval menu."""

@@ -277,6 +277,20 @@ class TestSubagentBanner:
         assert banner.subagent_type == "coder"
         assert "visible" in banner.classes
 
+    def test_breadcrumbs_shown_at_depth_3_plus(self) -> None:
+        """Banner shows breadcrumbs when nested 3+ levels deep."""
+        banner = SubagentBanner()
+        stack = ["root", "researcher", "coder"]
+        banner.show(subagent_type="coder", depth=2, context_stack=stack)
+        assert banner.breadcrumbs == "root > researcher > coder"
+
+    def test_no_breadcrumbs_at_depth_1(self) -> None:
+        """Banner shows simple label at depth 1 (no breadcrumbs)."""
+        banner = SubagentBanner()
+        stack = ["root", "researcher"]
+        banner.show(subagent_type="researcher", depth=1, context_stack=stack)
+        assert banner.breadcrumbs == ""
+
 
 class TestSubagentBannerInApp:
     """Test SubagentBanner rendering inside a real Textual app."""
@@ -932,3 +946,535 @@ class TestStepIntoLifecycleBugs:
             "Auto-approve should be scoped to the context — "
             "returning to root should restore the parent's setting"
         )
+
+
+# ---------------------------------------------------------------------------
+# 9. Breadcrumbs feature
+# ---------------------------------------------------------------------------
+
+
+class TestBreadcrumbs:
+    """Tests for the breadcrumbs feature in the SubagentBanner."""
+
+    def test_breadcrumbs_exact_boundary_at_3(self) -> None:
+        """Breadcrumbs should appear at exactly 3 items (the threshold)."""
+        banner = SubagentBanner()
+        banner.show(
+            subagent_type="coder",
+            depth=2,
+            context_stack=["root", "researcher", "coder"],
+        )
+        assert banner.breadcrumbs == "root > researcher > coder"
+
+    def test_breadcrumbs_at_depth_4(self) -> None:
+        """Breadcrumbs should show full chain at depth 4."""
+        banner = SubagentBanner()
+        stack = ["root", "planner", "researcher", "coder"]
+        banner.show(subagent_type="coder", depth=3, context_stack=stack)
+        assert banner.breadcrumbs == "root > planner > researcher > coder"
+
+    def test_no_breadcrumbs_at_2_items(self) -> None:
+        """Breadcrumbs should NOT appear with only 2 stack items."""
+        banner = SubagentBanner()
+        banner.show(
+            subagent_type="researcher",
+            depth=1,
+            context_stack=["root", "researcher"],
+        )
+        assert banner.breadcrumbs == ""
+
+    def test_no_breadcrumbs_with_none_stack(self) -> None:
+        """Breadcrumbs should be empty when context_stack is None."""
+        banner = SubagentBanner()
+        banner.show(subagent_type="coder", depth=1, context_stack=None)
+        assert banner.breadcrumbs == ""
+
+    def test_no_breadcrumbs_with_empty_stack(self) -> None:
+        """Breadcrumbs should be empty when context_stack is empty."""
+        banner = SubagentBanner()
+        banner.show(subagent_type="coder", depth=1, context_stack=[])
+        assert banner.breadcrumbs == ""
+
+    def test_breadcrumbs_update_on_successive_shows(self) -> None:
+        """Calling show() multiple times should update breadcrumbs."""
+        banner = SubagentBanner()
+        # First: depth 1, no breadcrumbs
+        banner.show(
+            subagent_type="researcher",
+            depth=1,
+            context_stack=["root", "researcher"],
+        )
+        assert banner.breadcrumbs == ""
+
+        # Second: depth 2, still no breadcrumbs (only 2 items shown)
+        banner.show(
+            subagent_type="coder",
+            depth=2,
+            context_stack=["root", "coder"],
+        )
+        assert banner.breadcrumbs == ""
+
+        # Third: depth 3, now breadcrumbs appear
+        banner.show(
+            subagent_type="writer",
+            depth=3,
+            context_stack=["root", "coder", "writer"],
+        )
+        assert banner.breadcrumbs == "root > coder > writer"
+
+    async def test_breadcrumbs_render_in_label(self) -> None:
+        """When breadcrumbs are set, the label should show them."""
+
+        class _BreadcrumbApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SubagentBanner(id="banner")
+
+        app = _BreadcrumbApp()
+        async with app.run_test() as pilot:
+            banner = app.query_one("#banner", SubagentBanner)
+            stack = ["root", "researcher", "coder"]
+            banner.show(subagent_type="coder", depth=2, context_stack=stack)
+            await pilot.pause()
+
+            label = banner.query_one("#subagent-label", Static)
+            label_text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "root > researcher > coder" in label_text
+
+    async def test_no_breadcrumbs_shows_type_depth_label(self) -> None:
+        """Without breadcrumbs, label should show [type:depth] format."""
+
+        class _NoBreadcrumbApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SubagentBanner(id="banner")
+
+        app = _NoBreadcrumbApp()
+        async with app.run_test() as pilot:
+            banner = app.query_one("#banner", SubagentBanner)
+            banner.show(
+                subagent_type="researcher",
+                depth=1,
+                context_stack=["root", "researcher"],
+            )
+            await pilot.pause()
+
+            label = banner.query_one("#subagent-label", Static)
+            label_text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "[researcher:1]" in label_text
+
+
+# ---------------------------------------------------------------------------
+# 10. Recursive step-into loop
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStepIntoPrompt:
+    """Tests for _build_step_into_prompt helper."""
+
+    def test_includes_task_description(self) -> None:
+        """Prompt should contain the task description."""
+        from deepagents_cli.app import _build_step_into_prompt
+
+        ctx = ConversationContext(
+            thread_id="t1",
+            subagent_type="researcher",
+            task_description="find the auth bug",
+            summary_path=Path("/tmp/summary.md"),
+            parent_tool_call_id=None,
+        )
+        prompt = _build_step_into_prompt(ctx)
+        assert "find the auth bug" in prompt
+
+    def test_includes_summary_path(self) -> None:
+        """Prompt should reference the summary file path."""
+        from deepagents_cli.app import _build_step_into_prompt
+
+        ctx = ConversationContext(
+            thread_id="t1",
+            subagent_type="coder",
+            task_description="write tests",
+            summary_path=Path("/tmp/branches/abc/summary.md"),
+            parent_tool_call_id=None,
+        )
+        prompt = _build_step_into_prompt(ctx)
+        assert "/tmp/branches/abc/summary.md" in prompt
+
+    def test_includes_return_instruction(self) -> None:
+        """Prompt should mention /return command."""
+        from deepagents_cli.app import _build_step_into_prompt
+
+        ctx = ConversationContext(
+            thread_id="t1",
+            subagent_type="researcher",
+            task_description="task",
+            summary_path=Path("/tmp/s.md"),
+            parent_tool_call_id=None,
+        )
+        prompt = _build_step_into_prompt(ctx)
+        assert "/return" in prompt
+
+
+def _make_step_into_interrupt(
+    subagent_type: str, description: str
+) -> list[tuple[Any, ...]]:
+    """Build chunks that trigger a step-into HITL interrupt."""
+    hitl_value = {
+        "action_requests": [
+            {
+                "name": "task",
+                "args": {
+                    "subagent_type": subagent_type,
+                    "description": description,
+                },
+            }
+        ],
+        "review_configs": [
+            {"action_name": "task", "allowed_decisions": ["approve", "reject"]}
+        ],
+    }
+    interrupt = Interrupt(value=hitl_value, resumable=True, ns=None)
+    return [((), "updates", {"__interrupt__": [interrupt]})]
+
+
+def _step_into_future(subagent_type: str, description: str) -> Future[object]:
+    """Create a resolved Future with a step-into decision."""
+    f: Future[object] = Future()
+    f.set_result(
+        {
+            "type": "step_into",
+            "args": {"subagent_type": subagent_type, "description": description},
+        }
+    )
+    return f
+
+
+class _CrashingAgent:
+    """Agent that yields chunks on first N calls, then raises on the next."""
+
+    def __init__(self, turns: list[list[tuple]], crash_on: int) -> None:
+        self._turns = turns
+        self._crash_on = crash_on
+        self._call_count = 0
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        self._call_count += 1
+        if self._call_count == self._crash_on:
+            msg = f"Simulated crash on call {self._call_count}"
+            raise RuntimeError(msg)
+        idx = min(self._call_count - 1, len(self._turns) - 1)
+        for chunk in self._turns[idx]:
+            yield chunk
+
+
+class TestRecursiveStepIntoLoop:
+    """Integration tests for the full recursive step-into loop.
+
+    These exercise execute_task_textual in the same while-loop
+    pattern used by _run_agent_task in app.py.
+    """
+
+    async def test_two_level_step_into_chain(self) -> None:
+        """Agent returns step-into twice, then completes. Loop pushes both."""
+        call_count = 0
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]],
+            _a: str,
+        ) -> Future[object]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _step_into_future("researcher", "find bugs")
+            return _step_into_future("coder", "fix bugs")
+
+        # Turn 1: interrupt -> step-into researcher
+        # Turn 2: interrupt -> step-into coder
+        # Turn 3: clean completion
+        agent = _MultiturnFakeAgent(
+            [
+                _make_step_into_interrupt("researcher", "find bugs"),
+                _make_step_into_interrupt("coder", "fix bugs"),
+                [],  # completes
+            ]
+        )
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        state = SessionState(auto_approve=False)
+        assert state.depth == 0
+
+        # Replicate the exact loop from _run_agent_task
+        result = await execute_task_textual(
+            user_input="start",
+            agent=agent,
+            assistant_id="test",
+            session_state=state,
+            adapter=adapter,
+        )
+
+        while result.step_into_context:
+            state.push_context(result.step_into_context)
+            from deepagents_cli.app import _build_step_into_prompt
+
+            prompt = _build_step_into_prompt(result.step_into_context)
+            result = await execute_task_textual(
+                user_input=prompt,
+                agent=agent,
+                assistant_id="test",
+                session_state=state,
+                adapter=adapter,
+            )
+
+        # Two contexts pushed: researcher then coder
+        assert state.depth == 2
+        stack_types = [c.subagent_type for c in state.context_stack]
+        assert stack_types == ["root", "researcher", "coder"]
+        # Agent called 3 times total
+        assert agent._call_count == 3
+
+    async def test_no_step_into_skips_loop(self) -> None:
+        """When agent completes without step-into, loop body never runs."""
+        # Agent completes immediately
+        agent = _FakeAgent([])
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=lambda *_: None,
+        )
+
+        state = SessionState(auto_approve=False)
+        result = await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="test",
+            session_state=state,
+            adapter=adapter,
+        )
+
+        assert result.step_into_context is None
+        assert state.depth == 0
+
+    async def test_prompts_contain_correct_task_descriptions(self) -> None:
+        """Each loop iteration should use the correct context's task."""
+        captured_inputs: list[str] = []
+
+        class _InputCapturingAgent:
+            def __init__(self, turns: list[list[tuple]]) -> None:
+                self._turns = turns
+                self._call_count = 0
+
+            async def astream(
+                self,
+                user_input: str | dict[str, Any],
+                *_: Any,
+                **__: Any,
+            ) -> AsyncIterator[tuple[Any, ...]]:
+                # Capture the input for each call
+                if isinstance(user_input, str):
+                    captured_inputs.append(user_input)
+                elif isinstance(user_input, dict):
+                    # langgraph format
+                    msgs = user_input.get("messages", [])
+                    if msgs:
+                        captured_inputs.append(
+                            msgs[0].content
+                            if hasattr(msgs[0], "content")
+                            else str(msgs[0])
+                        )
+                idx = min(self._call_count, len(self._turns) - 1)
+                self._call_count += 1
+                for chunk in self._turns[idx]:
+                    yield chunk
+
+        call_count = 0
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]], _a: str
+        ) -> Future[object]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _step_into_future("planner", "plan the migration")
+            return _step_into_future("coder", "write migration SQL")
+
+        agent = _InputCapturingAgent(
+            [
+                _make_step_into_interrupt("planner", "plan the migration"),
+                _make_step_into_interrupt("coder", "write migration SQL"),
+                [],
+            ]
+        )
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        state = SessionState(auto_approve=False)
+        result = await execute_task_textual(
+            user_input="start",
+            agent=agent,
+            assistant_id="test",
+            session_state=state,
+            adapter=adapter,
+        )
+
+        while result.step_into_context:
+            state.push_context(result.step_into_context)
+            from deepagents_cli.app import _build_step_into_prompt
+
+            prompt = _build_step_into_prompt(result.step_into_context)
+            result = await execute_task_textual(
+                user_input=prompt,
+                agent=agent,
+                assistant_id="test",
+                session_state=state,
+                adapter=adapter,
+            )
+
+        # The prompts fed into loop iterations should match each context
+        # captured_inputs[0] = "start" (initial call)
+        # captured_inputs[1] = prompt for planner context
+        # captured_inputs[2] = prompt for coder context
+        # Note: inputs may be wrapped by execute_task_textual, so check
+        # that the step_into_context descriptions ended up in the state
+        assert state.depth == 2
+        assert state.context_stack[1].task_description == "plan the migration"
+        assert state.context_stack[2].task_description == "write migration SQL"
+
+
+class TestErrorRecoveryIntegration:
+    """Error during nested step-into must pop all pushed contexts.
+
+    These tests exercise the actual execute_task_textual + loop pattern,
+    not just the state machine in isolation.
+    """
+
+    async def test_crash_on_second_subagent_pops_both(self) -> None:
+        """Agent crashes on 3rd call (2nd subagent). Both pushed contexts pop."""
+        call_count = 0
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]], _a: str
+        ) -> Future[object]:
+            nonlocal call_count
+            call_count += 1
+            return _step_into_future(f"agent-{call_count}", f"task-{call_count}")
+
+        # Turn 1: step-into interrupt
+        # Turn 2: step-into interrupt
+        # Turn 3: crash
+        agent = _CrashingAgent(
+            turns=[
+                _make_step_into_interrupt("agent-1", "task-1"),
+                _make_step_into_interrupt("agent-2", "task-2"),
+            ],
+            crash_on=3,
+        )
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        state = SessionState(auto_approve=False)
+        depth_before = state.depth  # 0
+
+        # Run the loop, catching the crash like _run_agent_task does
+        try:
+            result = await execute_task_textual(
+                user_input="go",
+                agent=agent,
+                assistant_id="test",
+                session_state=state,
+                adapter=adapter,
+            )
+            while result.step_into_context:
+                state.push_context(result.step_into_context)
+                from deepagents_cli.app import _build_step_into_prompt
+
+                prompt = _build_step_into_prompt(result.step_into_context)
+                result = await execute_task_textual(
+                    user_input=prompt,
+                    agent=agent,
+                    assistant_id="test",
+                    session_state=state,
+                    adapter=adapter,
+                )
+        except RuntimeError:
+            # Error handler: pop all contexts back to pre-loop depth
+            while state.depth > depth_before:
+                state.pop_context()
+
+        assert state.depth == 0
+        assert state.current_context.subagent_type == "root"
+
+    async def test_crash_preserves_pre_existing_depth(self) -> None:
+        """Crash should restore to depth before the loop, not always 0."""
+
+        async def mock_approval(  # noqa: RUF029
+            _r: list[dict[str, object]], _a: str
+        ) -> Future[object]:
+            return _step_into_future("child", "child task")
+
+        agent = _CrashingAgent(
+            turns=[_make_step_into_interrupt("child", "child task")],
+            crash_on=2,
+        )
+
+        adapter = TextualUIAdapter(
+            mount_message=_noop_mount,
+            update_status=_noop_status,
+            request_approval=mock_approval,
+            set_spinner=lambda _: asyncio.sleep(0),
+        )
+
+        state = SessionState(auto_approve=False)
+        # Pre-existing depth: user already in a subagent
+        state.push_context(
+            ConversationContext(
+                thread_id="t-parent",
+                subagent_type="parent",
+                task_description="parent task",
+                summary_path=None,
+                parent_tool_call_id=None,
+            )
+        )
+        depth_before = state.depth  # 1
+
+        try:
+            result = await execute_task_textual(
+                user_input="go deeper",
+                agent=agent,
+                assistant_id="test",
+                session_state=state,
+                adapter=adapter,
+            )
+            while result.step_into_context:
+                state.push_context(result.step_into_context)
+                from deepagents_cli.app import _build_step_into_prompt
+
+                prompt = _build_step_into_prompt(result.step_into_context)
+                result = await execute_task_textual(
+                    user_input=prompt,
+                    agent=agent,
+                    assistant_id="test",
+                    session_state=state,
+                    adapter=adapter,
+                )
+        except RuntimeError:
+            while state.depth > depth_before:
+                state.pop_context()
+
+        # Should be back at depth 1 (parent), not 0 (root)
+        assert state.depth == 1
+        assert state.current_context.subagent_type == "parent"

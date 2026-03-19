@@ -39,7 +39,7 @@ from deepagents_cli._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_cli.config import ConversationContext, settings
+from deepagents_cli.config import ConversationContext
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -204,6 +204,8 @@ def _create_branch_context(
     thread_id = str(uuid.uuid4())
 
     agent_name = assistant_id or "agent"
+    from deepagents_cli.config import settings
+
     branch_dir = settings.user_deepagents_dir / agent_name / "branches" / branch_id
     branch_dir.mkdir(parents=True, exist_ok=True)
 

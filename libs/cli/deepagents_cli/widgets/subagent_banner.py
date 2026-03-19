@@ -49,6 +49,7 @@ class SubagentBanner(Horizontal):
 
     subagent_type: reactive[str] = reactive("", init=False)
     depth: reactive[int] = reactive(0, init=False)
+    breadcrumbs: reactive[str] = reactive("", init=False)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the banner layout.
@@ -59,15 +60,28 @@ class SubagentBanner(Horizontal):
         yield Static("", classes="banner-label", id="subagent-label")
         yield Static("", classes="banner-commands", id="subagent-commands")
 
-    def show(self, *, subagent_type: str, depth: int) -> None:
+    def show(
+        self,
+        *,
+        subagent_type: str,
+        depth: int,
+        context_stack: list[str] | None = None,
+    ) -> None:
         """Show the banner for the given subagent context.
 
         Args:
             subagent_type: Name of the subagent (e.g. "general-purpose").
             depth: Current nesting depth (1 = first subagent).
+            context_stack: List of subagent type names from root to current,
+                used to render breadcrumbs (e.g. ["root", "researcher", "coder"]).
         """
         self.subagent_type = subagent_type
         self.depth = depth
+        if context_stack and len(context_stack) > 2:  # noqa: PLR2004
+            # Show breadcrumbs for nested subagents: root > researcher > coder
+            self.breadcrumbs = " > ".join(context_stack)
+        else:
+            self.breadcrumbs = ""
         self._refresh_content()
         self.add_class("visible")
 
@@ -83,5 +97,8 @@ class SubagentBanner(Horizontal):
         except Exception:  # noqa: BLE001
             return
 
-        label.update(f"[{self.subagent_type}:{self.depth}]")
+        if self.breadcrumbs:
+            label.update(self.breadcrumbs)
+        else:
+            label.update(f"[{self.subagent_type}:{self.depth}]")
         commands.update("/return  /summary  /context")

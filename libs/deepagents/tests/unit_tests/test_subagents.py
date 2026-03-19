@@ -49,7 +49,6 @@ class TestSubAgents:
             model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
             subagents=[
                 {
-                    "kind": "async",
                     "name": "remote-researcher",
                     "description": "Researches things remotely.",
                     "graph_id": "research_graph",

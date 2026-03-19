@@ -157,8 +157,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             but provide a pre-built `runnable` instead of a declarative prompt
             and tool configuration.
 
-            `AsyncSubAgent` entries are identified by `kind="async"` and are
-            routed into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
+            `AsyncSubAgent` entries are identified by their async-subagent
+            fields (`graph_id`, and optionally `url`/`headers`) and are routed
+            into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
             They should provide `name`, `description`, and `graph_id`, and may
             optionally include `url` and `headers`. These subagents run as
             background jobs and expose the async subagent tools for launching,
@@ -228,9 +229,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     processed_subagents: list[SubAgent | CompiledSubAgent] = []
     processed_async_subagents: list[AsyncSubAgent] = list(async_subagents or [])
     for spec in subagents or []:
-        if spec.get("kind") == "async":
+        if "graph_id" in spec:
             processed_async_subagents.append(spec)
-        elif "runnable" in spec:
+            continue
+        if "runnable" in spec:
             # CompiledSubAgent - use as-is
             processed_subagents.append(spec)
         else:

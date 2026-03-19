@@ -140,24 +140,32 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
             `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
             `PatchToolCallsMiddleware`).
-        subagents: The subagents to use.
+        subagents: Optional subagent specs available to the main agent.
 
-            This collection can include synchronous subagents (`SubAgent` or
-            `CompiledSubAgent`) and async remote subagents (`AsyncSubAgent`).
+            This collection supports three forms:
 
-            Synchronous `SubAgent` specs should include:
+            - `SubAgent`: A declarative synchronous subagent spec.
+            - `CompiledSubAgent`: A pre-compiled runnable subagent.
+            - `AsyncSubAgent`: A remote/background subagent spec.
 
-            - `name`
-            - `description` (used by the main agent to decide whether to call the sub agent)
-            - `system_prompt` (used as the system prompt in the subagent)
-            - (optional) `tools`
-            - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
-            - (optional) `middleware` (list of `AgentMiddleware`)
+            `SubAgent` entries are invoked through the `task` tool. They should
+            provide `name`, `description`, and `system_prompt`, and may also
+            override `tools`, `model`, `middleware`, `interrupt_on`, and
+            `skills`.
 
-            Each spec should be an `AsyncSubAgent` dict with `name`, `description`,
-            and `graph_id`. Optionally include `url` for remote deployments (omit
-            for ASGI transport). Async subagents run as background jobs with tools
-            for launching, checking, updating, cancelling, and listing jobs.
+            `CompiledSubAgent` entries are also exposed through the `task` tool,
+            but provide a pre-built `runnable` instead of a declarative prompt
+            and tool configuration.
+
+            `AsyncSubAgent` entries are identified by `kind="async"` and are
+            routed into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
+            They should provide `name`, `description`, and `graph_id`, and may
+            optionally include `url` and `headers`. These subagents run as
+            background jobs and expose the async subagent tools for launching,
+            checking, updating, cancelling, and listing jobs.
+
+            If no subagent named `general-purpose` is provided, a default
+            general-purpose synchronous subagent is added automatically.
 
         skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 

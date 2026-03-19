@@ -100,6 +100,51 @@ def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots
     )
 
 
+def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
+
+    agent = create_deep_agent(
+        model=model,
+        backend=backend,
+        subagents=[
+            {
+                "name": "code-reviewer",
+                "description": "Reviews code for quality and security issues",
+                "system_prompt": "You are a code reviewer. Analyze code for bugs, security vulnerabilities, and style issues.",
+            },
+            {
+                "name": "remote-researcher",
+                "description": "Researches topics on a remote LangGraph server",
+                "graph_id": "research_graph",
+                "url": "http://localhost:8123",
+            },
+            {
+                "name": "remote-analyst",
+                "description": "Analyzes data on a remote LangGraph server",
+                "graph_id": "analysis_graph",
+                "url": "http://localhost:8123",
+            },
+        ],
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    messages = history[0]["messages"]
+    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+    assert len(system_messages) >= 1
+
+    snapshot_path = snapshots_dir / "system_prompt_with_sync_and_async_subagents.md"
+    _assert_snapshot(
+        snapshot_path,
+        _system_message_as_text(system_messages[0]),
+        update_snapshots=update_snapshots,
+    )
+
+
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
 

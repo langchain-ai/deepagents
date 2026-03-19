@@ -72,6 +72,10 @@ where = ["."]
 include = ["deepagents_harbor*"]
 
 [tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",

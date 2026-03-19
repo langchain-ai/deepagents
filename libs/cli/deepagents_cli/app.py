@@ -599,7 +599,12 @@ class DeepAgentsApp(App):
         yield StatusBar(cwd=self._cwd, id="status-bar")
 
     async def on_mount(self) -> None:
-        """Initialize components after mount."""
+        """Initialize components after mount.
+
+        Only widget queries and lightweight config go here — anything that
+        would delay the first rendered frame (subprocess calls, heavy
+        imports) is deferred to `_post_paint_init` via `call_after_refresh`.
+        """
         # Move all objects allocated during import/compose into the permanent
         # generation so the cyclic GC skips them during first-paint rendering.
         import gc
@@ -618,12 +623,27 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Set git branch in status bar
+        # Focus the input immediately so the cursor is visible on first paint
+        self._chat_input.focus_input()
+
+        # Defer everything else until after the first frame renders so the
+        # user sees the splash screen instantly.
+        self.call_after_refresh(self._post_paint_init)
+
+    async def _post_paint_init(self) -> None:
+        """Run after the first frame renders.
+
+        Houses git-branch detection, session state creation, background
+        workers, and optional-tool checks.
+        """
+        # Git branch — runs in a thread to avoid blocking the event loop,
+        # renders on the next frame (~11ms subprocess).
         from deepagents_cli.textual_adapter import _get_git_branch
 
-        self._status_bar.branch = _get_git_branch() or ""
+        if self._status_bar:
+            self._status_bar.branch = await asyncio.to_thread(_get_git_branch) or ""
 
-        # Create session state
+        # Create session state (imports deepagents_cli.sessions)
         self._session_state = TextualSessionState(
             auto_approve=self._auto_approve,
             thread_id=self._lc_thread_id,
@@ -660,9 +680,6 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-import-prewarm",
         )
-
-        # Focus the input (autocomplete is now built into ChatInput)
-        self._chat_input.focus_input()
 
         # Warn about missing optional tools (advisory only — never block startup)
         try:
@@ -736,9 +753,10 @@ class DeepAgentsApp(App):
         Also runs deferred model creation if `model_kwargs` was provided,
         so the langchain import + init doesn't block first paint.
         """
-        # Run deferred model creation before starting the server so
-        # settings.model_name / model_provider are populated for the
-        # status bar and server process.
+        # Run deferred model creation. settings.model_name / model_provider
+        # are already set eagerly for the status bar display; this call
+        # does the heavy langchain import + SDK init and may refine them
+        # (e.g., context_limit from the model profile).
         if self._model_kwargs is not None:
             from deepagents_cli.config import create_model
             from deepagents_cli.model_config import ModelConfigError, save_recent_model
@@ -749,9 +767,6 @@ class DeepAgentsApp(App):
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
             result.apply_to_settings()
-
-            # Persist the resolved model so [models].recent is always populated,
-            # not only after an explicit /model switch.
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
 

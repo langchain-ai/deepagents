@@ -649,11 +649,25 @@ async def run_textual_cli_async(
     from rich.text import Text
 
     from deepagents_cli.app import AppResult, run_textual_app
+    from deepagents_cli.config import (
+        _get_default_model_spec,
+        detect_provider,
+        settings,
+    )
+    from deepagents_cli.model_config import ModelSpec
 
-    # Model creation is deferred to a background worker inside the TUI so
-    # first paint is not blocked by the langchain import + init.
-    # The model_kwargs are passed through to DeepAgentsApp which runs
-    # create_model() after the splash screen is visible.
+    # Resolve display-name cheaply (<1ms, no langchain) so the status
+    # bar can show the model on first paint. The expensive create_model()
+    # (~560ms) is deferred to a background worker.
+    resolved_spec = model_name or _get_default_model_spec()
+    parsed = ModelSpec.try_parse(resolved_spec)
+    if parsed:
+        settings.model_provider = parsed.provider
+        settings.model_name = parsed.model
+    else:
+        settings.model_name = resolved_spec
+        settings.model_provider = detect_provider(resolved_spec) or ""
+
     model_kwargs: dict[str, Any] = {
         "model_spec": model_name,
         "extra_kwargs": model_params,

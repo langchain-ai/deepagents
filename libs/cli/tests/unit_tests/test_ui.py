@@ -215,6 +215,12 @@ class TestFormatToolMessageContent:
         result = format_tool_message_content([obj])
         assert "object" in result
 
+    def test_list_with_non_ascii_dict_preserves_chars(self) -> None:
+        """Test that non-ASCII characters in list dicts are preserved."""
+        result = format_tool_message_content([{"key": "テスト"}])
+        assert "テスト" in result
+        assert "\\u" not in result
+
     def test_integer_content(self) -> None:
         """Test that non-string, non-list content is stringified."""
         assert format_tool_message_content(42) == "42"
@@ -324,6 +330,19 @@ class TestFormatContentBlock:
         block = {"type": "file", "base64": b64, "mime_type": "application/pdf"}
         result = _format_content_block(block)
         assert result == "[File: application/pdf, ~2KB]"
+
+    def test_non_ascii_chars_preserved(self) -> None:
+        """Test that non-ASCII characters are rendered literally, not escaped."""
+        block = {"type": "text", "content": "你好世界"}
+        result = _format_content_block(block)
+        assert "你好世界" in result
+        assert "\\u" not in result
+
+    def test_emoji_preserved(self) -> None:
+        """Test that emoji characters are rendered literally."""
+        block = {"message": "Status: ✅ done"}
+        result = _format_content_block(block)
+        assert "✅" in result
 
     def test_non_serializable_dict_falls_back_to_str(self) -> None:
         """Test that dicts with non-serializable values fall back to str()."""

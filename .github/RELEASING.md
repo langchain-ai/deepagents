@@ -101,7 +101,7 @@ The release-please workflow (`.github/workflows/release-please.yml`) detects a C
 
 ### Lockfile Updates
 
-When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. An up-to-date lockfile is necessary for the cli since it depends on the SDK, and `libs/harbor` depends on the CLI.
+When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. An up-to-date lockfile is necessary for the cli since it depends on the SDK, and `libs/evals` depends on the CLI.
 
 ### Release Pipeline
 
@@ -254,7 +254,7 @@ This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml`
    - Click **Run workflow**
    - Select `main` branch and `deepagents-cli` package
 
-3. **Fix the `autorelease: pending` label** if the original automated release left it on the merged release PR. The failed workflow skipped the `mark-release` job, so the label was never swapped. See [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label) for the fix. **If you skip this step, release-please will not create new release PRs.**
+3. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
 
 ### Re-releasing a Version
 

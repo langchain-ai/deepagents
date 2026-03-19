@@ -44,6 +44,40 @@ Instructions go here.
 class TestSubAgents:
     """Tests for sub-agent middleware functionality."""
 
+    def test_create_deep_agent_routes_async_subagents_from_subagents_param(self) -> None:
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            subagents=[
+                {
+                    "name": "remote-researcher",
+                    "description": "Researches things remotely.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        agent_tools = agent.nodes["tools"].bound._tools_by_name
+        assert "task" in agent_tools
+        assert "launch_async_subagent" in agent_tools
+        assert "check_async_subagent" in agent_tools
+
+    def test_create_deep_agent_keeps_sync_subagents_in_task_middleware(self) -> None:
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            subagents=[
+                {
+                    "name": "writer",
+                    "description": "Writes summaries.",
+                    "system_prompt": "Write summaries.",
+                }
+            ],
+        )
+
+        agent_tools = agent.nodes["tools"].bound._tools_by_name
+        assert "task" in agent_tools
+        assert "launch_async_subagent" not in agent_tools
+
     def test_subagent_returns_final_message_as_tool_result(self) -> None:
         """Test that a subagent's final message is returned as a ToolMessage.
 
@@ -1549,6 +1583,60 @@ class TestSubAgents:
         # Verify skills_metadata is NOT in the subagent state
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
+
+    def test_general_purpose_subagent_override(self) -> None:
+        """Test that a general-purpose subagent spec overrides the default."""
+        override_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Override response."),
+                ]
+            )
+        )
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_gp",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="Override agent",
+                    system_prompt="You are the override.",
+                    model=override_model,
+                )
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_gp_override"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Override response."
 
 
 class TestSubAgentMiddlewareValidation:

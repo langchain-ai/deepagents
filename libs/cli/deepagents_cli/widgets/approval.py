@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
@@ -18,9 +18,8 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.unicode_security import (
     check_url_safety,
@@ -65,12 +64,12 @@ class ApprovalMenu(Container):
         Binding("enter", "select", "Select", show=False),
         Binding("1", "select_approve", "Approve", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_reject", "Reject", show=False),
-        Binding("n", "select_reject", "Reject", show=False),
-        Binding("3", "select_auto_or_step", "Auto/Step", show=False),
+        Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("3", "select_auto_or_step", "Reject/Step", show=False),
+        Binding("n", "select_reject", "Reject", show=False),
         Binding("s", "select_step_into", "Step into", show=False),
-        Binding("4", "select_auto_when_task", "Auto (task)", show=False),
+        Binding("4", "select_reject_when_task", "Reject (task)", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
     ]
 
@@ -153,14 +152,14 @@ class ApprovalMenu(Container):
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
-    def _get_command_display(self, *, expanded: bool) -> str:
-        """Get the command display string (truncated or full).
+    def _get_command_display(self, *, expanded: bool) -> Content:
+        """Get the command display content (truncated or full).
 
         Args:
             expanded: Whether to show the full command or truncated version.
 
         Returns:
-            Formatted command string with Rich markup.
+            Styled Content for the command display.
 
         Raises:
             RuntimeError: If called with empty action_requests.
@@ -180,25 +179,33 @@ class ApprovalMenu(Container):
                 command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
             )
 
-        escaped_truncated = escape_markup(command_display)
-        display = f"[bold #f59e0b]{escaped_truncated}[/bold #f59e0b]"
         if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
-            display += " [dim](press 'e' to expand)[/dim]"
+            display = Content.from_markup(
+                "[bold #f59e0b]$cmd[/bold #f59e0b] [dim](press 'e' to expand)[/dim]",
+                cmd=command_display,
+            )
+        else:
+            display = Content.from_markup(
+                "[bold #f59e0b]$cmd[/bold #f59e0b]", cmd=command_display
+            )
 
         if not issues:
             return display
 
-        issue_summary = escape_markup(summarize_issues(issues))
-        raw_with_markers = escape_markup(render_with_unicode_markers(command_raw))
+        raw_with_markers = render_with_unicode_markers(command_raw)
         if not expanded and len(raw_with_markers) > _WARNING_TEXT_TRUNCATE_LENGTH:
             raw_with_markers = (
                 raw_with_markers[:_WARNING_TEXT_TRUNCATE_LENGTH] + get_glyphs().ellipsis
             )
 
-        return (
-            f"{display}\n"
-            f"[yellow]Warning:[/yellow] hidden chars detected ({issue_summary})\n"
-            f"[dim]raw: {raw_with_markers}[/dim]"
+        return Content.assemble(
+            display,
+            Content.from_markup(
+                "\n[yellow]Warning:[/yellow] hidden chars detected ($summary)\n"
+                "[dim]raw: $raw[/dim]",
+                summary=summarize_issues(issues),
+                raw=raw_with_markers,
+            ),
         )
 
     def compose(self) -> ComposeResult:
@@ -213,22 +220,28 @@ class ApprovalMenu(Container):
         # Title - show count if multiple tools
         count = len(self._action_requests)
         if count == 1:
-            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+            title = Content.from_markup(
+                ">>> $name Requires Approval <<<", name=self._tool_names[0]
+            )
         else:
-            title = f">>> {count} Tool Calls Require Approval <<<"
+            title = Content(f">>> {count} Tool Calls Require Approval <<<")
         yield Static(title, classes="approval-title")
 
         if self._security_warnings:
-            warning_lines = ["[yellow]Warning:[/yellow] Potentially deceptive text"]
-            warning_lines.extend(
-                f"[dim]- {escape_markup(warning)}[/dim]"
+            parts: list[Content] = [
+                Content.from_markup(
+                    "[yellow]Warning:[/yellow] Potentially deceptive text"
+                ),
+            ]
+            parts.extend(
+                Content.from_markup("\n[dim]- $w[/dim]", w=warning)
                 for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
             )
             if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
                 remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
-                warning_lines.append(f"[dim]- +{remaining} more warning(s)[/dim]")
+                parts.append(Content.styled(f"\n- +{remaining} more warning(s)", "dim"))
             yield Static(
-                "\n".join(warning_lines),
+                Content.assemble(*parts),
                 classes="approval-security-warning",
             )
 
@@ -259,11 +272,12 @@ class ApprovalMenu(Container):
 
         # Help text at the very bottom
         glyphs = get_glyphs()
-        quick_keys = "y/n/a" if not self._is_task_tool else "y/n/s/a"
-        b = glyphs.bullet
+        quick_keys = "y/a/n" if not self._is_task_tool else "y/a/s/n"
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {b} "
-            f"Enter select {b} {quick_keys} quick keys {b} Esc reject"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} {quick_keys} quick keys"
+            f" {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -271,7 +285,7 @@ class ApprovalMenu(Container):
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "yellow")
 
         if not self._is_minimal:
@@ -294,14 +308,20 @@ class ApprovalMenu(Container):
 
             # Add tool header if multiple tools
             if len(self._action_requests) > 1:
-                header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
+                header = Static(
+                    Content.from_markup(
+                        "[bold]$num. $name[/bold]",
+                        num=i + 1,
+                        name=tool_name,
+                    )
+                )
                 await self._tool_info_container.mount(header)
 
             # Show description if present
             description = action_request.get("description")
             if description:
                 desc_widget = Static(
-                    f"[dim]{description}[/dim]",
+                    Content.from_markup("[dim]$desc[/dim]", desc=description),
                     classes="approval-description",
                 )
                 await self._tool_info_container.mount(desc_widget)
@@ -318,21 +338,21 @@ class ApprovalMenu(Container):
         if self._is_task_tool:
             options = [
                 "1. Approve (y)",
-                "2. Reject (n)",
+                "2. Auto-approve for this thread (a)",
                 "3. Step into (approve + interactive) (s)",
-                "4. Auto-approve for this thread (a)",
+                "4. Reject (n)",
             ]
         elif count == 1:
             options = [
                 "1. Approve (y)",
-                "2. Reject (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                "3. Reject (n)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
-                f"2. Reject all {count} (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                f"3. Reject all {count} (n)",
             ]
 
         for i, (text, widget) in enumerate(
@@ -366,35 +386,36 @@ class ApprovalMenu(Container):
         self._update_options()
         self._handle_selection(0)
 
-    def action_select_reject(self) -> None:
-        """Select reject option."""
+    def action_select_auto(self) -> None:
+        """Select auto-approve option."""
         self._selected = 1
         self._update_options()
         self._handle_selection(1)
 
     def action_select_auto_or_step(self) -> None:
-        """Handle '3' key — step-into for task tool, auto-approve otherwise."""
+        """Handle '3' key -- step-into for task tool, reject otherwise."""
         idx = 2
         self._selected = idx
         self._update_options()
         self._handle_selection(idx)
 
-    def action_select_auto(self) -> None:
-        """Select auto-approve option (always the last option)."""
+    def action_select_reject(self) -> None:
+        """Select reject option (last option, index varies by mode)."""
         idx = self._num_options - 1
         self._selected = idx
         self._update_options()
         self._handle_selection(idx)
 
-    def action_select_auto_when_task(self) -> None:
-        """Handle '4' key — auto-approve (task tool 4-option mode)."""
+    def action_select_reject_when_task(self) -> None:
+        """Handle '4' key -- reject (task tool 4-option mode)."""
         if self._is_task_tool:
-            self._selected = 3
+            idx = 3
+            self._selected = idx
             self._update_options()
-            self._handle_selection(3)
+            self._handle_selection(idx)
 
     def action_select_step_into(self) -> None:
-        """Handle 's' key — step into (only for task tool)."""
+        """Handle 's' key -- step into (only for task tool)."""
         if self._is_task_tool:
             self._selected = 2
             self._update_options()
@@ -414,15 +435,15 @@ class ApprovalMenu(Container):
         if self._is_task_tool:
             decision_map = {
                 0: "approve",
-                1: "reject",
+                1: "auto_approve_all",
                 2: "step_into",
-                3: "auto_approve_all",
+                3: "reject",
             }
         else:
             decision_map = {
                 0: "approve",
-                1: "reject",
-                2: "auto_approve_all",
+                1: "auto_approve_all",
+                2: "reject",
             }
         decision = {"type": decision_map[option]}
 

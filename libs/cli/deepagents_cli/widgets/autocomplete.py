@@ -6,6 +6,8 @@ for slash commands (/) and file mentions (@).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -94,31 +96,6 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    ("/help", "Show help", ""),
-    ("/changelog", "Open changelog in browser", ""),
-    ("/clear", "Clear chat and start new thread", "reset"),
-    ("/compact", "Summarize conversation to reduce context usage", ""),
-    ("/context", "Show position in conversation stack", "stack depth"),
-    ("/docs", "Open documentation in browser", ""),
-    ("/feedback", "Submit a bug report or feature request", ""),
-    ("/mcp", "Show active MCP servers and tools", "servers"),
-    ("/model", "Switch or configure model (--model-params, --default)", ""),
-    ("/quit", "Exit app", "close leave"),
-    ("/reload", "Reload config from environment variables and .env", "refresh"),
-    ("/remember", "Update memory and skills from conversation", ""),
-    ("/return", "Return from subagent to parent context", "back exit"),
-    ("/summary", "View/edit summary file for current branch", ""),
-    ("/tokens", "Token usage", "cost"),
-    ("/threads", "Browse and resume previous threads", "continue history"),
-    ("/trace", "Open current thread in LangSmith", ""),
-    ("/version", "Show version", ""),
-]
-"""Built-in slash commands: (name, description, hidden_keywords).
-
-Hidden keywords are space-separated terms that participate in fuzzy matching
-but are never displayed to the user.
-"""
 
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
@@ -494,6 +471,16 @@ class FuzzyFileController:
     def refresh_cache(self) -> None:
         """Force refresh of file cache."""
         self._file_cache = None
+
+    async def warm_cache(self) -> None:
+        """Pre-populate the file cache off the event loop."""
+        if self._file_cache is not None:
+            return
+        # Best-effort; _get_files() falls back to sync on failure.
+        with contextlib.suppress(Exception):
+            self._file_cache = await asyncio.to_thread(
+                _get_project_files, self._project_root
+            )
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

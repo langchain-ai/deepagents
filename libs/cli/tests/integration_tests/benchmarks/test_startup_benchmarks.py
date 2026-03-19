@@ -43,6 +43,12 @@ import pytest
 # the purpose of the deferred-import optimisation.
 HEAVY_MODULES = frozenset(
     {
+        # SDK — importing these pulls in large dependency trees
+        "deepagents",
+        "deepagents._models",
+        "deepagents.backends",
+        "deepagents.backends.utils",
+        # langchain / langgraph stack
         "langchain",
         "langchain.chat_models",
         "langchain_core",
@@ -51,10 +57,17 @@ HEAVY_MODULES = frozenset(
         "langchain_core.runnables",
         "langchain_openai",
         "langchain_anthropic",
+        "langgraph",
+        # CLI runtime modules (deferred to agent.py)
         "deepagents_cli.agent",
         "deepagents_cli.sessions",
         "deepagents_cli.integrations.sandbox_factory",
         "deepagents_cli.tools",
+        # Deferred from config.py module level to lazy local imports
+        "dotenv",
+        "dotenv.main",
+        "deepagents_cli.model_config",
+        "deepagents_cli.project_utils",
     }
 )
 
@@ -128,14 +141,26 @@ class TestImportIsolation:
         [
             "from deepagents_cli.main import parse_args",
             "from deepagents_cli.main import check_cli_dependencies",
+            "from deepagents_cli.config import is_ascii_mode",
             "import deepagents_cli.ui",
             "import deepagents_cli.skills.commands",
+            "from deepagents_cli._cli_context import CLIContext",
+            "import deepagents_cli._ask_user_types",
+            "import deepagents_cli.textual_adapter",
+            "import deepagents_cli.tool_display",
+            "import deepagents_cli.file_ops",
         ],
         ids=[
             "main.parse_args",
             "main.check_cli_dependencies",
+            "config.is_ascii_mode",
             "ui",
             "skills.commands",
+            "_cli_context.CLIContext",
+            "_ask_user_types",
+            "textual_adapter",
+            "tool_display",
+            "file_ops",
         ],
     )
     def test_no_heavy_imports_on_lightweight_path(self, import_stmt: str) -> None:
@@ -194,20 +219,19 @@ class TestCLIStartupTime:
         return float(result.stdout.strip())
 
     def test_help_under_threshold(self) -> None:
-        """`deepagents --help` should complete well under 10 s.
+        """`deepagents --help` should complete well under 1 s.
 
-        A generous threshold to avoid flaky CI; the real goal is catching
-        regressions where a heavy import is accidentally re-added at
+        Catches regressions where a heavy import is accidentally re-added at
         module level.
         """
         elapsed = self._time_cli_command("--help")
-        assert elapsed < 10, f"`deepagents --help` took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, f"`deepagents --help` took {elapsed:.2f}s — expected < 1s"
 
     def test_version_under_threshold(self) -> None:
-        """`deepagents --version` should complete well under 10 s."""
+        """`deepagents --version` should complete well under 1 s."""
         elapsed = self._time_cli_command("--version")
-        assert elapsed < 10, (
-            f"`deepagents --version` took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, (
+            f"`deepagents --version` took {elapsed:.2f}s — expected < 1s"
         )
 
 
@@ -222,8 +246,8 @@ class TestCLIStartupTime:
 class TestImportTiming:
     """Catch order-of-magnitude import regressions in key modules.
 
-    The 10 s threshold is generous to avoid CI flakiness; the real value
-    is that `pytest --durations` surfaces the numbers for trend analysis.
+    The 1 s threshold catches meaningful regressions while
+    `pytest --durations` surfaces the numbers for trend analysis.
     """
 
     @pytest.mark.parametrize(
@@ -259,9 +283,7 @@ class TestImportTiming:
         result = _run_python(code)
         assert result.returncode == 0, f"Failed to import {module}:\n{result.stderr}"
         elapsed = float(result.stdout.strip())
-        # 10 s is generous; the point is to catch order-of-magnitude
-        # regressions, not enforce a tight budget.
-        assert elapsed < 10, f"Importing {module} took {elapsed:.2f}s — expected < 10s"
+        assert elapsed < 1, f"Importing {module} took {elapsed:.2f}s — expected < 1s"
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +318,22 @@ class TestDeferredImportsWork:
             f"Cannot import `deepagents_cli.sessions`:\n{result.stderr}"
         )
 
-    def test_tool_display_loads_sdk_backends(self) -> None:
-        """`tool_display` should load SDK backends."""
-        loaded = _get_loaded_modules("import deepagents_cli.tool_display")
-        assert "deepagents.backends" in loaded, (
-            "`tool_display` should import SDK `backends` for `DEFAULT_EXECUTE_TIMEOUT`"
+    def test_configurable_model_middleware_loads_langchain(self) -> None:
+        """Accessing `ConfigurableModelMiddleware` should trigger langchain import."""
+        loaded = _get_loaded_modules(
+            "from deepagents_cli.configurable_model import ConfigurableModelMiddleware"
+        )
+        langchain_modules = {m for m in loaded if m.startswith("langchain")}
+        assert langchain_modules, (
+            "Accessing `ConfigurableModelMiddleware` should load langchain modules"
+        )
+
+    def test_ask_user_middleware_loads_langchain(self) -> None:
+        """Accessing `AskUserMiddleware` should trigger langchain import."""
+        loaded = _get_loaded_modules(
+            "from deepagents_cli.ask_user import AskUserMiddleware"
+        )
+        langchain_modules = {m for m in loaded if m.startswith("langchain")}
+        assert langchain_modules, (
+            "Accessing `AskUserMiddleware` should load langchain modules"
         )

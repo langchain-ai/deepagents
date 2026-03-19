@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.input import MediaTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
+    ChatTextArea,
     CompletionOption,
     CompletionPopup,
 )
@@ -273,7 +277,7 @@ class TestPromptIndicator:
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
+            assert _prompt_text(prompt) == "$"
             assert chat_input.has_class("mode-shell")
 
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
@@ -297,7 +301,7 @@ class TestPromptIndicator:
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
+            assert _prompt_text(prompt) == "$"
             assert chat_input.has_class("mode-shell")
 
             chat_input.mode = "normal"
@@ -327,22 +331,22 @@ class TestPromptIndicator:
 
 
 class TestHistoryNavigationFlag:
-    """Test that _navigating_history resets when history is exhausted."""
+    """Test that _skip_history_change_events resets when history is exhausted."""
 
     async def test_down_arrow_at_bottom_resets_navigating_flag(self) -> None:
-        """Pressing down with no history should not leave _navigating_history stuck."""
+        """Pressing down with no history should not leave the skip counter stuck."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             text_area = chat_input._text_area
             assert text_area is not None
 
-            assert not text_area._navigating_history
+            assert text_area._skip_history_change_events == 0
 
             await pilot.press("down")
             await pilot.pause()
 
-            assert not text_area._navigating_history
+            assert text_area._skip_history_change_events == 0
 
     async def test_autocomplete_works_after_down_arrow(self) -> None:
         """Typing '/' after pressing down should still trigger completions."""
@@ -365,6 +369,103 @@ class TestHistoryNavigationFlag:
             assert chat_input._completion_manager is not None
             controller = chat_input._completion_manager._active
             assert controller is not None
+
+    async def test_counter_resets_after_successful_recall(self) -> None:
+        """Counter should return to 0 after a history entry is recalled."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Seed history with an entry
+            chat_input._history._entries.append("previous entry")
+
+            # Recall via up arrow (cursor starts at (0,0) on empty input)
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert text_area.text == "previous entry"
+            assert text_area._skip_history_change_events == 0
+
+    async def test_autocomplete_works_after_history_recall(self) -> None:
+        """Typing '/' after recalling history should trigger completions."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Seed and recall a history entry
+            chat_input._history._entries.append("previous entry")
+            await pilot.press("up")
+            await pilot.pause()
+            assert text_area.text == "previous entry"
+
+            # Clear and type '/' — autocomplete should activate
+            text_area.clear_text()
+            await pilot.pause()
+            text_area.insert("/")
+            await _pause_for_strip(pilot)
+
+            assert chat_input.mode == "command"
+            assert chat_input._completion_manager is not None
+            controller = chat_input._completion_manager._active
+            assert controller is not None
+
+    async def test_multiple_rapid_recalls_drain_counter(self) -> None:
+        """Multiple set_text_from_history calls should each reserve a skip."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Call set_text_from_history twice without letting events process
+            text_area.set_text_from_history("first")
+            text_area.set_text_from_history("second")
+            assert text_area._skip_history_change_events == 2
+
+            # Let both Changed events fire and drain the counter
+            await pilot.pause()
+            await pilot.pause()
+            assert text_area._skip_history_change_events == 0
+            assert text_area.text == "second"
+
+    async def test_clear_text_suppresses_own_changed_event(self) -> None:
+        """clear_text increments the counter so its Changed event is skipped."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Recall a history entry, then immediately clear
+            chat_input._history._entries.append("recalled")
+            await pilot.press("up")
+            await pilot.pause()
+            assert text_area.text == "recalled"
+
+            text_area.clear_text()
+            # Counter should be 1 (for the clear's own Changed event)
+            assert text_area._skip_history_change_events == 1
+            await pilot.pause()
+            assert text_area._skip_history_change_events == 0
+
+    async def test_negative_counter_resets_with_warning(self) -> None:
+        """Defensive check: negative counter is logged and reset to 0."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            # Force counter negative (simulates a bug elsewhere)
+            text_area._skip_history_change_events = -1
+            text_area.insert("x")
+            await pilot.pause()
+
+            assert text_area._skip_history_change_events == 0
 
 
 class TestHistoryBoundaryNavigation:
@@ -1851,3 +1952,340 @@ class TestDroppedVideoPaste:
             assert "[video 1]" in text
             assert len(app.tracker.get_images()) == 1
             assert len(app.tracker.get_videos()) == 1
+
+
+class TestBackslashEnterNewline:
+    """Test that backslash followed quickly by enter inserts a newline.
+
+    Some terminals (e.g. VSCode built-in) send a literal backslash followed
+    by enter when the user presses shift+enter.  The widget detects this
+    pair and collapses it into a newline.
+    """
+
+    async def test_backslash_then_enter_inserts_newline(self) -> None:
+        """Rapid backslash + enter should produce a newline, not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert "\n" in ta.text
+            assert "\\" not in ta.text
+            assert len(app.submitted) == 0
+
+    async def test_backslash_alone_inserts_normally(self) -> None:
+        """A lone backslash should be inserted immediately as normal text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.pause()
+
+            assert ta.text == "\\"
+
+    async def test_backslash_then_letter_inserts_both(self) -> None:
+        """Backslash followed by a letter should insert both characters."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert ta.text == "\\a"
+
+    async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
+        """Backslash + enter on empty prompt should not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\\" not in ta.text
+            assert ta.text == "\n"
+
+    async def test_backslash_then_slow_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backslash + enter beyond the timing gap should submit normally."""
+        # Set gap to 0 so any real delay exceeds it.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await asyncio.sleep(0.05)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Should have submitted (backslash included in text)
+            assert len(app.submitted) == 1
+
+
+class TestVSCodeSpaceWorkaround:
+    """VS Code 1.110 sends space as CSI u (character=None, is_printable=False).
+
+    Our workaround in _on_key detects this and manually inserts a space.
+    See https://github.com/Textualize/textual/issues/6408.
+    """
+
+    async def test_space_with_none_character_inserts_space(self) -> None:
+        """A space key event with character=None should still insert a space."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            # Simulate VS Code 1.110 CSI u space: key='space', character=None
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta.text == "hello "
+
+    async def test_normal_space_still_works(self) -> None:
+        """A normal space key event (character=' ') should still work."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert ta.text == "hello "
+
+
+class TestCtrlUDeleteLine:
+    """Test that ctrl+u deletes the current line rather than clearing all input."""
+
+    async def test_ctrl_u_clears_single_line(self) -> None:
+        """ctrl+u on a single line should clear that line's content."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_on_empty_input_is_noop(self) -> None:
+        """ctrl+u on already empty input should leave text empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_removes_middle_line_in_multiline(self) -> None:
+        """ctrl+u should delete the line the cursor is on, leaving others."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "line one\nline two\nline three"
+            await pilot.pause()
+            # Place cursor on line 1 (second line)
+            ta.move_cursor((1, 4))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "line one\nline three"
+            # Cursor should be at row 1, col 0 (the line that shifted up)
+            assert ta.cursor_location == (1, 0)
+
+    async def test_ctrl_u_removes_last_line_in_multiline(self) -> None:
+        """ctrl+u on the last line should remove it and land on the new last line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "first\nsecond\nthird"
+            await pilot.pause()
+            # Place cursor on last line
+            ta.move_cursor((2, 3))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "first\nsecond"
+            assert ta.cursor_location == (1, 0)
+
+    async def test_ctrl_u_removes_first_line_in_multiline(self) -> None:
+        """ctrl+u on the first line should remove it and cursor moves to row 0."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "alpha\nbeta\ngamma"
+            await pilot.pause()
+            ta.move_cursor((0, 2))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "beta\ngamma"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_does_not_clear_other_lines(self) -> None:
+        """ctrl+u should only affect the current line, not the whole buffer."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "keep this\ndelete me\nkeep this too"
+            await pilot.pause()
+            ta.move_cursor((1, 0))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert "keep this" in ta.text
+            assert "keep this too" in ta.text
+            assert "delete me" not in ta.text
+
+
+class _TextAreaTypingApp(App[None]):
+    """Minimal app that captures ChatTextArea.Typing and ChatInput.Typing events."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_area_typing_count = 0
+        self.chat_input_typing_count = 0
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+    def on_chat_text_area_typing(
+        self,
+        event: ChatTextArea.Typing,  # noqa: ARG002
+    ) -> None:
+        self.text_area_typing_count += 1
+
+    def on_chat_input_typing(
+        self,
+        event: ChatInput.Typing,  # noqa: ARG002
+    ) -> None:
+        self.chat_input_typing_count += 1
+
+
+class TestChatTextAreaTypingEmission:
+    """ChatTextArea should emit Typing on printable keys and backspace."""
+
+    async def test_printable_key_emits_typing(self) -> None:
+        """Pressing a printable character should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_backspace_emits_typing(self) -> None:
+        """Pressing backspace should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("h")
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_enter_does_not_emit_typing(self) -> None:
+        """Pressing enter should NOT emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+            initial = app.text_area_typing_count
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.text_area_typing_count == initial
+
+
+class TestChatInputTypingBubble:
+    """ChatInput.Typing should bubble from ChatTextArea.Typing."""
+
+    async def test_typing_bubbles_to_chat_input(self) -> None:
+        """ChatInput.Typing count should track ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("x")
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == 2

@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from langgraph.types import Interrupt
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
@@ -491,43 +490,27 @@ class TestStepIntoAdapterFlow:
 
 
 class TestContextCommandRendering:
-    """Test that /context uses Rich Text with proper styles (not raw markdown)."""
+    """Test that /context output is properly formatted."""
 
-    def test_context_output_uses_rich_text_not_markdown(self) -> None:
-        """AppMessage for /context should receive Rich Text, not raw markdown."""
-        # Simulate what _handle_context_command builds
-        text = Text()
-        text.append("Context Stack:\n", style="bold")
-        text.append("  [0] root (main conversation) <-- current\n")
+    def test_context_output_is_plain_text_string(self) -> None:
+        """AppMessage for /context should receive a plain string."""
+        lines = [
+            "**Context Stack:**",
+            "  [0] root (main conversation) <-- current",
+        ]
+        msg = AppMessage("\n".join(lines))
+        assert isinstance(msg._content, str)
+        assert "Context Stack:" in msg._content
 
-        msg = AppMessage(text)
-        # AppMessage stores the content — verify it's a Text object
-        assert isinstance(msg._content, Text)
-        # The plain text should NOT contain ** markdown markers
-        assert "**" not in msg._content.plain
-        # The word "Context Stack:" should be present
-        assert "Context Stack:" in msg._content.plain
-
-    def test_context_output_shows_subagent_type_bold(self) -> None:
-        """Subagent names in /context output should have bold styling."""
-        text = Text()
-        text.append("Context Stack:\n", style="bold")
-        text.append("  [0] root (main conversation)\n")
-        text.append("  [1] ", style="dim")
-        text.append("researcher", style="bold")
-        text.append(" <-- current\n")
-
-        # Extract spans to verify bold styling exists
-        bold_spans = [span for span in text._spans if span.style == "bold"]
-        assert len(bold_spans) >= 2  # "Context Stack:" and "researcher"
-        # Verify "researcher" is in the bolded region
-        researcher_start = text.plain.index("researcher")
-        researcher_end = researcher_start + len("researcher")
-        has_bold_researcher = any(
-            span.start <= researcher_start and span.end >= researcher_end
-            for span in bold_spans
-        )
-        assert has_bold_researcher
+    def test_context_output_shows_subagent_type_bold_markers(self) -> None:
+        """Subagent names in /context output use markdown bold markers."""
+        lines = [
+            "**Context Stack:**",
+            "  [0] root (main conversation)",
+            "  [1] **researcher** <-- current",
+        ]
+        output = "\n".join(lines)
+        assert "**researcher**" in output
 
 
 # ---------------------------------------------------------------------------

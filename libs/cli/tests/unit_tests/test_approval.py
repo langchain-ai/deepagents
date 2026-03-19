@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-from rich.markup import render
 
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.widgets.approval import (
@@ -68,35 +67,35 @@ class TestGetCommandDisplay:
         """Test that short commands display in full regardless of expanded state."""
         menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
         display = menu._get_command_display(expanded=False)
-        assert "echo hello" in display
-        assert "press 'e' to expand" not in display
+        assert "echo hello" in display.plain
+        assert "press 'e' to expand" not in display.plain
 
     def test_long_command_truncated_when_not_expanded(self) -> None:
         """Test that long commands are truncated with expand hint."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 50)
         menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
         display = menu._get_command_display(expanded=False)
-        assert get_glyphs().ellipsis in display
-        assert "press 'e' to expand" in display
+        assert get_glyphs().ellipsis in display.plain
+        assert "press 'e' to expand" in display.plain
         # Check that the truncated portion is present
-        assert "x" * _SHELL_COMMAND_TRUNCATE_LENGTH in display
+        assert "x" * _SHELL_COMMAND_TRUNCATE_LENGTH in display.plain
 
     def test_long_command_shows_full_when_expanded(self) -> None:
         """Test that long commands display in full when expanded."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 50)
         menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
         display = menu._get_command_display(expanded=True)
-        assert long_command in display
-        assert "press 'e' to expand" not in display
-        assert get_glyphs().ellipsis not in display
+        assert long_command in display.plain
+        assert "press 'e' to expand" not in display.plain
+        assert get_glyphs().ellipsis not in display.plain
 
     def test_short_command_shows_full_even_when_expanded_true(self) -> None:
         """Test that short commands show in full even when expanded=True."""
         menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
         display = menu._get_command_display(expanded=True)
-        assert "echo hello" in display
-        assert "press 'e' to expand" not in display
-        assert get_glyphs().ellipsis not in display
+        assert "echo hello" in display.plain
+        assert "press 'e' to expand" not in display.plain
+        assert get_glyphs().ellipsis not in display.plain
 
     def test_command_at_boundary_plus_one_is_expandable(self) -> None:
         """Test off-by-one: command at exactly threshold + 1 is expandable."""
@@ -104,41 +103,39 @@ class TestGetCommandDisplay:
         menu = ApprovalMenu({"name": "shell", "args": {"command": boundary_command}})
         assert menu._has_expandable_command is True
         display = menu._get_command_display(expanded=False)
-        assert get_glyphs().ellipsis in display
-        assert "press 'e' to expand" in display
+        assert get_glyphs().ellipsis in display.plain
+        assert "press 'e' to expand" in display.plain
 
     def test_none_command_value_handled(self) -> None:
         """Test that None command value is handled gracefully."""
         menu = ApprovalMenu({"name": "shell", "args": {"command": None}})
         assert menu._has_expandable_command is False
         display = menu._get_command_display(expanded=False)
-        assert "None" in display
+        assert "None" in display.plain
 
     def test_integer_command_value_handled(self) -> None:
         """Test that integer command value is converted to string."""
         menu = ApprovalMenu({"name": "shell", "args": {"command": 12345}})
         assert menu._has_expandable_command is False
         display = menu._get_command_display(expanded=False)
-        assert "12345" in display
+        assert "12345" in display.plain
 
     def test_command_display_escapes_markup_tags(self) -> None:
-        """Shell command display should escape literal Rich tag sequences."""
+        """Shell command display should safely render literal bracket sequences."""
         command = "echo [/dim] [literal]"
         menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
         display = menu._get_command_display(expanded=True)
-        rendered = render(display)
-        assert command in rendered.plain
+        assert command in display.plain
 
     def test_command_display_with_hidden_unicode_shows_warning(self) -> None:
         """Hidden Unicode should be surfaced with explicit warning details."""
         command = "echo a\u202eb"
         menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
         display = menu._get_command_display(expanded=True)
-        rendered = render(display)
-        assert "echo ab" in rendered.plain
-        assert "hidden chars detected" in rendered.plain
-        assert "U+202E" in rendered.plain
-        assert "raw:" in rendered.plain
+        assert "echo ab" in display.plain
+        assert "hidden chars detected" in display.plain
+        assert "U+202E" in display.plain
+        assert "raw:" in display.plain
 
 
 class TestToggleExpand:
@@ -167,16 +164,16 @@ class TestToggleExpand:
         menu.action_toggle_expand()
         menu._command_widget.update.assert_called_once()
         expanded_call = menu._command_widget.update.call_args[0][0]
-        assert long_command in expanded_call
-        assert get_glyphs().ellipsis not in expanded_call
+        assert long_command in expanded_call.plain
+        assert get_glyphs().ellipsis not in expanded_call.plain
 
         # Second toggle: collapse
         menu._command_widget.reset_mock()
         menu.action_toggle_expand()
         menu._command_widget.update.assert_called_once()
         collapsed_call = menu._command_widget.update.call_args[0][0]
-        assert get_glyphs().ellipsis in collapsed_call
-        assert "press 'e' to expand" in collapsed_call
+        assert get_glyphs().ellipsis in collapsed_call.plain
+        assert "press 'e' to expand" in collapsed_call.plain
 
     def test_toggle_does_nothing_for_non_expandable(self) -> None:
         """Test that toggling does nothing for non-expandable commands."""
@@ -257,3 +254,80 @@ class TestGetCommandDisplayGuard:
         menu._action_requests = []
         with pytest.raises(RuntimeError, match="empty action_requests"):
             menu._get_command_display(expanded=False)
+
+
+class TestOptionOrdering:
+    """Tests for the HITL option ordering: approve, auto-approve, reject."""
+
+    @pytest.mark.parametrize(
+        ("index", "expected_type"),
+        [
+            (0, "approve"),
+            (1, "auto_approve_all"),
+            (2, "reject"),
+        ],
+    )
+    def test_decision_map_index_maps_to_correct_type(
+        self, index: int, expected_type: str
+    ) -> None:
+        """Each selection index must resolve to its corresponding decision type."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu({"name": "write", "args": {"path": "f.py", "content": ""}})
+        menu.set_future(future)
+        menu._handle_selection(index)
+        assert future.result() == {"type": expected_type}
+        loop.close()
+
+    @pytest.mark.parametrize(
+        ("action", "expected_index"),
+        [
+            ("action_select_approve", 0),
+            ("action_select_auto", 1),
+            ("action_select_reject", 2),
+        ],
+    )
+    def test_action_select_sets_correct_index(
+        self, action: str, expected_index: int
+    ) -> None:
+        """Each action_select_* method must update _selected to the correct index."""
+        menu = ApprovalMenu({"name": "write", "args": {"path": "f.py", "content": ""}})
+        menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
+        getattr(menu, action)()
+        assert menu._selected == expected_index
+
+    @pytest.mark.parametrize(
+        ("key", "expected_type"),
+        [
+            ("1", "approve"),
+            ("y", "approve"),
+            ("2", "auto_approve_all"),
+            ("a", "auto_approve_all"),
+            ("3", "reject"),
+            ("n", "reject"),
+        ],
+    )
+    async def test_key_binding_resolves_correct_decision(
+        self, key: str, expected_type: str
+    ) -> None:
+        """Pressing a quick key must trigger the correct decision via key dispatch."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+
+        assert decision_received == {"type": expected_type}

@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
-import functools
 import importlib.util
 import json
 import logging
@@ -24,9 +23,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from langchain_core.tools import BaseTool
-
     from deepagents_cli.app import AppResult
+    from deepagents_cli.mcp_tools import MCPServerInfo
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -77,6 +75,45 @@ _RIPGREP_SUPPRESS_HINT = (
 )
 
 
+def _ripgrep_install_hint() -> str:
+    """Return a platform-specific install command for ripgrep.
+
+    Falls back to the GitHub URL when the platform isn't recognized.
+    """
+    plat = sys.platform
+    if plat == "darwin":
+        if shutil.which("brew"):
+            return "brew install ripgrep"
+        if shutil.which("port"):
+            return "sudo port install ripgrep"
+    elif plat == "linux":
+        if shutil.which("apt-get"):
+            return "sudo apt-get install ripgrep"
+        if shutil.which("dnf"):
+            return "sudo dnf install ripgrep"
+        if shutil.which("pacman"):
+            return "sudo pacman -S ripgrep"
+        if shutil.which("zypper"):
+            return "sudo zypper install ripgrep"
+        if shutil.which("apk"):
+            return "sudo apk add ripgrep"
+        if shutil.which("nix-env"):
+            return "nix-env -iA nixpkgs.ripgrep"
+    elif plat == "win32":
+        if shutil.which("choco"):
+            return "choco install ripgrep"
+        if shutil.which("scoop"):
+            return "scoop install ripgrep"
+        if shutil.which("winget"):
+            return "winget install BurntSushi.ripgrep"
+    # Cross-platform fallbacks
+    if shutil.which("cargo"):
+        return "cargo install ripgrep"
+    if shutil.which("conda"):
+        return "conda install -c conda-forge ripgrep"
+    return _RIPGREP_URL
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -109,30 +146,86 @@ def format_tool_warning_tui(tool: str) -> str:
         Plain-text warning suitable for `App.notify`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {_RIPGREP_URL}\n\n"
+            f"\nInstall: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}"
         )
     return f"{tool} is not installed."
 
 
 def format_tool_warning_cli(tool: str) -> str:
-    """Format a missing-tool warning for non-interactive Rich console output.
+    """Format a missing-tool warning for non-interactive console output.
 
     Args:
         tool: Name of the missing tool.
 
     Returns:
-        Rich-markup string suitable for `console.print`.
+        Warning string suitable for `console.print`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
+        if hint.startswith("http"):
+            hint = f"[link={hint}]{hint}[/link]"
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
+            f"Install: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}\n"
         )
     return f"{tool} is not installed."
+
+
+async def _preload_session_mcp_server_info(
+    *,
+    mcp_config_path: str | None,
+    no_mcp: bool,
+    trust_project_mcp: bool | None,
+) -> list["MCPServerInfo"] | None:
+    """Load MCP metadata for the interactive TUI in server mode.
+
+    In server mode the actual MCP tools are created inside the LangGraph server
+    process, but the local Textual app still needs MCP metadata for the welcome
+    banner and `/mcp` viewer. This preloads the metadata in the CLI process and
+    immediately cleans up any temporary MCP sessions it opened.
+
+    Args:
+        mcp_config_path: Optional explicit MCP config path.
+        no_mcp: Whether MCP loading is disabled.
+        trust_project_mcp: Project-level MCP trust decision.
+
+    Returns:
+        MCP server metadata for the TUI, or `None` when MCP is disabled.
+    """
+    if no_mcp:
+        return None
+
+    from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_cli.project_utils import ProjectContext
+
+    session_manager = None
+    try:
+        try:
+            project_context = ProjectContext.from_user_cwd(Path.cwd())
+        except OSError:
+            logger.warning("Could not determine working directory for MCP preload")
+            project_context = None
+        _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
+            explicit_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            project_context=project_context,
+        )
+        return server_info
+    finally:
+        if session_manager is not None:
+            try:
+                await session_manager.cleanup()
+            except Exception:
+                logger.warning(
+                    "MCP metadata preload cleanup failed",
+                    exc_info=True,
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,16 +234,8 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
-    from deepagents_cli.ui import (
-        build_help_parent,
-        show_help,
-        show_list_help,
-        show_reset_help,
-        show_threads_delete_help,
-        show_threads_help,
-        show_threads_list_help,
-    )
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -202,9 +287,21 @@ def parse_args() -> argparse.Namespace:
 
         return _ShowHelp
 
-    help_parent = functools.partial(
-        build_help_parent, make_help_action=_make_help_action
-    )
+    # Lazy wrapper: defers `ui` import until the help action fires (i.e.,
+    # only when the user passes `-h`). This avoids pulling in Rich and config at
+    # parse time for the common non-help path.
+    def _lazy_help(fn_name: str) -> Callable[[], None]:
+        def _show() -> None:
+            from deepagents_cli import ui
+
+            getattr(ui, fn_name)()
+
+        return _show
+
+    def help_parent(help_fn: Callable[[], None]) -> list[argparse.ArgumentParser]:
+        parent = argparse.ArgumentParser(add_help=False)
+        parent.add_argument("-h", "--help", action=_make_help_action(help_fn))
+        return [parent]
 
     parser = argparse.ArgumentParser(
         description=("Deep Agents - AI Coding Assistant"),
@@ -217,35 +314,42 @@ def parse_args() -> argparse.Namespace:
         "help",
         help="Show help information",
         add_help=False,
-        parents=help_parent(show_help),
+        parents=help_parent(_lazy_help("show_help")),
     )
 
     subparsers.add_parser(
         "list",
         help="List all available agents",
         add_help=False,
-        parents=help_parent(show_list_help),
+        parents=help_parent(_lazy_help("show_list_help")),
     )
+    add_json_output_arg(subparsers.choices["list"])
 
     reset_parser = subparsers.add_parser(
         "reset",
         help="Reset an agent",
         add_help=False,
-        parents=help_parent(show_reset_help),
+        parents=help_parent(_lazy_help("show_reset_help")),
     )
+    add_json_output_arg(reset_parser)
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
-    setup_skills_parser(subparsers, make_help_action=_make_help_action)
+    setup_skills_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     threads_parser = subparsers.add_parser(
         "threads",
         help="Manage conversation threads",
         add_help=False,
-        parents=help_parent(show_threads_help),
+        parents=help_parent(_lazy_help("show_threads_help")),
     )
+    add_json_output_arg(threads_parser)
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
     threads_list = threads_sub.add_parser(
@@ -253,23 +357,51 @@ def parse_args() -> argparse.Namespace:
         aliases=["ls"],
         help="List threads",
         add_help=False,
-        parents=help_parent(show_threads_list_help),
+        parents=help_parent(_lazy_help("show_threads_list_help")),
     )
+    add_json_output_arg(threads_list)
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
     threads_list.add_argument(
+        "-n",
         "--limit",
         type=int,
         default=None,
         help="Max number of threads to display (default: 20)",
     )
+    threads_list.add_argument(
+        "--sort",
+        choices=["created", "updated"],
+        default=None,
+        help="Sort threads by timestamp (default: from config, or updated)",
+    )
+    threads_list.add_argument(
+        "--branch",
+        default=None,
+        help="Filter by git branch name",
+    )
+    threads_list.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Show all columns (branch, created, prompt)",
+    )
+    threads_list.add_argument(
+        "-r",
+        "--relative",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Show timestamps as relative time (default: from config, or absolute)",
+    )
     threads_delete = threads_sub.add_parser(
         "delete",
         help="Delete a thread",
         add_help=False,
-        parents=help_parent(show_threads_delete_help),
+        parents=help_parent(_lazy_help("show_threads_delete_help")),
     )
+    add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
     # Default interactive mode — argument order here determines the
@@ -369,7 +501,10 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
+    add_json_output_arg(parser, default="text")
+
     parser.add_argument(
+        "-y",
         "--auto-approve",
         action="store_true",
         help=(
@@ -381,20 +516,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--ask-user",
-        action="store_true",
-        help=(
-            "Enable the ask_user tool, allowing the agent to ask "
-            "you questions during execution (opt-in)."
-        ),
-    )
-
-    parser.add_argument(
         "--sandbox",
         choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
         metavar="TYPE",
-        help="Remote sandbox for code execution (default: none - local only)",
+        help=(
+            "Remote sandbox for code execution "
+            "(default: none - local only; langsmith is included, "
+            "modal/daytona/runloop require downloading extras)"
+        ),
     )
 
     parser.add_argument(
@@ -409,6 +539,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to setup script to run in sandbox after creation",
     )
     parser.add_argument(
+        "-S",
         "--shell-allow-list",
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
@@ -460,7 +591,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-h",
         "--help",
-        action=_make_help_action(show_help),
+        action=_make_help_action(_lazy_help("show_help")),
     )
 
     return parser.parse_args()
@@ -477,21 +608,23 @@ async def run_textual_cli_async(
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
-    is_resumed: bool = False,
+    resume_thread: str | None = None,
     initial_prompt: str | None = None,
-    enable_ask_user: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
 ) -> "AppResult":
     """Run the Textual CLI interface (async version).
 
+    Starts a LangGraph server in a subprocess and connects the TUI to it via the
+    `langgraph-sdk` client.
+
     Args:
         assistant_id: Agent identifier for memory storage
         auto_approve: Whether to auto-approve tool usage
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
-        sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -501,10 +634,17 @@ async def run_textual_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
-        thread_id: Thread ID to use (new or resumed)
-        is_resumed: Whether this is a resumed session
+        thread_id: Thread ID for the session.
+
+            `None` when `resume_thread` is provided (the TUI resolves the final
+            ID asynchronously).
+        resume_thread: Raw resume intent from `-r` flag.
+
+            `'__MOST_RECENT__'` for bare `-r`, a thread ID string for `-r <id>`,
+            or `None` for new sessions.
+
+            Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
-        enable_ask_user: Enable the ask_user tool
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -518,153 +658,89 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_cli.agent import create_cli_agent
-    from deepagents_cli.app import run_textual_app
-    from deepagents_cli.config import console, create_model, settings
-    from deepagents_cli.model_config import ModelConfigError
-    from deepagents_cli.sessions import get_checkpointer
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.app import AppResult, run_textual_app
+    from deepagents_cli.config import (
+        _get_default_model_spec,
+        detect_provider,
+        settings,
+    )
+    from deepagents_cli.model_config import ModelConfigError, ModelSpec
+
+    # Resolve display-name cheaply (<1ms, no langchain) so the status
+    # bar can show the model on first paint. The expensive create_model()
+    # (~560ms) is deferred to a background worker.
 
     try:
-        result = create_model(
-            model_name,
-            extra_kwargs=model_params,
-            profile_overrides=profile_override,
-        )
+        resolved_spec = model_name or _get_default_model_spec()
     except ModelConfigError as e:
-        from deepagents_cli.app import AppResult
+        from deepagents_cli.config import console
 
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print(f"[bold red]Error:[/bold red] {e}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
-    model = result.model
-    result.apply_to_settings()
-
-    # Show thread info
-    if is_resumed:
-        msg = Text("Resuming thread: ", style="dim")
-        msg.append(str(thread_id), style="dim")
-        console.print(msg)
+    parsed = ModelSpec.try_parse(resolved_spec)
+    if parsed:
+        settings.model_provider = parsed.provider
+        settings.model_name = parsed.model
     else:
-        msg = Text("Starting with thread: ", style="dim")
-        msg.append(str(thread_id), style="dim")
-        console.print(msg)
+        settings.model_name = resolved_spec
+        settings.model_provider = detect_provider(resolved_spec) or ""
 
-    # Use async context manager for checkpointer
-    async with get_checkpointer() as checkpointer:
-        # Create agent with conditional tools
-        tools: list[BaseTool | Callable[..., Any] | dict[str, Any]] = [
-            http_request,
-            fetch_url,
-        ]
-        if settings.has_tavily:
-            tools.append(web_search)
+    model_kwargs: dict[str, Any] = {
+        "model_spec": model_name,
+        "extra_kwargs": model_params,
+        "profile_overrides": profile_override,
+    }
 
-        # Load MCP tools (explicit config, auto-discovery, or disabled)
-        mcp_session_manager = None
-        mcp_server_info = None
-        try:
-            from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
+    # Build kwargs for deferred server startup (runs inside the TUI)
+    server_kwargs: dict[str, Any] = {
+        "assistant_id": assistant_id,
+        "model_name": model_name,
+        "model_params": model_params,
+        "auto_approve": auto_approve,
+        "sandbox_type": sandbox_type,
+        "sandbox_id": sandbox_id,
+        "sandbox_setup": sandbox_setup,
+        "mcp_config_path": mcp_config_path,
+        "no_mcp": no_mcp,
+        "trust_project_mcp": trust_project_mcp,
+        "interactive": True,
+    }
 
-            (
-                mcp_tools,
-                mcp_session_manager,
-                mcp_server_info,
-            ) = await resolve_and_load_mcp_tools(
-                explicit_config_path=mcp_config_path,
-                no_mcp=no_mcp,
-                trust_project_mcp=trust_project_mcp,
-            )
-            tools.extend(mcp_tools)
-        except FileNotFoundError as e:
-            console.print(f"[red]✗ MCP config file not found: {e}[/red]")
-            sys.exit(1)
-        except RuntimeError as e:
-            console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
-            sys.exit(1)
+    mcp_preload_kwargs: dict[str, Any] | None = None
+    if not no_mcp:
+        mcp_preload_kwargs = {
+            "mcp_config_path": mcp_config_path,
+            "no_mcp": no_mcp,
+            "trust_project_mcp": trust_project_mcp,
+        }
 
-        # Handle sandbox mode
-        sandbox_backend = None
-        sandbox_cm = None
+    try:
+        result = await run_textual_app(
+            assistant_id=assistant_id,
+            backend=None,
+            auto_approve=auto_approve,
+            cwd=Path.cwd(),
+            thread_id=thread_id,
+            resume_thread=resume_thread,
+            initial_prompt=initial_prompt,
+            profile_override=profile_override,
+            server_kwargs=server_kwargs,
+            mcp_preload_kwargs=mcp_preload_kwargs,
+            model_kwargs=model_kwargs,
+        )
+    except Exception as e:
+        logger.debug("App error", exc_info=True)
+        from deepagents_cli.config import console
 
-        if sandbox_type != "none":
-            # Deferred: sandbox_factory imports provider-specific SDKs,
-            # only needed when a sandbox is actually requested.
-            from deepagents_cli.integrations.sandbox_factory import (
-                create_sandbox,
-            )
+        error_text = Text("Application error: ", style="red")
+        error_text.append(str(e))
+        console.print(error_text)
+        if logger.isEnabledFor(logging.DEBUG):
+            console.print(Text(traceback.format_exc(), style="dim"))
+        return AppResult(return_code=1, thread_id=None)
 
-            try:
-                # Create sandbox context manager but keep it open
-                sandbox_cm = create_sandbox(
-                    sandbox_type,
-                    sandbox_id=sandbox_id,
-                    setup_script_path=sandbox_setup,
-                )
-                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager used without `with` for long-lived sandbox lifecycle
-            except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
-                console.print()
-                console.print("[red]Sandbox creation failed[/red]")
-                console.print(Text(str(e), style="dim"))
-                sys.exit(1)
-
-        try:
-            agent, composite_backend = create_cli_agent(
-                model=model,
-                assistant_id=assistant_id,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                auto_approve=auto_approve,
-                enable_ask_user=enable_ask_user,
-                checkpointer=checkpointer,
-                mcp_server_info=mcp_server_info,
-            )
-        except Exception as e:  # broad catch for friendly CLI errors
-            logger.debug("Failed to create agent", exc_info=True)
-            error_text = Text("Failed to create agent: ", style="red")
-            error_text.append(str(e))
-            console.print(error_text)
-            if logger.isEnabledFor(logging.DEBUG):
-                console.print(Text(traceback.format_exc(), style="dim"))
-            sys.exit(1)
-
-        # Run Textual app - errors propagate to caller
-        from deepagents_cli.app import AppResult
-
-        result = AppResult(return_code=1, thread_id=None)
-        try:
-            result = await run_textual_app(
-                agent=agent,
-                assistant_id=assistant_id,
-                backend=composite_backend,
-                auto_approve=auto_approve,
-                enable_ask_user=enable_ask_user,
-                cwd=Path.cwd(),
-                thread_id=thread_id,
-                initial_prompt=initial_prompt,
-                checkpointer=checkpointer,
-                tools=tools,
-                sandbox=sandbox_backend,
-                sandbox_type=sandbox_type if sandbox_type != "none" else None,
-                mcp_server_info=mcp_server_info,
-                profile_override=profile_override,
-            )
-        finally:
-            # Clean up MCP session manager if initialized
-            if mcp_session_manager is not None:
-                try:
-                    await mcp_session_manager.cleanup()
-                except Exception:
-                    logger.warning("MCP session cleanup failed", exc_info=True)
-
-            # Clean up sandbox after app exits (success or error)
-            if sandbox_cm is not None:
-                try:
-                    sandbox_cm.__exit__(None, None, None)
-                except Exception:
-                    logger.warning("Sandbox cleanup failed", exc_info=True)
-        return result
+    return result
 
 
 async def _run_acp_cli_async(
@@ -695,9 +771,9 @@ async def _run_acp_cli_async(
     Returns:
         Exit code for ACP mode.
     """
-    from deepagents_cli.agent import create_cli_agent
+    from deepagents_cli.agent import create_cli_agent, load_async_subagents
     from deepagents_cli.config import create_model, settings
-    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.model_config import ModelConfigError, save_recent_model
     from deepagents_cli.tools import fetch_url, http_request, web_search
 
     try:
@@ -711,6 +787,9 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
     model_result.apply_to_settings()
+
+    # Persist the resolved model so [models].recent is always populated.
+    save_recent_model(f"{model_result.provider}:{model_result.model_name}")
 
     tools: list[Any] = [http_request, fetch_url]
     if settings.has_tavily:
@@ -742,12 +821,18 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
 
+    async_subagents = load_async_subagents() or None
+
     try:
+        from langgraph.checkpoint.memory import InMemorySaver
+
         agent_graph, _backend = create_cli_agent(
             model=model_result.model,
             assistant_id=assistant_id,
             tools=tools,
             mcp_server_info=mcp_server_info,
+            checkpointer=InMemorySaver(),
+            async_subagents=async_subagents,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")
@@ -926,9 +1011,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         extract_stdio_server_commands,
         load_mcp_config_lenient,
     )
+    from deepagents_cli.project_utils import ProjectContext
 
     try:
-        config_paths = discover_mcp_configs()
+        project_context = ProjectContext.from_user_cwd(Path.cwd())
+        config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
         return None
 
@@ -955,9 +1042,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         is_project_mcp_trusted,
         trust_project_mcp,
     )
-    from deepagents_cli.project_utils import find_project_root
 
-    project_root = str((find_project_root() or Path.cwd()).resolve())
+    project_root = str(
+        (project_context.project_root or project_context.user_cwd).resolve()
+    )
     fingerprint = compute_config_fingerprint(project_configs)
 
     if is_project_mcp_trusted(project_root, fingerprint):
@@ -994,10 +1082,10 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Note: LANGSMITH_PROJECT is already overridden in config.py
-    # (before LangChain imports). This ensures agent traces use
-    # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
-    # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+    # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
+    # _ensure_bootstrap() (triggered on first access of `settings`).
+    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
@@ -1021,10 +1109,12 @@ def cli_main() -> None:
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
 
-    from deepagents_cli.config import console, settings
-
     try:
         args = parse_args()
+
+        # Import console/settings AFTER arg parsing so --help (which exits
+        # inside parse_args) never pays the settings bootstrap cost.
+        from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -1178,6 +1268,8 @@ def cli_main() -> None:
                 sys.exit(1)
             sys.exit(0)
 
+        output_format = getattr(args, "output_format", "text")
+
         if args.command == "help":
             from deepagents_cli.ui import show_help
 
@@ -1185,11 +1277,11 @@ def cli_main() -> None:
         elif args.command == "list":
             from deepagents_cli.agent import list_agents
 
-            list_agents()
+            list_agents(output_format=output_format)
         elif args.command == "reset":
             from deepagents_cli.agent import reset_agent
 
-            reset_agent(args.agent, args.source_agent)
+            reset_agent(args.agent, args.source_agent, output_format=output_format)
         elif args.command == "skills":
             from deepagents_cli.skills import execute_skills_command
 
@@ -1208,10 +1300,17 @@ def cli_main() -> None:
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
                         limit=getattr(args, "limit", None),
+                        sort_by=getattr(args, "sort", None),
+                        branch=getattr(args, "branch", None),
+                        verbose=getattr(args, "verbose", False),
+                        relative=getattr(args, "relative", None),
+                        output_format=output_format,
                     )
                 )
             elif args.threads_command == "delete":
-                asyncio.run(delete_thread_command(args.thread_id))
+                asyncio.run(
+                    delete_thread_command(args.thread_id, output_format=output_format)
+                )
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
@@ -1234,6 +1333,18 @@ def cli_main() -> None:
                         )
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    sys.exit(1)
+
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -1264,75 +1375,27 @@ def cli_main() -> None:
                 build_langsmith_thread_url,
             )
             from deepagents_cli.sessions import (
-                find_similar_threads,
                 generate_thread_id,
-                get_most_recent,
-                get_thread_agent,
                 thread_exists,
             )
 
-            thread_id = None
-            is_resumed = False
+            # Instead of resolving thread_id here with synchronous asyncio.run()
+            # DB calls, pass the raw resume request to the TUI and let it
+            # resolve asynchronously during startup.
+            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
+            thread_id = None if resume_thread else generate_thread_id()
 
-            if args.resume_thread == "__MOST_RECENT__":
-                # -r (no ID): Get most recent thread
-                # If --agent specified, filter by that agent; otherwise get
-                # most recent overall
-                agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
-                thread_id = asyncio.run(get_most_recent(agent_filter))
-                if thread_id:
-                    is_resumed = True
-                    agent_name = asyncio.run(get_thread_agent(thread_id))
-                    if agent_name:
-                        args.agent = agent_name
-                else:
-                    if agent_filter:
-                        msg = Text("No previous thread for '", style="yellow")
-                        msg.append(args.agent)
-                        msg.append("', starting new.", style="yellow")
-                    else:
-                        msg = Text("No previous threads, starting new.", style="yellow")
-                    console.print(msg)
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
 
-            elif args.resume_thread:
-                # -r <ID>: Resume specific thread
-                if asyncio.run(thread_exists(args.resume_thread)):
-                    thread_id = args.resume_thread
-                    is_resumed = True
-                    if args.agent == _DEFAULT_AGENT_NAME:
-                        agent_name = asyncio.run(get_thread_agent(thread_id))
-                        if agent_name:
-                            args.agent = agent_name
-                else:
-                    error_msg = Text("Thread '", style="red")
-                    error_msg.append(args.resume_thread)
-                    error_msg.append("' not found.", style="red")
-                    console.print(error_msg)
-
-                    # Check for similar thread IDs
-                    similar = asyncio.run(find_similar_threads(args.resume_thread))
-                    if similar:
-                        console.print()
-                        console.print("[yellow]Did you mean?[/yellow]")
-                        for tid in similar:
-                            hint = Text("  deepagents -r ", style="cyan")
-                            hint.append(str(tid), style="cyan")
-                            console.print(hint)
-                        console.print()
-
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see "
-                        "available threads.[/dim]"
-                    )
-                    console.print(
-                        "[dim]Use 'deepagents -r' to resume the most "
-                        "recent thread.[/dim]"
-                    )
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    console.print(f"[bold red]Error:[/bold red] {exc}")
                     sys.exit(1)
-
-            # Generate new thread ID if not resuming
-            if thread_id is None:
-                thread_id = generate_thread_id()
 
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(
@@ -1353,9 +1416,8 @@ def cli_main() -> None:
                         model_params=model_params,
                         profile_override=profile_override,
                         thread_id=thread_id,
-                        is_resumed=is_resumed,
+                        resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
-                        enable_ask_user=getattr(args, "ask_user", False),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
@@ -1375,21 +1437,22 @@ def cli_main() -> None:
 
             # Show LangSmith thread link for threads with checkpointed
             # content (same table that backs the `/threads` listing).
-            try:
-                thread_url = build_langsmith_thread_url(thread_id)
-                if thread_url and asyncio.run(thread_exists(thread_id)):
-                    console.print()
-                    ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                    ls_hint.append(
-                        thread_url,
-                        style=Style(dim=True, link=thread_url),
+            if thread_id:
+                try:
+                    thread_url = build_langsmith_thread_url(thread_id)
+                    if thread_url and asyncio.run(thread_exists(thread_id)):
+                        console.print()
+                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
+                        ls_hint.append(
+                            thread_url,
+                            style=Style(dim=True, link=thread_url),
+                        )
+                        console.print(ls_hint)
+                except Exception:
+                    logger.debug(
+                        "Could not display LangSmith thread URL on teardown",
+                        exc_info=True,
                     )
-                    console.print(ls_hint)
-            except Exception:
-                logger.debug(
-                    "Could not display LangSmith thread URL on teardown",
-                    exc_info=True,
-                )
 
             # Show resume hint on exit for threads with checkpointed content.
             if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
@@ -1399,8 +1462,12 @@ def cli_main() -> None:
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C - suppress ugly traceback
-        console.print("\n\n[yellow]Interrupted[/yellow]")
+        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # `console` may not be bound if Ctrl+C arrives during config import.
+        try:
+            console.print("\n\n[yellow]Interrupted[/yellow]")
+        except NameError:
+            sys.stderr.write("\n\nInterrupted\n")
         sys.exit(0)
 
 

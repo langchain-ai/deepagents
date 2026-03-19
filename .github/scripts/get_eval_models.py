@@ -8,6 +8,7 @@ Reads the EVAL_MODELS env var to determine which models to include:
   - "set0": first-party API providers (Anthropic, OpenAI, Google)
   - "set1": a curated subset of flagship models
   - "set2": slower third-party hosted models
+  - "open": open-weight models (Nemotron, GLM-5, MiniMax M2.7)
   - any other value: treated as a single "provider:model" spec
 """
 
@@ -39,6 +40,8 @@ SET0: list[str] = [
     "google_genai:gemini-2.5-pro",
     "google_genai:gemini-3-flash-preview",
     "google_genai:gemini-3.1-pro-preview",
+    # OpenRouter
+    "openrouter:minimax/minimax-m2.7",
     # Baseten
     "baseten:zai-org/GLM-5",
     "baseten:MiniMaxAI/MiniMax-M2.5",
@@ -93,18 +96,25 @@ SET2: list[str] = [
     "ollama:deepseek-v3.2:cloud",
 ]
 
+# Open-weight models
+OPEN: list[str] = [
+    "nvidia:nvidia/nemotron-3-super-120b-a12b",
+    "baseten:zai-org/GLM-5",
+    "openrouter:minimax/minimax-m2.7",
+]
+
 
 def _resolve_models(selection: str) -> list[str]:
     """Return the list of models for the given selection string.
 
-    Accepts "all", "set1", "set2", a single model spec, or comma-separated
-    model specs.
+    Accepts "all", "set0", "set1", "set2", "open", a single model spec,
+    or comma-separated model specs.
     """
     selection = selection.strip()
     if selection == "all":
         seen: set[str] = set()
         result: list[str] = []
-        for model in SET0 + SET1 + SET2:
+        for model in SET0 + SET1 + SET2 + OPEN:
             if model not in seen:
                 seen.add(model)
                 result.append(model)
@@ -115,6 +125,8 @@ def _resolve_models(selection: str) -> list[str]:
         return SET1
     if selection == "set2":
         return SET2
+    if selection == "open":
+        return OPEN
     specs = [s.strip() for s in selection.split(",") if s.strip()]
     invalid = [s for s in specs if ":" not in s]
     if invalid:

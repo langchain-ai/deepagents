@@ -83,6 +83,11 @@ on:
         required: false
         default: ""
         type: string
+      eval_categories:
+        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Leave empty to run all categories."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -108,6 +113,7 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
           BRANCH: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
         run: |
@@ -118,6 +124,7 @@ jobs:
           echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Resolved** | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`eval_categories\` | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Branch | \`${BRANCH}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Triggered by | \`${ACTOR}\` |" >> "$GITHUB_STEP_SUMMARY"
 
@@ -171,6 +178,17 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test
+
+      - name: "🏷️ Apply category filter"
+        if: inputs.eval_categories != ''
+        run: |
+          flags=""
+          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          for cat in "${cats[@]}"; do
+            cat=$(echo "$cat" | xargs)
+            flags="$flags --eval-category $cat"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals

@@ -626,25 +626,44 @@ class DeepAgentsApp(App):
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
 
-        # Resolve git branch right after first paint — highest priority
-        # deferred item since it's visible in the status bar.
-        self.call_after_refresh(self._resolve_git_branch_and_continue)
+        # Start branch resolution immediately — the thread launches now
+        # (during on_mount) so by the time the first frame finishes painting
+        # the subprocess is already done. _post_paint_init fires the heavier
+        # workers (server, model creation) afterward.
+        self._startup_task = asyncio.create_task(
+            self._resolve_git_branch_and_continue()
+        )
 
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch immediately, then fire remaining init workers.
 
         Called via `call_after_refresh` so it runs right after first paint.
-        The branch subprocess gets a thread before the heavy workers
-        (model creation, server start) saturate I/O.
+        Inlines the subprocess call to avoid importing `textual_adapter` which
+        would block the event loop and delay the branch render.
         """
-        from deepagents_cli.textual_adapter import _get_git_branch
+        import subprocess  # noqa: S404  # stdlib, already loaded
 
-        branch = await asyncio.to_thread(_get_git_branch) or ""
+        def _get_branch() -> str:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                pass
+            return ""
+
+        branch = await asyncio.to_thread(_get_branch)
         if self._status_bar:
             self._status_bar.branch = branch
 
-        # Now kick off everything else
-        await self._post_paint_init()
+        # Yield to Textual so the branch renders before heavy workers start
+        self.call_after_refresh(self._post_paint_init)
 
     async def _post_paint_init(self) -> None:
         """Fire background workers for remaining startup work.

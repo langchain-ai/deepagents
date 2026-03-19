@@ -85,7 +85,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -142,7 +142,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             `PatchToolCallsMiddleware`).
         subagents: The subagents to use.
 
-            Each subagent should be a `dict` with the following keys:
+            This collection can include synchronous subagents (`SubAgent` or
+            `CompiledSubAgent`) and async remote subagents (`AsyncSubAgent`).
+
+            Synchronous `SubAgent` specs should include:
 
             - `name`
             - `description` (used by the main agent to decide whether to call the sub agent)
@@ -150,12 +153,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             - (optional) `tools`
             - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
             - (optional) `middleware` (list of `AgentMiddleware`)
-        async_subagents: Optional list of async subagent specs for remote LangGraph servers.
 
             Each spec should be an `AsyncSubAgent` dict with `name`, `description`,
             and `graph_id`. Optionally include `url` for remote deployments (omit
             for ASGI transport). Async subagents run as background jobs with tools
             for launching, checking, updating, cancelling, and listing jobs.
+
         skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
             Paths must be specified using POSIX conventions (forward slashes) and are relative
@@ -215,8 +218,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
     # Process user-provided subagents to fill in defaults for model, tools, and middleware
     processed_subagents: list[SubAgent | CompiledSubAgent] = []
+    processed_async_subagents: list[AsyncSubAgent] = list(async_subagents or [])
     for spec in subagents or []:
-        if "runnable" in spec:
+        if spec.get("kind") == "async":
+            processed_async_subagents.append(spec)
+        elif "runnable" in spec:
             # CompiledSubAgent - use as-is
             processed_subagents.append(spec)
         else:
@@ -274,8 +280,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         ]
     )
 
-    if async_subagents:
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+    if processed_async_subagents:
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=processed_async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)

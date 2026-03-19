@@ -44,6 +44,41 @@ Instructions go here.
 class TestSubAgents:
     """Tests for sub-agent middleware functionality."""
 
+    def test_create_deep_agent_routes_async_subagents_from_subagents_param(self) -> None:
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            subagents=[
+                {
+                    "kind": "async",
+                    "name": "remote-researcher",
+                    "description": "Researches things remotely.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        agent_tools = agent.nodes["tools"].bound._tools_by_name
+        assert "task" in agent_tools
+        assert "launch_async_subagent" in agent_tools
+        assert "check_async_subagent" in agent_tools
+
+    def test_create_deep_agent_keeps_sync_subagents_in_task_middleware(self) -> None:
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            subagents=[
+                {
+                    "name": "writer",
+                    "description": "Writes summaries.",
+                    "system_prompt": "Write summaries.",
+                }
+            ],
+        )
+
+        agent_tools = agent.nodes["tools"].bound._tools_by_name
+        assert "task" in agent_tools
+        assert "launch_async_subagent" not in agent_tools
+
     def test_subagent_returns_final_message_as_tool_result(self) -> None:
         """Test that a subagent's final message is returned as a ToolMessage.
 

@@ -18,16 +18,29 @@ if TYPE_CHECKING:
     from matplotlib.projections.polar import PolarAxes  # ty: ignore[unresolved-import]
 
 _CATEGORIES_JSON = Path(__file__).parent / "categories.json"
-_data = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))
+try:
+    _categories_raw = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))
+except FileNotFoundError:
+    msg = (
+        f"categories.json not found at {_CATEGORIES_JSON}. "
+        "Ensure the deepagents_evals package is installed correctly "
+        "(the file should be included via [tool.setuptools.package-data])."
+    )
+    raise FileNotFoundError(msg) from None
+except (json.JSONDecodeError, KeyError) as exc:
+    msg = f"Failed to parse {_CATEGORIES_JSON}: {exc}"
+    raise ValueError(msg) from exc
 
-EVAL_CATEGORIES: list[str] = _data["categories"]
+EVAL_CATEGORIES: list[str] = _categories_raw["categories"]
 """Canonical eval category names.
 
 Order determines axis placement on the radar chart (clockwise from top).
 """
 
-CATEGORY_LABELS: dict[str, str] = _data["labels"]
+CATEGORY_LABELS: dict[str, str] = _categories_raw["labels"]
 """Human-friendly display labels for radar chart axes, keyed by category name."""
+
+del _categories_raw
 
 _COLORS: list[str] = [
     "#2563eb",  # blue
@@ -168,8 +181,8 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     """Load model results from an `evals_summary.json` file.
 
     The summary file is a JSON array of objects. Each object must have a
-    `model` key and a `category_scores` dict mapping category names to
-    `[0, 1]` correctness floats.
+    `category_scores` dict mapping category names to `[0, 1]` correctness
+    floats. The `model` key defaults to `"unknown"` if absent.
 
     Args:
         path: Path to `evals_summary.json`.

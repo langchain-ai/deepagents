@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 from pathlib import Path
 
 from tabulate import tabulate
@@ -44,27 +45,43 @@ _HEADERS = [
 
 
 _CATEGORIES_JSON = Path(__file__).resolve().parents[2] / "libs" / "evals" / "deepagents_evals" / "categories.json"
-_CATEGORY_LABELS: dict[str, str] = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))["labels"]
+
+
+def _load_category_labels() -> dict[str, str]:
+    """Load human-readable category labels from `categories.json`.
+
+    Returns:
+        Mapping of category name to display label, or empty dict on failure.
+    """
+    try:
+        return json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))["labels"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+        print(f"warning: could not load category labels from {_CATEGORIES_JSON}: {exc}", file=sys.stderr)
+        return {}
 
 
 def _build_category_table(rows: list[dict[str, object]]) -> list[str]:
     """Build a per-category scores table from report rows.
 
-    Returns an empty list when no category data is present.
+    Returns a single-element list containing the rendered Markdown table
+    string, or an empty list when no category data is present.
+
+    Args:
+        rows: Report row dicts, each expected to contain a `category_scores`
+            mapping and a `model` string.
     """
-    # Collect all categories across all models.
-    all_cats: list[str] = []
-    seen: set[str] = set()
-    for r in rows:
-        for cat in (r.get("category_scores") or {}):
-            if cat not in seen:
-                all_cats.append(cat)
-                seen.add(cat)
+    # Collect all categories across all models (preserving insertion order).
+    all_cats: list[str] = list(dict.fromkeys(
+        cat
+        for r in rows
+        for cat in (r.get("category_scores") or {})
+    ))
 
     if not all_cats:
         return []
 
-    headers = ["model", *[_CATEGORY_LABELS.get(c, c) for c in all_cats]]
+    labels = _load_category_labels()
+    headers = ["model", *[labels.get(c, c) for c in all_cats]]
     table_rows: list[list[object]] = []
     for r in rows:
         scores = r.get("category_scores") or {}

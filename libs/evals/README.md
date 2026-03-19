@@ -190,6 +190,9 @@ CI runs produce a per-category correctness table in the GitHub Actions step summ
 Full eval runs (3+ categories) generate a radar chart comparing model scores across categories, uploaded as the `radar-chart` artifact. The chart is skipped for narrow category-filtered runs where a radar would be meaningless.
 
 ```bash
+# Install chart dependencies (matplotlib)
+uv sync --extra charts
+
 # Generate from CI summary
 python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.png
 
@@ -200,7 +203,7 @@ python scripts/generate_radar.py --toy -o charts/radar.png
 ### Adding a new category
 
 1. Add the category name and label to `deepagents_evals/categories.json`
-2. Tag test(s) with `pytestmark = pytest.mark.eval_category("your_category")`
+2. Tag test(s) with `pytestmark = [pytest.mark.eval_category("your_category")]`
 3. Add the category to `EXPECTED_CATEGORY_MODULES` in `tests/unit_tests/test_category_tagging.py`
 4. Run `make test` — drift tests will catch any mismatch
 

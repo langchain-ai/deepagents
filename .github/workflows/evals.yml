@@ -237,12 +237,13 @@ jobs:
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py
 
       - name: "📦 Install evals package"
+        id: install-evals
         if: hashFiles('evals_summary.json') != ''
         working-directory: libs/evals
         run: uv sync --extra charts
 
       - name: "📊 Generate radar chart"
-        if: hashFiles('evals_summary.json') != ''
+        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
         working-directory: libs/evals
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --title "Deep Agents Eval Results"
 

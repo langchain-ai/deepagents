@@ -53,7 +53,11 @@ class GitleaksSanitizerProvider:
     def __init__(self) -> None:
         self._binary = shutil.which("gitleaks")
         if self._binary is None:
-            logger.warning("gitleaks binary not found in PATH — sanitizer will be a no-op")
+            msg = (
+                "gitleaks binary not found in PATH. "
+                "Install gitleaks (https://github.com/gitleaks/gitleaks) or remove --sanitizer flag."
+            )
+            raise FileNotFoundError(msg)
 
     @property
     def name(self) -> str:

@@ -779,10 +779,16 @@ def create_cli_agent(
             "gitleaks": GitleaksSanitizerProvider,
         }
         provider_cls = _SANITIZER_PROVIDERS.get(sanitizer)
-        if provider_cls is not None:
-            agent_middleware.insert(0, SanitizerMiddleware(providers=[provider_cls()]))
-        else:
+        if provider_cls is None:
             logger.warning("Unknown sanitizer provider: %s — skipping", sanitizer)
+        else:
+            try:
+                agent_middleware.insert(0, SanitizerMiddleware(providers=[provider_cls()]))
+            except FileNotFoundError:
+                logger.warning(
+                    "Sanitizer '%s' binary not found in PATH — install it or remove --sanitizer flag",
+                    sanitizer,
+                )
 
     agent_middleware.append(ConfigurableModelMiddleware())
 

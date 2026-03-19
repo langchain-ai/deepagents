@@ -49,12 +49,10 @@ class TestGitleaksSanitize:
         assert result["content"] == content
         assert result["findings"] == []
 
-    def test_graceful_when_binary_missing(self):
+    def test_raises_when_binary_missing(self):
         with patch("deepagents.middleware.sanitizer_gitleaks.shutil.which", return_value=None):
-            provider = GitleaksSanitizerProvider()
-        result = provider.sanitize("SECRET123")
-        assert result["content"] == "SECRET123"
-        assert result["findings"] == []
+            with pytest.raises(FileNotFoundError, match="gitleaks binary not found"):
+                GitleaksSanitizerProvider()
 
     def test_graceful_on_gitleaks_error(self, provider):
         with patch("deepagents.middleware.sanitizer_gitleaks.subprocess.run") as mock_run:
@@ -78,9 +76,7 @@ class TestGitleaksSanitize:
 
 class TestGitleaksAsanitize:
     @pytest.mark.asyncio
-    async def test_async_graceful_when_binary_missing(self):
+    async def test_async_raises_when_binary_missing(self):
         with patch("deepagents.middleware.sanitizer_gitleaks.shutil.which", return_value=None):
-            provider = GitleaksSanitizerProvider()
-        result = await provider.asanitize("SECRET123")
-        assert result["content"] == "SECRET123"
-        assert result["findings"] == []
+            with pytest.raises(FileNotFoundError, match="gitleaks binary not found"):
+                GitleaksSanitizerProvider()

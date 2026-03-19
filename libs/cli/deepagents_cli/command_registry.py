@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deepagents_cli.skills.load import ExtendedSkillMetadata
 
 
 class BypassTier(StrEnum):
@@ -199,3 +203,23 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
 ]
 """`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
+
+
+def build_skill_commands(
+    skills: list[ExtendedSkillMetadata],
+) -> list[tuple[str, str, str]]:
+    """Build autocomplete tuples for discovered skills.
+
+    Each skill becomes a `/skill:<name>` entry with its description
+    and the skill name as a hidden keyword for fuzzy matching.
+
+    Args:
+        skills: List of discovered skill metadata.
+
+    Returns:
+        List of `(name, description, hidden_keywords)` tuples.
+    """
+    return [
+        (f"/skill:{skill['name']}", skill["description"], skill["name"])
+        for skill in skills
+    ]

@@ -696,3 +696,101 @@ class TestListSkillsBuiltIn:
         # User skills should still load despite built-in source failing
         assert len(skills) == 1
         assert skills[0]["name"] == "user-skill"
+
+
+class TestListSkillsClaudeDirectories:
+    """Test `list_skills` with experimental Claude skills directories."""
+
+    def test_user_claude_skills_discovered(self, tmp_path: Path) -> None:
+        """Skills in `~/.claude/skills/` are discovered with experimental source."""
+        claude_dir = tmp_path / "claude_skills"
+        _create_skill(claude_dir / "claude-skill", "claude-skill", "A Claude skill")
+
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=None,
+            user_claude_skills_dir=claude_dir,
+        )
+        assert len(skills) == 1
+        assert skills[0]["name"] == "claude-skill"
+        assert skills[0]["source"] == "claude (experimental)"
+
+    def test_project_claude_skills_discovered(self, tmp_path: Path) -> None:
+        """Skills in `.claude/skills/` are discovered with experimental source."""
+        claude_dir = tmp_path / "project_claude_skills"
+        _create_skill(
+            claude_dir / "project-claude", "project-claude", "A project Claude skill"
+        )
+
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=None,
+            project_claude_skills_dir=claude_dir,
+        )
+        assert len(skills) == 1
+        assert skills[0]["name"] == "project-claude"
+        assert skills[0]["source"] == "claude (experimental)"
+
+    def test_claude_overrides_agents_dir(self, tmp_path: Path) -> None:
+        """Claude skills dirs have higher precedence than `.agents/skills/`."""
+        agents_dir = tmp_path / "agents_skills"
+        claude_dir = tmp_path / "claude_skills"
+
+        _create_skill(agents_dir / "shared-skill", "shared-skill", "From agents dir")
+        _create_skill(claude_dir / "shared-skill", "shared-skill", "From Claude dir")
+
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=None,
+            project_agent_skills_dir=agents_dir,
+            user_claude_skills_dir=claude_dir,
+        )
+        assert len(skills) == 1
+        assert skills[0]["description"] == "From Claude dir"
+        assert skills[0]["source"] == "claude (experimental)"
+
+    def test_project_claude_overrides_user_claude(self, tmp_path: Path) -> None:
+        """Project-level `.claude/skills/` overrides user-level `~/.claude/skills/`."""
+        user_claude_dir = tmp_path / "user_claude"
+        project_claude_dir = tmp_path / "project_claude"
+
+        _create_skill(user_claude_dir / "shared-skill", "shared-skill", "User Claude")
+        _create_skill(
+            project_claude_dir / "shared-skill", "shared-skill", "Project Claude"
+        )
+
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=None,
+            user_claude_skills_dir=user_claude_dir,
+            project_claude_skills_dir=project_claude_dir,
+        )
+        assert len(skills) == 1
+        assert skills[0]["description"] == "Project Claude"
+
+    def test_nonexistent_claude_dirs_handled(self, tmp_path: Path) -> None:
+        """Nonexistent Claude dirs are handled gracefully."""
+        skills = list_skills(
+            user_skills_dir=None,
+            project_skills_dir=None,
+            user_claude_skills_dir=tmp_path / "nonexistent_user",
+            project_claude_skills_dir=tmp_path / "nonexistent_project",
+        )
+        assert skills == []
+
+    def test_claude_coexists_with_standard_skills(self, tmp_path: Path) -> None:
+        """Claude skills appear alongside standard discovery skills."""
+        user_dir = tmp_path / "user_skills"
+        claude_dir = tmp_path / "claude_skills"
+
+        _create_skill(user_dir / "user-skill", "user-skill", "A user skill")
+        _create_skill(claude_dir / "claude-skill", "claude-skill", "A Claude skill")
+
+        skills = list_skills(
+            user_skills_dir=user_dir,
+            project_skills_dir=None,
+            user_claude_skills_dir=claude_dir,
+        )
+        assert len(skills) == 2
+        names = {s["name"] for s in skills}
+        assert names == {"user-skill", "claude-skill"}

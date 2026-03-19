@@ -39,7 +39,7 @@ class ExtendedSkillMetadata(SkillMetadata):
 
 
 # Re-export for CLI commands
-__all__ = ["SkillMetadata", "list_skills"]
+__all__ = ["SkillMetadata", "list_skills", "load_skill_content"]
 
 
 def list_skills(
@@ -49,6 +49,8 @@ def list_skills(
     project_skills_dir: Path | None = None,
     user_agent_skills_dir: Path | None = None,
     project_agent_skills_dir: Path | None = None,
+    user_claude_skills_dir: Path | None = None,
+    project_claude_skills_dir: Path | None = None,
 ) -> list[ExtendedSkillMetadata]:
     """List skills from built-in, user, and/or project directories.
 
@@ -61,6 +63,8 @@ def list_skills(
     2. `user_agent_skills_dir` (`~/.agents/skills/`)
     3. `project_skills_dir` (`.deepagents/skills/`)
     4. `project_agent_skills_dir` (`.agents/skills/`)
+    5. `user_claude_skills_dir` (`~/.claude/skills/`, experimental)
+    6. `project_claude_skills_dir` (`.claude/skills/`, experimental)
 
     Skills from higher-precedence directories override those with the same name.
 
@@ -70,6 +74,8 @@ def list_skills(
         project_skills_dir: Path to `.deepagents/skills/`.
         user_agent_skills_dir: Path to `~/.agents/skills/` (alias).
         project_agent_skills_dir: Path to `.agents/skills/` (alias).
+        user_claude_skills_dir: Path to `~/.claude/skills/` (experimental).
+        project_claude_skills_dir: Path to `.claude/skills/` (experimental).
 
     Returns:
         Merged list of skill metadata from all sources, with higher-precedence
@@ -169,7 +175,7 @@ def list_skills(
                 exc_info=True,
             )
 
-    # 4. Project agent skills (.agents/skills/) - highest priority
+    # 4. Project agent skills (.agents/skills/) - highest standard priority
     if project_agent_skills_dir and project_agent_skills_dir.exists():
         try:
             project_agent_backend = FilesystemBackend(
@@ -191,4 +197,81 @@ def list_skills(
                 exc_info=True,
             )
 
+    # 5. User Claude skills (~/.claude/skills/) - experimental
+    if user_claude_skills_dir and user_claude_skills_dir.exists():
+        try:
+            user_claude_backend = FilesystemBackend(
+                root_dir=str(user_claude_skills_dir)
+            )
+            user_claude_skills = list_skills_from_backend(
+                backend=user_claude_backend, source_path="."
+            )
+            if user_claude_skills:
+                logger.info(
+                    "Discovered %d skill(s) from experimental Claude path: %s",
+                    len(user_claude_skills),
+                    user_claude_skills_dir,
+                )
+            for skill in user_claude_skills:
+                extended_skill = cast(
+                    "ExtendedSkillMetadata",
+                    {**skill, "source": "claude (experimental)"},
+                )
+                all_skills[skill["name"]] = extended_skill
+        except OSError:
+            logger.warning(
+                "Could not load user Claude skills from %s",
+                user_claude_skills_dir,
+                exc_info=True,
+            )
+
+    # 6. Project Claude skills (.claude/skills/) - experimental, highest priority
+    if project_claude_skills_dir and project_claude_skills_dir.exists():
+        try:
+            project_claude_backend = FilesystemBackend(
+                root_dir=str(project_claude_skills_dir)
+            )
+            project_claude_skills = list_skills_from_backend(
+                backend=project_claude_backend, source_path="."
+            )
+            if project_claude_skills:
+                logger.info(
+                    "Discovered %d skill(s) from experimental Claude path: %s",
+                    len(project_claude_skills),
+                    project_claude_skills_dir,
+                )
+            for skill in project_claude_skills:
+                extended_skill = cast(
+                    "ExtendedSkillMetadata",
+                    {**skill, "source": "claude (experimental)"},
+                )
+                all_skills[skill["name"]] = extended_skill
+        except OSError:
+            logger.warning(
+                "Could not load project Claude skills from %s",
+                project_claude_skills_dir,
+                exc_info=True,
+            )
+
     return list(all_skills.values())
+
+
+def load_skill_content(skill_path: str) -> str | None:
+    """Read the full SKILL.md content for a skill.
+
+    Args:
+        skill_path: Path to the SKILL.md file (from `SkillMetadata['path']`).
+
+    Returns:
+        Full text content of the SKILL.md file, or `None` on read failure.
+    """
+    from pathlib import Path as _Path
+
+    path = _Path(skill_path)
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        logger.warning(
+            "Could not read skill content from %s", skill_path, exc_info=True
+        )
+        return None

@@ -950,6 +950,7 @@ class ChatInput(Vertical):
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
         self._completion_view: _CompletionViewAdapter | None = None
+        self._slash_controller: SlashCommandController | None = None
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not
@@ -1008,9 +1009,12 @@ class ChatInput(Vertical):
         self._file_controller = FuzzyFileController(
             self._completion_view, cwd=self._cwd
         )
+        self._slash_controller = SlashCommandController(
+            SLASH_COMMANDS, self._completion_view
+        )
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self._completion_view),
+                self._slash_controller,
                 self._file_controller,
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
@@ -1021,6 +1025,18 @@ class ChatInput(Vertical):
             exit_on_error=False,
         )
         self._text_area.focus()
+
+    def update_slash_commands(self, commands: list[tuple[str, str, str]]) -> None:
+        """Update the slash command controller's command list.
+
+        Called by the app after discovering skills to merge static
+        commands with dynamic `/skill:` entries.
+
+        Args:
+            commands: Full list of `(command, description, hidden_keywords)` tuples.
+        """
+        if self._slash_controller:
+            self._slash_controller.update_commands(commands)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""

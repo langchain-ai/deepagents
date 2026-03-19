@@ -821,12 +821,20 @@ def create_cli_agent(
         # Lowest to highest precedence:
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
+        # -> user .claude (experimental) -> project .claude (experimental)
         sources = [str(settings.get_built_in_skills_dir())]
         sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
         if project_agent_skills_dir:
             sources.append(str(project_agent_skills_dir))
+
+        # Experimental: Claude Code skill directories
+        user_claude_skills_dir = settings.get_user_claude_skills_dir()
+        sources.append(str(user_claude_skills_dir))
+        project_claude_skills_dir = settings.get_project_claude_skills_dir()
+        if project_claude_skills_dir:
+            sources.append(str(project_claude_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(

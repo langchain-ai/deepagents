@@ -34,6 +34,7 @@ _TIPS: list[str] = [
     "Use /model to switch models mid-conversation",
     "Press ctrl+x to compose prompts in your external editor",
     "Press ctrl+u to delete the current line in the chat input",
+    "Use /skill:<name> to invoke a skill directly",
 ]
 """Rotating tips shown in the welcome footer.
 

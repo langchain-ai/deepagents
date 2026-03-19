@@ -1014,6 +1014,31 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
+    def get_user_claude_skills_dir() -> Path:
+        """Get user-level `~/.claude/skills/` directory (experimental).
+
+        Scans Claude Code's skill directory as a convenience bridge for
+        cross-tool skill sharing. This is experimental and may be removed.
+
+        Returns:
+            Path to `~/.claude/skills/`
+        """
+        return Path.home() / ".claude" / "skills"
+
+    def get_project_claude_skills_dir(self) -> Path | None:
+        """Get project-level `.claude/skills/` directory (experimental).
+
+        Scans Claude Code's project skill directory as a convenience bridge
+        for cross-tool skill sharing. This is experimental and may be removed.
+
+        Returns:
+            Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".claude" / "skills"
+
+    @staticmethod
     def get_built_in_skills_dir() -> Path:
         """Get the directory containing built-in skills that ship with the CLI.
 

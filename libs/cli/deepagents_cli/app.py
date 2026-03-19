@@ -561,6 +561,8 @@ class DeepAgentsApp(App):
         self._message_store = MessageStore()
         # Startup task reference (set in on_mount)
         self._startup_task: asyncio.Task[None] | None = None
+        # Cached skill autocomplete entries (populated by discovery worker)
+        self._discovered_skill_commands: list[tuple[str, str, str]] = []
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
         from deepagents_cli.input import MediaTracker
@@ -737,6 +739,13 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
+        # Discover skills for /skill: autocomplete (filesystem I/O, offloaded)
+        self.run_worker(
+            self._discover_skills_for_autocomplete(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
+
         # Auto-submit initial prompt if provided via -m flag.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
@@ -801,6 +810,38 @@ class DeepAgentsApp(App):
                 severity="warning",
                 timeout=15,
             )
+
+    async def _discover_skills_for_autocomplete(self) -> None:
+        """Discover skills and update slash command autocomplete.
+
+        Runs filesystem I/O in a thread to avoid blocking the event loop.
+        """
+        from deepagents_cli.command_registry import SLASH_COMMANDS, build_skill_commands
+        from deepagents_cli.config import settings
+        from deepagents_cli.skills.load import list_skills
+
+        assistant_id = self._assistant_id or "agent"
+
+        def _discover() -> list[tuple[str, str, str]]:
+            skills = list_skills(
+                built_in_skills_dir=settings.get_built_in_skills_dir(),
+                user_skills_dir=settings.get_user_skills_dir(assistant_id),
+                project_skills_dir=settings.get_project_skills_dir(),
+                user_agent_skills_dir=settings.get_user_agent_skills_dir(),
+                project_agent_skills_dir=settings.get_project_agent_skills_dir(),
+                user_claude_skills_dir=settings.get_user_claude_skills_dir(),
+                project_claude_skills_dir=settings.get_project_claude_skills_dir(),
+            )
+            return build_skill_commands(skills)
+
+        try:
+            skill_commands = await asyncio.to_thread(_discover)
+            if skill_commands and self._chat_input:
+                merged = list(SLASH_COMMANDS) + skill_commands
+                self._chat_input.update_slash_commands(merged)
+                self._discovered_skill_commands = skill_commands
+        except Exception:
+            logger.warning("Skill discovery for autocomplete failed", exc_info=True)
 
     def _init_agent_adapter(self) -> None:
         """Create the UI adapter and kick off background cache prewarming."""
@@ -2071,7 +2112,8 @@ class DeepAgentsApp(App):
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, /remember, "
-                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
+                "/skill:<name>, /tokens, /threads, /trace, /changelog, /docs, "
+                "/feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -2284,6 +2326,9 @@ class DeepAgentsApp(App):
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
             await self._mount_message(AppMessage(report))
+        elif cmd.startswith("/skill:"):
+            await self._handle_skill_command(command)
+            return
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -2291,6 +2336,72 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    async def _handle_skill_command(self, command: str) -> None:
+        """Handle a `/skill:<name>` command by loading and invoking a skill.
+
+        Reads the full SKILL.md body and sends it as a user message to the
+        agent, along with any user-provided arguments.
+
+        Args:
+            command: The full command string (e.g., `/skill:web-research find X`).
+        """
+        from deepagents_cli.config import settings
+        from deepagents_cli.skills.load import list_skills, load_skill_content
+
+        # Parse: /skill:<name> [args...]
+        after_prefix = command[len("/skill:") :].strip()
+        parts = after_prefix.split(maxsplit=1)
+        if not parts or not parts[0]:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+            return
+
+        skill_name = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+        assistant_id = self._assistant_id or "agent"
+
+        def _find_skill() -> tuple[str | None, str | None]:
+            skills = list_skills(
+                built_in_skills_dir=settings.get_built_in_skills_dir(),
+                user_skills_dir=settings.get_user_skills_dir(assistant_id),
+                project_skills_dir=settings.get_project_skills_dir(),
+                user_agent_skills_dir=settings.get_user_agent_skills_dir(),
+                project_agent_skills_dir=settings.get_project_agent_skills_dir(),
+                user_claude_skills_dir=settings.get_user_claude_skills_dir(),
+                project_claude_skills_dir=settings.get_project_claude_skills_dir(),
+            )
+            for skill in skills:
+                if skill["name"] == skill_name:
+                    content = load_skill_content(skill["path"])
+                    return skill["name"], content
+            return None, None
+
+        found_name, content = await asyncio.to_thread(_find_skill)
+
+        if found_name is None:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(f"Skill not found: {skill_name}"))
+            return
+
+        if content is None:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(f"Could not read content for skill: {skill_name}")
+            )
+            return
+
+        # Compose prompt: skill instructions + user args
+        prompt = (
+            f"I'm invoking the skill `{found_name}`. "
+            "Below are the full instructions from the skill's SKILL.md file. "
+            "Follow these instructions to complete the task.\n\n"
+            f"---\n{content}\n---"
+        )
+        if args:
+            prompt += f"\n\n**User request:** {args}"
+
+        await self._handle_user_message(prompt)
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.

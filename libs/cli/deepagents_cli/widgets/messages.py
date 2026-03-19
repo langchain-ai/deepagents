@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
 from textual.content import Content
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from deepagents_cli.config import (
     COLORS,
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
     from textual.timer import Timer
+    from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
@@ -307,10 +308,14 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         Yields:
             Markdown widget for rendering assistant content.
         """
+        from textual.widgets import Markdown
+
         yield Markdown("", id="assistant-content")
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
+        from textual.widgets import Markdown
+
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def _get_markdown(self) -> Markdown:
@@ -320,6 +325,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The Markdown widget for this message.
         """
         if self._markdown is None:
+            from textual.widgets import Markdown
+
             self._markdown = self.query_one("#assistant-content", Markdown)
         return self._markdown
 
@@ -330,6 +337,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The MarkdownStream instance for streaming content.
         """
         if self._stream is None:
+            from textual.widgets import Markdown
+
             self._stream = Markdown.get_stream(self._get_markdown())
         return self._stream
 

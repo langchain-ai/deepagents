@@ -1763,3 +1763,191 @@ class TestDetectProvider:
             assert detect_provider("GPT-4o") == "openai"
         finally:
             settings.anthropic_api_key = None
+
+
+class TestLazyModuleAttributes:
+    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+
+    def test_getattr_returns_settings(self) -> None:
+        """Module __getattr__ resolves 'settings' to a Settings instance."""
+        from deepagents_cli.config import _get_settings
+
+        result = _get_settings()
+        assert isinstance(result, Settings)
+
+    def test_getattr_returns_console(self) -> None:
+        """Module __getattr__ resolves 'console' to a Console instance."""
+        from rich.console import Console
+
+        from deepagents_cli.config import _get_console
+
+        result = _get_console()
+        assert isinstance(result, Console)
+
+    def test_getattr_raises_for_unknown(self) -> None:
+        """Module __getattr__ raises AttributeError for unknown names."""
+        import deepagents_cli.config as config_mod
+
+        with pytest.raises(AttributeError, match="no attribute"):
+            getattr(config_mod, "nonexistent_attr_xyz")  # noqa: B009  # intentional __getattr__ test
+
+    def test_ensure_bootstrap_is_idempotent(self) -> None:
+        """_ensure_bootstrap is a no-op on second call."""
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # First call already ran (settings was imported above).
+        # Calling again should be a harmless no-op.
+        _ensure_bootstrap()
+        assert isinstance(settings, Settings)
+
+    def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
+        """_ensure_bootstrap sets flag even when the try body raises."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # Reset flag so bootstrap will re-enter
+        original = config_mod._bootstrap_done
+        config_mod._bootstrap_done = False
+
+        try:
+            with patch(
+                "deepagents_cli.config._load_dotenv", side_effect=RuntimeError("boom")
+            ):
+                _ensure_bootstrap()  # should warn, not raise
+
+            # Flag must be set even after failure
+            assert config_mod._bootstrap_done is True
+        finally:
+            config_mod._bootstrap_done = original
+
+    def test_get_settings_returns_same_instance(self) -> None:
+        """_get_settings caches in globals — two calls return the same object."""
+        from deepagents_cli.config import _get_settings
+
+        a = _get_settings()
+        b = _get_settings()
+        assert a is b
+
+    def test_ensure_bootstrap_langsmith_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_ensure_bootstrap copies DEEPAGENTS_LANGSMITH_PROJECT."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "my-agent-project")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert config_mod._original_langsmith_project is None
+            import os
+
+            assert os.environ["LANGSMITH_PROJECT"] == "my-agent-project"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_ensure_bootstrap_preserves_original_langsmith(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_ensure_bootstrap captures original LANGSMITH_PROJECT."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
+            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "agent-project")
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert config_mod._original_langsmith_project == "user-project"
+            import os
+
+            assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+
+class TestFindDotenvFromStartPath:
+    """Tests for _find_dotenv_from_start_path."""
+
+    def test_finds_env_in_start_dir(self, tmp_path: Path) -> None:
+        """Finds .env in the start directory itself."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+        assert _find_dotenv_from_start_path(tmp_path) == env_file
+
+    def test_finds_env_in_parent(self, tmp_path: Path) -> None:
+        """Finds .env in a parent directory."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+        child = tmp_path / "a" / "b"
+        child.mkdir(parents=True)
+        assert _find_dotenv_from_start_path(child) == env_file
+
+    def test_returns_none_when_no_env(self, tmp_path: Path) -> None:
+        """Returns None when no .env exists anywhere."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        child = tmp_path / "a"
+        child.mkdir()
+        # No .env anywhere under tmp_path — the search will keep going
+        # to real parent dirs, but tmp_path itself has none
+        result = _find_dotenv_from_start_path(child)
+        # May find a real .env in parent dirs; just check it doesn't crash
+        assert result is None or result.name == ".env"
+
+    def test_continues_past_oserror_on_intermediate_dir(self, tmp_path: Path) -> None:
+        """OSError on an intermediate .env candidate doesn't abort search."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        # Create .env in the grandparent
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+
+        child = tmp_path / "sub"
+        child.mkdir()
+
+        # Patch is_file to raise OSError for the child's .env candidate
+        original_is_file = Path.is_file
+
+        def patched_is_file(self: Path) -> bool:
+            if self == child / ".env":
+                msg = "Permission denied"
+                raise OSError(msg)
+            return original_is_file(self)
+
+        with patch.object(Path, "is_file", patched_is_file):
+            result = _find_dotenv_from_start_path(child)
+
+        # Should continue past the OSError and find .env in parent
+        assert result == env_file

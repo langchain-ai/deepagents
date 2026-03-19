@@ -1118,7 +1118,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
                 ),
                 patch("deepagents_cli.app.webbrowser.open") as mock_open,
@@ -1144,7 +1144,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState()
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 return_value=None,
             ):
                 await app._handle_trace_command("/trace")
@@ -1175,7 +1175,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
                 patch(
@@ -1200,7 +1200,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState(thread_id="test-thread-123")
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 side_effect=RuntimeError("SDK error"),
             ):
                 await app._handle_trace_command("/trace")

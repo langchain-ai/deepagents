@@ -654,12 +654,20 @@ async def run_textual_cli_async(
         detect_provider,
         settings,
     )
-    from deepagents_cli.model_config import ModelSpec
+    from deepagents_cli.model_config import ModelConfigError, ModelSpec
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
     # (~560ms) is deferred to a background worker.
-    resolved_spec = model_name or _get_default_model_spec()
+
+    try:
+        resolved_spec = model_name or _get_default_model_spec()
+    except ModelConfigError as e:
+        from deepagents_cli.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {e}", highlight=False)
+        return AppResult(return_code=1, thread_id=None)
+
     parsed = ModelSpec.try_parse(resolved_spec)
     if parsed:
         settings.model_provider = parsed.provider

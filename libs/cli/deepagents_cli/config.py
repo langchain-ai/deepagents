@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
-from deepagents_cli._version import DOCS_URL as DOCS_URL, __version__
+from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 _bootstrap_done = False
 """Whether `_ensure_bootstrap()` has executed."""
+
+_bootstrap_lock = threading.Lock()
+"""Guards `_ensure_bootstrap()` against concurrent access from the main
+thread and the prewarm worker thread."""
+
+_singleton_lock = threading.Lock()
+"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
 
 _bootstrap_start_path: Path | None = None
 """Working directory captured at bootstrap time for dotenv and project discovery."""
@@ -87,46 +94,50 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
 def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
-    Idempotent — subsequent calls are no-ops. Called automatically by
-    `_get_settings()` when `settings` is first accessed.
+    Idempotent and thread-safe — subsequent calls are no-ops. Called
+    automatically by `_get_settings()` when `settings` is first accessed.
 
     The flag is set in `finally` so that partial failures (e.g. a
     malformed `.env`) still mark bootstrap as done — preventing infinite retry
-    loops — while allowing the exception to propagate.
+    loops. Exceptions are caught and logged at ERROR level; the CLI proceeds
+    with the environment as-is.
     """
     global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project  # noqa: PLW0603
 
     if _bootstrap_done:
         return
 
-    try:
-        from deepagents_cli.project_utils import (
-            get_server_project_context as _get_server_project_context,
-        )
+    with _bootstrap_lock:
+        if _bootstrap_done:  # double-check after acquiring lock
+            return
 
-        ctx = _get_server_project_context()
-        _bootstrap_start_path = ctx.user_cwd if ctx else None
-        _load_dotenv(start_path=_bootstrap_start_path)
+        try:
+            from deepagents_cli.project_utils import (
+                get_server_project_context as _get_server_project_context,
+            )
 
-        # Capture AFTER dotenv loading so .env-only values are visible,
-        # but BEFORE the override below replaces it.
-        _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+            ctx = _get_server_project_context()
+            _bootstrap_start_path = ctx.user_cwd if ctx else None
+            _load_dotenv(start_path=_bootstrap_start_path)
 
-        # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
-        # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
-        # time, so we override it here and preserve the user's original value
-        # for shell commands.
-        deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
-        if deepagents_project:
-            os.environ["LANGSMITH_PROJECT"] = deepagents_project
-    except Exception:
-        logger.warning(
-            "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
-            "may be missing. The CLI will proceed with environment as-is.",
-            exc_info=True,
-        )
-    finally:
-        _bootstrap_done = True
+            # Capture AFTER dotenv loading so .env-only values are visible,
+            # but BEFORE the override below replaces it.
+            _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+
+            # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
+            # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
+            # time, so we override it here and preserve the user's original
+            # value for shell commands.
+            deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+            if deepagents_project:
+                os.environ["LANGSMITH_PROJECT"] = deepagents_project
+        except Exception:
+            logger.exception(
+                "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
+                "may be missing. The CLI will proceed with environment as-is.",
+            )
+        finally:
+            _bootstrap_done = True
 
 
 if TYPE_CHECKING:
@@ -1944,11 +1955,15 @@ def _get_console() -> Console:
     cached = globals().get("console")
     if cached is not None:
         return cached
-    from rich.console import Console
+    with _singleton_lock:
+        cached = globals().get("console")
+        if cached is not None:
+            return cached
+        from rich.console import Console
 
-    inst = Console(highlight=False)
-    globals()["console"] = inst
-    return inst
+        inst = Console(highlight=False)
+        globals()["console"] = inst
+        return inst
 
 
 def _get_settings() -> Settings:
@@ -1964,17 +1979,21 @@ def _get_settings() -> Settings:
     cached = globals().get("settings")
     if cached is not None:
         return cached
-    _ensure_bootstrap()
-    try:
-        inst = Settings.from_environment(start_path=_bootstrap_start_path)
-    except Exception:
-        logger.exception(
-            "Failed to initialize settings from environment (start_path=%s)",
-            _bootstrap_start_path,
-        )
-        raise
-    globals()["settings"] = inst
-    return inst
+    with _singleton_lock:
+        cached = globals().get("settings")
+        if cached is not None:
+            return cached
+        _ensure_bootstrap()
+        try:
+            inst = Settings.from_environment(start_path=_bootstrap_start_path)
+        except Exception:
+            logger.exception(
+                "Failed to initialize settings from environment (start_path=%s)",
+                _bootstrap_start_path,
+            )
+            raise
+        globals()["settings"] = inst
+        return inst
 
 
 def __getattr__(name: str) -> Settings | Console:

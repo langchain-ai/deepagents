@@ -136,9 +136,9 @@ def resolve_physical_path(
         return None
     try:
         if assistant_id and path_str.startswith("/memories/"):
-            from deepagents_cli.config import settings as _settings
+            from deepagents_cli.config import settings
 
-            agent_dir = _settings.get_agent_dir(assistant_id)
+            agent_dir = settings.get_agent_dir(assistant_id)
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()
         path = Path(path_str)

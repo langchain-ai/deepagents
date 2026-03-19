@@ -546,6 +546,8 @@ class DeepAgentsApp(App):
         self._deferred_actions: list[DeferredAction] = []
         # Message virtualization store
         self._message_store = MessageStore()
+        # Startup task reference (set in on_mount)
+        self._startup_task: asyncio.Task[None] | None = None
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
         from deepagents_cli.input import MediaTracker
@@ -635,35 +637,44 @@ class DeepAgentsApp(App):
         )
 
     async def _resolve_git_branch_and_continue(self) -> None:
-        """Resolve git branch immediately, then fire remaining init workers.
+        """Resolve git branch, then schedule remaining init workers.
 
-        Called via `call_after_refresh` so it runs right after first paint.
-        Inlines the subprocess call to avoid importing `textual_adapter` which
-        would block the event loop and delay the branch render.
+        Launched via `asyncio.create_task()` during `on_mount` so the subprocess
+        runs concurrently with first-paint rendering. `_post_paint_init` is
+        scheduled via `call_after_refresh` regardless of whether branch
+        resolution succeeds.
         """
-        import subprocess  # noqa: S404  # stdlib, already loaded
+        try:
+            import subprocess  # noqa: S404  # stdlib, already loaded
 
-        def _get_branch() -> str:
-            try:
-                result = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    check=False,
-                )
-                if result.returncode == 0:
-                    return result.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                pass
-            return ""
+            def _get_branch() -> str:
+                try:
+                    result = subprocess.run(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        return result.stdout.strip()
+                except FileNotFoundError:
+                    pass  # git not installed
+                except subprocess.TimeoutExpired:
+                    logger.debug("Git branch detection timed out")
+                except OSError:
+                    logger.debug("Git branch detection failed", exc_info=True)
+                return ""
 
-        branch = await asyncio.to_thread(_get_branch)
-        if self._status_bar:
-            self._status_bar.branch = branch
-
-        # Yield to Textual so the branch renders before heavy workers start
-        self.call_after_refresh(self._post_paint_init)
+            branch = await asyncio.to_thread(_get_branch)
+            if self._status_bar:
+                self._status_bar.branch = branch
+        except Exception:
+            logger.warning("Git branch resolution failed", exc_info=True)
+        finally:
+            # Always schedule post-paint init — even if branch resolution
+            # fails, the app must still start the server, session, etc.
+            self.call_after_refresh(self._post_paint_init)
 
     async def _post_paint_init(self) -> None:
         """Fire background workers for remaining startup work.
@@ -738,7 +749,15 @@ class DeepAgentsApp(App):
                 thread_id=self._lc_thread_id,
             )
 
-        self._session_state = await asyncio.to_thread(_create)
+        try:
+            self._session_state = await asyncio.to_thread(_create)
+        except Exception:
+            logger.exception("Failed to create session state")
+            self.notify(
+                "Session initialization failed. Some features may be unavailable.",
+                severity="error",
+                timeout=10,
+            )
 
     async def _check_optional_tools_background(self) -> None:
         """Check for optional tools in a thread and notify if missing."""
@@ -756,8 +775,11 @@ class DeepAgentsApp(App):
 
         try:
             missing = await asyncio.to_thread(check_optional_tools)
-        except Exception:
+        except (OSError, FileNotFoundError):
             logger.debug("Failed to check for optional tools", exc_info=True)
+            return
+        except Exception:
+            logger.warning("Unexpected error checking optional tools", exc_info=True)
             return
 
         for tool in missing:

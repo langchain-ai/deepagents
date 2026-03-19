@@ -780,9 +780,9 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
-                            from deepagents_cli.config import settings as _settings
+                            from deepagents_cli.config import settings
 
-                            active_model = _settings.model_name or ""
+                            active_model = settings.model_name or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(

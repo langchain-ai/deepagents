@@ -10,10 +10,26 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from deepagents import create_deep_agent
+from langchain_core.tools import tool
 from langgraph.types import Command
 
 from tests.evals.utils import run_agent
-from tests.utils import get_soccer_scores, get_weather, sample_tool
+
+
+@tool(description="Use this tool to get the weather")
+def get_weather(location: str) -> str:
+    return f"The weather in {location} is sunny."
+
+
+@tool(description="Use this tool to get the latest soccer scores")
+def get_soccer_scores(team: str) -> str:
+    return f"The latest soccer scores for {team} are 2-1."
+
+
+@tool(description="Sample tool")
+def sample_tool(sample_input: str) -> str:
+    return sample_input
+
 
 SAMPLE_TOOL_CONFIG = {
     "sample_tool": True,

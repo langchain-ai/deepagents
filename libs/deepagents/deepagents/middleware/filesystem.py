@@ -445,6 +445,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        max_evicted_files: int = 50,
         max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -455,6 +456,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            max_evicted_files: Maximum number of evicted tool results to keep in the filesystem.
+                Older results are deleted when this limit is reached. Defaults to 50.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -474,6 +477,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self.max_evicted_files = max_evicted_files
         self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
@@ -1193,6 +1197,32 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return await handler(request)
 
+    def _cleanup_evicted_results(self, backend: BackendProtocol) -> None:
+        """Keep only the most recent evicted results to prevent disk/state leak."""
+        try:
+            results = backend.ls_info("/large_tool_results/")
+            if len(results) > self.max_evicted_files:
+                # Sort by modified_at (newest first)
+                results.sort(key=lambda x: x.get("modified_at", ""), reverse=True)
+                to_delete = results[self.max_evicted_files:]
+                for file_info in to_delete:
+                    backend.remove(file_info["path"])
+        except Exception:
+            # Cleanup is best-effort
+            pass
+
+    async def _acleanup_evicted_results(self, backend: BackendProtocol) -> None:
+        """Async version of _cleanup_evicted_results."""
+        try:
+            results = await backend.als_info("/large_tool_results/")
+            if len(results) > self.max_evicted_files:
+                results.sort(key=lambda x: x.get("modified_at", ""), reverse=True)
+                to_delete = results[self.max_evicted_files:]
+                for file_info in to_delete:
+                    await backend.aremove(file_info["path"])
+        except Exception:
+            pass
+
     def _process_large_message(
         self,
         message: ToolMessage,
@@ -1231,6 +1261,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
+
+        # Rolling cleanup to prevent disk/state leak
+        self._cleanup_evicted_results(resolved_backend)
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -1278,6 +1311,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message, None
+
+        # Rolling cleanup to prevent disk/state leak
+        await self._acleanup_evicted_results(resolved_backend)
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)

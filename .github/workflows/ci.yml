@@ -73,6 +73,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
@@ -266,6 +267,16 @@ jobs:
       working-directory: "libs/deepagents"
     secrets: inherit
 
+  # Run CodSpeed benchmarks on CLI changes
+  benchmark-cli:
+    name: "⏱️ Benchmark cli"
+    needs: changes
+    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/cli"
+    secrets: inherit
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -285,6 +296,7 @@ jobs:
       - test-modal
       - test-runloop
       - benchmark-deepagents
+      - benchmark-cli
     if: always()
     runs-on: ubuntu-latest
     steps:

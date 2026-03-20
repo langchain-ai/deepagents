@@ -152,12 +152,46 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
     steps:
+      - name: "🔑 Verify sandbox credentials"
+        working-directory: .
+        run: |
+          missing=()
+          case "$HARBOR_SANDBOX_ENV" in
+            daytona)
+              [ -z "$DAYTONA_API_KEY" ] && missing+=("DAYTONA_API_KEY")
+              ;;
+            modal)
+              [ -z "$MODAL_TOKEN_ID" ] && missing+=("MODAL_TOKEN_ID")
+              [ -z "$MODAL_TOKEN_SECRET" ] && missing+=("MODAL_TOKEN_SECRET")
+              ;;
+            runloop)
+              [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
+              ;;
+          esac
+
+          # Model provider key (infer from model prefix)
+          model_provider="${HARBOR_MODEL%%:*}"
+          case "$model_provider" in
+            anthropic) [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
+            openai)    [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
+            baseten)   [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
+          esac
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required credentials present for $HARBOR_SANDBOX_ENV/$model_provider"
+
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 

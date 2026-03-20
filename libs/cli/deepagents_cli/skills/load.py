@@ -85,173 +85,48 @@ def list_skills(
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
 
-    # Load in precedence order (lowest to highest).
-    # Each source is wrapped in try/except so that a single inaccessible
-    # directory (e.g. permission error) does not prevent skills from other
-    # healthy directories from being listed.
+    sources: list[tuple[Path | None, str, bool]] = [
+        (built_in_skills_dir, "built-in", False),
+        (user_skills_dir, "user", False),
+        (user_agent_skills_dir, "user", False),
+        (project_skills_dir, "project", False),
+        (project_agent_skills_dir, "project", False),
+        (user_claude_skills_dir, "claude (experimental)", True),
+        (project_claude_skills_dir, "claude (experimental)", True),
+    ]
+    """Sources in precedence order (lowest to highest).
 
-    # 0. Built-in skills (<package>/built_in_skills/) - lowest priority
-    if built_in_skills_dir and built_in_skills_dir.exists():
-        try:
-            built_in_backend = FilesystemBackend(root_dir=str(built_in_skills_dir))
-            built_in_skills = list_skills_from_backend(
-                backend=built_in_backend, source_path="."
-            )
-            for skill in built_in_skills:
-                # Inject the installed CLI version into built-in skill metadata
-                # so consumers can see which version shipped the skill.
-                enriched_metadata = {
-                    **skill["metadata"],
-                    "deepagents-cli-version": _cli_version,
-                }
-                # cast(): type checkers can't infer TypedDict from spread syntax
-                extended_skill = cast(
-                    "ExtendedSkillMetadata",
-                    {**skill, "source": "built-in", "metadata": enriched_metadata},
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load built-in skills from %s",
-                built_in_skills_dir,
-                exc_info=True,
-            )
+    Each tuple: `(directory, source label, is_experimental)`.
 
-    # 1. User deepagents skills (~/.deepagents/{agent}/skills/)
-    if user_skills_dir and user_skills_dir.exists():
-        try:
-            user_backend = FilesystemBackend(root_dir=str(user_skills_dir))
-            user_skills = list_skills_from_backend(
-                backend=user_backend, source_path="."
-            )
-            for skill in user_skills:
-                # cast(): type checkers can't infer TypedDict from spread syntax
-                extended_skill = cast(
-                    "ExtendedSkillMetadata", {**skill, "source": "user"}
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load user skills from %s",
-                user_skills_dir,
-                exc_info=True,
-            )
+    Each source is individually try/except-guarded so a single inaccessible
+    directory doesn't block the rest.
+    """
 
-    # 2. User agent skills (~/.agents/skills/) - overrides user deepagents
-    if user_agent_skills_dir and user_agent_skills_dir.exists():
+    for skill_dir, source_label, experimental in sources:
+        if not skill_dir or not skill_dir.exists():
+            continue
         try:
-            user_agent_backend = FilesystemBackend(root_dir=str(user_agent_skills_dir))
-            user_agent_skills = list_skills_from_backend(
-                backend=user_agent_backend, source_path="."
-            )
-            for skill in user_agent_skills:
-                # cast(): type checkers can't infer TypedDict from spread syntax
-                extended_skill = cast(
-                    "ExtendedSkillMetadata", {**skill, "source": "user"}
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load user agent skills from %s",
-                user_agent_skills_dir,
-                exc_info=True,
-            )
-
-    # 3. Project deepagents skills (.deepagents/skills/)
-    if project_skills_dir and project_skills_dir.exists():
-        try:
-            project_backend = FilesystemBackend(root_dir=str(project_skills_dir))
-            project_skills = list_skills_from_backend(
-                backend=project_backend, source_path="."
-            )
-            for skill in project_skills:
-                # cast(): type checkers can't infer TypedDict from spread syntax
-                extended_skill = cast(
-                    "ExtendedSkillMetadata", {**skill, "source": "project"}
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load project skills from %s",
-                project_skills_dir,
-                exc_info=True,
-            )
-
-    # 4. Project agent skills (.agents/skills/) - highest standard priority
-    if project_agent_skills_dir and project_agent_skills_dir.exists():
-        try:
-            project_agent_backend = FilesystemBackend(
-                root_dir=str(project_agent_skills_dir)
-            )
-            project_agent_skills = list_skills_from_backend(
-                backend=project_agent_backend, source_path="."
-            )
-            for skill in project_agent_skills:
-                # cast(): type checkers can't infer TypedDict from spread syntax
-                extended_skill = cast(
-                    "ExtendedSkillMetadata", {**skill, "source": "project"}
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load project agent skills from %s",
-                project_agent_skills_dir,
-                exc_info=True,
-            )
-
-    # 5. User Claude skills (~/.claude/skills/) - experimental
-    if user_claude_skills_dir and user_claude_skills_dir.exists():
-        try:
-            user_claude_backend = FilesystemBackend(
-                root_dir=str(user_claude_skills_dir)
-            )
-            user_claude_skills = list_skills_from_backend(
-                backend=user_claude_backend, source_path="."
-            )
-            if user_claude_skills:
+            backend = FilesystemBackend(root_dir=str(skill_dir))
+            skills = list_skills_from_backend(backend=backend, source_path=".")
+            if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",
-                    len(user_claude_skills),
-                    user_claude_skills_dir,
+                    len(skills),
+                    skill_dir,
                 )
-            for skill in user_claude_skills:
-                extended_skill = cast(
-                    "ExtendedSkillMetadata",
-                    {**skill, "source": "claude (experimental)"},
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
+            for skill in skills:
+                extra: dict[str, object] = {"source": source_label}
+                if source_label == "built-in":
+                    extra["metadata"] = {
+                        **skill["metadata"],
+                        "deepagents-cli-version": _cli_version,
+                    }
+                extended = cast("ExtendedSkillMetadata", {**skill, **extra})
+                all_skills[skill["name"]] = extended
+        except (OSError, KeyError, TypeError):
             logger.warning(
-                "Could not load user Claude skills from %s",
-                user_claude_skills_dir,
-                exc_info=True,
-            )
-
-    # 6. Project Claude skills (.claude/skills/) - experimental, highest priority
-    if project_claude_skills_dir and project_claude_skills_dir.exists():
-        try:
-            project_claude_backend = FilesystemBackend(
-                root_dir=str(project_claude_skills_dir)
-            )
-            project_claude_skills = list_skills_from_backend(
-                backend=project_claude_backend, source_path="."
-            )
-            if project_claude_skills:
-                logger.info(
-                    "Discovered %d skill(s) from experimental Claude path: %s",
-                    len(project_claude_skills),
-                    project_claude_skills_dir,
-                )
-            for skill in project_claude_skills:
-                extended_skill = cast(
-                    "ExtendedSkillMetadata",
-                    {**skill, "source": "claude (experimental)"},
-                )
-                all_skills[skill["name"]] = extended_skill
-        except OSError:
-            logger.warning(
-                "Could not load project Claude skills from %s",
-                project_claude_skills_dir,
+                "Could not load skills from %s",
+                skill_dir,
                 exc_info=True,
             )
 
@@ -275,7 +150,13 @@ def load_skill_content(
     Args:
         skill_path: Path to the SKILL.md file (from `SkillMetadata['path']`).
         allowed_roots: Skill root directories the resolved path must be
-            contained within. If empty, containment is not checked.
+            contained within.
+
+            Callers must pre-resolve these via `Path.resolve()` — the resolved
+            skill path is compared directly, so un-resolved roots cause false
+            containment failures.
+
+            If empty, containment is not checked.
 
     Returns:
         Full text content of the SKILL.md file, or `None` on read failure
@@ -285,9 +166,7 @@ def load_skill_content(
 
     path = Path(skill_path).resolve()
 
-    if allowed_roots and not any(
-        path.is_relative_to(root.resolve()) for root in allowed_roots
-    ):
+    if allowed_roots and not any(path.is_relative_to(root) for root in allowed_roots):
         logger.warning(
             "Skill path %s is outside all allowed roots, refusing to read",
             skill_path,

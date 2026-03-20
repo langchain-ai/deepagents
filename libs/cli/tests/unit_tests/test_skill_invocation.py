@@ -197,6 +197,8 @@ def _make_app() -> MagicMock:
 
     app = MagicMock(spec=DeepAgentsApp)
     app._assistant_id = "agent"
+    app._discovered_skills = []
+    app._skill_allowed_roots = []
     app._mounted_messages: list[object] = []
 
     def capture_mount(msg: object) -> None:
@@ -205,6 +207,9 @@ def _make_app() -> MagicMock:
     app._mount_message = AsyncMock(side_effect=capture_mount)
     app._handle_user_message = AsyncMock()
     app._handle_skill_command = DeepAgentsApp._handle_skill_command.__get__(app)
+    app._discover_skills_and_roots = DeepAgentsApp._discover_skills_and_roots.__get__(
+        app
+    )
     return app
 
 
@@ -233,7 +238,12 @@ def _fake_skill(
 
 
 class TestHandleSkillCommand:
-    """Test _handle_skill_command orchestration paths."""
+    """Test _handle_skill_command orchestration paths.
+
+    Most tests leave `_discovered_skills` empty so the fallback (fresh
+    discovery) path is exercised. Cache-hit tests populate the cache
+    directly.
+    """
 
     async def test_empty_name_shows_usage(self) -> None:
         app = _make_app()
@@ -347,3 +357,61 @@ class TestHandleSkillCommand:
         texts = _app_message_texts(app)
         assert any("TypeError" in t for t in texts)
         app._handle_user_message.assert_not_awaited()
+
+    async def test_cache_hit_skips_list_skills(self) -> None:
+        """When the skill is in the cache, list_skills should not be called."""
+        from pathlib import Path
+
+        app = _make_app()
+        skill = _fake_skill()
+        app._discovered_skills = [skill]
+        sentinel_root = Path("/sentinel/root")
+        app._skill_allowed_roots = [sentinel_root]
+
+        with (
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Cached\nDo cached stuff",
+            ) as mock_load,
+            patch("deepagents_cli.skills.load.list_skills") as mock_list,
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        mock_list.assert_not_called()
+        # Verify cached allowed_roots flow through to load_skill_content
+        mock_load.assert_called_once()
+        _, kwargs = mock_load.call_args
+        assert kwargs["allowed_roots"] == [sentinel_root]
+        app._handle_user_message.assert_awaited_once()
+        prompt = app._handle_user_message.call_args[0][0]
+        assert "test-skill" in prompt
+        assert "# Cached" in prompt
+
+    async def test_cache_miss_falls_back_to_discovery(self) -> None:
+        """When skill is not in cache, fresh discovery is used and cache backfilled."""
+        app = _make_app()
+        skill = _fake_skill(name="new-skill")
+        # Cache has a different skill
+        app._discovered_skills = [_fake_skill(name="other-skill")]
+
+        with (
+            patch(
+                "deepagents_cli.skills.load.list_skills",
+                return_value=[skill],
+            ) as mock_list,
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Fresh\nContent",
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:new-skill")
+
+        mock_list.assert_called_once()
+        app._handle_user_message.assert_awaited_once()
+        prompt = app._handle_user_message.call_args[0][0]
+        assert "new-skill" in prompt
+        assert "# Fresh" in prompt
+        # Cache should be backfilled with fresh discovery results
+        assert len(app._discovered_skills) == 1
+        assert app._discovered_skills[0]["name"] == "new-skill"

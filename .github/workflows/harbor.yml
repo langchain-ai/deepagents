@@ -80,6 +80,35 @@ jobs:
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models }}
+          MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
+          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
+          SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          N_TASKS: ${{ inputs.n_tasks }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          AGENT_MODE: ${{ inputs.agent_mode }}
+        run: |
+          echo "### ⚓ Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${N_TASKS}" = "0" ]; then
+            echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`n_tasks\` | \`${N_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 

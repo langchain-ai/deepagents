@@ -1,15 +1,17 @@
 """Harbor sandbox backend for executing commands in Harbor environments."""
 
 import asyncio
-import base64
-import json
 import logging
 import shlex
+import tempfile
+from pathlib import Path
 
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileDownloadResponse,
     FileInfo,
+    FileUploadResponse,
     GlobResult,
     GrepMatch,
     GrepResult,
@@ -22,12 +24,6 @@ from deepagents.backends.utils import check_empty_content, create_file_data
 from harbor.environments.base import BaseEnvironment
 
 _SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
-
-# Shell exit codes used by the aedit command script
-_EXIT_NOT_FOUND = 1
-_EXIT_MULTIPLE_MATCHES = 2
-_EXIT_FILE_MISSING = 3
-_EXIT_DECODE_FAILED = 4
 
 logger = logging.getLogger(__name__)
 
@@ -199,34 +195,43 @@ awk -v offset={offset} -v limit={limit} '
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file using shell commands."""
-        # Encode content as base64 to avoid escaping issues
-        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        """Create a new file using Harbor's native file transfer.
+
+        Uses `environment.upload_file()` instead of embedding content in
+        the command string, which avoids OS ARG_MAX limits on large payloads.
+        """
         safe_path = shlex.quote(file_path)
 
-        # Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
-        # ARG_MAX limits the total size of command-line arguments.
-        # Heredocs bypass this by passing data through stdin rather than as arguments.
-        cmd = f"""
+        # Step 1: existence check + mkdir (small command, no ARG_MAX risk).
+        check_cmd = f"""
 if [ -e {safe_path} ]; then
-    echo "Error: File '"{safe_path}"' already exists" >&2
+    echo 'Error: File already exists: '{safe_path} >&2
     exit 1
 fi
-parent_dir=$(dirname {safe_path})
-mkdir -p "$parent_dir" 2>/dev/null
-if ! base64 -d > {safe_path} <<'__DEEPAGENTS_EOF__'
-{content_b64}
-__DEEPAGENTS_EOF__
-then
-    echo "Error: Failed to decode content for file '"{safe_path}"' " >&2
-    exit 1
-fi
+mkdir -p "$(dirname {safe_path})" 2>/dev/null
 """
-        result = await self.aexecute(cmd)
+        result = await self.aexecute(check_cmd)
 
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
+
+        # Step 2: transfer content via Harbor's native file upload
+        # (bypasses ARG_MAX entirely — data never touches the command line).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".tmp", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            await self.environment.upload_file(tmp_path, file_path)
+        except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
+            return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                logger.debug("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
         return WriteResult(path=file_path, files_update=None)
 
@@ -245,93 +250,47 @@ fi
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        """Edit a file by replacing string occurrences using shell commands."""
-        # Create JSON payload with old and new strings, then base64 encode
-        payload = json.dumps({"old": old_string, "new": new_string})
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        safe_path = shlex.quote(file_path)
-        replace_all_str = "true" if replace_all else "false"
+        """Edit a file by replacing string occurrences.
 
-        # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits.
-        # ARG_MAX limits the total size of command-line arguments.
-        # Format: base64-encoded JSON with {{"old": str, "new": str}}.
-        # The heredoc feeds into the brace group { ... } which reads and processes stdin.
-        cmd = f"""
-if [ ! -f {safe_path} ]; then
-    exit 3
-fi
+        Downloads the file via Harbor's native file transfer, performs the
+        replacement locally, and re-uploads.  This avoids OS ARG_MAX limits
+        that the previous heredoc approach hit on large payloads.
+        """
+        # Download → local edit → upload (no ARG_MAX risk).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local = Path(tmpdir) / "file"
+            try:
+                await self.environment.download_file(file_path, local)
+            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure type
+                logger.warning("Failed to download %s for editing: %s", file_path, exc)
+                return EditResult(error=f"Error: Failed to download '{file_path}': {exc}")
 
-{{
-    # Read entire heredoc content using cat (read only gets first line)
-    payload_b64=$(cat)
-    if [ -z "$payload_b64" ]; then
-        echo "Error: No payload received for edit operation" >&2
-        exit 4
-    fi
+            try:
+                text = local.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return EditResult(error=f"Error: File '{file_path}' is not a text file")
 
-    # Decode base64 payload
-    payload=$(echo "$payload_b64" | base64 -d) || {{
-        echo "Error: Failed to decode payload" >&2
-        exit 4
-    }}
+            count = text.count(old_string)
+            if count == 0:
+                return EditResult(error=f"Error: String not found in file: '{old_string}'")
+            if count > 1 and not replace_all:
+                return EditResult(
+                    error=f"Error: String '{old_string}' appears multiple times. "
+                    "Use replace_all=True to replace all occurrences."
+                )
 
-    # Extract old and new strings from JSON using python3
-    old=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['old'], end='')") || {{
-        echo "Error: Failed to parse JSON payload" >&2
-        exit 4
-    }}
-    new=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['new'], end='')") || {{
-        echo "Error: Failed to parse JSON payload" >&2
-        exit 4
-    }}
-
-    # Count occurrences using grep -F (fixed strings)
-    count=$(grep -o -F "$old" {safe_path} | wc -l)
-
-    if [ "$count" -eq 0 ]; then
-        exit 1
-    elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
-        exit 2
-    fi
-
-    # Use perl for reliable string replacement (handles special chars).
-    # Note: \\Q...\\E escapes the search pattern. The replacement string is not
-    # escaped, so Perl special sequences (\\U, $1, etc.) in new will be interpreted.
-    if [ "{replace_all_str}" = "true" ]; then
-        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
-    else
-        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
-    fi
-
-    echo "$count"
-}} <<'__DEEPAGENTS_EOF__'
-{payload_b64}
-__DEEPAGENTS_EOF__
-"""
-        result = await self.aexecute(cmd)
-
-        exit_code = result.exit_code
-        output = result.output.strip()
-
-        if exit_code == _EXIT_NOT_FOUND:
-            return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if exit_code == _EXIT_MULTIPLE_MATCHES:
-            return EditResult(
-                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
-            )
-        if exit_code == _EXIT_FILE_MISSING:
-            return EditResult(error=f"Error: File '{file_path}' not found")
-        if exit_code == _EXIT_DECODE_FAILED:
-            return EditResult(error=f"Error: Failed to decode edit payload: {output}")
-        if exit_code != 0:
-            return EditResult(
-                error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}"
+            result_text = (
+                text.replace(old_string, new_string)
+                if replace_all
+                else text.replace(old_string, new_string, 1)
             )
 
-        try:
-            count = int(output.split("\n")[0])
-        except (ValueError, IndexError):
-            count = 1
+            local.write_text(result_text, encoding="utf-8")
+
+            try:
+                await self.environment.upload_file(local, file_path)
+            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
+                return EditResult(error=f"Error editing file '{file_path}': {exc}")
 
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
@@ -507,4 +466,51 @@ done
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching glob pattern using shell commands."""
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
+
+    # -- file transfer via Harbor's native upload/download -------------------
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload files using Harbor's native file transfer."""
+        results: list[FileUploadResponse] = []
+        for path, content in files:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".tmp", delete=False) as tmp:
+                tmp.write(content)
+                tmp_path = Path(tmp.name)
+            try:
+                await self.environment.upload_file(tmp_path, path)
+                results.append(FileUploadResponse(path=path, error=None))
+            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
+                logger.warning("Failed to upload %s: %s", path, exc)
+                results.append(FileUploadResponse(path=path, error="invalid_path"))
+            finally:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    logger.debug("Failed to clean up temp file %s", tmp_path, exc_info=True)
+        return results
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload files (sync). Not supported; use `aupload_files`."""
+        raise NotImplementedError(_SYNC_NOT_SUPPORTED)
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files using Harbor's native file transfer."""
+        results: list[FileDownloadResponse] = []
+        for path in paths:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                local = Path(tmpdir) / (Path(path).name or "file")
+                try:
+                    await self.environment.download_file(path, local)
+                    content = local.read_bytes()
+                    results.append(FileDownloadResponse(path=path, content=content, error=None))
+                except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure type
+                    logger.warning("Failed to download %s: %s", path, exc)
+                    results.append(
+                        FileDownloadResponse(path=path, content=None, error="file_not_found")
+                    )
+        return results
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files (sync). Not supported; use `adownload_files`."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)

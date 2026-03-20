@@ -53,105 +53,19 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
-# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
-# ARG_MAX limits the total size of command-line arguments.
-# Previously, base64-encoded content was interpolated directly into the command
-# string, which would fail for files larger than ~100KB after base64 expansion.
-# Heredocs bypass this by passing data through stdin rather than as arguments.
-# Stdin format: first line is base64-encoded file path, second line is base64-encoded content.
-_WRITE_COMMAND_TEMPLATE = """python3 -c "
-import os
-import sys
-import base64
-import json
+# Preflight check for write operations: verify the target file does not already
+# exist and create parent directories.  Only the (small) base64-encoded *path*
+# is interpolated — file content is transferred separately via upload_files()
+# so that arbitrarily large payloads never hit OS ARG_MAX limits.
+_WRITE_CHECK_TEMPLATE = """python3 -c "
+import os, sys, base64
 
-# Read JSON payload from stdin containing file_path and content (both base64-encoded)
-payload_b64 = sys.stdin.read().strip()
-if not payload_b64:
-    print('Error: No payload received for write operation', file=sys.stderr)
+path = base64.b64decode('{path_b64}').decode('utf-8')
+if os.path.exists(path):
+    print('Error: File already exists: ' + repr(path), file=sys.stderr)
     sys.exit(1)
-
-try:
-    payload = base64.b64decode(payload_b64).decode('utf-8')
-    data = json.loads(payload)
-    file_path = data['path']
-    content = base64.b64decode(data['content']).decode('utf-8')
-except Exception as e:
-    print(f'Error: Failed to decode write payload: {{e}}', file=sys.stderr)
-    sys.exit(1)
-
-# Check if file already exists (atomic with write)
-if os.path.exists(file_path):
-    print(f'Error: File \\'{{file_path}}\\' already exists', file=sys.stderr)
-    sys.exit(1)
-
-# Create parent directory if needed
-parent_dir = os.path.dirname(file_path) or '.'
-os.makedirs(parent_dir, exist_ok=True)
-
-with open(file_path, 'w') as f:
-    f.write(content)
-" <<'__DEEPAGENTS_EOF__'
-{payload_b64}
-__DEEPAGENTS_EOF__\n"""
-
-# Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
-# Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
-# JSON bundles all parameters; base64 ensures safe transport of arbitrary content
-# (special chars, newlines, etc.) through the heredoc without escaping issues.
-_EDIT_COMMAND_TEMPLATE = """python3 -c "
-import sys
-import base64
-import json
-import os
-
-# Read and decode JSON payload from stdin
-payload_b64 = sys.stdin.read().strip()
-if not payload_b64:
-    print('Error: No payload received for edit operation', file=sys.stderr)
-    sys.exit(4)
-
-try:
-    payload = base64.b64decode(payload_b64).decode('utf-8')
-    data = json.loads(payload)
-    file_path = data['path']
-    old = data['old']
-    new = data['new']
-except Exception as e:
-    print(f'Error: Failed to decode edit payload: {{e}}', file=sys.stderr)
-    sys.exit(4)
-
-# Check if file exists
-if not os.path.isfile(file_path):
-    sys.exit(3)  # File not found
-
-# Read file content
-with open(file_path, 'r') as f:
-    text = f.read()
-
-# Count occurrences
-count = text.count(old)
-
-# Exit with error codes if issues found
-if count == 0:
-    sys.exit(1)  # String not found
-elif count > 1 and not {replace_all}:
-    sys.exit(2)  # Multiple occurrences without replace_all
-
-# Perform replacement
-if {replace_all}:
-    result = text.replace(old, new)
-else:
-    result = text.replace(old, new, 1)
-
-# Write back to file
-with open(file_path, 'w') as f:
-    f.write(result)
-
-print(count)
-" <<'__DEEPAGENTS_EOF__'
-{payload_b64}
-__DEEPAGENTS_EOF__\n"""
+os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+" 2>&1"""
 
 # Use heredoc to pass read parameters via stdin, matching write/edit pattern.
 # Stdin format: base64-encoded JSON with
@@ -316,22 +230,22 @@ except PermissionError:
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        # Create JSON payload with file path and base64-encoded content
-        # This avoids shell injection via file_path and ARG_MAX limits on content
-        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        payload = json.dumps({"path": file_path, "content": content_b64})
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        # Step 1: existence check + mkdir (small command, no ARG_MAX risk).
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+        result = self.execute(check_cmd)
 
-        # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd)
-
-        # Check for errors (exit code or error message in output)
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
-        # External storage - no files_update needed
+        # Step 2: transfer content via upload_files() to bypass ARG_MAX.
+        responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        if not responses:
+            return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
+        if responses[0].error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
+
         return WriteResult(path=file_path, files_update=None)
 
     def edit(
@@ -342,32 +256,30 @@ except PermissionError:
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Create JSON payload with file path, old string, and new string
-        # This avoids shell injection via file_path and ARG_MAX limits on strings
-        payload = json.dumps({"path": file_path, "old": old_string, "new": new_string})
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        # Download → local edit → upload to bypass ARG_MAX on large payloads.
+        responses = self.download_files([file_path])
+        resp = responses[0] if responses else None
+        if not resp or resp.error or resp.content is None:
+            return EditResult(error=f"Error: File '{file_path}' not found")
 
-        # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=replace_all)
-        result = self.execute(cmd)
+        try:
+            text = resp.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return EditResult(error=f"Error: File '{file_path}' is not a text file")
 
-        exit_code = result.exit_code
-        output = result.output.strip()
+        count = text.count(old_string)
+        if count == 0:
+            return EditResult(error=f"Error: String not found in file: '{old_string}'")
+        if count > 1 and not replace_all:
+            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
 
-        # Map exit codes to error messages
-        error_messages = {
-            1: f"Error: String not found in file: '{old_string}'",
-            2: f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
-            3: f"Error: File '{file_path}' not found",
-            4: f"Error: Failed to decode edit payload: {output}",
-        }
-        if exit_code in error_messages:
-            return EditResult(error=error_messages[exit_code])
-        if exit_code != 0:
-            return EditResult(error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}")
+        result_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
 
-        count = int(output)
-        # External storage - no files_update needed
+        upload_resp = self.upload_files([(file_path, result_text.encode("utf-8"))])
+        upload_err = upload_resp[0].error if upload_resp else "upload returned no response"
+        if upload_err:
+            return EditResult(error=f"Error editing file '{file_path}': {upload_err}")
+
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
     def grep(

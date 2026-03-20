@@ -41,6 +41,7 @@ on:
         options:
           - docker
           - daytona
+          - langsmith
           - modal
           - runloop
       task_count:

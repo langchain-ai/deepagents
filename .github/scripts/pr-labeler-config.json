@@ -46,18 +46,20 @@
     "breaking": "breaking"
   },
   "scopeToLabel": {
-    "deepagents": "deepagents",
-    "sdk": "deepagents",
-    "deepagents-cli": "cli",
-    "cli": "cli",
-    "harbor": "evals",
-    "evals": "evals",
     "acp": "acp",
-    "docs": "documentation",
-    "infra": "infra",
+    "ci": "infra",
+    "cli": "cli",
+    "cli-gha": "cli",
+    "daytona": "daytona",
+    "deepagents": "deepagents",
+    "deepagents-cli": "cli",
     "deps": "dependencies",
+    "docs": "documentation",
+    "evals": "evals",
     "examples": "examples",
-    "daytona": "daytona"
+    "harbor": "evals",
+    "infra": "infra",
+    "sdk": "deepagents"
   },
   "fileRules": [
     {
@@ -79,6 +81,14 @@
       "label": "evals",
       "prefix": "libs/evals/",
       "skipExcludedFiles": true
+    },
+    {
+      "label": "cli",
+      "exact": "action.yml"
+    },
+    {
+      "label": "github_actions",
+      "exact": "action.yml"
     },
     {
       "label": "github_actions",

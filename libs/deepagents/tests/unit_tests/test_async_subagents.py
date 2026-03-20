@@ -260,10 +260,7 @@ class TestLaunchTool:
         mock_client.runs.create.assert_called_once_with(
             thread_id="thread_abc",
             assistant_id="my_graph",
-            input={
-                "messages": [{"role": "user", "content": "analyze data"}],
-                "task_id": "thread_abc",
-            },
+            input={"messages": [{"role": "user", "content": "analyze data"}]},
         )
 
 
@@ -890,19 +887,20 @@ class TestExtractParentContext:
         ctx = _extract_parent_context(runtime)
         assert ctx["parent_thread_id"] == "thread-supervisor-123"
 
-    def test_extracts_assistant_id_from_metadata(self) -> None:
+    def test_skips_none_thread_id(self) -> None:
         runtime = ToolRuntime(
             state={},
             context=None,
             tool_call_id="tc_test",
             store=None,
             stream_writer=lambda _: None,
-            config={"metadata": {"assistant_id": "asst-supervisor-456"}},
+            config={"configurable": {"thread_id": None}},
         )
         ctx = _extract_parent_context(runtime)
-        assert ctx["parent_assistant_id"] == "asst-supervisor-456"
+        assert ctx == {}
 
-    def test_extracts_both_ids(self) -> None:
+    def test_ignores_metadata(self) -> None:
+        """_extract_parent_context only extracts thread_id, not assistant_id."""
         runtime = ToolRuntime(
             state={},
             context=None,
@@ -915,31 +913,13 @@ class TestExtractParentContext:
             },
         )
         ctx = _extract_parent_context(runtime)
-        assert ctx == {
-            "parent_thread_id": "thread-123",
-            "parent_assistant_id": "asst-456",
-        }
-
-    def test_skips_none_values(self) -> None:
-        runtime = ToolRuntime(
-            state={},
-            context=None,
-            tool_call_id="tc_test",
-            store=None,
-            stream_writer=lambda _: None,
-            config={
-                "configurable": {"thread_id": None},
-                "metadata": {"assistant_id": "asst-456"},
-            },
-        )
-        ctx = _extract_parent_context(runtime)
-        assert "parent_thread_id" not in ctx
-        assert ctx["parent_assistant_id"] == "asst-456"
+        assert ctx == {"parent_thread_id": "thread-123"}
+        assert "parent_assistant_id" not in ctx
 
 
 class TestLaunchToolPassesParentContext:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_includes_parent_context_in_input(self, mock_get_client: MagicMock) -> None:
+    def test_launch_includes_parent_thread_id_in_input(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
         mock_client.runs.create.return_value = {"run_id": "run_xyz"}
@@ -956,7 +936,6 @@ class TestLaunchToolPassesParentContext:
             stream_writer=lambda _: None,
             config={
                 "configurable": {"thread_id": "supervisor-thread"},
-                "metadata": {"assistant_id": "supervisor-asst"},
             },
         )
 
@@ -972,15 +951,13 @@ class TestLaunchToolPassesParentContext:
             assistant_id="my_graph",
             input={
                 "messages": [{"role": "user", "content": "analyze data"}],
-                "task_id": "thread_abc",
                 "parent_thread_id": "supervisor-thread",
-                "parent_assistant_id": "supervisor-asst",
             },
         )
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_launch_omits_parent_context_when_not_available(self, mock_get_client: MagicMock) -> None:
-        """When the supervisor config has no thread_id/assistant_id, input has only task_id."""
+        """When the supervisor config has no thread_id, input stays clean."""
         mock_client = MagicMock()
         mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
         mock_client.runs.create.return_value = {"run_id": "run_xyz"}
@@ -999,8 +976,5 @@ class TestLaunchToolPassesParentContext:
         mock_client.runs.create.assert_called_once_with(
             thread_id="thread_abc",
             assistant_id="my_graph",
-            input={
-                "messages": [{"role": "user", "content": "analyze data"}],
-                "task_id": "thread_abc",
-            },
+            input={"messages": [{"role": "user", "content": "analyze data"}]},
         )

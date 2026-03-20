@@ -229,29 +229,23 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
 
 
 def _extract_parent_context(runtime: ToolRuntime) -> dict[str, str]:
-    """Extract the supervisor's thread and assistant IDs from the tool runtime.
+    """Extract the supervisor's thread ID from the tool runtime.
 
-    These are included in the subagent's input state so the subagent can
-    notify the supervisor when it completes (via `CompletionNotifierMiddleware`).
+    The thread ID is included in the subagent's input state so the subagent
+    can notify the supervisor when it completes (via
+    `CompletionNotifierMiddleware`).
 
     Returns:
-        Dict with `parent_thread_id` and/or `parent_assistant_id` if available.
-        Empty dict if neither is available.
+        Dict with `parent_thread_id` if available. Empty dict otherwise.
     """
-    context: dict[str, str] = {}
     config = runtime.config or {}
     configurable = config.get("configurable") or {}
-    metadata = config.get("metadata") or {}
 
     thread_id = configurable.get("thread_id")
     if thread_id:
-        context["parent_thread_id"] = str(thread_id)
+        return {"parent_thread_id": str(thread_id)}
 
-    assistant_id = metadata.get("assistant_id")
-    if assistant_id:
-        context["parent_assistant_id"] = str(assistant_id)
-
-    return context
+    return {}
 
 
 def _build_start_tool(
@@ -280,7 +274,6 @@ def _build_start_tool(
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
-                    "task_id": task_id,
                     **parent_context,
                 },
             )
@@ -325,7 +318,6 @@ def _build_start_tool(
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
-                    "task_id": task_id,
                     **parent_context,
                 },
             )

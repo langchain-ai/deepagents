@@ -1,5 +1,8 @@
 """Completion notifier middleware for async subagents.
 
+!!! warning "Experimental"
+    This middleware is experimental and may change in future releases.
+
 When an async subagent finishes (success or error), this middleware sends a
 message back to the **supervisor's** thread so the supervisor wakes up and can
 proactively relay results to the user -- without the user having to poll via
@@ -9,47 +12,60 @@ proactively relay results to the user -- without the user having to poll via
 
 The async subagent protocol is inherently fire-and-forget: the supervisor
 launches a job via `start_async_task` and only learns about completion
-when someone calls `check_async_task`.
+when someone calls `check_async_task`. This middleware closes that gap.
 
-The notifier calls `runs.create()` on the supervisor's thread and assistant
-ID, which queues a new run. From the supervisor's perspective, it looks like
-a new user message arrived -- except the content is a structured notification
+```
+Supervisor                    Subagent
+    |                            |
+    |--- start_async_task -----> |
+    |<-- task_id (immediately) - |
+    |                            |  (working...)
+    |                            |  (done!)
+    |                            |
+    |<-- runs.create(            |
+    |      supervisor_thread,    |
+    |      "completed: ...")     |
+    |                            |
+    |  (wakes up, sees result)   |
+```
+
+The notifier calls `runs.create()` on the supervisor's thread, which
+queues a new run. From the supervisor's perspective, it looks like a new
+user message arrived -- except the content is a structured notification
 from the subagent.
 
 ## How parent context is propagated
 
-The supervisor's `start_async_task` tool includes the parent's
-`thread_id` and `assistant_id` in the subagent's input state. The notifier
-reads these from the subagent's own state, which means:
-
-- The IDs survive thread interrupts and updates (they're in state, not config)
-- If the IDs are not present, the notifier silently no-ops
+- `parent_graph_id` is passed as a **constructor argument** to the middleware.
+  This is the supervisor's graph ID (or assistant ID), which the subagent
+  developer knows at configuration time.
+- `parent_thread_id` is injected into the subagent's input state by the
+  supervisor's `start_async_task` tool. It survives thread interrupts and
+  updates because it lives in state, not config.
+- If `parent_thread_id` is not present in state, the notifier silently no-ops.
 
 ## Usage
 
 Add this middleware to the subagent's middleware stack:
 
 ```python
-import contextlib
-
-from langchain.agents import create_agent
-from langchain_core.runnables import RunnableConfig
-
 from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
 
+notifier = CompletionNotifierMiddleware(
+    parent_graph_id="supervisor",
+    subagent_name="researcher",
+)
 
-@contextlib.asynccontextmanager
-async def graph(config: RunnableConfig):
-    yield create_agent(
-        model=model,
-        tools=[...],
-        middleware=[CompletionNotifierMiddleware(subagent_name="researcher")],
-    )
+graph = create_agent(
+    model=model,
+    tools=[...],
+    middleware=[notifier],
+)
 ```
 
-The middleware will read `parent_thread_id` and `parent_assistant_id` from
-the agent's state at the end of execution. These are injected automatically
-by the supervisor's `start_async_task` tool when it creates the run.
+The middleware will read `parent_thread_id` from the agent's state at the
+end of execution. This is injected automatically by the supervisor's
+`start_async_task` tool when it creates the run.
 """
 
 from __future__ import annotations
@@ -69,14 +85,15 @@ if TYPE_CHECKING:
 
 # State keys where the supervisor's launch tool stores parent context.
 _PARENT_THREAD_ID_KEY = "parent_thread_id"
-_PARENT_ASSISTANT_ID_KEY = "parent_assistant_id"
-_TASK_ID_KEY = "task_id"
 
 
 class CompletionNotifierState(AgentState):
     """State extension for subagents that use the completion notifier.
 
-    These fields are injected by the supervisor's `launch_async_subagent`
+    !!! warning "Experimental"
+        This state schema is experimental and may change in future releases.
+
+    These fields are injected by the supervisor's `start_async_task`
     tool and read by `CompletionNotifierMiddleware` to send notifications
     back to the supervisor's thread.
     """
@@ -84,22 +101,10 @@ class CompletionNotifierState(AgentState):
     parent_thread_id: NotRequired[str | None]
     """The supervisor's thread ID. Used to address the notification."""
 
-    parent_assistant_id: NotRequired[str | None]
-    """The supervisor's assistant ID. Used to create a run on the supervisor's thread."""
-
-    task_id: NotRequired[str | None]
-    """The task ID assigned by the supervisor.
-
-    This is the subagent's thread ID, which the supervisor uses to track
-    the job. Included in notifications so the supervisor can correlate
-    completions back to specific jobs when multiple tasks of the same
-    subagent type are running concurrently.
-    """
-
 
 async def _notify_parent(
     parent_thread_id: str,
-    parent_assistant_id: str,
+    parent_graph_id: str,
     notification: str,
     subagent_name: str,
 ) -> None:
@@ -111,7 +116,8 @@ async def _notify_parent(
 
     Args:
         parent_thread_id: The supervisor's thread ID.
-        parent_assistant_id: The supervisor's assistant ID.
+        parent_graph_id: The supervisor's graph ID (used as `assistant_id`
+            in the `runs.create` call).
         notification: The message content to send.
         subagent_name: Human-readable name for logging.
     """
@@ -121,7 +127,7 @@ async def _notify_parent(
         client = get_client()
         await client.runs.create(
             thread_id=parent_thread_id,
-            assistant_id=parent_assistant_id,
+            assistant_id=parent_graph_id,
             input={
                 "messages": [{"role": "user", "content": notification}],
             },
@@ -159,20 +165,27 @@ def _extract_last_message(state: dict[str, Any]) -> str:
 class CompletionNotifierMiddleware(AgentMiddleware):
     """Notifies the supervisor when an async subagent completes or errors.
 
+    !!! warning "Experimental"
+        This middleware is experimental and may change in future releases.
+
     This middleware is added to the **subagent's** middleware stack (not the
     supervisor's). When the subagent finishes, it sends a message to the
     supervisor's thread via `runs.create()`, waking the supervisor so it can
     proactively relay results.
 
-    The supervisor's thread ID and assistant ID are read from the subagent's
-    own state (keys `parent_thread_id` and `parent_assistant_id`). These are
-    injected by the supervisor's `launch_async_subagent` tool at launch time.
+    The supervisor's `parent_thread_id` is read from the subagent's own state
+    (injected by the supervisor's `start_async_task` tool at launch time).
+    The `parent_graph_id` is provided as a constructor argument since it's
+    static configuration known at deployment time.
 
-    If the parent context is not present in state (e.g., the subagent was
+    If `parent_thread_id` is not present in state (e.g., the subagent was
     launched manually without a supervisor), the middleware silently does
     nothing.
 
     Args:
+        parent_graph_id: The supervisor's graph ID (or assistant ID). Used
+            as the `assistant_id` parameter when calling `runs.create()` to
+            send notifications back to the supervisor.
         subagent_name: Human-readable name used in notification messages
             and logs. Helps the supervisor identify which subagent sent
             the notification.
@@ -183,7 +196,10 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             CompletionNotifierMiddleware,
         )
 
-        notifier = CompletionNotifierMiddleware(subagent_name="researcher")
+        notifier = CompletionNotifierMiddleware(
+            parent_graph_id="supervisor",
+            subagent_name="researcher",
+        )
 
         graph = create_agent(
             model=model,
@@ -195,42 +211,49 @@ class CompletionNotifierMiddleware(AgentMiddleware):
 
     state_schema = CompletionNotifierState
 
-    def __init__(self, subagent_name: str = "subagent") -> None:
+    def __init__(self, parent_graph_id: str, subagent_name: str = "subagent") -> None:
         """Initialize the `CompletionNotifierMiddleware`."""
         super().__init__()
+        self.parent_graph_id = parent_graph_id
         self.subagent_name = subagent_name
         self._notified = False
-
-    def _get_parent_ids(self, state: dict[str, Any]) -> tuple[str | None, str | None]:
-        """Extract parent thread and assistant IDs from the subagent's state."""
-        return (
-            state.get(_PARENT_THREAD_ID_KEY),
-            state.get(_PARENT_ASSISTANT_ID_KEY),
-        )
 
     def _should_notify(self, state: dict[str, Any]) -> bool:
         """Check whether we should send a notification."""
         if self._notified:
             return False
-        parent_thread_id, parent_assistant_id = self._get_parent_ids(state)
-        return bool(parent_thread_id) and bool(parent_assistant_id)
+        return bool(state.get(_PARENT_THREAD_ID_KEY))
 
     async def _send_notification(self, state: dict[str, Any], message: str) -> None:
         """Send a notification to the parent if conditions are met."""
         if not self._should_notify(state):
             return
         self._notified = True
-        parent_thread_id, parent_assistant_id = self._get_parent_ids(state)
         await _notify_parent(
-            parent_thread_id,  # type: ignore[arg-type]
-            parent_assistant_id,  # type: ignore[arg-type]
+            state[_PARENT_THREAD_ID_KEY],
+            self.parent_graph_id,
             message,
             self.subagent_name,
         )
 
-    def _format_notification(self, state: dict[str, Any], body: str) -> str:
+    @staticmethod
+    def _get_task_id() -> str | None:
+        """Read the subagent's own thread_id from config.
+
+        The subagent's `thread_id` is the same as the `task_id` from the
+        supervisor's perspective. Available via `get_config()` at runtime.
+        """
+        try:
+            from langgraph.config import get_config  # noqa: PLC0415
+
+            config = get_config()
+            return (config.get("configurable") or {}).get("thread_id")
+        except RuntimeError:
+            return None
+
+    def _format_notification(self, body: str) -> str:
         """Build a notification string with task_id and subagent name."""
-        task_id = state.get(_TASK_ID_KEY)
+        task_id = self._get_task_id()
         prefix = f"[task_id={task_id}]" if task_id else ""
         return f"{prefix}[subagent={self.subagent_name}] {body}"
 
@@ -244,7 +267,7 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         Extracts the last message as a summary and sends it to the supervisor.
         """
         summary = _extract_last_message(state)
-        notification = self._format_notification(state, f"Completed. Result: {summary}")
+        notification = self._format_notification(f"Completed. Result: {summary}")
         await self._send_notification(state, notification)
         return None
 
@@ -261,6 +284,6 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         try:
             return await handler(request)
         except Exception as e:
-            notification = self._format_notification(request.state, f"Error: {e!s}")
+            notification = self._format_notification(f"Error: {e!s}")
             await self._send_notification(request.state, notification)
             raise

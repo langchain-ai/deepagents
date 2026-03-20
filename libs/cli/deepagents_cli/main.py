@@ -1461,6 +1461,22 @@ def cli_main() -> None:
                 hint = Text("deepagents -r ", style="cyan")
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
+
+            # Warn about available update on exit
+            try:
+                if result.update_available[0]:
+                    from deepagents_cli.update_check import upgrade_command
+
+                    latest = result.update_available[1]
+                    console.print()
+                    update_msg = Text("Update available: ", style="yellow bold")
+                    update_msg.append(f"v{latest}", style="yellow")
+                    console.print(update_msg)
+                    cmd_hint = Text("Run: ", style="dim")
+                    cmd_hint.append(upgrade_command(), style="cyan")
+                    console.print(cmd_hint)
+            except Exception:
+                logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C — suppress ugly traceback.
         # `console` may not be bound if Ctrl+C arrives during config import.

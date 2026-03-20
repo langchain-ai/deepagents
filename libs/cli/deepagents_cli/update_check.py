@@ -1,29 +1,50 @@
-"""Background update check for deepagents-cli.
+"""Update lifecycle for `deepagents-cli`.
 
-Compares the installed version against PyPI and caches the result
-(see `CACHE_TTL`). All errors are silently swallowed to avoid disrupting
-user experience.
+Handles version checking against PyPI (with caching), install-method detection,
+auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
+
+All errors are silently swallowed to avoid disrupting user experience.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import shutil
+import sys
 import time
-from typing import TYPE_CHECKING
+import tomllib
+from typing import TYPE_CHECKING, Literal
 
-from deepagents_cli._version import __version__
+from deepagents_cli._version import PYPI_URL, USER_AGENT, __version__
 
 if TYPE_CHECKING:
     from pathlib import Path
-from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
+
+from deepagents_cli.model_config import DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
-PYPI_URL = "https://pypi.org/pypi/deepagents-cli/json"
 CACHE_FILE: Path = DEFAULT_CONFIG_DIR / "latest_version.json"
+SEEN_VERSION_FILE: Path = DEFAULT_CONFIG_DIR / "seen_version.json"
 CACHE_TTL = 86_400  # 24 hours
-USER_AGENT = f"deepagents-cli/{__version__} update-check"
+
+InstallMethod = Literal["uv", "pip", "brew", "unknown"]
+
+_UPGRADE_COMMANDS: dict[InstallMethod, str] = {
+    "uv": "uv tool upgrade deepagents-cli",
+    "brew": "brew upgrade deepagents-cli",
+    "pip": "pip install --upgrade deepagents-cli",
+}
+"""Upgrade commands keyed by install method.
+
+Execution order is determined by `perform_upgrade`, which tries the detected
+method only.
+"""
+
+_UPGRADE_TIMEOUT = 120  # seconds
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -34,30 +55,39 @@ def _parse_version(v: str) -> tuple[int, ...]:
 
     Returns:
         Tuple of integers, e.g. `(1, 2, 3)`.
-
     """
     return tuple(int(x) for x in v.strip().split("."))
 
 
-def get_latest_version() -> str | None:
+def get_latest_version(*, bypass_cache: bool = False) -> str | None:
     """Fetch the latest deepagents-cli version from PyPI, with caching.
 
     Results are cached to `CACHE_FILE` to avoid repeated network calls.
+
+    Args:
+        bypass_cache: Skip the cache and always hit PyPI.
 
     Returns:
         The latest version string, or `None` on any failure.
     """
     try:
-        if CACHE_FILE.exists():
+        if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             if time.time() - data.get("checked_at", 0) < CACHE_TTL:
                 return data["version"]
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
         logger.debug("Failed to read update-check cache", exc_info=True)
 
     try:
         import requests
+    except ImportError:
+        logger.warning(
+            "requests package not installed — update checks disabled. "
+            "Install with: pip install requests"
+        )
+        return None
 
+    try:
         resp = requests.get(
             PYPI_URL,
             headers={"User-Agent": USER_AGENT},
@@ -65,7 +95,7 @@ def get_latest_version() -> str | None:
         )
         resp.raise_for_status()
         latest: str = resp.json()["info"]["version"]
-    except Exception:
+    except (requests.RequestException, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return None
 
@@ -75,21 +105,26 @@ def get_latest_version() -> str | None:
             json.dumps({"version": latest, "checked_at": time.time()}),
             encoding="utf-8",
         )
-    except Exception:
+    except OSError:
         logger.debug("Failed to write update-check cache", exc_info=True)
 
     return latest
 
 
-def is_update_available() -> tuple[bool, str | None]:
+def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
     """Check whether a newer version of deepagents-cli is available.
 
+    Args:
+        bypass_cache: Skip the cache and always hit PyPI.
+
     Returns:
-        A `(available, latest)` tuple. `available` is `True` when
-        the PyPI version is strictly newer than the installed version;
-        `latest` is the version string (or `None` when the check fails).
+        A `(available, latest)` tuple.
+
+            `available` is `True` when the PyPI version is strictly newer than
+            the installed version; `latest` is the version string (or `None`
+            when the check fails).
     """
-    latest = get_latest_version()
+    latest = get_latest_version(bypass_cache=bypass_cache)
     if latest is None:
         return False, None
 
@@ -100,3 +135,196 @@ def is_update_available() -> tuple[bool, str | None]:
         logger.debug("Failed to compare versions", exc_info=True)
 
     return False, None
+
+
+# ---------------------------------------------------------------------------
+# Install method detection
+# ---------------------------------------------------------------------------
+
+
+def detect_install_method() -> InstallMethod:
+    """Detect how `deepagents-cli` was installed.
+
+    Checks `sys.prefix` against known paths for uv and Homebrew.
+
+    Returns:
+        `'unknown'` for editable/dev installs, otherwise falls back to `'pip'`.
+    """
+    from deepagents_cli.config import _is_editable_install
+
+    prefix = sys.prefix
+    # uv tool installs live under ~/.local/share/uv/tools/
+    if "/uv/tools/" in prefix or "\\uv\\tools\\" in prefix:
+        return "uv"
+    # Homebrew prefixes
+    if any(
+        prefix.startswith(p)
+        for p in ("/opt/homebrew", "/usr/local/Cellar", "/home/linuxbrew")
+    ):
+        return "brew"
+    # Editable / dev installs — don't auto-upgrade
+    if _is_editable_install():
+        return "unknown"
+    return "pip"
+
+
+def upgrade_command(method: InstallMethod | None = None) -> str:
+    """Return the shell command to upgrade `deepagents-cli`.
+
+    Falls back to the pip command for unrecognised install methods.
+
+    Args:
+        method: Install method override.
+
+            Auto-detected if `None`.
+    """
+    if method is None:
+        method = detect_install_method()
+    return _UPGRADE_COMMANDS.get(method, _UPGRADE_COMMANDS["pip"])
+
+
+async def perform_upgrade() -> tuple[bool, str]:
+    """Attempt to upgrade `deepagents-cli` using the detected install method.
+
+    Only tries the detected method — does not fall back to other package
+    managers to avoid cross-environment contamination.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr.
+    """
+    method = detect_install_method()
+    if method == "unknown":
+        return False, "Editable install detected — skipping auto-update."
+
+    cmd = _UPGRADE_COMMANDS.get(method)
+    if cmd is None:
+        return False, f"No upgrade command for install method: {method}"
+
+    # Skip brew if binary not on PATH
+    if method == "brew" and not shutil.which("brew"):
+        return False, "brew not found on PATH."
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_UPGRADE_TIMEOUT
+        )
+        output = (stdout or b"").decode() + (stderr or b"").decode()
+        if proc.returncode == 0:
+            return True, output.strip()
+        logger.warning(
+            "Upgrade via %s exited with code %d: %s",
+            method,
+            proc.returncode,
+            output.strip(),
+        )
+        return False, output.strip()
+    except TimeoutError:
+        msg = f"Upgrade command timed out after {_UPGRADE_TIMEOUT}s: {cmd}"
+        logger.warning(msg)
+        return False, msg
+    except OSError:
+        logger.warning("Failed to execute upgrade command: %s", cmd, exc_info=True)
+        return False, f"Failed to execute: {cmd}"
+
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+
+def is_update_check_enabled() -> bool:
+    """Return whether update checks are enabled.
+
+    Checks `DEEPAGENTS_NO_UPDATE_CHECK` env var and the `[update].check` key
+    in `config.toml`.
+
+    Defaults to enabled.
+    """
+    if os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+        return False
+    return _read_update_config().get("check", True)
+
+
+def is_auto_update_enabled() -> bool:
+    """Return whether auto-update is enabled.
+
+    Opt-in via `DEEPAGENTS_AUTO_UPDATE=1` env var or
+    `[update].auto_update = true` in `config.toml`.
+
+    Defaults to `False`.
+
+    Always disabled for editable installs.
+    """
+    from deepagents_cli.config import _is_editable_install
+
+    if _is_editable_install():
+        return False
+    if os.environ.get("DEEPAGENTS_AUTO_UPDATE"):
+        return True
+    return _read_update_config().get("auto_update", False)
+
+
+def _read_update_config() -> dict[str, bool]:
+    """Read `[update]` section from `config.toml`.
+
+    Returns:
+        A dict of boolean config values, empty on missing/unreadable file.
+    """
+    try:
+        if not DEFAULT_CONFIG_PATH.exists():
+            return {}
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+        section = data.get("update", {})
+        return {k: v for k, v in section.items() if isinstance(v, bool)}
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read [update] config", exc_info=True)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# "What's new" tracking
+# ---------------------------------------------------------------------------
+
+
+def get_seen_version() -> str | None:
+    """Return the last version the user saw the "what's new" banner for."""
+    try:
+        if SEEN_VERSION_FILE.exists():
+            data = json.loads(SEEN_VERSION_FILE.read_text(encoding="utf-8"))
+            return data.get("version")
+    except Exception:
+        logger.debug("Failed to read seen-version file", exc_info=True)
+    return None
+
+
+def mark_version_seen(version: str) -> None:
+    """Record that the user has seen the "what's new" banner for *version*."""
+    try:
+        SEEN_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SEEN_VERSION_FILE.write_text(
+            json.dumps({"version": version, "seen_at": time.time()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.debug("Failed to write seen-version file", exc_info=True)
+
+
+def should_show_whats_new() -> bool:
+    """Return `True` if this is the first launch on a newer version."""
+    seen = get_seen_version()
+    if seen is None:
+        # First run ever — mark current as seen, don't show banner.
+        mark_version_seen(__version__)
+        return False
+    try:
+        return _parse_version(__version__) > _parse_version(seen)
+    except (ValueError, TypeError):
+        logger.debug("Failed to compare versions for what's-new check", exc_info=True)
+        return False

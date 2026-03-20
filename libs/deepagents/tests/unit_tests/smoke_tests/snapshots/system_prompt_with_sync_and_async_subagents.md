@@ -108,14 +108,14 @@ Available subagent types:
 You have access to async subagent tools that launch background tasks on remote LangGraph servers.
 
 ### Tools:
-- `launch_async_task`: Start a new background task. Returns a task ID immediately.
+- `start_async_task`: Start a new background task. Returns a task ID immediately.
 - `check_async_task`: Get current status and result of a task. Returns status + result (if complete).
 - `update_async_task`: Send new instructions to a running task. Returns confirmation + updated status.
 - `cancel_async_task`: Stop a running task. Returns confirmation.
 - `list_async_tasks`: List all tracked tasks with live statuses. Returns summary of all tasks.
 
 ### Workflow:
-1. **Launch** — Use `launch_async_task` to start a task. Report the task ID to the user and stop.
+1. **Start** — Use `start_async_task` to start a task. Report the task ID to the user and stop.
    Do NOT immediately check the status — the task runs in the background while you and the user continue other work.
 2. **Check (on request)** — Only use `check_async_task` when the user explicitly asks for a status update or
    result. If the status is "running", report that and stop — do not poll in a loop.

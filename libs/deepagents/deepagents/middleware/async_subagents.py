@@ -121,10 +121,10 @@ def _tasks_reducer(
 class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
-    async_subagent_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+    async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
 
 
-ASYNC_TASK_TOOL_DESCRIPTION = """Launch an async subagent on a remote LangGraph server. The subagent runs in the background and returns a task ID immediately.
+ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent on a remote LangGraph server. The subagent runs in the background and returns a task ID immediately.
 
 Available async agent types:
 {available_agents}
@@ -141,14 +141,14 @@ ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
 You have access to async subagent tools that launch background tasks on remote LangGraph servers.
 
 ### Tools:
-- `launch_async_task`: Start a new background task. Returns a task ID immediately.
+- `start_async_task`: Start a new background task. Returns a task ID immediately.
 - `check_async_task`: Get current status and result of a task. Returns status + result (if complete).
 - `update_async_task`: Send new instructions to a running task. Returns confirmation + updated status.
 - `cancel_async_task`: Stop a running task. Returns confirmation.
 - `list_async_tasks`: List all tracked tasks with live statuses. Returns summary of all tasks.
 
 ### Workflow:
-1. **Launch** — Use `launch_async_task` to start a task. Report the task ID to the user and stop.
+1. **Start** — Use `start_async_task` to start a task. Report the task ID to the user and stop.
    Do NOT immediately check the status — the task runs in the background while you and the user continue other work.
 2. **Check (on request)** — Only use `check_async_task` when the user explicitly asks for a status update or
    result. If the status is "running", report that and stop — do not poll in a loop.
@@ -228,14 +228,14 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
     return None
 
 
-def _build_launch_tool(
+def _build_start_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
     tool_description: str,
 ) -> StructuredTool:
-    """Build the `launch_async_task` tool."""
+    """Build the `start_async_task` tool."""
 
-    def launch_async_task(
+    def start_async_task(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
         subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
         runtime: ToolRuntime,
@@ -271,11 +271,11 @@ def _build_launch_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {task_id: task},
+                "async_tasks": {task_id: task},
             }
         )
 
-    async def alaunch_async_task(
+    async def astart_async_task(
         description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
         subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
         runtime: ToolRuntime,
@@ -311,14 +311,14 @@ def _build_launch_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {task_id: task},
+                "async_tasks": {task_id: task},
             }
         )
 
     return StructuredTool.from_function(
-        name="launch_async_task",
-        func=launch_async_task,
-        coroutine=alaunch_async_task,
+        name="start_async_task",
+        func=start_async_task,
+        coroutine=astart_async_task,
         description=tool_description,
     )
 
@@ -366,7 +366,7 @@ def _build_check_command(
     return Command(
         update={
             "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
-            "async_subagent_tasks": {task["task_id"]: updated_task},
+            "async_tasks": {task["task_id"]: updated_task},
         }
     )
 
@@ -380,7 +380,7 @@ def _resolve_tracked_task(
     Returns:
         The tracked `AsyncTask` on success, or an error string.
     """
-    tasks: dict[str, AsyncTask] = runtime.state.get("async_subagent_tasks") or {}
+    tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
     tracked = tasks.get(task_id.strip())
     if not tracked:
         return f"No tracked task found for task_id: {task_id!r}"
@@ -393,7 +393,7 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
     """Build the `check_async_task` tool."""
 
     def check_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
         task = _resolve_tracked_task(task_id, runtime)
@@ -418,7 +418,7 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         return _build_check_command(result, task, runtime.tool_call_id)
 
     async def acheck_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
         task = _resolve_tracked_task(task_id, runtime)
@@ -463,7 +463,7 @@ def _build_update_tool(
     """
 
     def update_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
         runtime: ToolRuntime,
     ) -> str | Command:
@@ -497,12 +497,12 @@ def _build_update_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {tracked["task_id"]: task},
+                "async_tasks": {tracked["task_id"]: task},
             }
         )
 
     async def aupdate_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
         runtime: ToolRuntime,
     ) -> str | Command:
@@ -536,7 +536,7 @@ def _build_update_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {tracked["task_id"]: task},
+                "async_tasks": {tracked["task_id"]: task},
             }
         )
 
@@ -558,7 +558,7 @@ def _build_cancel_tool(
     """Build the `cancel_async_task` tool."""
 
     def cancel_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -585,12 +585,12 @@ def _build_cancel_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {tracked["task_id"]: updated},
+                "async_tasks": {tracked["task_id"]: updated},
             }
         )
 
     async def acancel_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by launch_async_task. Pass it verbatim."],
+        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -617,7 +617,7 @@ def _build_cancel_tool(
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": {tracked["task_id"]: updated},
+                "async_tasks": {tracked["task_id"]: updated},
             }
         )
 
@@ -709,7 +709,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
         ] = None,
     ) -> str | Command:
-        tasks: dict[str, AsyncTask] = runtime.state.get("async_subagent_tasks") or {}
+        tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
         if not filtered:
             return "No async subagent tasks tracked."
@@ -733,7 +733,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": updated_tasks,
+                "async_tasks": updated_tasks,
             }
         )
 
@@ -744,7 +744,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
         ] = None,
     ) -> str | Command:
-        tasks: dict[str, AsyncTask] = runtime.state.get("async_subagent_tasks") or {}
+        tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
         if not filtered:
             return "No async subagent tasks tracked."
@@ -768,7 +768,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_subagent_tasks": updated_tasks,
+                "async_tasks": updated_tasks,
             }
         )
 
@@ -802,7 +802,7 @@ def _build_async_subagent_tools(
     launch_desc = ASYNC_TASK_TOOL_DESCRIPTION.format(available_agents=agents_desc)
 
     return [
-        _build_launch_tool(agent_map, clients, launch_desc),
+        _build_start_tool(agent_map, clients, launch_desc),
         _build_check_tool(clients),
         _build_update_tool(agent_map, clients),
         _build_cancel_tool(clients),
@@ -818,7 +818,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     `SubAgentMiddleware`, async subagents return immediately with a task ID,
     allowing the main agent to continue working while subagents execute.
 
-    Task IDs are persisted in the agent state under `async_subagent_tasks` so they
+    Task IDs are persisted in the agent state under `async_tasks` so they
     survive context compaction/offloading and can be accessed programmatically.
 
     Args:

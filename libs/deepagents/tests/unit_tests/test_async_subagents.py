@@ -65,7 +65,7 @@ def _make_runtime_with_task(
         },
     }
     return ToolRuntime(
-        state={"async_subagent_tasks": tasks},
+        state={"async_tasks": tasks},
         context=None,
         tool_call_id=tool_call_id,
         store=None,
@@ -92,7 +92,7 @@ class TestAsyncSubAgentMiddleware:
         mw = AsyncSubAgentMiddleware(async_subagents=[_make_spec()])
         tool_names = {t.name for t in mw.tools}
         assert tool_names == {
-            "launch_async_task",
+            "start_async_task",
             "check_async_task",
             "update_async_task",
             "cancel_async_task",
@@ -192,7 +192,7 @@ class TestBuildAsyncSubagentTools:
         assert len(tools) == 5
         names = [t.name for t in tools]
         assert names == [
-            "launch_async_task",
+            "start_async_task",
             "check_async_task",
             "update_async_task",
             "cancel_async_task",
@@ -236,8 +236,8 @@ class TestLaunchTool:
 
         assert isinstance(result, Command)
         update = result.update
-        assert "async_subagent_tasks" in update
-        tasks = update["async_subagent_tasks"]
+        assert "async_tasks" in update
+        tasks = update["async_tasks"]
         assert "thread_abc" in tasks
         task = tasks["thread_abc"]
         assert task["task_id"] == "thread_abc"
@@ -279,7 +279,7 @@ class TestCheckTool:
             },
         }
         return ToolRuntime(
-            state={"async_subagent_tasks": tasks},
+            state={"async_tasks": tasks},
             context=None,
             tool_call_id=tool_call_id,
             store=None,
@@ -306,7 +306,7 @@ class TestCheckTool:
         assert parsed["status"] == "running"
         assert parsed["thread_id"] == "thread_abc"
 
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "running"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -334,7 +334,7 @@ class TestCheckTool:
         assert parsed["status"] == "success"
         assert parsed["result"] == "Analysis complete: found 3 issues."
 
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "success"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -355,7 +355,7 @@ class TestCheckTool:
         assert parsed["status"] == "error"
         assert "error" in parsed
 
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "error"
 
 
@@ -381,7 +381,7 @@ class TestUpdateTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tasks_state},
+            state={"async_tasks": tasks_state},
             context=None,
             tool_call_id="tc_update",
             store=None,
@@ -395,7 +395,7 @@ class TestUpdateTool:
         )
 
         assert isinstance(result, Command)
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
 
         # Same task_id, updated run_id
         assert "thread_abc" in tasks
@@ -457,7 +457,7 @@ class TestListTasksTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tasks},
+            state={"async_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -473,7 +473,7 @@ class TestListTasksTool:
         assert "success" in content
         assert "running" in content
         # state should be updated with fresh statuses
-        updated = result.update["async_subagent_tasks"]
+        updated = result.update["async_tasks"]
         assert updated["t1"]["status"] == "success"
         assert updated["t2"]["status"] == "running"
 
@@ -517,7 +517,7 @@ class TestListTasksTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tasks},
+            state={"async_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -564,7 +564,7 @@ class TestListTasksTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tasks},
+            state={"async_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -617,7 +617,7 @@ class TestAsyncTools:
 
         assert isinstance(result, Command)
         assert "thread_abc" in result.update["messages"][0].content
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
         assert "thread_abc" in tasks
 
     @patch("deepagents.middleware.async_subagents.get_client")
@@ -642,7 +642,7 @@ class TestAsyncTools:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tracked_tasks},
+            state={"async_tasks": tracked_tasks},
             context=None,
             tool_call_id="tc_async_check",
             store=None,
@@ -658,7 +658,7 @@ class TestAsyncTools:
         parsed = json.loads(result.update["messages"][0].content)
         assert parsed["status"] == "success"
         assert parsed["result"] == "Done!"
-        assert result.update["async_subagent_tasks"]["thread_abc"]["status"] == "success"
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "success"
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_update_returns_command(self, mock_get_client: MagicMock) -> None:
@@ -681,7 +681,7 @@ class TestAsyncTools:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_tasks": tasks_state},
+            state={"async_tasks": tasks_state},
             context=None,
             tool_call_id="tc_async_update",
             store=None,
@@ -695,8 +695,8 @@ class TestAsyncTools:
         )
 
         assert isinstance(result, Command)
-        assert "thread_abc" in result.update["async_subagent_tasks"]
-        assert result.update["async_subagent_tasks"]["thread_abc"]["run_id"] == "run_new"
+        assert "thread_abc" in result.update["async_tasks"]
+        assert result.update["async_tasks"]["thread_abc"]["run_id"] == "run_new"
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_cancel_returns_command(self, mock_get_client: MagicMock) -> None:
@@ -710,7 +710,7 @@ class TestAsyncTools:
         result = await cancel.coroutine(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
-        assert result.update["async_subagent_tasks"]["thread_abc"]["status"] == "cancelled"
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
 
 
 class TestCancelTool:
@@ -725,7 +725,7 @@ class TestCancelTool:
         result = cancel.func(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
-        tasks = result.update["async_subagent_tasks"]
+        tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "cancelled"
         assert tasks["thread_abc"]["task_id"] == "thread_abc"
         msgs = result.update["messages"]
@@ -787,7 +787,7 @@ class TestLaunchErrorHandling:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec("alpha")])
-        launch = _get_tool(tools, "launch_async_task")
+        launch = _get_tool(tools, "start_async_task")
         result = launch.func(
             description="do stuff",
             subagent_type="alpha",

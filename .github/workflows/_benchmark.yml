@@ -28,7 +28,7 @@ env:
 jobs:
   benchmark:
     name: "CodSpeed"
-    runs-on: ubuntu-latest
+    runs-on: codspeed-macro
     permissions:
       contents: read
       id-token: write

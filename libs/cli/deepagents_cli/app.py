@@ -3119,6 +3119,22 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _pop_last_queued_message(self) -> None:
+        """Remove the most recently queued message (LIFO).
+
+        If the chat input is empty the evicted text is restored there so the
+        user can edit and re-submit.  Otherwise the message is silently
+        discarded.  A brief toast is shown in both cases.
+        """
+        msg = self._pending_messages.pop()
+        if self._queued_widgets:
+            widget = self._queued_widgets.pop()
+            widget.remove()
+
+        if self._chat_input and not self._chat_input.value.strip():
+            self._chat_input.value = msg.text
+        self.notify("Removed queued message", timeout=2)
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -3241,7 +3257,9 @@ class DeepAgentsApp(App):
         3. If input is in command/shell mode, exit to normal mode
         4. If shell command is running, kill it
         5. If approval menu is active, reject it
-        6. If agent is running, interrupt it
+        6. If ask-user menu is active, cancel it
+        7. If queued messages exist, pop the last one (LIFO)
+        8. If agent is running, interrupt it
         """
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
@@ -3281,6 +3299,13 @@ class DeepAgentsApp(App):
         # worker, following the same pattern as the approval widget above.
         if self._pending_ask_user_widget:
             self._pending_ask_user_widget.action_cancel()
+            return
+
+        # If queued messages exist, pop the last one (LIFO) instead of
+        # interrupting the agent.  This lets the user retract queued messages
+        # one at a time; once the queue is empty the next ESC will interrupt.
+        if self._pending_messages:
+            self._pop_last_queued_message()
             return
 
         # If agent is running, interrupt it and discard queued messages

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from deepagents_cli.command_registry import (
     ALL_CLASSIFIED,
     ALWAYS_IMMEDIATE,
@@ -106,3 +109,46 @@ class TestSlashCommands:
                 assert alias not in names, (
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
+
+
+class TestHelpBodyDrift:
+    """Ensure the /help body in app.py stays in sync with COMMANDS.
+
+    The "Commands: ..." line in the `/help` handler is hand-maintained
+    separately from the `COMMANDS` tuple in `command_registry.py`.  This
+    test catches drift — e.g. a new command added to the registry but
+    forgotten in the help output.
+    """
+
+    def test_help_body_lists_all_commands(self) -> None:
+        """Every command in COMMANDS must appear in the /help body."""
+        app_src = (
+            Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.py"
+        ).read_text()
+
+        # Isolate the "Commands: ..." section (before "Interactive Features")
+        match = re.search(
+            r'"Commands:\s*(.*?)(?=Interactive Features)',
+            app_src,
+            re.DOTALL,
+        )
+        assert match, "Could not locate Commands section in help_body"
+        commands_section = match.group(1)
+
+        help_cmds = set(re.findall(r"/[a-z]+", commands_section))
+        registry_cmds = {cmd.name for cmd in COMMANDS}
+
+        # Commands intentionally omitted from the help body
+        excluded = {"/version"}
+
+        missing = registry_cmds - help_cmds - excluded
+        extra = help_cmds - registry_cmds
+
+        assert not missing, (
+            f"Commands in COMMANDS but missing from /help body: {missing}\n"
+            "Add them to help_body in app.py _handle_command()."
+        )
+        assert not extra, (
+            f"Commands in /help body but missing from COMMANDS: {extra}\n"
+            "Remove them from help_body or add to COMMANDS in command_registry.py."
+        )

@@ -706,6 +706,7 @@ async def run_textual_cli_async(
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,
+        "enable_ask_user": True,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,

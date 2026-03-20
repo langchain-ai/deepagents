@@ -95,6 +95,22 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
         # Result: {"/file1.txt": FileData(...), "/file3.txt": FileData(...)}
         ```
     """
+    # Defensive: handle list types that can occur with certain checkpointer
+    # or channel update configurations (see issue #731).
+    if isinstance(left, list):
+        merged_left: dict[str, FileData] = {}
+        for item in left:
+            if isinstance(item, dict):
+                merged_left.update({k: v for k, v in item.items() if v is not None})
+        left = merged_left or None
+
+    if isinstance(right, list):
+        merged_right: dict[str, FileData | None] = {}
+        for item in right:
+            if isinstance(item, dict):
+                merged_right.update(item)
+        right = merged_right
+
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
 

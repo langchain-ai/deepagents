@@ -11,8 +11,67 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.backends.state import StateBackend
+from deepagents.backends.utils import _filter_files_by_path
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import _file_data_reducer
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+class TestFileDataReducerListHandling:
+    """Tests for _file_data_reducer handling list inputs (issue #731)."""
+
+    def test_left_empty_list(self) -> None:
+        right = {"/a.txt": {"content": "hello", "modified_at": 1.0}}
+        result = _file_data_reducer([], right)  # type: ignore[arg-type]
+        assert result == {"/a.txt": {"content": "hello", "modified_at": 1.0}}
+
+    def test_left_list_of_dicts(self) -> None:
+        left = [
+            {"/a.txt": {"content": "a", "modified_at": 1.0}},
+            {"/b.txt": {"content": "b", "modified_at": 2.0}},
+        ]
+        right = {"/c.txt": {"content": "c", "modified_at": 3.0}}
+        result = _file_data_reducer(left, right)  # type: ignore[arg-type]
+        assert "/a.txt" in result
+        assert "/b.txt" in result
+        assert "/c.txt" in result
+
+    def test_right_empty_list(self) -> None:
+        left = {"/a.txt": {"content": "hello", "modified_at": 1.0}}
+        result = _file_data_reducer(left, [])  # type: ignore[arg-type]
+        assert result == {"/a.txt": {"content": "hello", "modified_at": 1.0}}
+
+    def test_right_list_of_dicts(self) -> None:
+        left = {"/a.txt": {"content": "a", "modified_at": 1.0}}
+        right = [
+            {"/b.txt": {"content": "b", "modified_at": 2.0}},
+            {"/c.txt": {"content": "c", "modified_at": 3.0}},
+        ]
+        result = _file_data_reducer(left, right)  # type: ignore[arg-type]
+        assert "/a.txt" in result
+        assert "/b.txt" in result
+        assert "/c.txt" in result
+
+    def test_both_lists(self) -> None:
+        left = [{"/a.txt": {"content": "a", "modified_at": 1.0}}]
+        right = [{"/b.txt": {"content": "b", "modified_at": 2.0}}]
+        result = _file_data_reducer(left, right)  # type: ignore[arg-type]
+        assert "/a.txt" in result
+        assert "/b.txt" in result
+
+    def test_both_empty_lists(self) -> None:
+        result = _file_data_reducer([], [])  # type: ignore[arg-type]
+        assert result == {}
+
+
+class TestFilterFilesByPathListHandling:
+    """Tests for _filter_files_by_path handling non-dict input (issue #731)."""
+
+    def test_files_as_empty_list(self) -> None:
+        assert _filter_files_by_path([], "/") == {}  # type: ignore[arg-type]
+
+    def test_files_as_non_empty_list(self) -> None:
+        assert _filter_files_by_path([{"/a.txt": {}}], "/") == {}  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])

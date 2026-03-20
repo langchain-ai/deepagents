@@ -83,6 +83,8 @@ class StateBackend(BackendProtocol):
             Directories have a trailing / in their path and is_dir=True.
         """
         files = self.runtime.state.get("files", {})
+        if not isinstance(files, dict):
+            files = {}
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
 

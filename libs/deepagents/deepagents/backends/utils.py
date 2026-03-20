@@ -497,6 +497,9 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
         _filter_files_by_path(files, "/dir/file")  # Returns {"/dir/file": {...}}
         _filter_files_by_path(files, "/dir")       # Returns both files
     """
+    if not isinstance(files, dict):
+        return {}
+
     # Check if path matches an exact file
     if normalized_path in files:
         return {normalized_path: files[normalized_path]}

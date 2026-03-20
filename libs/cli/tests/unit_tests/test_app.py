@@ -156,21 +156,21 @@ class TestAppBindings:
         assert ctrl_c.action == "quit_or_interrupt"
         assert ctrl_c.priority is True
 
-    def test_toggle_tool_output_has_ctrl_e_binding(self) -> None:
-        """Ctrl+E should be bound to toggle_tool_output with priority."""
+    def test_toggle_tool_output_has_ctrl_o_binding(self) -> None:
+        """Ctrl+O should be bound to toggle_tool_output with priority."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        ctrl_e = bindings_by_key.get("ctrl+e")
+        ctrl_o = bindings_by_key.get("ctrl+o")
 
-        assert ctrl_e is not None
-        assert ctrl_e.action == "toggle_tool_output"
-        assert ctrl_e.priority is True
+        assert ctrl_o is not None
+        assert ctrl_o.action == "toggle_tool_output"
+        assert ctrl_o.priority is True
 
-    def test_ctrl_o_not_bound_to_toggle_tool_output(self) -> None:
-        """Ctrl+O should not exist (replaced by Ctrl+E)."""
+    def test_ctrl_e_not_bound(self) -> None:
+        """Ctrl+E must not be bound — it shadows TextArea cursor_line_end."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        assert "ctrl+o" not in bindings_by_key
+        assert "ctrl+e" not in bindings_by_key
 
 
 class TestITerm2CursorGuide:

@@ -92,7 +92,7 @@ jobs:
         run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
-    name: "⚓ Harbor (${{ matrix.model }})"
+    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }})"
     needs: prep
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -142,7 +142,7 @@ jobs:
             --jobs-dir jobs/terminal-bench \
             --env "$HARBOR_SANDBOX_ENV" \
             --model "${{ matrix.model }}" \
-            --agent-kwargs '{"use_cli_agent": false}'
+            --agent-kwarg use_cli_agent=false
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job

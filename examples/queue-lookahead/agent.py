@@ -13,11 +13,10 @@ Then run the test script in another terminal:
 
 import time
 
+from deepagents.middleware.queue_lookahead import QueueLookaheadMiddleware
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-
-from deepagents.middleware.queue_lookahead import QueueLookaheadMiddleware
 
 
 @tool
@@ -37,7 +36,7 @@ model = init_chat_model("anthropic:claude-sonnet-4-20250514")
 agent = create_agent(
     model=model,
     tools=[slow_think],
-    prompt="You are a helpful assistant. You MUST use the slow_think tool at least once before answering. "
+    system_prompt="You are a helpful assistant. You MUST use the slow_think tool at least once before answering. "
     "Always acknowledge any follow-up messages that appear in the conversation.",
     middleware=[QueueLookaheadMiddleware()],
 )

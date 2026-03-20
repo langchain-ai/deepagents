@@ -39,7 +39,7 @@ from deepagents_cli._session_stats import (
 # All other config imports — settings, create_model, detect_provider, etc. — are
 # deferred to local imports at their call sites since they are only accessed
 # after user interaction begins.
-from deepagents_cli._version import DOCS_URL
+from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
 from deepagents_cli.prompts import REMEMBER_PROMPT
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -358,7 +358,7 @@ class TextualSessionState:
 
 
 _COMMAND_URLS: dict[str, str] = {
-    "/changelog": "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md",
+    "/changelog": CHANGELOG_URL,
     "/docs": DOCS_URL,
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
@@ -394,7 +394,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding(
-            "ctrl+e",
+            "ctrl+o",
             "toggle_tool_output",
             "Toggle Tool Output",
             show=False,
@@ -547,6 +547,8 @@ class DeepAgentsApp(App):
         # Typing-aware approval deferral state
         self._last_typed_at: float | None = None
         self._approval_placeholder: Static | None = None
+        # Update availability state — set by _check_for_updates, read on exit
+        self._update_available: tuple[bool, str | None] = (False, None)
         # Cumulative usage stats across all turns in this session
         self._session_stats: SessionStats = SessionStats()
         # User message queue for sequential processing
@@ -600,6 +602,8 @@ class DeepAgentsApp(App):
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
                 connecting=self._connecting,
+                resuming=self._resume_thread_intent is not None,
+                local_server=self._server_kwargs is not None,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -715,12 +719,20 @@ class DeepAgentsApp(App):
                 group="server-startup",
             )
 
-        # Background update check (opt-out via DEEPAGENTS_NO_UPDATE_CHECK)
-        if not os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+        # Background update check and what's-new banner
+        # (opt-out via env var or config.toml [update].check)
+        from deepagents_cli.update_check import is_update_check_enabled
+
+        if is_update_check_enabled():
             self.run_worker(
                 self._check_for_updates,
                 exclusive=True,
                 group="startup-update-check",
+            )
+            self.run_worker(
+                self._show_whats_new,
+                exclusive=True,
+                group="startup-whats-new",
             )
 
         # Prewarm deferred widget imports in a thread
@@ -1138,22 +1150,140 @@ class DeepAgentsApp(App):
             logger.debug("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
-        """Check PyPI for a newer deepagents-cli version and notify the user."""
+        """Check PyPI for a newer version and optionally auto-update."""
+        # Phase 1: version check (benign failure)
         try:
-            from deepagents_cli.update_check import is_update_available
+            from deepagents_cli.update_check import (
+                is_auto_update_enabled,
+                is_update_available,
+                upgrade_command,
+            )
 
             available, latest = await asyncio.to_thread(is_update_available)
-            if available:
-                from deepagents_cli._version import __version__ as cli_version
+            if not available:
+                return
+
+            self._update_available = (True, latest)
+        except Exception:
+            logger.debug("Background update check failed", exc_info=True)
+            return
+
+        # Phase 2: auto-update or notify (failures surfaced to user)
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+
+            if is_auto_update_enabled():
+                from deepagents_cli.update_check import perform_upgrade
 
                 self.notify(
+                    f"Updating to v{latest}...",
+                    severity="information",
+                    timeout=5,
+                )
+                success, _output = await perform_upgrade()
+                if success:
+                    self.notify(
+                        f"Updated to v{latest}. Restart to use the new version.",
+                        severity="information",
+                        timeout=10,
+                    )
+                else:
+                    cmd = upgrade_command()
+                    self.notify(
+                        f"Auto-update failed. Run manually: {cmd}",
+                        severity="warning",
+                        timeout=15,
+                    )
+            else:
+                cmd = upgrade_command()
+                self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    "Run: uv tool upgrade deepagents-cli",
+                    f"Run: {cmd}",
                     severity="information",
                     timeout=15,
                 )
         except Exception:
-            logger.debug("Background update check failed", exc_info=True)
+            logger.warning("Auto-update failed unexpectedly", exc_info=True)
+            self.notify(
+                "Update failed unexpectedly.",
+                severity="warning",
+                timeout=10,
+            )
+
+    async def _show_whats_new(self) -> None:
+        """Show a 'what's new' banner on the first launch after an upgrade."""
+        try:
+            from deepagents_cli.update_check import should_show_whats_new
+
+            if not await asyncio.to_thread(should_show_whats_new):
+                return
+        except Exception:
+            logger.debug("What's new check failed", exc_info=True)
+            return
+
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+
+            await self._mount_message(
+                AppMessage(
+                    f"Updated to v{cli_version}\nSee what's new: {CHANGELOG_URL}"
+                )
+            )
+        except Exception:
+            logger.debug("What's new banner display failed", exc_info=True)
+            return
+
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.update_check import mark_version_seen
+
+            await asyncio.to_thread(mark_version_seen, cli_version)
+        except Exception:
+            logger.warning("Failed to persist seen-version marker", exc_info=True)
+
+    async def _handle_update_command(self) -> None:
+        """Handle the `/update` slash command — check for and install updates."""
+        await self._mount_message(UserMessage("/update"))
+        try:
+            from deepagents_cli.update_check import (
+                is_update_available,
+                perform_upgrade,
+                upgrade_command,
+            )
+
+            await self._mount_message(AppMessage("Checking for updates..."))
+            available, latest = await asyncio.to_thread(
+                is_update_available, bypass_cache=True
+            )
+            if not available:
+                await self._mount_message(AppMessage("Already on the latest version."))
+                return
+
+            from deepagents_cli._version import __version__ as cli_version
+
+            await self._mount_message(
+                AppMessage(
+                    f"Update available: v{latest} (current: v{cli_version}). "
+                    "Upgrading..."
+                )
+            )
+            success, output = await perform_upgrade()
+            if success:
+                self._update_available = (False, None)
+                await self._mount_message(
+                    AppMessage(f"Updated to v{latest}. Restart to use the new version.")
+                )
+            else:
+                cmd = upgrade_command()
+                detail = f": {output[:200]}" if output else ""
+                await self._mount_message(
+                    AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}")
+                )
+        except Exception as exc:
+            logger.warning("/update command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
+            )
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
@@ -2070,8 +2200,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
-                "/model [--model-params JSON] [--default], /reload, /remember, "
-                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
+                "/model [--model-params JSON] [--default], /reload, "
+                "/remember, /tokens, /threads, /trace, /update, "
+                "/changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -2148,6 +2279,8 @@ class DeepAgentsApp(App):
             await self._show_thread_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)
+        elif cmd == "/update":
+            await self._handle_update_command()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -3119,6 +3252,43 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _pop_last_queued_message(self) -> None:
+        """Remove the most recently queued message (LIFO).
+
+        If the chat input is empty the evicted text is restored there so the
+        user can edit and re-submit. Otherwise the message is discarded. The
+        toast message distinguishes between the two outcomes.
+
+        Caller must ensure `_pending_messages` is non-empty. A defensive guard
+        is included in case of async TOCTOU races.
+        """
+        if not self._pending_messages:
+            return
+        msg = self._pending_messages.pop()
+        if self._queued_widgets:
+            widget = self._queued_widgets.pop()
+            widget.remove()
+        else:
+            logger.warning(
+                "Queued-widget deque empty while pending-messages was not; "
+                "widget/message tracking may be out of sync"
+            )
+
+        if not self._chat_input:
+            logger.warning(
+                "Chat input unavailable during queue pop; "
+                "message text cannot be restored: %s",
+                msg.text[:60],
+            )
+            self.notify("Queued message discarded", timeout=2)
+            return
+
+        if not self._chat_input.value.strip():
+            self._chat_input.value = msg.text
+            self.notify("Queued message moved to input", timeout=2)
+        else:
+            self.notify("Queued message discarded (input not empty)", timeout=3)
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -3241,7 +3411,9 @@ class DeepAgentsApp(App):
         3. If input is in command/shell mode, exit to normal mode
         4. If shell command is running, kill it
         5. If approval menu is active, reject it
-        6. If agent is running, interrupt it
+        6. If ask-user menu is active, cancel it
+        7. If queued messages exist, pop the last one (LIFO)
+        8. If agent is running, interrupt it
         """
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
@@ -3281,6 +3453,13 @@ class DeepAgentsApp(App):
         # worker, following the same pattern as the approval widget above.
         if self._pending_ask_user_widget:
             self._pending_ask_user_widget.action_cancel()
+            return
+
+        # If queued messages exist, pop the last one (LIFO) instead of
+        # interrupting the agent.  This lets the user retract queued messages
+        # one at a time; once the queue is empty the next ESC will interrupt.
+        if self._pending_messages:
+            self._pop_last_queued_message()
             return
 
         # If agent is running, interrupt it and discard queued messages
@@ -3958,6 +4137,9 @@ class AppResult:
     session_stats: SessionStats = field(default_factory=SessionStats)
     """Cumulative usage stats across all turns in the session."""
 
+    update_available: tuple[bool, str | None] = (False, None)
+    """`(is_available, latest_version)` for post-exit update warning."""
+
 
 async def run_textual_app(
     *,
@@ -4044,4 +4226,5 @@ async def run_textual_app(
         return_code=app.return_code or 0,
         thread_id=app._lc_thread_id,
         session_stats=app._session_stats,
+        update_available=app._update_available,
     )

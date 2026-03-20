@@ -163,6 +163,9 @@ ban-relative-imports = "all"
     "T201",    # `print` found — scripts use print for output
     "S",       # Security warnings — not applicable to scripts
 ]
+"deepagents_harbor/langsmith.py" = [
+    "T201",    # `print` found — CI-facing integration layer, print is the expected output
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false

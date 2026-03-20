@@ -577,6 +577,11 @@ def parse_args() -> argparse.Namespace:
         logger.warning("Unexpected error looking up SDK version", exc_info=True)
         sdk_version = "unknown"
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Check for and install updates, then exit",
+    )
+    parser.add_argument(
         "--acp",
         action="store_true",
         help="Run as an ACP server over stdio instead of launching the Textual UI",
@@ -701,6 +706,7 @@ async def run_textual_cli_async(
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,
+        "enable_ask_user": True,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -1219,6 +1225,55 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        # Handle --update (headless, no session)
+        if args.update:
+            try:
+                from rich.markup import escape
+
+                from deepagents_cli._version import __version__ as cli_version
+                from deepagents_cli.update_check import (
+                    is_update_available,
+                    perform_upgrade,
+                    upgrade_command,
+                )
+
+                console.print("Checking for updates...", style="dim")
+                available, latest = is_update_available(bypass_cache=True)
+                if latest is None:
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] Could not "
+                        "reach PyPI. Check your network and try again."
+                    )
+                    sys.exit(1)
+                if not available:
+                    console.print(f"Already on the latest version (v{cli_version}).")
+                    sys.exit(0)
+
+                console.print(
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}). Upgrading..."
+                )
+                success, output = asyncio.run(perform_upgrade())
+                if success:
+                    console.print(f"[green]Updated to v{latest}.[/green]")
+                else:
+                    cmd = upgrade_command()
+                    detail = f": {escape(output[:200])}" if output else ""
+                    console.print(
+                        f"[bold red]Auto-update failed{detail}[/bold red]\n"
+                        f"Run manually: [cyan]{cmd}[/cyan]"
+                    )
+                    sys.exit(1)
+                sys.exit(0)
+            except Exception:
+                logger.warning("--update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Update failed.\n"
+                    "Run manually: [cyan]uv tool upgrade "
+                    "deepagents-cli[/cyan]"
+                )
+                sys.exit(1)
+
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
             from deepagents_cli.model_config import clear_default_model
@@ -1461,6 +1516,22 @@ def cli_main() -> None:
                 hint = Text("deepagents -r ", style="cyan")
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
+
+            # Warn about available update on exit
+            try:
+                if result.update_available[0]:
+                    from deepagents_cli.update_check import upgrade_command
+
+                    latest = result.update_available[1]
+                    console.print()
+                    update_msg = Text("Update available: ", style="yellow bold")
+                    update_msg.append(f"v{latest}", style="yellow")
+                    console.print(update_msg)
+                    cmd_hint = Text("Run: ", style="dim")
+                    cmd_hint.append(upgrade_command(), style="cyan")
+                    console.print(cmd_hint)
+            except Exception:
+                logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C — suppress ugly traceback.
         # `console` may not be bound if Ctrl+C arrives during config import.

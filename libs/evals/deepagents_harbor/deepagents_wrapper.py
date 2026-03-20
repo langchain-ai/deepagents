@@ -243,11 +243,20 @@ class DeepAgentsWrapper(BaseAgent):
             )
 
         # Build metadata with experiment tracking info
+        try:
+            sdk_version = importlib.metadata.version("deepagents")
+        except importlib.metadata.PackageNotFoundError:
+            sdk_version = "unknown"
+
         metadata = {
             "task_instruction": instruction,
+            # "model" is the legacy key; "model_name" is the canonical key
+            # used for LangSmith experiment filtering.
             "model": self._model_name,
-            # This is a harbor-specific session ID for the entire task run
-            # It's different from the LangSmith experiment ID (called session_id)
+            "model_name": self._model_name,
+            "sdk_version": sdk_version,
+            # Harbor's per-task session ID, distinct from the LangSmith
+            # TracerSession UUID also called "session_id" in the API.
             "harbor_session_id": environment.session_id,
             # Tag to indicate which agent implementation is being used
             "agent_mode": "cli" if self._use_cli_agent else "sdk",

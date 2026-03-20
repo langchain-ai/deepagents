@@ -464,6 +464,7 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -482,6 +483,9 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -569,9 +573,10 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {
-        "messages": [{"role": "user", "content": message_content}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False

@@ -55,6 +55,7 @@ from deepagents_cli.widgets.messages import (
     AssistantMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SkillMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -2596,7 +2597,28 @@ class DeepAgentsApp(App):
         if args:
             prompt += f"\n\n**User request:** {args}"
 
-        await self._handle_user_message(prompt)
+        await self._mount_message(
+            SkillMessage(
+                skill_name=cached["name"],
+                description=str(cached.get("description", "")),
+                source=str(cached.get("source", "")),
+                body=content,
+                args=args,
+            )
+        )
+        await self._send_to_agent(
+            prompt,
+            message_kwargs={
+                "additional_kwargs": {
+                    "__skill": {
+                        "name": cached["name"],
+                        "description": str(cached.get("description", "")),
+                        "source": str(cached.get("source", "")),
+                        "args": args,
+                    },
+                },
+            },
+        )
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -2795,7 +2817,25 @@ class DeepAgentsApp(App):
         """
         # Mount the user message
         await self._mount_message(UserMessage(message))
+        await self._send_to_agent(message)
 
+    async def _send_to_agent(
+        self,
+        message: str,
+        *,
+        message_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a message to the agent and start execution.
+
+        This is the low-level send path. It does NOT mount any widget — the
+        caller is responsible for mounting the appropriate visual representation
+        (e.g., `UserMessage`, `SkillMessage`) before calling this method.
+
+        Args:
+            message: The prompt to send to the agent.
+            message_kwargs: Extra fields merged into the stream input message
+                dict (e.g., `additional_kwargs` for skill metadata).
+        """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
@@ -2810,7 +2850,7 @@ class DeepAgentsApp(App):
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
             self._agent_worker = self.run_worker(
-                self._run_agent_task(message),
+                self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
             )
         else:
@@ -2818,10 +2858,20 @@ class DeepAgentsApp(App):
                 AppMessage("Agent not configured for this session.")
             )
 
-    async def _run_agent_task(self, message: str) -> None:
+    async def _run_agent_task(
+        self,
+        message: str,
+        *,
+        message_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """Run the agent task in a background worker.
 
         This runs in a Textual worker so the main event loop stays responsive.
+
+        Args:
+            message: The prompt to send to the agent.
+            message_kwargs: Extra fields merged into the stream input message
+                dict (e.g., `additional_kwargs` for skill metadata).
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
@@ -2839,6 +2889,7 @@ class DeepAgentsApp(App):
                 backend=self._backend,
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
+                message_kwargs=message_kwargs,
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
@@ -2955,7 +3006,23 @@ class DeepAgentsApp(App):
                 )
                 if content.startswith("[SYSTEM]"):
                     continue
-                result.append(MessageData(type=MessageType.USER, content=content))
+
+                # Detect skill invocations persisted via additional_kwargs
+                skill_meta = (msg.additional_kwargs or {}).get("__skill")
+                if isinstance(skill_meta, dict) and skill_meta.get("name"):
+                    result.append(
+                        MessageData(
+                            type=MessageType.SKILL,
+                            content="",
+                            skill_name=skill_meta["name"],
+                            skill_description=str(skill_meta.get("description", "")),
+                            skill_source=str(skill_meta.get("source", "")),
+                            skill_args=str(skill_meta.get("args", "")),
+                            skill_body=content,
+                        )
+                    )
+                else:
+                    result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
                 # Extract text content
@@ -3302,7 +3369,7 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
-        self, widget: Static | AssistantMessage | ToolCallMessage
+        self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage
     ) -> None:
         """Mount a message widget to the messages area.
 

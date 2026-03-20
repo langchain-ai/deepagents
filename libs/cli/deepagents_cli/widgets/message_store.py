@@ -31,6 +31,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_status",
         "tool_output",
         "tool_expanded",
+        "skill_expanded",
         "is_streaming",
         "height_hint",
     }
@@ -43,6 +44,7 @@ class MessageType(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+    SKILL = "skill"
     ERROR = "error"
     APP = "app"
     SUMMARIZATION = "summarization"
@@ -107,6 +109,25 @@ class MessageData:
     diff_file_path: str | None = None
     """File path associated with the diff (DIFF messages only)."""
 
+    # SKILL message fields - only populated for SKILL messages
+    skill_name: str | None = None
+    """Name of the skill that was invoked."""
+
+    skill_description: str | None = None
+    """Short description of the skill."""
+
+    skill_source: str | None = None
+    """Origin of the skill (e.g., `'built-in'`, `'user'`, `'project'`)."""
+
+    skill_args: str | None = None
+    """User-provided arguments to the skill invocation."""
+
+    skill_body: str | None = None
+    """Full SKILL.md content sent to the agent."""
+
+    skill_expanded: bool = False
+    """Whether the skill body is expanded in the UI."""
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
@@ -148,6 +169,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
             UserMessage,
@@ -171,6 +193,18 @@ class MessageData:
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
                 widget._deferred_expanded = self.tool_expanded
+                return widget
+
+            case MessageType.SKILL:
+                widget = SkillMessage(
+                    skill_name=self.skill_name or "unknown",
+                    description=self.skill_description or "",
+                    source=self.skill_source or "",
+                    body=self.skill_body or "",
+                    args=self.skill_args or "",
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.skill_expanded
                 return widget
 
             case MessageType.ERROR:
@@ -214,12 +248,26 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
 
         widget_id = widget.id or f"msg-{uuid.uuid4().hex[:8]}"
+
+        if isinstance(widget, SkillMessage):
+            return cls(
+                type=MessageType.SKILL,
+                content="",
+                id=widget_id,
+                skill_name=widget._skill_name,
+                skill_description=widget._description,
+                skill_source=widget._source,
+                skill_body=widget._body,
+                skill_args=widget._args,
+                skill_expanded=widget._expanded,
+            )
 
         if isinstance(widget, UserMessage):
             return cls(

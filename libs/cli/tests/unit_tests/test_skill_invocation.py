@@ -206,6 +206,7 @@ def _make_app() -> MagicMock:
 
     app._mount_message = AsyncMock(side_effect=capture_mount)
     app._handle_user_message = AsyncMock()
+    app._send_to_agent = AsyncMock()
     app._handle_skill_command = DeepAgentsApp._handle_skill_command.__get__(app)
     app._discover_skills_and_roots = DeepAgentsApp._discover_skills_and_roots.__get__(
         app
@@ -251,7 +252,7 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("Usage:" in t for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_skill_not_found(self) -> None:
         app = _make_app()
@@ -263,7 +264,7 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("not found" in t.lower() for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_content_none_shows_error(self) -> None:
         app = _make_app()
@@ -277,7 +278,7 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("could not read" in t.lower() for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_empty_content_shows_error(self) -> None:
         app = _make_app()
@@ -291,9 +292,11 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("empty" in t.lower() for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_happy_path_sends_prompt(self) -> None:
+        from deepagents_cli.widgets.messages import SkillMessage
+
         app = _make_app()
         skill = _fake_skill()
         with (
@@ -306,12 +309,18 @@ class TestHandleSkillCommand:
         ):
             await app._handle_skill_command("/skill:test-skill")
 
-        app._handle_user_message.assert_awaited_once()
-        prompt = app._handle_user_message.call_args[0][0]
+        app._send_to_agent.assert_awaited_once()
+        prompt = app._send_to_agent.call_args[0][0]
         assert "test-skill" in prompt
         assert "# Instructions" in prompt
+        # Verify SkillMessage was mounted instead of UserMessage
+        skill_msgs = [m for m in app._mounted_messages if isinstance(m, SkillMessage)]
+        assert len(skill_msgs) == 1
+        assert skill_msgs[0]._skill_name == "test-skill"
 
     async def test_happy_path_with_args(self) -> None:
+        from deepagents_cli.widgets.messages import SkillMessage
+
         app = _make_app()
         skill = _fake_skill()
         with (
@@ -324,9 +333,12 @@ class TestHandleSkillCommand:
         ):
             await app._handle_skill_command("/skill:test-skill find quantum")
 
-        prompt = app._handle_user_message.call_args[0][0]
+        prompt = app._send_to_agent.call_args[0][0]
         assert "find quantum" in prompt
         assert "**User request:**" in prompt
+        skill_msgs = [m for m in app._mounted_messages if isinstance(m, SkillMessage)]
+        assert len(skill_msgs) == 1
+        assert skill_msgs[0]._args == "find quantum"
 
     async def test_filesystem_error_shows_specific_message(self) -> None:
         app = _make_app()
@@ -341,7 +353,7 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("filesystem error" in t.lower() for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_unexpected_error_includes_exception_type(self) -> None:
         app = _make_app()
@@ -356,7 +368,7 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("TypeError" in t for t in texts)
-        app._handle_user_message.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
 
     async def test_cache_hit_skips_list_skills(self) -> None:
         """When the skill is in the cache, list_skills should not be called."""
@@ -382,8 +394,8 @@ class TestHandleSkillCommand:
         mock_load.assert_called_once()
         _, kwargs = mock_load.call_args
         assert kwargs["allowed_roots"] == [sentinel_root]
-        app._handle_user_message.assert_awaited_once()
-        prompt = app._handle_user_message.call_args[0][0]
+        app._send_to_agent.assert_awaited_once()
+        prompt = app._send_to_agent.call_args[0][0]
         assert "test-skill" in prompt
         assert "# Cached" in prompt
 
@@ -408,8 +420,8 @@ class TestHandleSkillCommand:
             await app._handle_skill_command("/skill:new-skill")
 
         mock_list.assert_called_once()
-        app._handle_user_message.assert_awaited_once()
-        prompt = app._handle_user_message.call_args[0][0]
+        app._send_to_agent.assert_awaited_once()
+        prompt = app._send_to_agent.call_args[0][0]
         assert "new-skill" in prompt
         assert "# Fresh" in prompt
         # Cache should be backfilled with fresh discovery results

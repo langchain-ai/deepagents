@@ -102,6 +102,23 @@ def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
     return namespace
 
 
+def _normalize_store_key_for_ls(key: str) -> str:
+    """Normalize store keys so directory prefix checks match logical paths.
+
+    Store item keys may omit a leading slash (for example ``test.md`` at the
+    virtual root). ``ls`` compares against a normalized directory prefix such
+    as ``/``; without this step, root-level files are incorrectly excluded.
+
+    Args:
+        key: Raw key from the store.
+
+    Returns:
+        Key string with a leading slash when it was missing.
+    """
+    s = str(key)
+    return s if s.startswith("/") else f"/{s}"
+
+
 class StoreBackend(BackendProtocol):
     """Backend that stores files in LangGraph's BaseStore (persistent).
 
@@ -352,12 +369,13 @@ class StoreBackend(BackendProtocol):
         normalized_path = path if path.endswith("/") else path + "/"
 
         for item in items:
+            key_str = _normalize_store_key_for_ls(item.key)
             # Check if file is in the specified directory or a subdirectory
-            if not str(item.key).startswith(normalized_path):
+            if not key_str.startswith(normalized_path):
                 continue
 
             # Get the relative path after the directory
-            relative = str(item.key)[len(normalized_path) :]
+            relative = key_str[len(normalized_path) :]
 
             # If relative path contains '/', it's in a subdirectory
             if "/" in relative:

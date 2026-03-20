@@ -9,6 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
+from deepagents.backends.utils import create_file_data
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -126,6 +127,26 @@ def test_store_backend_ls_trailing_slash():
     assert listing2 is not None
     assert len(listing1) == len(listing2)
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
+
+
+def test_store_backend_ls_root_store_keys_without_leading_slash() -> None:
+    """Root listing includes files whose keys omit a leading slash (issue #1655)."""
+    rt = make_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+    namespace = ("filesystem",)
+    fd = create_file_data("# Test")
+    store_value = be._convert_file_data_to_store_value(fd)
+    rt.store.put(namespace, "test.md", store_value)
+    rt.store.put(namespace, "subdir/file.txt", store_value)
+
+    root_listing = be.ls("/").entries
+    assert root_listing is not None
+    paths = {fi["path"] for fi in root_listing}
+    is_dir = {fi["path"]: fi.get("is_dir", False) for fi in root_listing}
+    assert "test.md" in paths
+    assert is_dir["test.md"] is False
+    assert "/subdir/" in paths
+    assert is_dir["/subdir/"] is True
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])

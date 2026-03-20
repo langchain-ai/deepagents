@@ -3123,17 +3123,38 @@ class DeepAgentsApp(App):
         """Remove the most recently queued message (LIFO).
 
         If the chat input is empty the evicted text is restored there so the
-        user can edit and re-submit.  Otherwise the message is silently
-        discarded.  A brief toast is shown in both cases.
+        user can edit and re-submit. Otherwise the message is discarded. The
+        toast message distinguishes between the two outcomes.
+
+        Caller must ensure `_pending_messages` is non-empty. A defensive guard
+        is included in case of async TOCTOU races.
         """
+        if not self._pending_messages:
+            return
         msg = self._pending_messages.pop()
         if self._queued_widgets:
             widget = self._queued_widgets.pop()
             widget.remove()
+        else:
+            logger.warning(
+                "Queued-widget deque empty while pending-messages was not; "
+                "widget/message tracking may be out of sync"
+            )
 
-        if self._chat_input and not self._chat_input.value.strip():
+        if not self._chat_input:
+            logger.warning(
+                "Chat input unavailable during queue pop; "
+                "message text cannot be restored: %s",
+                msg.text[:60],
+            )
+            self.notify("Queued message discarded", timeout=2)
+            return
+
+        if not self._chat_input.value.strip():
             self._chat_input.value = msg.text
-        self.notify("Removed queued message", timeout=2)
+            self.notify("Queued message moved to input", timeout=2)
+        else:
+            self.notify("Queued message discarded (input not empty)", timeout=3)
 
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""

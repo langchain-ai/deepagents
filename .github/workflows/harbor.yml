@@ -63,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -72,6 +74,21 @@ jobs:
         run: python .github/scripts/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor-prep
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🧪 Ensure LangSmith dataset"
+        working-directory: libs/evals
+        run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
     name: "⚓ Harbor (${{ matrix.model }})"
@@ -107,9 +124,6 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
-
-      - name: "🧪 Ensure LangSmith dataset"
-        run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
       - name: "🧪 Create LangSmith experiment"
         id: langsmith

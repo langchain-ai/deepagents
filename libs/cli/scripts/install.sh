@@ -176,7 +176,21 @@ fi
 # Install deepagents-cli
 # ---------------------------------------------------------------------------
 PACKAGE="deepagents-cli${EXTRAS}"
-log_info "Installing ${PACKAGE}..."
+
+# Capture pre-install version (if any) for messaging
+PRE_VERSION=""
+if command -v deepagents >/dev/null 2>&1; then
+  PRE_VERSION=$(deepagents -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+elif [ -x "${HOME}/.local/bin/deepagents" ]; then
+  PRE_VERSION=$("${HOME}/.local/bin/deepagents" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+fi
+
+if [ -n "$PRE_VERSION" ]; then
+  log_info "deepagents-cli ${PRE_VERSION} found — checking for updates..."
+else
+  log_info "Installing ${PACKAGE}..."
+fi
+
 if ! "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE"; then
   log_error "Failed to install ${PACKAGE}. See errors above."
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_PYTHON=3.12), or install manually."

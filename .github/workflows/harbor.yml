@@ -178,6 +178,11 @@ jobs:
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
 
+      - name: "🔇 Suppress Harbor first-run tips"
+        run: |
+          mkdir -p ~/.cache/harbor
+          echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
+
       - name: "⚓ Run Harbor"
         run: |
           n_tasks_flag=""

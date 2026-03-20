@@ -161,8 +161,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
             They should provide `name`, `description`, and `graph_id`, and may
             optionally include `url` and `headers`. These subagents run as
-            background jobs and expose the async subagent tools for launching,
-            checking, updating, cancelling, and listing jobs.
+            background tasks and expose the async subagent tools for launching,
+            checking, updating, cancelling, and listing tasks.
 
             If no subagent named `general-purpose` is provided, a default
             general-purpose synchronous subagent is added automatically.

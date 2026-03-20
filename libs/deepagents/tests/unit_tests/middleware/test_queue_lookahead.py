@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from langchain_core.messages import HumanMessage
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+
+sys.path.insert(0, "tests/unit_tests")
+from chat_model import GenericFakeChatModel
 
 from deepagents.middleware.queue_lookahead import (
     QueueLookaheadMiddleware,
@@ -355,6 +361,166 @@ class TestAbeforeModel:
 
             mock_client.runs.list.assert_called_once_with(thread_id="thread-1", status="pending")
             assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: real graph with middleware
+# ---------------------------------------------------------------------------
+
+
+def _make_pending_run(run_id: str, content: str) -> dict[str, Any]:
+    """Build a fake pending run dict.
+
+    Args:
+        run_id: The run ID.
+        content: The user message content.
+
+    Returns:
+        A dict shaped like a LangGraph SDK Run.
+    """
+    return {
+        "run_id": run_id,
+        "kwargs": {"input": {"messages": [{"role": "user", "content": content}]}},
+    }
+
+
+class TestGraphIntegration:
+    """Tests that compile a real agent graph with QueueLookaheadMiddleware."""
+
+    async def test_pending_messages_reach_model(self):
+        """Pending messages injected by before_model are seen by the model."""
+        mock_client = MagicMock()
+        mock_client.runs = MagicMock()
+        # First call to before_model finds a pending run; subsequent calls find none
+        mock_client.runs.list = AsyncMock(
+            side_effect=[
+                [_make_pending_run("run-1", "actually, use Python 3.12")],
+                [],  # no more pending on the second model call (if any)
+            ]
+        )
+        mock_client.runs.cancel = AsyncMock()
+
+        mw = QueueLookaheadMiddleware(client=mock_client)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="Got it, using 3.12.")]))
+
+        agent = create_agent(model=model, middleware=[mw])
+
+        config = {"configurable": {"thread_id": "test-thread-1"}}
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="Write me a Python script")]},
+            config,
+        )
+
+        # The model should have seen both the original message and the injected one
+        assert len(model.call_history) >= 1
+        model_messages = model.call_history[0]["messages"]
+        contents = [m.content for m in model_messages if isinstance(m, HumanMessage)]
+        assert "Write me a Python script" in contents
+        assert "actually, use Python 3.12" in contents
+
+        # The injected message should appear in the final state
+        final_messages = result["messages"]
+        human_contents = [m.content for m in final_messages if isinstance(m, HumanMessage)]
+        assert "actually, use Python 3.12" in human_contents
+
+        # The pending run was cancelled
+        mock_client.runs.cancel.assert_called_once_with(
+            thread_id="test-thread-1",
+            run_id="run-1",
+            action="interrupt",
+        )
+
+    async def test_pending_messages_checkpointed(self):
+        """Pending messages are persisted to the checkpoint before the model runs."""
+        mock_client = MagicMock()
+        mock_client.runs = MagicMock()
+        mock_client.runs.list = AsyncMock(
+            side_effect=[
+                [_make_pending_run("run-1", "checkpoint me")],
+                [],
+            ]
+        )
+        mock_client.runs.cancel = AsyncMock()
+
+        mw = QueueLookaheadMiddleware(client=mock_client)
+        checkpointer = InMemorySaver()
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+
+        agent = create_agent(model=model, middleware=[mw], checkpointer=checkpointer)
+
+        config = {"configurable": {"thread_id": "test-checkpoint"}}
+        await agent.ainvoke(
+            {"messages": [HumanMessage(content="original")]},
+            config,
+        )
+
+        # Verify the injected message is in the checkpointed state
+        state = agent.get_state(config)
+        messages = state.values["messages"]
+        human_contents = [m.content for m in messages if isinstance(m, HumanMessage)]
+        assert "checkpoint me" in human_contents
+
+    async def test_no_pending_messages_passthrough(self):
+        """When there are no pending runs, the agent behaves normally."""
+        mock_client = MagicMock()
+        mock_client.runs = MagicMock()
+        mock_client.runs.list = AsyncMock(return_value=[])
+
+        mw = QueueLookaheadMiddleware(client=mock_client)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="normal response")]))
+
+        agent = create_agent(model=model, middleware=[mw])
+
+        config = {"configurable": {"thread_id": "test-passthrough"}}
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="hello")]},
+            config,
+        )
+
+        # Model was called with just the original message
+        model_messages = model.call_history[0]["messages"]
+        human_messages = [m for m in model_messages if isinstance(m, HumanMessage)]
+        assert len(human_messages) == 1
+        assert human_messages[0].content == "hello"
+
+        # Response is normal
+        assert any(m.content == "normal response" for m in result["messages"])
+
+    async def test_multiple_pending_runs_in_graph(self):
+        """Multiple pending runs are all drained and injected in one before_model pass."""
+        mock_client = MagicMock()
+        mock_client.runs = MagicMock()
+        mock_client.runs.list = AsyncMock(
+            side_effect=[
+                [
+                    _make_pending_run("run-1", "correction 1"),
+                    _make_pending_run("run-2", "correction 2"),
+                ],
+                [],
+            ]
+        )
+        mock_client.runs.cancel = AsyncMock()
+
+        mw = QueueLookaheadMiddleware(client=mock_client)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="understood both")]))
+
+        agent = create_agent(model=model, middleware=[mw])
+
+        config = {"configurable": {"thread_id": "test-multi"}}
+        await agent.ainvoke(
+            {"messages": [HumanMessage(content="do something")]},
+            config,
+        )
+
+        # Model should see all three messages
+        model_messages = model.call_history[0]["messages"]
+        human_contents = [m.content for m in model_messages if isinstance(m, HumanMessage)]
+        assert "do something" in human_contents
+        assert "correction 1" in human_contents
+        assert "correction 2" in human_contents
+
+        # Both pending runs cancelled
+        assert mock_client.runs.cancel.call_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -44,11 +44,24 @@ on:
           - langsmith
           - modal
           - runloop
-      task_count:
-        description: "Number of Terminal Bench 2 tasks to run"
+      n_tasks:
+        description: "Maximum number of tasks to run (0 = all tasks in dataset)"
+        required: true
+        default: "0"
+        type: string
+      concurrency:
+        description: "Number of concurrent trials (parallel sandbox slots)"
         required: true
         default: "1"
         type: string
+      agent_mode:
+        description: "Agent implementation to use"
+        required: true
+        default: "sdk"
+        type: choice
+        options:
+          - sdk
+          - cli
 
 permissions:
   contents: read
@@ -110,9 +123,11 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-      HARBOR_TASK_COUNT: ${{ inputs.task_count }}
+      HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
+      HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_MODEL: ${{ matrix.model }}
+      HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -136,14 +151,19 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          n_tasks_flag=""
+          if [ "$HARBOR_N_TASKS" != "0" ]; then
+            n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
+          fi
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
-            -n "$HARBOR_TASK_COUNT" \
+            -n "$HARBOR_CONCURRENCY" \
+            $n_tasks_flag \
             --jobs-dir jobs/terminal-bench \
             --env "$HARBOR_SANDBOX_ENV" \
             --model "$HARBOR_MODEL" \
-            --agent-kwarg use_cli_agent=false
+            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -183,7 +203,13 @@ jobs:
             echo "- Model: $HARBOR_MODEL"
             echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
             echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
-            echo "- Task count: ${HARBOR_TASK_COUNT}"
+            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
+            if [ "$HARBOR_N_TASKS" = "0" ]; then
+              echo "- Max tasks: all"
+            else
+              echo "- Max tasks: ${HARBOR_N_TASKS}"
+            fi
+            echo "- Agent mode: ${HARBOR_AGENT_MODE}"
             echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
               echo "- Harbor job dir: $HARBOR_JOB_DIR"

@@ -19,26 +19,32 @@ evals: ## Run evals
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)
 
-# Run harbor jobs
+# Harbor jobs
+# -n = concurrent trials (parallel sandbox slots), NOT task count
+# -l = max tasks to run (omit for all)
+# AGENT_MODE: cli (local default) or sdk (CI default)
+AGENT_MODE ?= cli
+AGENT_KWARG = --agent-kwarg use_cli_agent=$(if $(filter cli,$(AGENT_MODE)),true,false)
+
 run-hello-world: ## Run hello-world job
 	@mkdir -p jobs/hello-world
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker $(AGENT_KWARG)
 
-run-terminal-bench-modal: ## Run terminal-bench on Modal
+run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal $(AGENT_KWARG)
 
-run-terminal-bench-daytona: ## Run terminal-bench on Daytona
+run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona $(AGENT_KWARG)
 
-run-terminal-bench-docker: ## Run terminal-bench on Docker
+run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker $(AGENT_KWARG)
 
-run-terminal-bench-runloop: ## Run terminal-bench on Runloop
+run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
 
 ######################
 # CHARTS

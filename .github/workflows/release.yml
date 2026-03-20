@@ -35,7 +35,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-main branch (danger!) - Only use for hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for backports and hotfixes"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean

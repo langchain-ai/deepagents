@@ -21,7 +21,10 @@ from langgraph.types import Interrupt
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from deepagents_cli.config import ConversationContext, SessionState
+from deepagents_cli.step_into import (
+    ConversationContext,
+    StepIntoSessionState as SessionState,
+)
 from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     execute_task_textual,

@@ -1026,21 +1026,6 @@ class Settings:
         return Path(__file__).parent / "built_in_skills"
 
 
-@dataclass
-class ConversationContext:
-    """A single conversation context in the stack.
-
-    Used for tracking nested subagent conversations when user "steps into" a subagent.
-    """
-
-    thread_id: str
-    subagent_type: str  # "root" for main conversation, or subagent type name
-    task_description: str  # Original task from parent (empty for root)
-    summary_path: Path | None  # Where summary will be written (None for root)
-    parent_tool_call_id: str | None  # For ToolMessage to parent
-    parent_auto_approve: bool | None = None  # Saved parent auto_approve on push
-
-
 class SessionState:
     """Mutable session state shared across the app, adapter, and agent.
 
@@ -1050,9 +1035,6 @@ class SessionState:
 
     The `auto_approve` flag controls whether tool calls (shell execution, file
     writes/edits, web search, URL fetch) require user confirmation before running.
-
-    The context_stack tracks nested conversations when stepping into subagents.
-    The root context is always at index 0.
     """
 
     def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
@@ -1072,84 +1054,7 @@ class SessionState:
         self.exit_hint_handle = None
         from deepagents_cli.sessions import generate_thread_id
 
-        # Initialize with root context
-        self.context_stack: list[ConversationContext] = [
-            ConversationContext(
-                thread_id=generate_thread_id(),
-                subagent_type="root",
-                task_description="",
-                summary_path=None,
-                parent_tool_call_id=None,
-            )
-        ]
-
-    @property
-    def thread_id(self) -> str:
-        """Get the current context's thread_id (backwards compatible)."""
-        return self.current_context.thread_id
-
-    @thread_id.setter
-    def thread_id(self, value: str) -> None:
-        """Set the current context's thread_id."""
-        self.current_context.thread_id = value
-
-    @property
-    def current_context(self) -> ConversationContext:
-        """Get the current (topmost) conversation context."""
-        return self.context_stack[-1]
-
-    @property
-    def depth(self) -> int:
-        """Get the current nesting depth (0 = root)."""
-        return len(self.context_stack) - 1
-
-    @property
-    def is_in_subagent(self) -> bool:
-        """Check if currently in a stepped-into subagent context."""
-        return self.depth > 0
-
-    def push_context(self, ctx: ConversationContext) -> None:
-        """Push a new context onto the stack (entering a subagent).
-
-        Saves the current auto_approve state so it can be restored on pop.
-        Resets auto_approve to False for the new context.
-        """
-        ctx.parent_auto_approve = self.auto_approve
-        self.auto_approve = False
-        self.context_stack.append(ctx)
-
-    def pop_context(self) -> ConversationContext:
-        """Pop the current context from the stack (returning from subagent).
-
-        Restores the parent's auto_approve state.
-
-        Returns:
-            The popped context.
-
-        Raises:
-            ValueError: If trying to pop the root context.
-        """
-        if self.depth == 0:
-            msg = "Cannot pop root context"
-            raise ValueError(msg)
-        ctx = self.context_stack.pop()
-        if ctx.parent_auto_approve is not None:
-            self.auto_approve = ctx.parent_auto_approve
-        return ctx
-
-    def reset_to_root(self) -> None:
-        """Reset to a fresh root context (used by /clear)."""
-        from deepagents_cli.sessions import generate_thread_id
-
-        self.context_stack = [
-            ConversationContext(
-                thread_id=generate_thread_id(),
-                subagent_type="root",
-                task_description="",
-                summary_path=None,
-                parent_tool_call_id=None,
-            )
-        ]
+        self.thread_id = generate_thread_id()
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return the new state.

@@ -41,8 +41,9 @@ from deepagents_cli._session_stats import (
 # deferred to local imports at their call sites since they are only accessed
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
-from deepagents_cli.config import ConversationContext, SessionState, is_ascii_mode
+from deepagents_cli.config import is_ascii_mode
 from deepagents_cli.prompts import REMEMBER_PROMPT
+from deepagents_cli.step_into import ConversationContext, StepIntoSessionState
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -350,10 +351,10 @@ def _new_thread_id() -> str:
     return generate_thread_id()
 
 
-class TextualSessionState(SessionState):
+class TextualSessionState(StepIntoSessionState):
     """Session state for the Textual app.
 
-    Extends SessionState with context stack support for step-into subagents.
+    Extends StepIntoSessionState with UUID7 thread IDs.
     """
 
     def __init__(
@@ -368,9 +369,10 @@ class TextualSessionState(SessionState):
             auto_approve: Whether to auto-approve tool calls
             thread_id: Optional thread ID (generates UUID7 if not provided)
         """
-        super().__init__(auto_approve=auto_approve)
-        # Override root thread_id with the proper ID generator
-        self.context_stack[0].thread_id = thread_id or _new_thread_id()
+        super().__init__(
+            auto_approve=auto_approve,
+            thread_id=thread_id or _new_thread_id(),
+        )
 
     def reset_thread(self) -> str:
         """Reset to a new thread (and context stack).

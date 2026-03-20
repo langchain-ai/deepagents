@@ -16,7 +16,6 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
-from textual.widgets.text_area import Selection
 
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
@@ -327,22 +326,12 @@ class ChatTextArea(TextArea):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding(
-            "shift+enter,ctrl+j,alt+enter,ctrl+enter",
+            "shift+enter,alt+enter,ctrl+enter",
             "insert_newline",
             "New Line",
             show=False,
             priority=True,
         ),
-        Binding(
-            "ctrl+a",
-            "select_all_text",
-            "Select All",
-            show=False,
-            priority=True,
-        ),
-        # Mac Cmd+Z/Cmd+Shift+Z for undo/redo (in addition to Ctrl+Z/Y)
-        Binding("cmd+z,super+z", "undo", "Undo", show=False, priority=True),
-        Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
     _skip_history_change_events: int
@@ -434,16 +423,6 @@ class ChatTextArea(TextArea):
     def action_insert_newline(self) -> None:
         """Insert a newline character."""
         self.insert("\n")
-
-    def action_select_all_text(self) -> None:
-        """Select all text in the text area."""
-        if not self.text:
-            return
-        # Select from start to end
-        lines = self.text.split("\n")
-        end_row = len(lines) - 1
-        end_col = len(lines[end_row])
-        self.selection = Selection(start=(0, 0), end=(end_row, end_col))
 
     def _cancel_paste_burst_timer(self) -> None:
         """Cancel any scheduled paste-burst flush timer."""
@@ -621,12 +600,6 @@ class ChatTextArea(TextArea):
             self.insert("\n")
             return
 
-        if event.key == "ctrl+u":
-            event.prevent_default()
-            event.stop()
-            self._delete_current_line()
-            return
-
         if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
             event.prevent_default()
             event.stop()
@@ -785,28 +758,6 @@ class ChatTextArea(TextArea):
         self._backslash_pending_time = None
         self.text = ""
         self.move_cursor((0, 0))
-
-    def _delete_current_line(self) -> None:
-        """Delete the current line under the cursor.
-
-        If the text has only one line, clears its content entirely. Otherwise
-        removes the line at the cursor row (along with its newline separator)
-        and moves the cursor to column 0 of the new current row.
-        """
-        lines = self.text.split("\n")
-        row, _ = self.cursor_location
-        if row >= len(lines):
-            return
-        if len(lines) == 1:
-            # Single line — clear content only
-            self.text = ""
-            self.move_cursor((0, 0))
-            return
-
-        lines.pop(row)
-        new_row = min(row, len(lines) - 1)
-        self.text = "\n".join(lines)
-        self.move_cursor((new_row, 0))
 
 
 class _CompletionViewAdapter:

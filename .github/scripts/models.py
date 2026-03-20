@@ -15,8 +15,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import NamedTuple
+
+_SAFE_SPEC_RE = re.compile(r"^[a-zA-Z0-9:_\-./]+$")
+"""Allowed characters in model specs: alphanumeric, colon, hyphen, underscore,
+dot, slash.
+
+Rejects shell metacharacters ($, `, ;, |, &, (, ), etc.).
+"""
 
 
 class Model(NamedTuple):
@@ -174,9 +182,7 @@ def _filter_by_tag(prefix: str, tag: str | None) -> list[str]:
     """Return model specs matching a tag filter, in REGISTRY order."""
     if tag is not None:
         return [m.spec for m in REGISTRY if tag in m.groups]
-    return [
-        m.spec for m in REGISTRY if any(g.startswith(prefix) for g in m.groups)
-    ]
+    return [m.spec for m in REGISTRY if any(g.startswith(prefix) for g in m.groups)]
 
 
 def _resolve_models(workflow: str, selection: str) -> list[str]:
@@ -205,6 +211,10 @@ def _resolve_models(workflow: str, selection: str) -> list[str]:
     invalid = [s for s in specs if ":" not in s]
     if invalid:
         msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
+        raise ValueError(msg)
+    unsafe = [s for s in specs if not _SAFE_SPEC_RE.match(s)]
+    if unsafe:
+        msg = f"Model spec(s) contain disallowed characters: {', '.join(repr(s) for s in unsafe)}"
         raise ValueError(msg)
     return specs
 

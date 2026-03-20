@@ -600,6 +600,8 @@ class DeepAgentsApp(App):
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
                 connecting=self._connecting,
+                resuming=self._resume_thread_intent is not None,
+                local_server=self._server_kwargs is not None,
                 id="welcome-banner",
             )
             yield Container(id="messages")

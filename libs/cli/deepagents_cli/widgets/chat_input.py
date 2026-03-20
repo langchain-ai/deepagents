@@ -1001,6 +1001,11 @@ class ChatInput(Vertical):
         """
         if self._slash_controller:
             self._slash_controller.update_commands(commands)
+        else:
+            logger.warning(
+                "Cannot update slash commands: controller not initialized "
+                "(widget not yet mounted)"
+            )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""

@@ -258,7 +258,10 @@ def list_skills(
 
 
 def load_skill_content(skill_path: str) -> str | None:
-    """Read the full SKILL.md content for a skill.
+    """Read the full raw SKILL.md content for a skill.
+
+    Returns the complete file content including any YAML frontmatter.
+    Callers are responsible for parsing or stripping frontmatter if needed.
 
     Args:
         skill_path: Path to the SKILL.md file (from `SkillMetadata['path']`).
@@ -266,9 +269,9 @@ def load_skill_content(skill_path: str) -> str | None:
     Returns:
         Full text content of the SKILL.md file, or `None` on read failure.
     """
-    from pathlib import Path as _Path  # alias to avoid shadowing TYPE_CHECKING import
+    from pathlib import Path
 
-    path = _Path(skill_path)
+    path = Path(skill_path)
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):

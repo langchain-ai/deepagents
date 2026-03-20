@@ -636,6 +636,13 @@ class DeepAgentsApp(App):
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
 
+        # Apply any skill commands discovered before the widget was mounted
+        if self._discovered_skill_commands:
+            from deepagents_cli.command_registry import SLASH_COMMANDS
+
+            merged = list(SLASH_COMMANDS) + self._discovered_skill_commands
+            self._chat_input.update_slash_commands(merged)
+
         # Set initial auto-approve state
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
@@ -836,12 +843,19 @@ class DeepAgentsApp(App):
 
         try:
             skill_commands = await asyncio.to_thread(_discover)
-            if skill_commands and self._chat_input:
-                merged = list(SLASH_COMMANDS) + skill_commands
-                self._chat_input.update_slash_commands(merged)
+            if skill_commands:
                 self._discovered_skill_commands = skill_commands
+                if self._chat_input:
+                    merged = list(SLASH_COMMANDS) + skill_commands
+                    self._chat_input.update_slash_commands(merged)
+                else:
+                    logger.debug(
+                        "Skill discovery completed (%d skills) but chat input "
+                        "not yet mounted; autocomplete deferred",
+                        len(skill_commands),
+                    )
         except OSError:
-            logger.debug(
+            logger.warning(
                 "Filesystem error during skill discovery for assistant %r",
                 assistant_id,
                 exc_info=True,
@@ -2338,7 +2352,6 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(report))
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-            return
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -2386,13 +2399,24 @@ class DeepAgentsApp(App):
 
         try:
             found_name, content = await asyncio.to_thread(_find_skill)
-        except Exception:
+        except OSError as exc:
+            logger.warning(
+                "Filesystem error loading skill %r", skill_name, exc_info=True
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"Could not load skill: {skill_name}. Filesystem error: {exc}"
+                )
+            )
+            return
+        except Exception as exc:
             logger.warning("Error searching for skill %r", skill_name, exc_info=True)
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
                     f"Error loading skill: {skill_name}. "
-                    "Check the skill's SKILL.md file for syntax errors."
+                    f"Unexpected error: {type(exc).__name__}: {exc}"
                 )
             )
             return
@@ -2413,7 +2437,16 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Compose prompt: skill instructions + user args
+        if not content.strip():
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"Skill '{skill_name}' has an empty SKILL.md file. "
+                    "Add instructions to the file before invoking."
+                )
+            )
+            return
+
         prompt = (
             f"I'm invoking the skill `{found_name}`. "
             "Below are the full instructions from the skill's SKILL.md file. "

@@ -214,8 +214,8 @@ def parse_skill_command(command: str) -> tuple[str, str]:
     Returns:
         Tuple of `(skill_name, args)`.
 
-            Both are empty strings when the command has no skill name after
-            the prefix.
+            The skill name is normalized to lowercase. Both are empty strings
+            when the command has no skill name after the prefix.
     """
     after_prefix = command[len("/skill:") :].strip()
     parts = after_prefix.split(maxsplit=1)

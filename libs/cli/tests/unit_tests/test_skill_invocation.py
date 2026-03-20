@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_cli.command_registry import build_skill_commands, parse_skill_command
 from deepagents_cli.skills.load import load_skill_content
@@ -143,3 +144,166 @@ class TestSkillCommandParsing:
         name, args = parse_skill_command("/skill:Web-Research")
         assert name == "web-research"
         assert args == ""
+
+    def test_whitespace_only_after_prefix(self) -> None:
+        name, args = parse_skill_command("/skill:   ")
+        assert name == ""
+        assert args == ""
+
+
+def _make_app() -> MagicMock:
+    """Create a mock app with the methods _handle_skill_command needs."""
+    from deepagents_cli.app import DeepAgentsApp
+
+    app = MagicMock(spec=DeepAgentsApp)
+    app._assistant_id = "agent"
+    app._mounted_messages: list[object] = []
+
+    def capture_mount(msg: object) -> None:
+        app._mounted_messages.append(msg)
+
+    app._mount_message = AsyncMock(side_effect=capture_mount)
+    app._handle_user_message = AsyncMock()
+    app._handle_skill_command = DeepAgentsApp._handle_skill_command.__get__(app)
+    return app
+
+
+def _app_message_texts(app: MagicMock) -> list[str]:
+    """Extract plain text from AppMessage widgets mounted by the mock app."""
+    from deepagents_cli.widgets.messages import AppMessage
+
+    return [str(m.content) for m in app._mounted_messages if isinstance(m, AppMessage)]
+
+
+def _fake_skill(
+    name: str = "test-skill",
+    desc: str = "A test skill",
+    path: str = "/skills/test-skill/SKILL.md",
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "description": desc,
+        "path": path,
+        "license": None,
+        "compatibility": None,
+        "metadata": {},
+        "allowed_tools": [],
+        "source": "user",
+    }
+
+
+class TestHandleSkillCommand:
+    """Test _handle_skill_command orchestration paths."""
+
+    async def test_empty_name_shows_usage(self) -> None:
+        app = _make_app()
+        await app._handle_skill_command("/skill:")
+
+        texts = _app_message_texts(app)
+        assert any("Usage:" in t for t in texts)
+        app._handle_user_message.assert_not_awaited()
+
+    async def test_skill_not_found(self) -> None:
+        app = _make_app()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[]),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:nonexistent")
+
+        texts = _app_message_texts(app)
+        assert any("not found" in t.lower() for t in texts)
+        app._handle_user_message.assert_not_awaited()
+
+    async def test_content_none_shows_error(self) -> None:
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch("deepagents_cli.skills.load.load_skill_content", return_value=None),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        texts = _app_message_texts(app)
+        assert any("could not read" in t.lower() for t in texts)
+        app._handle_user_message.assert_not_awaited()
+
+    async def test_empty_content_shows_error(self) -> None:
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch("deepagents_cli.skills.load.load_skill_content", return_value=""),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        texts = _app_message_texts(app)
+        assert any("empty" in t.lower() for t in texts)
+        app._handle_user_message.assert_not_awaited()
+
+    async def test_happy_path_sends_prompt(self) -> None:
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Instructions\nDo stuff",
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        app._handle_user_message.assert_awaited_once()
+        prompt = app._handle_user_message.call_args[0][0]
+        assert "test-skill" in prompt
+        assert "# Instructions" in prompt
+
+    async def test_happy_path_with_args(self) -> None:
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Instructions\nDo stuff",
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill find quantum")
+
+        prompt = app._handle_user_message.call_args[0][0]
+        assert "find quantum" in prompt
+        assert "**User request:**" in prompt
+
+    async def test_filesystem_error_shows_specific_message(self) -> None:
+        app = _make_app()
+        with (
+            patch(
+                "deepagents_cli.skills.load.list_skills",
+                side_effect=PermissionError("access denied"),
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        texts = _app_message_texts(app)
+        assert any("filesystem error" in t.lower() for t in texts)
+        app._handle_user_message.assert_not_awaited()
+
+    async def test_unexpected_error_includes_exception_type(self) -> None:
+        app = _make_app()
+        with (
+            patch(
+                "deepagents_cli.skills.load.list_skills",
+                side_effect=TypeError("bad argument"),
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        texts = _app_message_texts(app)
+        assert any("TypeError" in t for t in texts)
+        app._handle_user_message.assert_not_awaited()

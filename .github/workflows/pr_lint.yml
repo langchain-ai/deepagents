@@ -27,7 +27,7 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (optional):
-#   deepagents, sdk, deepagents-cli, cli, harbor, acp, examples, infra, deps
+#   deepagents, sdk, deepagents-cli, cli, harbor, evals, acp, examples, infra, deps
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -90,6 +90,7 @@ jobs:
             deepagents-cli
             cli
             harbor
+            evals
             acp
             examples
             infra

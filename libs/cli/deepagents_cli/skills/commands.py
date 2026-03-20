@@ -9,30 +9,18 @@ These commands are registered with the CLI via main.py:
 
 from __future__ import annotations
 
-import functools
+import argparse
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import argparse
     from collections.abc import Callable
 
     from deepagents.middleware.skills import SkillMetadata
 
     from deepagents_cli.output import OutputFormat
 
-from rich.markup import escape as escape_markup
-
-from deepagents_cli.config import COLORS, Settings, console, get_glyphs
-from deepagents_cli.ui import (
-    build_help_parent,
-    show_skills_create_help,
-    show_skills_delete_help,
-    show_skills_help,
-    show_skills_info_help,
-    show_skills_list_help,
-)
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -162,9 +150,9 @@ def _list(
             If False, show all skills (user + project).
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    # Deferred: skills.load imports the deepagents SDK. This module is
-    # imported at CLI startup for setup_skills_parser(), so a top-level
-    # import here would penalize every command (e.g. `--help`).
+    from rich.markup import escape as escape_markup
+
+    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
@@ -425,6 +413,8 @@ def _create(
             If False, create in user skills directory.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
+    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
@@ -532,9 +522,9 @@ def _info(
             If False, search in both user and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    # Deferred: skills.load imports the deepagents SDK. This module is
-    # imported at CLI startup for setup_skills_parser(), so a top-level
-    # import here would penalize every command (e.g. `--help`).
+    from rich.markup import escape as escape_markup
+
+    from deepagents_cli.config import COLORS, Settings, console
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
@@ -676,16 +666,16 @@ def _delete(
     Raises:
         SystemExit: If the deletion fails or a safety check is violated.
     """
+    from rich.markup import escape as escape_markup
+
+    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+    from deepagents_cli.skills.load import list_skills
+
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         return
-
-    # Deferred: skills.load imports the deepagents SDK. This module is
-    # imported at CLI startup for setup_skills_parser(), so a top-level
-    # import here would penalize every command (e.g. `--help`).
-    from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -853,16 +843,27 @@ def setup_skills_parser(
     Returns:
         The skills subparser for argument handling.
     """
-    help_parent = functools.partial(
-        build_help_parent, make_help_action=make_help_action
-    )
+
+    # Lazy wrapper: defers ui import until the help action fires.
+    def _lazy_help(fn_name: str) -> Callable[[], None]:
+        def _show() -> None:
+            from deepagents_cli import ui
+
+            getattr(ui, fn_name)()
+
+        return _show
+
+    def help_parent(help_fn: Callable[[], None]) -> list[argparse.ArgumentParser]:
+        parent = argparse.ArgumentParser(add_help=False)
+        parent.add_argument("-h", "--help", action=make_help_action(help_fn))
+        return [parent]
 
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
         description="Manage agent skills - list, create, view, and delete skills.",
         add_help=False,
-        parents=help_parent(show_skills_help),
+        parents=help_parent(_lazy_help("show_skills_help")),
     )
     if add_output_args is not None:
         add_output_args(skills_parser)
@@ -880,7 +881,7 @@ def setup_skills_parser(
             "(user, user alias, project, project alias)."
         ),
         add_help=False,
-        parents=help_parent(show_skills_list_help),
+        parents=help_parent(_lazy_help("show_skills_list_help")),
     )
     if add_output_args is not None:
         add_output_args(list_parser)
@@ -907,7 +908,7 @@ def setup_skills_parser(
             ".deepagents/skills/ directory."
         ),
         add_help=False,
-        parents=help_parent(show_skills_create_help),
+        parents=help_parent(_lazy_help("show_skills_create_help")),
     )
     if add_output_args is not None:
         add_output_args(create_parser)
@@ -932,7 +933,7 @@ def setup_skills_parser(
         help="Show detailed information about a skill",
         description="Show detailed information about a specific skill",
         add_help=False,
-        parents=help_parent(show_skills_info_help),
+        parents=help_parent(_lazy_help("show_skills_info_help")),
     )
     if add_output_args is not None:
         add_output_args(info_parser)
@@ -954,7 +955,7 @@ def setup_skills_parser(
         help="Delete a skill",
         description="Delete a skill directory and all its contents",
         add_help=False,
-        parents=help_parent(show_skills_delete_help),
+        parents=help_parent(_lazy_help("show_skills_delete_help")),
     )
     if add_output_args is not None:
         add_output_args(delete_parser)
@@ -984,6 +985,8 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     Args:
         args: Parsed command line arguments with skills_command attribute
     """
+    from deepagents_cli.config import COLORS, console
+
     # validate agent argument
     if args.agent:
         is_valid, error_msg = _validate_name(args.agent)
@@ -1028,6 +1031,8 @@ def execute_skills_command(args: argparse.Namespace) -> None:
         )
     else:
         # No subcommand provided, show skills help screen
+        from deepagents_cli.ui import show_skills_help
+
         show_skills_help()
 
 

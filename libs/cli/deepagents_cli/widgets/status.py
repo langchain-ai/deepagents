@@ -14,7 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from deepagents_cli.config import COLORS, get_glyphs, settings
+from deepagents_cli.config import COLORS, get_glyphs
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +220,8 @@ class StatusBar(Horizontal):
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
+        from deepagents_cli.config import settings
+
         self.cwd = self._initial_cwd
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)

@@ -1449,35 +1449,6 @@ class TestLoadAsyncSubagents:
         assert result == []
 
 
-class TestCreateDeepAgentKwargsWorkaround:
-    """Remind us to remove the **kwargs workaround once the SDK pin allows it.
-
-    `create_cli_agent` builds a dict and calls `create_deep_agent(**kwargs)`
-    instead of using direct keyword arguments because the pinned SDK (0.4.x)
-    doesn't accept `async_subagents`. Once the pin is bumped to >=0.5.0 the
-    workaround should be reverted to direct kwargs for readability and type
-    safety.
-    """
-
-    def test_revert_kwargs_workaround_when_sdk_pin_is_bumped(self) -> None:
-        import tomllib
-
-        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
-
-        deps = data["project"]["dependencies"]
-        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
-        pinned_version = sdk_pin.split("==")[1]
-        major, minor = (int(x) for x in pinned_version.split(".")[:2])
-
-        assert (major, minor) < (0, 5), (
-            f"SDK pin is now {pinned_version} (>=0.5.0). "
-            "Revert the **kwargs workaround in create_cli_agent() back to "
-            "direct keyword arguments and delete this test."
-        )
-
-
 class TestLsEntriesShim:
     """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
 

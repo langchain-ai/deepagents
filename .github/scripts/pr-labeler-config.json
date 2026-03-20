@@ -50,7 +50,8 @@
     "sdk": "deepagents",
     "deepagents-cli": "cli",
     "cli": "cli",
-    "harbor": "harbor",
+    "harbor": "evals",
+    "evals": "evals",
     "acp": "acp",
     "docs": "documentation",
     "infra": "infra",
@@ -61,19 +62,23 @@
   "fileRules": [
     {
       "label": "deepagents",
-      "prefix": "libs/deepagents/"
+      "prefix": "libs/deepagents/",
+      "skipExcludedFiles": true
     },
     {
       "label": "cli",
-      "prefix": "libs/cli/"
+      "prefix": "libs/cli/",
+      "skipExcludedFiles": true
     },
     {
       "label": "acp",
-      "prefix": "libs/acp/"
+      "prefix": "libs/acp/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "harbor",
-      "prefix": "libs/harbor/"
+      "label": "evals",
+      "prefix": "libs/evals/",
+      "skipExcludedFiles": true
     },
     {
       "label": "github_actions",

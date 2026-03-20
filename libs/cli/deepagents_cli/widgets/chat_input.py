@@ -333,6 +333,19 @@ class ChatTextArea(TextArea):
             priority=True,
         ),
     ]
+    """Key bindings for the chat text area.
+
+    These are the single source of truth for shortcut keys. `_NEWLINE_KEYS`
+    is derived from this list so that `_on_key` stays in sync automatically.
+    """
+
+    _NEWLINE_KEYS: ClassVar[frozenset[str]] = frozenset(
+        key
+        for b in BINDINGS
+        if b.action == "insert_newline"
+        for key in b.key.split(",")
+    )
+    """Flattened set of keys that insert a newline, derived from `BINDINGS`."""
 
     _skip_history_change_events: int
     """Counter incremented before a history-driven text replacement so the
@@ -593,8 +606,8 @@ class ChatTextArea(TextArea):
         if event.key == "backslash" and event.character == "\\":
             self._backslash_pending_time = now
 
-        # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
-        if event.key in {"shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"}:
+        # Modifier+Enter inserts newline — keys derived from BINDINGS
+        if event.key in self._NEWLINE_KEYS:
             event.prevent_default()
             event.stop()
             self.insert("\n")

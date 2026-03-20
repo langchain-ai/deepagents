@@ -33,7 +33,7 @@ _TIPS: list[str] = [
     "Use /remember to save learnings from this conversation",
     "Use /model to switch models mid-conversation",
     "Press ctrl+x to compose prompts in your external editor",
-    "Press ctrl+u to delete the current line in the chat input",
+    "Press ctrl+u to delete to the start of the line in the chat input",
 ]
 """Rotating tips shown in the welcome footer.
 

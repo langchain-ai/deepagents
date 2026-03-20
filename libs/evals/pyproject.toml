@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.5.0",
+    "langchain>=1.2.13",
     "deepagents-cli",
     # Harbor runtime
     "harbor>=0.1.12",
@@ -29,18 +30,21 @@ dependencies = [
     "modal>=0.64.0",
     # LangChain model providers (evals run against many providers)
     "langchain-anthropic>=1.0.0",
-    "langchain-baseten",
-    "langchain-deepseek",
-    "langchain-fireworks",
-    "langchain-google-genai",
-    "langchain-groq",
-    "langchain-mistralai",
-    "langchain-ollama",
+    "langchain-baseten>=0.2.0",
+    "langchain-deepseek>=1.0.0",
+    "langchain-fireworks>=1.0.0",
+    "langchain-google-genai>=4.0.0",
+    "langchain-groq>=1.0.0",
+    "langchain-mistralai>=1.0.0",
+    "langchain-nvidia-ai-endpoints>=1.0.0",
+    "langchain-ollama>=1.0.0",
     "langchain-openai>=1.0.0",
-    "langchain-xai",
+    "langchain-openrouter>=0.1.0",
+    "langchain-xai>=1.0.0",
     # Eval-specific dependencies
     "datasets>=3.0.0",
     "nltk>=3.9.0",
+    "openevals>=0.1.3",
     "tiktoken>=0.8.0",
 ]
 
@@ -59,6 +63,7 @@ test = [
     "python-dotenv>=1.0.0",
     "pytest-socket>=0.7.0",
     "pytest-cov>=7.0.0",
+    "matplotlib>=3.9.0",
 ]
 
 [project.urls]
@@ -76,7 +81,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deepagents_harbor*"]
+include = ["deepagents_harbor*", "deepagents_evals*"]
+
+[tool.setuptools.package-data]
+deepagents_evals = ["categories.json"]
 
 [tool.uv]
 required-environments = [
@@ -155,11 +163,14 @@ ban-relative-imports = "all"
     "T201",    # `print` found — scripts use print for output
     "S",       # Security warnings — not applicable to scripts
 ]
+"deepagents_harbor/langsmith.py" = [
+    "T201",    # `print` found — CI-facing integration layer, print is the expected output
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_harbor"]
+known-first-party = ["deepagents_evals", "deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

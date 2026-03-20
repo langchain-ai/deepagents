@@ -7,41 +7,41 @@ encodes the score (0-1 correctness).
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from matplotlib.figure import Figure  # ty: ignore[unresolved-import]
-    from matplotlib.projections.polar import PolarAxes  # ty: ignore[unresolved-import]
+    from matplotlib.figure import Figure
+    from matplotlib.projections.polar import PolarAxes
 
-# Eval categories corresponding to the eval test suites in libs/deepagents/tests/evals/.
-# Order determines axis placement on the chart (clockwise from top).
-EVAL_CATEGORIES: list[str] = [
-    "file_operations",
-    "skills",
-    "hitl",
-    "memory",
-    "summarization",
-    "subagents",
-    "system_prompt",
-    "tool_usage",
-]
+_CATEGORIES_JSON = Path(__file__).parent / "categories.json"
+try:
+    _categories_raw = json.loads(_CATEGORIES_JSON.read_text(encoding="utf-8"))
+except FileNotFoundError:
+    msg = (
+        f"categories.json not found at {_CATEGORIES_JSON}. "
+        "Ensure the deepagents_evals package is installed correctly "
+        "(the file should be included via [tool.setuptools.package-data])."
+    )
+    raise FileNotFoundError(msg) from None
+except (json.JSONDecodeError, KeyError) as exc:
+    msg = f"Failed to parse {_CATEGORIES_JSON}: {exc}"
+    raise ValueError(msg) from exc
 
-# Display labels for chart axes (shorter, human-friendly).
-CATEGORY_LABELS: dict[str, str] = {
-    "file_operations": "File Ops",
-    "skills": "Skills",
-    "hitl": "HITL",
-    "memory": "Memory",
-    "summarization": "Summarization",
-    "subagents": "Subagents",
-    "system_prompt": "System Prompt",
-    "tool_usage": "Tool Usage",
-}
+EVAL_CATEGORIES: list[str] = _categories_raw["categories"]
+"""Canonical eval category names.
 
-# Visually distinct colors for up to 8 models.
+Order determines axis placement on the radar chart (clockwise from top).
+"""
+
+CATEGORY_LABELS: dict[str, str] = _categories_raw["labels"]
+"""Human-friendly display labels for radar chart axes, keyed by category name."""
+
+del _categories_raw
+
 _COLORS: list[str] = [
     "#2563eb",  # blue
     "#dc2626",  # red
@@ -52,6 +52,7 @@ _COLORS: list[str] = [
     "#be185d",  # pink
     "#854d0e",  # brown
 ]
+"""Eight visually distinct hex colors, cycled across models on the radar chart."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ def generate_radar(
     title: str = "Eval Results",
     output: str | Path | None = None,
     figsize: tuple[float, float] = (10, 10),
+    _color_offset: int = 0,
 ) -> Figure:
     """Generate a radar chart comparing models across eval categories.
 
@@ -87,7 +89,7 @@ def generate_radar(
     Returns:
         The matplotlib `Figure` object.
     """
-    import matplotlib.pyplot as plt  # ty: ignore[unresolved-import]
+    import matplotlib.pyplot as plt
 
     cats = categories or EVAL_CATEGORIES
     n = len(cats)
@@ -115,7 +117,7 @@ def generate_radar(
 
     # Plot each model as a filled polygon.
     for idx, result in enumerate(results):
-        color = _COLORS[idx % len(_COLORS)]
+        color = _COLORS[(idx + _color_offset) % len(_COLORS)]
         values = [result.scores.get(c, 0.0) for c in cats]
         values.append(values[0])  # close polygon
 
@@ -155,6 +157,64 @@ def generate_radar(
     return fig
 
 
+def generate_individual_radars(
+    results: list[ModelResult],
+    *,
+    categories: list[str] | None = None,
+    output_dir: str | Path = "charts/individual",
+    title_prefix: str = "Eval Results",
+    figsize: tuple[float, float] = (10, 10),
+) -> list[Path]:
+    """Generate one radar chart per model.
+
+    Each chart is saved as `<sanitized_model_name>.png` inside `output_dir`.
+
+    Args:
+        results: One `ModelResult` per model.
+        categories: Category axes to include. Defaults to `EVAL_CATEGORIES`.
+        output_dir: Directory to write per-model PNGs.
+        title_prefix: Prefix for each chart title (model name is appended).
+        figsize: Figure size in inches.
+
+    Returns:
+        List of paths to the saved PNG files.
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    paths: list[Path] = []
+    for idx, result in enumerate(results):
+        name = _short_model_name(result.model)
+        safe = _safe_filename(result.model)
+        dest = out / f"{safe}.png"
+        generate_radar(
+            [result],
+            categories=categories,
+            title=f"{title_prefix} — {name}",
+            output=dest,
+            figsize=figsize,
+            _color_offset=idx,
+        )
+        paths.append(dest)
+    return paths
+
+
+def _safe_filename(model: str) -> str:
+    """Convert a model identifier into a filesystem-safe filename stem.
+
+    Replaces colons, slashes, and spaces with hyphens, then strips leading/
+    trailing hyphens.
+
+    Args:
+        model: Full model identifier.
+
+    Returns:
+        Sanitized string safe for use as a filename (without extension).
+    """
+    safe = model.replace(":", "-").replace("/", "-").replace(" ", "-")
+    return safe.strip("-") or "unknown"
+
+
 def _short_model_name(model: str) -> str:
     """Shorten `provider:model-name-version` to a readable label.
 
@@ -179,10 +239,9 @@ def _short_model_name(model: str) -> str:
 def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     """Load model results from an `evals_summary.json` file.
 
-    The summary file is a JSON array of objects, each with a `model` key and
-    aggregate metrics. Since per-category scores aren't in the current report
-    format, this returns only the aggregate `correctness` mapped to a single
-    `overall` category.
+    The summary file is a JSON array of objects. Each object must have a
+    `category_scores` dict mapping category names to `[0, 1]` correctness
+    floats. The `model` key defaults to `"unknown"` if absent.
 
     Args:
         path: Path to `evals_summary.json`.
@@ -193,7 +252,8 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     Raises:
         FileNotFoundError: If `path` does not exist.
         json.JSONDecodeError: If the file contains invalid JSON.
-        ValueError: If a `correctness` value is not numeric.
+        ValueError: If a score value in `category_scores` is not numeric.
+        KeyError: If an entry is missing `category_scores`.
     """
     import json
 
@@ -201,8 +261,8 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
     results: list[ModelResult] = []
     for entry in data:
         model = str(entry.get("model", "unknown"))
-        correctness = float(entry.get("correctness", 0.0))
-        results.append(ModelResult(model=model, scores={"overall": correctness}))
+        scores = {k: float(v) for k, v in entry["category_scores"].items()}
+        results.append(ModelResult(model=model, scores=scores))
     return results
 
 
@@ -224,6 +284,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.78,
                 "system_prompt": 0.97,
                 "tool_usage": 0.85,
+                "followup_quality": 0.91,
+                "external_benchmarks": 0.76,
+                "tau2_airline": 0.70,
+                "memory_agent_bench": 0.82,
             },
         ),
         ModelResult(
@@ -237,6 +301,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.75,
                 "system_prompt": 0.90,
                 "tool_usage": 0.88,
+                "followup_quality": 0.85,
+                "external_benchmarks": 0.72,
+                "tau2_airline": 0.65,
+                "memory_agent_bench": 0.78,
             },
         ),
         ModelResult(
@@ -250,6 +318,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.70,
                 "system_prompt": 0.85,
                 "tool_usage": 0.82,
+                "followup_quality": 0.80,
+                "external_benchmarks": 0.68,
+                "tau2_airline": 0.60,
+                "memory_agent_bench": 0.75,
             },
         ),
         ModelResult(
@@ -263,6 +335,10 @@ def toy_data() -> list[ModelResult]:
                 "subagents": 0.85,
                 "system_prompt": 0.98,
                 "tool_usage": 0.91,
+                "followup_quality": 0.94,
+                "external_benchmarks": 0.81,
+                "tau2_airline": 0.75,
+                "memory_agent_bench": 0.88,
             },
         ),
     ]

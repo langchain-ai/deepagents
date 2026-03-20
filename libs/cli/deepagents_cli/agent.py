@@ -931,23 +931,18 @@ def create_cli_agent(
     )
 
     # Create the agent
-    #
-    # TODO: revert to direct keyword arguments once the CLI pins SDK >=0.5.0.
-    # We use **kwargs here because `async_subagents` was added in SDK 0.5.0 but
-    # the CLI still pins 0.4.x. Passing an unknown kwarg — even as None — raises
-    # TypeError, so we must omit it from the dict entirely when unused.
-    agent_kwargs: dict[str, Any] = {
-        "model": model,
-        "system_prompt": system_prompt,
-        "tools": tools,
-        "backend": composite_backend,
-        "middleware": agent_middleware,
-        "interrupt_on": interrupt_on,
-        "checkpointer": checkpointer,
-        "subagents": custom_subagents or None,
-    }
-    if async_subagents:
-        agent_kwargs["async_subagents"] = async_subagents
-
-    agent = create_deep_agent(**agent_kwargs).with_config(config)
+    all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
+        *custom_subagents,
+        *(async_subagents or []),
+    ]
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        backend=composite_backend,
+        middleware=agent_middleware,
+        interrupt_on=interrupt_on,
+        checkpointer=checkpointer,
+        subagents=all_subagents or None,
+    ).with_config(config)
     return agent, composite_backend

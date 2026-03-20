@@ -4,11 +4,13 @@ import json
 
 import pytest
 
-from deepagents_harbor.radar import (
+from deepagents_evals.radar import (
     CATEGORY_LABELS,
     EVAL_CATEGORIES,
     ModelResult,
+    _safe_filename,
     _short_model_name,
+    generate_individual_radars,
     generate_radar,
     load_results_from_summary,
     toy_data,
@@ -96,13 +98,68 @@ def test_generate_radar_many_models_color_cycling():
     assert fig is not None
 
 
+# --- generate_individual_radars ---
+
+
+def test_generate_individual_radars_creates_per_model_files(tmp_path):
+    results = toy_data()
+    paths = generate_individual_radars(results, output_dir=tmp_path)
+    assert len(paths) == len(results)
+    for p in paths:
+        assert p.exists()
+        assert p.stat().st_size > 0
+        assert p.suffix == ".png"
+
+
+def test_generate_individual_radars_filenames_are_safe(tmp_path):
+    results = [
+        ModelResult(model="anthropic:claude-sonnet-4-6", scores={"a": 0.5, "b": 0.8, "c": 0.3}),
+        ModelResult(model="openai:gpt-4.1", scores={"a": 0.6, "b": 0.7, "c": 0.4}),
+    ]
+    paths = generate_individual_radars(results, output_dir=tmp_path, categories=["a", "b", "c"])
+    names = [p.stem for p in paths]
+    assert "anthropic-claude-sonnet-4-6" in names
+    assert "openai-gpt-4.1" in names
+
+
+def test_generate_individual_radars_single_model(tmp_path):
+    results = [ModelResult(model="test", scores={"a": 0.5, "b": 0.8, "c": 0.3})]
+    paths = generate_individual_radars(results, output_dir=tmp_path, categories=["a", "b", "c"])
+    assert len(paths) == 1
+
+
+# --- _safe_filename ---
+
+
+def test_safe_filename_replaces_colons():
+    assert _safe_filename("anthropic:claude-sonnet-4-6") == "anthropic-claude-sonnet-4-6"
+
+
+def test_safe_filename_replaces_slashes():
+    assert _safe_filename("org/model/v1") == "org-model-v1"
+
+
+def test_safe_filename_empty_string():
+    assert _safe_filename("") == "unknown"
+
+
+def test_safe_filename_only_special_chars():
+    assert _safe_filename(":::") == "unknown"
+
+
 # --- load_results_from_summary ---
 
 
 def test_load_results_from_summary_happy_path(tmp_path):
     data = [
-        {"model": "anthropic:claude-sonnet-4-6", "correctness": 0.85},
-        {"model": "openai:gpt-4.1", "correctness": 0.72},
+        {
+            "model": "anthropic:claude-sonnet-4-6",
+            "category_scores": {"file_operations": 0.85, "memory": 0.90},
+        },
+        {
+            "model": "openai:gpt-4.1",
+            "category_scores": {"file_operations": 0.72, "memory": 0.80},
+        },
     ]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -110,21 +167,21 @@ def test_load_results_from_summary_happy_path(tmp_path):
     results = load_results_from_summary(path)
     assert len(results) == 2
     assert results[0].model == "anthropic:claude-sonnet-4-6"
-    assert results[0].scores == {"overall": 0.85}
-    assert results[1].scores == {"overall": 0.72}
+    assert results[0].scores == {"file_operations": 0.85, "memory": 0.90}
+    assert results[1].scores == {"file_operations": 0.72, "memory": 0.80}
 
 
-def test_load_results_from_summary_missing_correctness_defaults(tmp_path):
+def test_load_results_from_summary_missing_category_scores_raises(tmp_path):
     data = [{"model": "test-model"}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    results = load_results_from_summary(path)
-    assert results[0].scores == {"overall": 0.0}
+    with pytest.raises(KeyError):
+        load_results_from_summary(path)
 
 
 def test_load_results_from_summary_missing_model_defaults(tmp_path):
-    data = [{"correctness": 0.9}]
+    data = [{"category_scores": {"memory": 0.9}}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
 

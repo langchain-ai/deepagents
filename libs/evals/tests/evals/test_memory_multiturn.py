@@ -31,8 +31,13 @@ from tests.evals.utils import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+pytestmark = [pytest.mark.eval_category("memory")]
+
 MEMORY_PATH = "/project/AGENTS.md"
+"""Virtual path to the agent's memory file used across all memory multi-turn evals."""
+
 MEMORY_SEED = "# Project Memory\n\nUser preferences and project facts.\n"
+"""Initial content seeded into the memory file before each test run."""
 
 
 # ---------------------------------------------------------------------------

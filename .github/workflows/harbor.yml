@@ -1,0 +1,200 @@
+name: "⚓ Harbor"
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Model set to run. Set definitions: .github/scripts/models.py. Use models_override for individual models."
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - anthropic
+          - openai
+          - baseten
+          - "anthropic:claude-sonnet-4-20250514"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5-20251101"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5.4"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:deepseek-ai/DeepSeek-V3.2"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
+      models_override:
+        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        required: false
+        default: ""
+        type: string
+      sandbox_env:
+        description: "Harbor sandbox environment"
+        required: true
+        default: "docker"
+        type: choice
+        options:
+          - docker
+          - daytona
+          - langsmith
+          - modal
+          - runloop
+      task_count:
+        description: "Number of Terminal Bench 2 tasks to run"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+  HARBOR_DATASET_NAME: "terminal-bench"
+  HARBOR_DATASET_VERSION: "2.0"
+
+jobs:
+  prep:
+    name: "🔧 Prepare matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Compute Harbor matrix"
+        id: set-matrix
+        run: python .github/scripts/models.py harbor
+        env:
+          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor-prep
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🧪 Ensure LangSmith dataset"
+        working-directory: libs/evals
+        run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
+
+  harbor:
+    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }})"
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING_V2: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      HARBOR_TASK_COUNT: ${{ inputs.task_count }}
+      HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+      HARBOR_MODEL: ${{ matrix.model }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "🧪 Create LangSmith experiment"
+        id: langsmith
+        run: |
+          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME")
+          echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
+          echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+
+      - name: "⚓ Run Harbor"
+        run: |
+          uv run harbor run \
+            --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+            --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
+            -n "$HARBOR_TASK_COUNT" \
+            --jobs-dir jobs/terminal-bench \
+            --env "$HARBOR_SANDBOX_ENV" \
+            --model "$HARBOR_MODEL" \
+            --agent-kwarg use_cli_agent=false
+
+      - name: "🔍 Find latest Harbor job"
+        id: latest-job
+        run: |
+          latest_job=$(python - <<'PY'
+          from pathlib import Path
+
+          jobs_dir = Path("jobs/terminal-bench")
+          job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
+          if not job_dirs:
+              raise SystemExit("No Harbor job directory found")
+          print(job_dirs[-1])
+          PY
+          )
+          echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
+
+      - name: "⭐ Add Harbor rewards to LangSmith"
+        if: always() && steps.latest-job.outcome == 'success' && steps.langsmith.outcome == 'success'
+        env:
+          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+        run: |
+          uv run python scripts/harbor_langsmith.py add-feedback \
+            "$HARBOR_JOB_DIR" \
+            --project-name "$LANGSMITH_EXPERIMENT_NAME"
+
+      - name: "📝 Write workflow summary"
+        if: always()
+        env:
+          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+          LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
+        run: |
+          {
+            echo "## Harbor run"
+            echo
+            echo "- Model: $HARBOR_MODEL"
+            echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
+            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
+            echo "- Task count: ${HARBOR_TASK_COUNT}"
+            echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
+              echo "- Harbor job dir: $HARBOR_JOB_DIR"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📤 Upload Harbor artifacts"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harbor-${{ strategy.job-index }}
+          path: |
+            libs/evals/jobs/terminal-bench
+          if-no-files-found: warn

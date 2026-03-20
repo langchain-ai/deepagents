@@ -400,3 +400,55 @@ class TestBuildConnectingFooter:
     def test_contains_connecting_message(self) -> None:
         """Footer should include the connecting status text."""
         assert "Connecting to server..." in build_connecting_footer().plain
+
+    def test_resuming_message(self) -> None:
+        """Footer should say 'Resuming...' when resuming."""
+        footer = build_connecting_footer(resuming=True)
+        assert "Resuming..." in footer.plain
+        assert "Connecting" not in footer.plain
+
+    def test_local_server_message(self) -> None:
+        """Footer should say 'local server' when local_server is True."""
+        footer = build_connecting_footer(local_server=True)
+        assert "Connecting to local server..." in footer.plain
+
+    def test_resuming_takes_precedence_over_local(self) -> None:
+        """Resuming text should win when both resuming and local_server are set."""
+        footer = build_connecting_footer(resuming=True, local_server=True)
+        assert "Resuming..." in footer.plain
+        assert "local server" not in footer.plain
+
+
+class TestBannerConnectingFooterVariants:
+    """Verify WelcomeBanner forwards resuming/local_server to _build_banner."""
+
+    def test_connecting_default(self) -> None:
+        """Baseline connecting banner shows generic server text."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." in plain
+        assert "Ready to code" not in plain
+
+    def test_connecting_resuming(self) -> None:
+        """Banner forwards resuming flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "Connecting" not in plain
+
+    def test_connecting_local_server(self) -> None:
+        """Banner forwards local_server flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to local server..." in plain
+
+    def test_connecting_resuming_precedence(self) -> None:
+        """Resuming wins over local_server at the banner level."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "local server" not in plain

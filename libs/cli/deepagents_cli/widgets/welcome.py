@@ -33,7 +33,8 @@ _TIPS: list[str] = [
     "Use /remember to save learnings from this conversation",
     "Use /model to switch models mid-conversation",
     "Press ctrl+x to compose prompts in your external editor",
-    "Press ctrl+u to delete the current line in the chat input",
+    "Press ctrl+u to delete to the start of the line in the chat input",
+    "Type /update to check for and install updates",
 ]
 """Rotating tips shown in the welcome footer.
 
@@ -64,6 +65,8 @@ class WelcomeBanner(Static):
         mcp_tool_count: int = 0,
         *,
         connecting: bool = False,
+        resuming: bool = False,
+        local_server: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the welcome banner.
@@ -73,12 +76,21 @@ class WelcomeBanner(Static):
             mcp_tool_count: Number of MCP tools loaded at startup.
             connecting: When `True`, show a "Connecting..." footer instead of
                 the normal ready prompt. Call `set_connected` to transition.
+            resuming: When `True`, the connecting footer says "Resuming..."
+                instead of any `'Connecting...'` variant.
+            local_server: When `True`, the connecting footer qualifies the
+                server as "local" (i.e. a server process managed by the
+                CLI).
+
+                Ignored when `resuming` is `True`.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
         self._connecting = connecting
+        self._resuming = resuming
+        self._local_server = local_server
         self._failed = False
         self._failure_error: str = ""
         self._project_name: str | None = get_langsmith_project_name()
@@ -215,7 +227,12 @@ class WelcomeBanner(Static):
         if self._failed:
             parts.append(build_failure_footer(self._failure_error))
         elif self._connecting:
-            parts.append(build_connecting_footer())
+            parts.append(
+                build_connecting_footer(
+                    resuming=self._resuming,
+                    local_server=self._local_server,
+                )
+            )
         else:
             parts.append(build_welcome_footer())
         return Content.assemble(*parts)
@@ -237,13 +254,27 @@ def build_failure_footer(error: str) -> Content:
     )
 
 
-def build_connecting_footer() -> Content:
+def build_connecting_footer(
+    *, resuming: bool = False, local_server: bool = False
+) -> Content:
     """Build a footer shown while waiting for the server to connect.
+
+    Args:
+        resuming: Show `'Resuming...'` instead of any `'Connecting...'` variant.
+        local_server: Qualify the server as "local" in the connecting message.
+
+            Ignored when `resuming` is `True`.
 
     Returns:
         Content with a connecting status message.
     """
-    return Content.styled("\nConnecting to server...\n", "dim")
+    if resuming:
+        text = "\nResuming...\n"
+    elif local_server:
+        text = "\nConnecting to local server...\n"
+    else:
+        text = "\nConnecting to server...\n"
+    return Content.styled(text, "dim")
 
 
 def build_welcome_footer() -> Content:

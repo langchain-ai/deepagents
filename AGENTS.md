@@ -245,6 +245,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - Keep top-level imports in `main.py` and other entry-point modules minimal.
 - Defer heavy imports to the point where they are actually needed (inside functions/methods).
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
+- Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
+- When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
+- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
 **CLI help screen:**
 

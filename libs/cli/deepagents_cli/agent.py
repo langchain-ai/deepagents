@@ -672,6 +672,7 @@ def create_cli_agent(
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
@@ -710,6 +711,10 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
+            clarifying questions.
+
+            Disabled in non-interactive mode.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
@@ -795,9 +800,10 @@ def create_cli_agent(
     agent_middleware.append(ConfigurableModelMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
-    from deepagents_cli.ask_user import AskUserMiddleware
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
 
-    agent_middleware.append(AskUserMiddleware())
+        agent_middleware.append(AskUserMiddleware())
 
     # Add memory middleware
     if enable_memory:

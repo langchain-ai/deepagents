@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Preset model selection"
+        description: "Model set to run. Set definitions: .github/scripts/models.py. Use models_override for individual models."
         required: true
         default: "all"
         type: choice
@@ -69,7 +69,7 @@ jobs:
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
-        run: python .github/scripts/get_harbor_models.py
+        run: python .github/scripts/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 

@@ -189,13 +189,22 @@ jobs:
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+
+          # LangSmith sandboxes are not a built-in harbor environment type,
+          # so we use --environment-import-path instead of --env.
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_flag="--environment-import-path deepagents_harbor.langsmith_environment:LangSmithEnvironment"
+          else
+            env_flag="--env $HARBOR_SANDBOX_ENV"
+          fi
+
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
             --jobs-dir jobs/terminal-bench \
-            --env "$HARBOR_SANDBOX_ENV" \
+            $env_flag \
             --model "$HARBOR_MODEL" \
             --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
 

@@ -3119,6 +3119,43 @@ class DeepAgentsApp(App):
                 "UI may be out of sync with message store"
             )
 
+    def _pop_last_queued_message(self) -> None:
+        """Remove the most recently queued message (LIFO).
+
+        If the chat input is empty the evicted text is restored there so the
+        user can edit and re-submit. Otherwise the message is discarded. The
+        toast message distinguishes between the two outcomes.
+
+        Caller must ensure `_pending_messages` is non-empty. A defensive guard
+        is included in case of async TOCTOU races.
+        """
+        if not self._pending_messages:
+            return
+        msg = self._pending_messages.pop()
+        if self._queued_widgets:
+            widget = self._queued_widgets.pop()
+            widget.remove()
+        else:
+            logger.warning(
+                "Queued-widget deque empty while pending-messages was not; "
+                "widget/message tracking may be out of sync"
+            )
+
+        if not self._chat_input:
+            logger.warning(
+                "Chat input unavailable during queue pop; "
+                "message text cannot be restored: %s",
+                msg.text[:60],
+            )
+            self.notify("Queued message discarded", timeout=2)
+            return
+
+        if not self._chat_input.value.strip():
+            self._chat_input.value = msg.text
+            self.notify("Queued message moved to input", timeout=2)
+        else:
+            self.notify("Queued message discarded (input not empty)", timeout=3)
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -3241,7 +3278,9 @@ class DeepAgentsApp(App):
         3. If input is in command/shell mode, exit to normal mode
         4. If shell command is running, kill it
         5. If approval menu is active, reject it
-        6. If agent is running, interrupt it
+        6. If ask-user menu is active, cancel it
+        7. If queued messages exist, pop the last one (LIFO)
+        8. If agent is running, interrupt it
         """
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
@@ -3281,6 +3320,13 @@ class DeepAgentsApp(App):
         # worker, following the same pattern as the approval widget above.
         if self._pending_ask_user_widget:
             self._pending_ask_user_widget.action_cancel()
+            return
+
+        # If queued messages exist, pop the last one (LIFO) instead of
+        # interrupting the agent.  This lets the user retract queued messages
+        # one at a time; once the queue is empty the next ESC will interrupt.
+        if self._pending_messages:
+            self._pop_last_queued_message()
             return
 
         # If agent is running, interrupt it and discard queued messages

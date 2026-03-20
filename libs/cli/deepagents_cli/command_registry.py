@@ -140,6 +140,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/update",
+        description="Check for and install updates",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="upgrade",
+    ),
+    SlashCommand(
         name="/version",
         description="Show version",
         bypass_tier=BypassTier.CONNECTING,

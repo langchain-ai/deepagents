@@ -929,13 +929,12 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "first"
             assert app._pending_messages[1].text == "second"
 
-    async def test_queue_cleared_on_interrupt(self) -> None:
-        """Interrupt should clear the message queue."""
+    async def test_escape_pops_last_queued_message(self) -> None:
+        """Escape should pop the last queued message (LIFO), not nuke all."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
-            # Simulate a worker so action_interrupt has something to cancel
             mock_worker = MagicMock()
             app._agent_worker = mock_worker
 
@@ -946,12 +945,122 @@ class TestMessageQueue:
 
             assert len(app._pending_messages) == 2
 
-            # Interrupt (escape key handler)
+            # First ESC pops the last queued message
             app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "msg1"
+            mock_worker.cancel.assert_not_called()
 
+            # Second ESC pops the remaining message
+            app.action_interrupt()
             assert len(app._pending_messages) == 0
-            assert len(app._queued_widgets) == 0
+            mock_worker.cancel.assert_not_called()
+
+            # Third ESC interrupts the agent
+            app.action_interrupt()
             mock_worker.cancel.assert_called_once()
+
+    async def test_escape_restores_text_to_empty_input(self) -> None:
+        """Popped message text is restored to chat input when input is empty."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("restore me", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input is empty — text should be restored
+            chat.value = ""
+            app.action_interrupt()
+            assert chat.value == "restore me"
+
+    async def test_escape_preserves_existing_input_text(self) -> None:
+        """Popped message text is discarded when chat input already has content."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("queued msg", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input has content — should NOT be overwritten
+            chat.value = "draft text"
+            app.action_interrupt()
+            assert chat.value == "draft text"
+            assert len(app._pending_messages) == 0
+
+    async def test_escape_pop_shows_toast(self) -> None:
+        """Popping a queued message shows a differentiated toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Queue a message and pop with empty input — "moved to input"
+            app._pending_messages.append(QueuedMessage(text="a", mode="normal"))
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message moved to input", timeout=2
+                )
+
+            # Queue another and pop with non-empty input — "discarded"
+            app._pending_messages.append(QueuedMessage(text="b", mode="normal"))
+            chat.value = "existing"
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message discarded (input not empty)", timeout=3
+                )
+
+    async def test_escape_pop_single_then_interrupt(self) -> None:
+        """Single queued message is popped, then next ESC interrupts agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            app._pending_messages.append(QueuedMessage(text="only", mode="normal"))
+            app._queued_widgets.append(MagicMock())
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            mock_worker.cancel.assert_not_called()
+
+            app.action_interrupt()
+            mock_worker.cancel.assert_called_once()
+
+    async def test_escape_pop_handles_widget_desync(self) -> None:
+        """Pop completes gracefully when _queued_widgets is empty but messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Messages without corresponding widgets (desync scenario)
+            app._pending_messages.append(QueuedMessage(text="orphan", mode="normal"))
+            assert len(app._queued_widgets) == 0
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            # No crash — method handled the desync
 
     async def test_interrupt_dismisses_completion_without_stopping_agent(self) -> None:
         """Esc should dismiss completion popup without interrupting the agent."""
@@ -1687,8 +1796,8 @@ class TestInterruptApprovalPriority:
         approval.action_select_reject.assert_called_once()
         worker.cancel.assert_not_called()
 
-    async def test_escape_cancels_worker_when_no_approval_pending(self) -> None:
-        """Escape cancels active worker and clears queued messages when no approval."""
+    async def test_escape_pops_queue_before_cancelling_worker(self) -> None:
+        """Escape pops queued messages (LIFO) before cancelling the worker."""
         app = DeepAgentsApp()
         worker = MagicMock()
         queued_w1 = MagicMock()
@@ -1700,17 +1809,28 @@ class TestInterruptApprovalPriority:
             app._pending_approval_widget = None
             app._agent_running = True
             app._agent_worker = worker
-            app._pending_messages.append(QueuedMessage(text="q", mode="normal"))
+            app._pending_messages.append(QueuedMessage(text="q1", mode="normal"))
+            app._pending_messages.append(QueuedMessage(text="q2", mode="normal"))
             app._queued_widgets.append(queued_w1)
             app._queued_widgets.append(queued_w2)
 
+            # First ESC pops last queued message, does not cancel worker
             app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "q1"
+            queued_w2.remove.assert_called_once()
+            queued_w1.remove.assert_not_called()
+            worker.cancel.assert_not_called()
 
-        worker.cancel.assert_called_once()
-        queued_w1.remove.assert_called_once()
-        queued_w2.remove.assert_called_once()
-        assert len(app._pending_messages) == 0
-        assert len(app._queued_widgets) == 0
+            # Second ESC pops remaining message
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            queued_w1.remove.assert_called_once()
+            worker.cancel.assert_not_called()
+
+            # Third ESC finally cancels the worker
+            app.action_interrupt()
+            worker.cancel.assert_called_once()
 
     async def test_escape_rejects_approval_when_no_worker(self) -> None:
         """Approval rejection works even without an active agent worker."""

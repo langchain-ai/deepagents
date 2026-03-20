@@ -2350,6 +2350,13 @@ class DeepAgentsApp(App):
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
             await self._mount_message(AppMessage(report))
+
+            # Re-discover skills so autocomplete reflects any new/removed skills
+            self.run_worker(
+                self._discover_skills_for_autocomplete(),
+                exclusive=True,
+                group="startup-skill-discovery",
+            )
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         else:

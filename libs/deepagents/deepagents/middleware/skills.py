@@ -631,7 +631,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(
+        self,
+        *,
+        backend: BACKEND_TYPES,
+        sources: list[str],
+        inject_prompt: bool = True,
+    ) -> None:
         """Initialize the skills middleware.
 
         Args:
@@ -641,9 +647,14 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
             sources: List of skill source paths (e.g.,
                 `['/skills/user/', '/skills/project/']`).
+            inject_prompt: Whether to inject skill names and descriptions into
+                the system prompt. When `False`, skills are still loaded and
+                accessible via progressive disclosure but the system prompt is
+                not modified with the skill listing.
         """
         self._backend = backend
         self.sources = sources
+        self.inject_prompt = inject_prompt
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
@@ -708,12 +719,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
+        Skipped when `inject_prompt` is `False`.
+
         Args:
             request: Model request to modify
 
         Returns:
             New model request with skills documentation injected into system message
         """
+        if not self.inject_prompt:
+            return request
+
         skills_metadata = request.state.get("skills_metadata", [])
         skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)

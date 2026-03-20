@@ -87,6 +87,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
+    inject_skills_in_prompt: bool = True,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
@@ -174,6 +175,12 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             `invoke(files={...})`. With `FilesystemBackend`, skills are loaded from disk relative
             to the backend's `root_dir`. Later sources override earlier ones for skills with the
             same name (last one wins).
+        inject_skills_in_prompt: Whether to inject skill names and descriptions
+            into the system prompt. When `False`, skills are still loaded and
+            accessible via progressive disclosure (the agent can read `SKILL.md`
+            files on demand) but the system prompt is not modified with the
+            skill listing. Useful when the number of skills is large and the
+            listing would bloat the system prompt unnecessarily.
         memory: Optional list of memory file paths (`AGENTS.md` files) to load
             (e.g., `["/memory/AGENTS.md"]`).
 
@@ -211,7 +218,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills, inject_prompt=inject_skills_in_prompt))
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
@@ -248,7 +255,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_inject = spec.get("inject_skills_in_prompt", inject_skills_in_prompt)
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills, inject_prompt=subagent_inject))
             subagent_middleware.extend(spec.get("middleware", []))
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
@@ -271,7 +279,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         TodoListMiddleware(),
     ]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, inject_prompt=inject_skills_in_prompt))
     deepagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),

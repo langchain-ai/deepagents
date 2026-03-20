@@ -1601,3 +1601,154 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+def test_inject_prompt_false_skips_system_prompt_injection(tmp_path: Path) -> None:
+    """Test that inject_prompt=False prevents skill listing from being added to system prompt."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(skills_dir)],
+        inject_prompt=False,
+    )
+
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+    system_content = messages[0].text if messages[0].type == "system" else ""
+    assert "Skills System" not in system_content
+    assert "test-skill" not in system_content
+
+
+def test_inject_prompt_true_includes_system_prompt_injection(tmp_path: Path) -> None:
+    """Test that inject_prompt=True (default) includes skill listing in system prompt."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(skills_dir)],
+        inject_prompt=True,
+    )
+
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+    system_content = messages[0].text
+    assert "Skills System" in system_content
+    assert "test-skill" in system_content
+
+
+def test_inject_prompt_default_is_true() -> None:
+    """Test that inject_prompt defaults to True."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/skills/user/"],
+    )
+    assert middleware.inject_prompt is True
+
+
+def test_inject_prompt_false_still_loads_skills(tmp_path: Path) -> None:
+    """Test that inject_prompt=False still loads skill metadata via before_agent."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(skills_dir)],
+        inject_prompt=False,
+    )
+
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"
+
+
+async def test_inject_prompt_false_skips_system_prompt_async(tmp_path: Path) -> None:
+    """Test that inject_prompt=False prevents skill listing in async agent invocation."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "async-skill" / "SKILL.md")
+    skill_content = make_skill_content("async-skill", "An async test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(skills_dir)],
+        inject_prompt=False,
+    )
+
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    await agent.ainvoke({"messages": [HumanMessage(content="Hello")]})
+
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+    system_content = messages[0].text if messages[0].type == "system" else ""
+    assert "Skills System" not in system_content
+    assert "async-skill" not in system_content
+
+
+def test_create_deep_agent_inject_skills_in_prompt_false(tmp_path: Path) -> None:
+    """Test create_deep_agent with inject_skills_in_prompt=False."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for deep agents")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+    agent = create_deep_agent(
+        backend=backend,
+        skills=[str(skills_dir)],
+        inject_skills_in_prompt=False,
+        model=fake_model,
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+    system_content = messages[0].text
+    assert "Skills System" not in system_content
+    assert "test-skill" not in system_content

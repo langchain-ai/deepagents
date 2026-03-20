@@ -77,6 +77,9 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
 
+    inject_skills_in_prompt: NotRequired[bool]
+    """Whether to inject skill names/descriptions into the system prompt."""
+
 
 class CompiledSubAgent(TypedDict):
     """A pre-compiled agent spec.

@@ -719,7 +719,8 @@ class DeepAgentsApp(App):
                 group="server-startup",
             )
 
-        # Background update check (opt-out via env var or config.toml [update].check)
+        # Background update check and what's-new banner
+        # (opt-out via env var or config.toml [update].check)
         from deepagents_cli.update_check import is_update_check_enabled
 
         if is_update_check_enabled():
@@ -1203,6 +1204,11 @@ class DeepAgentsApp(App):
                 )
         except Exception:
             logger.warning("Auto-update failed unexpectedly", exc_info=True)
+            self.notify(
+                "Update failed unexpectedly.",
+                severity="warning",
+                timeout=10,
+            )
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""
@@ -1225,6 +1231,7 @@ class DeepAgentsApp(App):
             )
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)
+            return
 
         try:
             from deepagents_cli._version import __version__ as cli_version
@@ -1260,7 +1267,7 @@ class DeepAgentsApp(App):
                     "Upgrading..."
                 )
             )
-            success, _output = await perform_upgrade()
+            success, output = await perform_upgrade()
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
@@ -1268,11 +1275,12 @@ class DeepAgentsApp(App):
                 )
             else:
                 cmd = upgrade_command()
+                detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
-                    AppMessage(f"Auto-update failed. Run manually: {cmd}")
+                    AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}")
                 )
         except Exception as exc:
-            logger.debug("/update command failed", exc_info=True)
+            logger.warning("/update command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
             )

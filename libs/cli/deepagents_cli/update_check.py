@@ -3,7 +3,8 @@
 Handles version checking against PyPI (with caching), install-method detection,
 auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
 
-All errors are silently swallowed to avoid disrupting user experience.
+Public entry points never raise; errors are caught and logged to avoid
+disrupting user experience.
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
 }
 """Upgrade commands keyed by install method.
 
-Execution order is determined by `perform_upgrade`, which tries the detected
-method only.
+`perform_upgrade` runs only the command matching the detected install method;
+no fallback chain.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
@@ -95,7 +96,7 @@ def get_latest_version(*, bypass_cache: bool = False) -> str | None:
         )
         resp.raise_for_status()
         latest: str = resp.json()["info"]["version"]
-    except (requests.RequestException, KeyError, json.JSONDecodeError):
+    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return None
 
@@ -148,7 +149,8 @@ def detect_install_method() -> InstallMethod:
     Checks `sys.prefix` against known paths for uv and Homebrew.
 
     Returns:
-        `'unknown'` for editable/dev installs, otherwise falls back to `'pip'`.
+        The detected install method: `'uv'`, `'brew'`, `'pip'`, or `'unknown'`
+            (editable/dev installs).
     """
     from deepagents_cli.config import _is_editable_install
 
@@ -171,7 +173,7 @@ def detect_install_method() -> InstallMethod:
 def upgrade_command(method: InstallMethod | None = None) -> str:
     """Return the shell command to upgrade `deepagents-cli`.
 
-    Falls back to the pip command for unrecognised install methods.
+    Falls back to the pip command for unrecognized install methods.
 
     Args:
         method: Install method override.
@@ -225,6 +227,8 @@ async def perform_upgrade() -> tuple[bool, str]:
         )
         return False, output.strip()
     except TimeoutError:
+        proc.kill()
+        await proc.wait()
         msg = f"Upgrade command timed out after {_UPGRADE_TIMEOUT}s: {cmd}"
         logger.warning(msg)
         return False, msg
@@ -265,7 +269,7 @@ def is_auto_update_enabled() -> bool:
 
     if _is_editable_install():
         return False
-    if os.environ.get("DEEPAGENTS_AUTO_UPDATE"):
+    if os.environ.get("DEEPAGENTS_AUTO_UPDATE", "").lower() in {"1", "true", "yes"}:
         return True
     return _read_update_config().get("auto_update", False)
 
@@ -284,7 +288,7 @@ def _read_update_config() -> dict[str, bool]:
         section = data.get("update", {})
         return {k: v for k, v in section.items() if isinstance(v, bool)}
     except (OSError, tomllib.TOMLDecodeError):
-        logger.debug("Could not read [update] config", exc_info=True)
+        logger.warning("Could not read [update] config — using defaults", exc_info=True)
         return {}
 
 
@@ -299,7 +303,7 @@ def get_seen_version() -> str | None:
         if SEEN_VERSION_FILE.exists():
             data = json.loads(SEEN_VERSION_FILE.read_text(encoding="utf-8"))
             return data.get("version")
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
         logger.debug("Failed to read seen-version file", exc_info=True)
     return None
 
@@ -312,7 +316,7 @@ def mark_version_seen(version: str) -> None:
             json.dumps({"version": version, "seen_at": time.time()}),
             encoding="utf-8",
         )
-    except Exception:
+    except OSError:
         logger.debug("Failed to write seen-version file", exc_info=True)
 
 

@@ -114,8 +114,8 @@ class TestSlashCommands:
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.
 
-    The "Commands: ..." line in the ``/help`` handler is hand-maintained
-    separately from the ``COMMANDS`` tuple in ``command_registry.py``.  This
+    The "Commands: ..." line in the `/help` handler is hand-maintained
+    separately from the `COMMANDS` tuple in `command_registry.py`.  This
     test catches drift — e.g. a new command added to the registry but
     forgotten in the help output.
     """

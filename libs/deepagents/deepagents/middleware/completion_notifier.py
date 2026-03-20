@@ -51,10 +51,7 @@ Add this middleware to the subagent's middleware stack:
 ```python
 from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
 
-notifier = CompletionNotifierMiddleware(
-    parent_graph_id="supervisor",
-    subagent_name="researcher",
-)
+notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
 
 graph = create_agent(
     model=model,
@@ -106,7 +103,6 @@ async def _notify_parent(
     parent_thread_id: str,
     parent_graph_id: str,
     notification: str,
-    subagent_name: str,
 ) -> None:
     """Send a notification run to the parent supervisor's thread.
 
@@ -119,7 +115,6 @@ async def _notify_parent(
         parent_graph_id: The supervisor's graph ID (used as `assistant_id`
             in the `runs.create` call).
         notification: The message content to send.
-        subagent_name: Human-readable name for logging.
     """
     from langgraph_sdk import get_client  # noqa: PLC0415  # deferred to avoid import cost at module level
 
@@ -133,9 +128,9 @@ async def _notify_parent(
             },
         )
         logger.info(
-            "Notified parent thread %s that subagent '%s' finished",
+            "Notified parent thread %s via graph '%s'",
             parent_thread_id,
-            subagent_name,
+            parent_graph_id,
         )
     except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         logger.warning(
@@ -186,9 +181,6 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         parent_graph_id: The supervisor's graph ID (or assistant ID). Used
             as the `assistant_id` parameter when calling `runs.create()` to
             send notifications back to the supervisor.
-        subagent_name: Human-readable name used in notification messages
-            and logs. Helps the supervisor identify which subagent sent
-            the notification.
 
     Example:
         ```python
@@ -196,10 +188,7 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             CompletionNotifierMiddleware,
         )
 
-        notifier = CompletionNotifierMiddleware(
-            parent_graph_id="supervisor",
-            subagent_name="researcher",
-        )
+        notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
 
         graph = create_agent(
             model=model,
@@ -211,11 +200,10 @@ class CompletionNotifierMiddleware(AgentMiddleware):
 
     state_schema = CompletionNotifierState
 
-    def __init__(self, parent_graph_id: str, subagent_name: str = "subagent") -> None:
+    def __init__(self, parent_graph_id: str) -> None:
         """Initialize the `CompletionNotifierMiddleware`."""
         super().__init__()
         self.parent_graph_id = parent_graph_id
-        self.subagent_name = subagent_name
         self._notified = False
 
     def _should_notify(self, state: dict[str, Any]) -> bool:
@@ -233,7 +221,6 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             state[_PARENT_THREAD_ID_KEY],
             self.parent_graph_id,
             message,
-            self.subagent_name,
         )
 
     @staticmethod
@@ -255,7 +242,7 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         """Build a notification string with task_id and subagent name."""
         task_id = self._get_task_id()
         prefix = f"[task_id={task_id}]" if task_id else ""
-        return f"{prefix}[subagent={self.subagent_name}] {body}"
+        return f"{prefix}{body}"
 
     async def aafter_agent(
         self,

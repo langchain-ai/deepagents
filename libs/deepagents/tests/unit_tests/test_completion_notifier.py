@@ -30,7 +30,6 @@ def _make_state(
 def _make_middleware(**kwargs: Any) -> CompletionNotifierMiddleware:
     """Create a middleware with sensible defaults."""
     kwargs.setdefault("parent_graph_id", "supervisor")
-    kwargs.setdefault("subagent_name", "coder")
     return CompletionNotifierMiddleware(**kwargs)
 
 
@@ -76,7 +75,6 @@ class TestNotifyParent:
             parent_thread_id="thread-123",
             parent_graph_id="supervisor",
             notification="Job completed",
-            subagent_name="researcher",
         )
 
         mock_client.runs.create.assert_awaited_once_with(
@@ -98,7 +96,6 @@ class TestNotifyParent:
             parent_thread_id="thread-123",
             parent_graph_id="supervisor",
             notification="Job completed",
-            subagent_name="researcher",
         )
 
 
@@ -110,14 +107,6 @@ class TestCompletionNotifierMiddleware:
     def test_stores_parent_graph_id(self):
         mw = _make_middleware(parent_graph_id="my-supervisor")
         assert mw.parent_graph_id == "my-supervisor"
-
-    def test_default_subagent_name(self):
-        mw = CompletionNotifierMiddleware(parent_graph_id="supervisor")
-        assert mw.subagent_name == "subagent"
-
-    def test_custom_subagent_name(self):
-        mw = _make_middleware(subagent_name="researcher")
-        assert mw.subagent_name == "researcher"
 
     def test_should_notify_false_when_no_parent_thread_id(self):
         mw = _make_middleware()
@@ -152,7 +141,6 @@ class TestAfterAgent:
         assert mock_notify.call_args[0][0] == "thread-123"
         assert mock_notify.call_args[0][1] == "supervisor"
         notification = mock_notify.call_args[0][2]
-        assert "[subagent=coder]" in notification
         assert "Here is the result" in notification
 
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
@@ -190,7 +178,6 @@ class TestAfterAgent:
 
         notification = mock_notify.call_args[0][2]
         assert "[task_id=" not in notification
-        assert "[subagent=coder]" in notification
 
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
     async def test_no_notification_without_parent_thread_id(self, mock_notify):
@@ -246,7 +233,6 @@ class TestWrapModelCall:
 
         mock_notify.assert_awaited_once()
         notification = mock_notify.call_args[0][2]
-        assert "[subagent=coder]" in notification
         assert "model crashed" in notification
 
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
@@ -285,9 +271,7 @@ class TestGetTaskId:
         mw = _make_middleware()
         with patch(
             "langgraph.config.get_config",
-            return_value={
-                "configurable": {"thread_id": "thread-abc"},
-            },
+            return_value={"configurable": {"thread_id": "thread-abc"}},
         ):
             assert mw._get_task_id() == "thread-abc"
 
@@ -300,9 +284,7 @@ class TestGetTaskId:
         mw = _make_middleware()
         with patch(
             "langgraph.config.get_config",
-            return_value={
-                "configurable": {},
-            },
+            return_value={"configurable": {}},
         ):
             assert mw._get_task_id() is None
 

@@ -11,6 +11,7 @@ from deepagents.middleware.completion_notifier import (
     CompletionNotifierState,
     _extract_last_message,
     _notify_parent,
+    _resolve_headers,
 )
 
 
@@ -65,6 +66,19 @@ class TestExtractLastMessage:
         assert _extract_last_message(state) == "42"
 
 
+class TestResolveHeaders:
+    def test_adds_auth_scheme_by_default(self):
+        assert _resolve_headers(None) == {"x-auth-scheme": "langsmith"}
+
+    def test_preserves_custom_headers(self):
+        result = _resolve_headers({"x-custom": "value"})
+        assert result == {"x-custom": "value", "x-auth-scheme": "langsmith"}
+
+    def test_does_not_override_explicit_auth_scheme(self):
+        result = _resolve_headers({"x-auth-scheme": "custom"})
+        assert result == {"x-auth-scheme": "custom"}
+
+
 class TestNotifyParent:
     @patch("langgraph_sdk.get_client")
     async def test_sends_run_to_parent_thread(self, mock_get_client):
@@ -77,12 +91,31 @@ class TestNotifyParent:
             notification="Job completed",
         )
 
+        mock_get_client.assert_called_once_with(url=None, headers={"x-auth-scheme": "langsmith"})
         mock_client.runs.create.assert_awaited_once_with(
             thread_id="thread-123",
             assistant_id="supervisor",
             input={
                 "messages": [{"role": "user", "content": "Job completed"}],
             },
+        )
+
+    @patch("langgraph_sdk.get_client")
+    async def test_passes_url_and_headers(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+
+        await _notify_parent(
+            parent_thread_id="thread-123",
+            parent_graph_id="supervisor",
+            notification="done",
+            url="https://supervisor.langsmith.dev",
+            headers={"x-custom": "val"},
+        )
+
+        mock_get_client.assert_called_once_with(
+            url="https://supervisor.langsmith.dev",
+            headers={"x-custom": "val", "x-auth-scheme": "langsmith"},
         )
 
     @patch("langgraph_sdk.get_client")
@@ -107,6 +140,22 @@ class TestCompletionNotifierMiddleware:
     def test_stores_parent_graph_id(self):
         mw = _make_middleware(parent_graph_id="my-supervisor")
         assert mw.parent_graph_id == "my-supervisor"
+
+    def test_url_defaults_to_none(self):
+        mw = _make_middleware()
+        assert mw.url is None
+
+    def test_stores_url(self):
+        mw = _make_middleware(url="https://supervisor.langsmith.dev")
+        assert mw.url == "https://supervisor.langsmith.dev"
+
+    def test_headers_defaults_to_none(self):
+        mw = _make_middleware()
+        assert mw.headers is None
+
+    def test_stores_headers(self):
+        mw = _make_middleware(headers={"x-custom": "val"})
+        assert mw.headers == {"x-custom": "val"}
 
     def test_should_notify_false_when_no_parent_thread_id(self):
         mw = _make_middleware()

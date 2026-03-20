@@ -39,6 +39,9 @@ from the subagent.
 - `parent_graph_id` is passed as a **constructor argument** to the middleware.
   This is the supervisor's graph ID (or assistant ID), which the subagent
   developer knows at configuration time.
+- `url` and `headers` are optional constructor arguments for reaching the
+  supervisor on a remote deployment. Omit `url` for same-deployment ASGI
+  transport.
 - `parent_thread_id` is injected into the subagent's input state by the
   supervisor's `start_async_task` tool. It survives thread interrupts and
   updates because it lives in state, not config.
@@ -51,7 +54,14 @@ Add this middleware to the subagent's middleware stack:
 ```python
 from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
 
+# Same deployment (ASGI transport -- supervisor and subagent share a server):
 notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
+
+# Remote deployment (supervisor on a different server):
+notifier = CompletionNotifierMiddleware(
+    parent_graph_id="supervisor",
+    url="https://supervisor.langsmith.dev",
+)
 
 graph = create_agent(
     model=model,
@@ -99,27 +109,40 @@ class CompletionNotifierState(AgentState):
     """The supervisor's thread ID. Used to address the notification."""
 
 
+def _resolve_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    """Build headers for the supervisor's LangGraph server.
+
+    Ensures `x-auth-scheme: langsmith` is present unless explicitly overridden.
+    """
+    resolved: dict[str, str] = dict(headers or {})
+    if "x-auth-scheme" not in resolved:
+        resolved["x-auth-scheme"] = "langsmith"
+    return resolved
+
+
 async def _notify_parent(
     parent_thread_id: str,
     parent_graph_id: str,
     notification: str,
+    *,
+    url: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> None:
     """Send a notification run to the parent supervisor's thread.
-
-    Uses `get_client()` with no URL, which resolves to ASGI transport when
-    running in the same LangGraph deployment. For split deployments, the
-    subagent needs network access back to the supervisor.
 
     Args:
         parent_thread_id: The supervisor's thread ID.
         parent_graph_id: The supervisor's graph ID (used as `assistant_id`
             in the `runs.create` call).
         notification: The message content to send.
+        url: URL of the supervisor's LangGraph server. Omit for ASGI
+            transport (same deployment).
+        headers: Additional headers for the request.
     """
     from langgraph_sdk import get_client  # noqa: PLC0415  # deferred to avoid import cost at module level
 
     try:
-        client = get_client()
+        client = get_client(url=url, headers=_resolve_headers(headers))
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=parent_graph_id,
@@ -181,6 +204,11 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         parent_graph_id: The supervisor's graph ID (or assistant ID). Used
             as the `assistant_id` parameter when calling `runs.create()` to
             send notifications back to the supervisor.
+        url: URL of the supervisor's LangGraph server (e.g.,
+            `"https://my-deployment.langsmith.dev"`). Omit to use ASGI
+            transport for same-deployment communication.
+        headers: Additional headers to include in requests to the
+            supervisor's server.
 
     Example:
         ```python
@@ -188,7 +216,14 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             CompletionNotifierMiddleware,
         )
 
+        # Same deployment (ASGI transport):
         notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
+
+        # Remote deployment:
+        notifier = CompletionNotifierMiddleware(
+            parent_graph_id="supervisor",
+            url="https://supervisor.langsmith.dev",
+        )
 
         graph = create_agent(
             model=model,
@@ -200,10 +235,18 @@ class CompletionNotifierMiddleware(AgentMiddleware):
 
     state_schema = CompletionNotifierState
 
-    def __init__(self, parent_graph_id: str) -> None:
+    def __init__(
+        self,
+        parent_graph_id: str,
+        *,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         """Initialize the `CompletionNotifierMiddleware`."""
         super().__init__()
         self.parent_graph_id = parent_graph_id
+        self.url = url
+        self.headers = headers
         self._notified = False
 
     def _should_notify(self, state: dict[str, Any]) -> bool:
@@ -221,6 +264,8 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             state[_PARENT_THREAD_ID_KEY],
             self.parent_graph_id,
             message,
+            url=self.url,
+            headers=self.headers,
         )
 
     @staticmethod

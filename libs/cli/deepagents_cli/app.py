@@ -2382,6 +2382,24 @@ class DeepAgentsApp(App):
         assistant_id = self._assistant_id or "agent"
 
         def _find_skill() -> tuple[str | None, str | None]:
+            skill_roots: list[Path] = [
+                d
+                for d in (
+                    settings.get_built_in_skills_dir(),
+                    settings.get_user_skills_dir(assistant_id),
+                    settings.get_project_skills_dir(),
+                    settings.get_user_agent_skills_dir(),
+                    settings.get_project_agent_skills_dir(),
+                    settings.get_user_claude_skills_dir(),
+                    settings.get_project_claude_skills_dir(),
+                )
+                if d is not None
+            ]
+            # Extra dirs extend the containment allowlist but do not
+            # participate in skill discovery — they exist so that symlinks
+            # inside the standard skill directories can point to targets
+            # in these additional locations.
+            allowed_roots = skill_roots + settings.get_extra_skills_dirs()
             skills = list_skills(
                 built_in_skills_dir=settings.get_built_in_skills_dir(),
                 user_skills_dir=settings.get_user_skills_dir(assistant_id),
@@ -2393,7 +2411,9 @@ class DeepAgentsApp(App):
             )
             for skill in skills:
                 if skill["name"] == skill_name:
-                    content = load_skill_content(skill["path"])
+                    content = load_skill_content(
+                        skill["path"], allowed_roots=allowed_roots
+                    )
                     return skill["name"], content
             return None, None
 

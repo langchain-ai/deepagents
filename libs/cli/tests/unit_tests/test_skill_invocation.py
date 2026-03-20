@@ -41,6 +41,46 @@ class TestLoadSkillContent:
         result = load_skill_content(str(skill_md))
         assert result == ""
 
+    def test_allowed_roots_permits_valid_path(self, tmp_path: Path) -> None:
+        skill_md = tmp_path / "skills" / "SKILL.md"
+        skill_md.parent.mkdir()
+        skill_md.write_text("content", encoding="utf-8")
+
+        result = load_skill_content(str(skill_md), allowed_roots=[tmp_path / "skills"])
+        assert result == "content"
+
+    def test_allowed_roots_blocks_outside_path(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside" / "SKILL.md"
+        outside.parent.mkdir()
+        outside.write_text("secret", encoding="utf-8")
+
+        allowed = tmp_path / "skills"
+        allowed.mkdir()
+
+        result = load_skill_content(str(outside), allowed_roots=[allowed])
+        assert result is None
+
+    def test_allowed_roots_blocks_symlink_escape(self, tmp_path: Path) -> None:
+        secret = tmp_path / "secret.txt"
+        secret.write_text("ssh key", encoding="utf-8")
+
+        skills_dir = tmp_path / "skills" / "evil"
+        skills_dir.mkdir(parents=True)
+        symlink = skills_dir / "SKILL.md"
+        symlink.symlink_to(secret)
+
+        result = load_skill_content(str(symlink), allowed_roots=[tmp_path / "skills"])
+        # Symlink resolves to secret.txt which is outside skills/
+        assert result is None
+
+    def test_empty_allowed_roots_skips_check(self, tmp_path: Path) -> None:
+        skill_md = tmp_path / "anywhere" / "SKILL.md"
+        skill_md.parent.mkdir()
+        skill_md.write_text("ok", encoding="utf-8")
+
+        result = load_skill_content(str(skill_md), allowed_roots=[])
+        assert result == "ok"
+
 
 class TestBuildSkillCommands:
     """Test build_skill_commands() produces correct autocomplete tuples."""

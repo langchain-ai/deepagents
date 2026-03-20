@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 from deepagents.backends.filesystem import FilesystemBackend
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 from deepagents.middleware.skills import (
     SkillMetadata,
@@ -257,21 +258,42 @@ def list_skills(
     return list(all_skills.values())
 
 
-def load_skill_content(skill_path: str) -> str | None:
+def load_skill_content(
+    skill_path: str,
+    *,
+    allowed_roots: Sequence[Path] = (),
+) -> str | None:
     """Read the full raw SKILL.md content for a skill.
 
     Returns the complete file content including any YAML frontmatter.
     Callers are responsible for parsing or stripping frontmatter if needed.
 
+    When `allowed_roots` is provided, the resolved path must fall within at
+    least one root directory. This prevents symlink traversal from reading files
+    outside known skill directories.
+
     Args:
         skill_path: Path to the SKILL.md file (from `SkillMetadata['path']`).
+        allowed_roots: Skill root directories the resolved path must be
+            contained within. If empty, containment is not checked.
 
     Returns:
-        Full text content of the SKILL.md file, or `None` on read failure.
+        Full text content of the SKILL.md file, or `None` on read failure
+            or containment violation.
     """
     from pathlib import Path
 
-    path = Path(skill_path)
+    path = Path(skill_path).resolve()
+
+    if allowed_roots and not any(
+        path.is_relative_to(root.resolve()) for root in allowed_roots
+    ):
+        logger.warning(
+            "Skill path %s is outside all allowed roots, refusing to read",
+            skill_path,
+        )
+        return None
+
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):

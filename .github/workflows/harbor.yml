@@ -92,6 +92,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      HARBOR_TASK_COUNT: ${{ inputs.task_count }}
+      HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -121,9 +123,9 @@ jobs:
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
-            -n "${{ inputs.task_count }}" \
+            -n "$HARBOR_TASK_COUNT" \
             --jobs-dir jobs/terminal-bench \
-            --env "${{ inputs.sandbox_env }}" \
+            --env "$HARBOR_SANDBOX_ENV" \
             --model "${{ matrix.model }}" \
             --agent-kwargs '{"use_cli_agent": false}'
 
@@ -143,7 +145,7 @@ jobs:
           echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
 
       - name: "⭐ Add Harbor rewards to LangSmith"
-        if: always() && steps.latest-job.outcome == 'success'
+        if: always() && steps.latest-job.outcome == 'success' && steps.langsmith.outcome == 'success'
         run: |
           uv run python scripts/harbor_langsmith.py add-feedback \
             "${{ steps.latest-job.outputs.job_dir }}" \
@@ -157,8 +159,8 @@ jobs:
             echo
             echo "- Model: ${{ matrix.model }}"
             echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
-            echo "- Sandbox: ${{ inputs.sandbox_env }}"
-            echo "- Task count: ${{ inputs.task_count }}"
+            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
+            echo "- Task count: ${HARBOR_TASK_COUNT}"
             echo "- LangSmith experiment: ${{ steps.langsmith.outputs.experiment_name }}"
             if [ "${{ steps.latest-job.outcome }}" = "success" ]; then
               echo "- Harbor job dir: ${{ steps.latest-job.outputs.job_dir }}"

@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClientFactory
 from langsmith import Client
+from langsmith.utils import LangSmithNotFoundError
 
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
@@ -171,7 +172,7 @@ def ensure_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     client = Client()
     try:
         dataset = client.read_dataset(dataset_name=dataset_name)
-    except Exception:
+    except LangSmithNotFoundError:
         create_dataset(dataset_name=dataset_name, version=version, overwrite=overwrite)
         return
 
@@ -262,7 +263,7 @@ async def create_experiment_async(
         # Get the dataset
         dataset = await _get_dataset_by_name(dataset_name, session)
         dataset_id = dataset["id"]
-        print(f"Found dataset '{dataset_name}' with ID: {dataset_id}")
+        print(f"Found dataset '{dataset_name}' with ID: {dataset_id}", file=sys.stderr)
 
         # Generate experiment name if not provided
         if experiment_name is None:
@@ -272,7 +273,7 @@ async def create_experiment_async(
         experiment_metadata = metadata or {}
 
         # Create experiment session
-        print(f"Creating experiment session: {experiment_name}")
+        print(f"Creating experiment session: {experiment_name}", file=sys.stderr)
         experiment_session = await _create_experiment_session(
             dataset_id,
             experiment_name,
@@ -327,7 +328,7 @@ def _extract_reward(trial_dir: Path) -> float:
         result = json.load(f)
         verifier_result = result.get("verifier_result") or {}
         rewards = verifier_result.get("rewards") or {}
-        return rewards.get("reward")
+        return rewards.get("reward", 0.0)
 
 
 def _process_trial(
@@ -369,8 +370,8 @@ def _process_trial(
         feedback_list = list(client.list_feedback(run_ids=[run_id]))
         if any(fb.key == "harbor_reward" for fb in feedback_list):
             return {"status": "skipped", "message": "Feedback already exists"}
-    except Exception:
-        pass  # Continue if feedback check fails
+    except Exception as exc:
+        print(f"  Warning: feedback dedup check failed ({exc}), proceeding anyway")
 
     # Extract reward
     reward = _extract_reward(trial_dir)
@@ -446,7 +447,7 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     print(f"Errors: {results['error']}")
 
 
-def main() -> None:
+def main() -> int:
     """Main CLI entrypoint with subcommands."""
     parser = argparse.ArgumentParser(
         description="Harbor-LangSmith integration CLI for managing datasets, experiments, and feedback.",
@@ -567,15 +568,20 @@ def main() -> None:
             overwrite=args.overwrite,
         )
     elif args.command == "create-experiment":
-        metadata = json.loads(args.metadata)
+        try:
+            metadata = json.loads(args.metadata)
+        except json.JSONDecodeError as exc:
+            print(f"Error: --metadata must be valid JSON: {exc}", file=sys.stderr)
+            return 1
         if not isinstance(metadata, dict):
-            msg = "Experiment metadata must be a JSON object."
-            raise ValueError(msg)
-        create_experiment(
+            print("Error: --metadata must be a JSON object.", file=sys.stderr)
+            return 1
+        name = create_experiment(
             dataset_name=args.dataset_name,
             experiment_name=args.name,
             metadata={str(key): str(value) for key, value in metadata.items()},
         )
+        print(name)
     elif args.command == "add-feedback":
         if not args.job_folder.exists():
             print(f"Error: Job folder does not exist: {args.job_folder}")

@@ -1,7 +1,7 @@
 """Output the Harbor eval matrix JSON for the GitHub Actions workflow.
 
-Prints a single line: matrix={"model":["provider:model-name", ...]}
-suitable for appending to $GITHUB_OUTPUT.
+Writes matrix={"model":["provider:model-name", ...]} to $GITHUB_OUTPUT when
+set, otherwise prints to stdout.
 
 Reads the HARBOR_MODELS env var to determine which models to include:
   - "all" (default): every supported Harbor workflow model
@@ -42,6 +42,7 @@ BASETEN_MODELS: list[str] = [
 
 
 def _dedupe(models: list[str]) -> list[str]:
+    """Return models with duplicates removed, preserving order."""
     seen: set[str] = set()
     result: list[str] = []
     for model in models:
@@ -64,6 +65,9 @@ def _resolve_models(selection: str) -> list[str]:
         return BASETEN_MODELS
 
     specs = [spec.strip() for spec in normalized.split(",") if spec.strip()]
+    if not specs:
+        msg = "No models resolved from HARBOR_MODELS (got empty or whitespace-only input)"
+        raise ValueError(msg)
     invalid = [spec for spec in specs if ":" not in spec]
     if invalid:
         msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(spec) for spec in invalid)}"

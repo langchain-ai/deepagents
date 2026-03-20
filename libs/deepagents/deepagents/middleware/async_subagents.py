@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
@@ -86,6 +87,24 @@ class AsyncSubAgentJob(TypedDict):
     Typed as `str` rather than a `Literal` because the LangGraph SDK's
     `Run.status` is `str` — using a `Literal` here would require `cast` at every
     SDK boundary.
+    """
+
+    created_at: str
+    """ISO-8601 timestamp (UTC) when the job was created, with second precision.
+
+    Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
+    """
+
+    last_checked_at: str
+    """ISO-8601 timestamp (UTC) when the job status was last checked via SDK.
+
+    Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
+    """
+
+    last_updated_at: str
+    """ISO-8601 timestamp (UTC) when the job was last updated with a new message.
+
+    Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
 
 
@@ -237,12 +256,16 @@ def _build_launch_tool(
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
             return f"Failed to launch async subagent '{subagent_type}': {e}"
         job_id = thread["thread_id"]
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         job: AsyncSubAgentJob = {
             "job_id": job_id,
             "agent_name": subagent_type,
             "thread_id": job_id,
             "run_id": run["run_id"],
             "status": "running",
+            "created_at": now,
+            "last_checked_at": now,
+            "last_updated_at": now,
         }
         msg = f"Launched async subagent. job_id: {job_id}"
         return Command(
@@ -273,12 +296,16 @@ def _build_launch_tool(
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
             return f"Failed to launch async subagent '{subagent_type}': {e}"
         job_id = thread["thread_id"]
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         job: AsyncSubAgentJob = {
             "job_id": job_id,
             "agent_name": subagent_type,
             "thread_id": job_id,
             "run_id": run["run_id"],
             "status": "running",
+            "created_at": now,
+            "last_checked_at": now,
+            "last_updated_at": now,
         }
         msg = f"Launched async subagent. job_id: {job_id}"
         return Command(
@@ -325,12 +352,16 @@ def _build_check_command(
     tool_call_id: str | None,
 ) -> Command:
     """Build the `Command` update for a check result."""
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     updated_job = AsyncSubAgentJob(
         job_id=job["job_id"],
         agent_name=job["agent_name"],
         thread_id=job["thread_id"],
         run_id=job["run_id"],
         status=result["status"],
+        created_at=job["created_at"],
+        last_checked_at=now,
+        last_updated_at=job["last_updated_at"],
     )
     return Command(
         update={
@@ -451,12 +482,16 @@ def _build_update_tool(
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         job: AsyncSubAgentJob = {
             "job_id": tracked["job_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
             "run_id": run["run_id"],
             "status": "running",
+            "created_at": tracked["created_at"],
+            "last_checked_at": tracked["last_checked_at"],
+            "last_updated_at": now,
         }
         msg = f"Updated async subagent. job_id: {tracked['job_id']}"
         return Command(
@@ -486,12 +521,16 @@ def _build_update_tool(
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         job: AsyncSubAgentJob = {
             "job_id": tracked["job_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
             "run_id": run["run_id"],
             "status": "running",
+            "created_at": tracked["created_at"],
+            "last_checked_at": tracked["last_checked_at"],
+            "last_updated_at": now,
         }
         msg = f"Updated async subagent. job_id: {tracked['job_id']}"
         return Command(
@@ -531,12 +570,16 @@ def _build_cancel_tool(
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncSubAgentJob(
             job_id=tracked["job_id"],
             agent_name=tracked["agent_name"],
             thread_id=tracked["thread_id"],
             run_id=tracked["run_id"],
             status="cancelled",
+            created_at=tracked["created_at"],
+            last_checked_at=now,
+            last_updated_at=tracked["last_updated_at"],
         )
         msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
@@ -559,12 +602,16 @@ def _build_cancel_tool(
             await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             return f"Failed to cancel run: {e}"
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncSubAgentJob(
             job_id=tracked["job_id"],
             agent_name=tracked["agent_name"],
             thread_id=tracked["thread_id"],
             run_id=tracked["run_id"],
             status="cancelled",
+            created_at=tracked["created_at"],
+            last_checked_at=now,
+            last_updated_at=tracked["last_updated_at"],
         )
         msg = f"Cancelled async subagent job: {tracked['job_id']}"
         return Command(
@@ -668,6 +715,7 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
             return "No async subagent jobs tracked."
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for job in filtered:
             status = _fetch_live_status(clients, job)
             entries.append(_format_job_entry(job, status))
@@ -677,6 +725,9 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
                 thread_id=job["thread_id"],
                 run_id=job["run_id"],
                 status=status,
+                created_at=job["created_at"],
+                last_checked_at=now,
+                last_updated_at=job["last_updated_at"],
             )
         msg = f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
         return Command(
@@ -700,6 +751,7 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
         statuses = await asyncio.gather(*(_afetch_live_status(clients, job) for job in filtered))
         updated_jobs: dict[str, AsyncSubAgentJob] = {}
         entries: list[str] = []
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for job, status in zip(filtered, statuses, strict=True):
             entries.append(_format_job_entry(job, status))
             updated_jobs[job["job_id"]] = AsyncSubAgentJob(
@@ -708,6 +760,9 @@ def _build_list_jobs_tool(clients: _ClientCache) -> StructuredTool:
                 thread_id=job["thread_id"],
                 run_id=job["run_id"],
                 status=status,
+                created_at=job["created_at"],
+                last_checked_at=now,
+                last_updated_at=job["last_updated_at"],
             )
         msg = f"{len(entries)} tracked job(s):\n" + "\n".join(entries)
         return Command(

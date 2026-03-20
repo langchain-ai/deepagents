@@ -394,7 +394,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding(
-            "ctrl+e",
+            "ctrl+o",
             "toggle_tool_output",
             "Toggle Tool Output",
             show=False,

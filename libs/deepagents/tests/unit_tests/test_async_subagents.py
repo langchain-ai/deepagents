@@ -14,6 +14,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentState,
     AsyncTask,
     _build_async_subagent_tools,
+    _extract_parent_context,
     _resolve_headers,
     _tasks_reducer,
 )
@@ -259,7 +260,10 @@ class TestLaunchTool:
         mock_client.runs.create.assert_called_once_with(
             thread_id="thread_abc",
             assistant_id="my_graph",
-            input={"messages": [{"role": "user", "content": "analyze data"}]},
+            input={
+                "messages": [{"role": "user", "content": "analyze data"}],
+                "task_id": "thread_abc",
+            },
         )
 
 
@@ -867,3 +871,136 @@ class TestCheckEdgeCases:
         assert parsed["status"] == "success"
         # result should show empty-messages fallback since thread values couldn't be fetched
         assert "no output" in parsed["result"].lower()
+
+
+class TestExtractParentContext:
+    def test_empty_config_returns_empty_dict(self) -> None:
+        runtime = _make_runtime()
+        assert _extract_parent_context(runtime) == {}
+
+    def test_extracts_thread_id_from_configurable(self) -> None:
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id="tc_test",
+            store=None,
+            stream_writer=lambda _: None,
+            config={"configurable": {"thread_id": "thread-supervisor-123"}},
+        )
+        ctx = _extract_parent_context(runtime)
+        assert ctx["parent_thread_id"] == "thread-supervisor-123"
+
+    def test_extracts_assistant_id_from_metadata(self) -> None:
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id="tc_test",
+            store=None,
+            stream_writer=lambda _: None,
+            config={"metadata": {"assistant_id": "asst-supervisor-456"}},
+        )
+        ctx = _extract_parent_context(runtime)
+        assert ctx["parent_assistant_id"] == "asst-supervisor-456"
+
+    def test_extracts_both_ids(self) -> None:
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id="tc_test",
+            store=None,
+            stream_writer=lambda _: None,
+            config={
+                "configurable": {"thread_id": "thread-123"},
+                "metadata": {"assistant_id": "asst-456"},
+            },
+        )
+        ctx = _extract_parent_context(runtime)
+        assert ctx == {
+            "parent_thread_id": "thread-123",
+            "parent_assistant_id": "asst-456",
+        }
+
+    def test_skips_none_values(self) -> None:
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id="tc_test",
+            store=None,
+            stream_writer=lambda _: None,
+            config={
+                "configurable": {"thread_id": None},
+                "metadata": {"assistant_id": "asst-456"},
+            },
+        )
+        ctx = _extract_parent_context(runtime)
+        assert "parent_thread_id" not in ctx
+        assert ctx["parent_assistant_id"] == "asst-456"
+
+
+class TestLaunchToolPassesParentContext:
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_includes_parent_context_in_input(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec("alpha")])
+        launch = tools[0]
+
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id="tc_launch",
+            store=None,
+            stream_writer=lambda _: None,
+            config={
+                "configurable": {"thread_id": "supervisor-thread"},
+                "metadata": {"assistant_id": "supervisor-asst"},
+            },
+        )
+
+        result = launch.func(
+            description="analyze data",
+            subagent_type="alpha",
+            runtime=runtime,
+        )
+
+        assert isinstance(result, Command)
+        mock_client.runs.create.assert_called_once_with(
+            thread_id="thread_abc",
+            assistant_id="my_graph",
+            input={
+                "messages": [{"role": "user", "content": "analyze data"}],
+                "task_id": "thread_abc",
+                "parent_thread_id": "supervisor-thread",
+                "parent_assistant_id": "supervisor-asst",
+            },
+        )
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_omits_parent_context_when_not_available(self, mock_get_client: MagicMock) -> None:
+        """When the supervisor config has no thread_id/assistant_id, input has only task_id."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec("alpha")])
+        launch = tools[0]
+
+        result = launch.func(
+            description="analyze data",
+            subagent_type="alpha",
+            runtime=_make_runtime("tc_launch"),
+        )
+
+        assert isinstance(result, Command)
+        mock_client.runs.create.assert_called_once_with(
+            thread_id="thread_abc",
+            assistant_id="my_graph",
+            input={
+                "messages": [{"role": "user", "content": "analyze data"}],
+                "task_id": "thread_abc",
+            },
+        )

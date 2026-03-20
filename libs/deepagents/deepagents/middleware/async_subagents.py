@@ -228,6 +228,32 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
     return None
 
 
+def _extract_parent_context(runtime: ToolRuntime) -> dict[str, str]:
+    """Extract the supervisor's thread and assistant IDs from the tool runtime.
+
+    These are included in the subagent's input state so the subagent can
+    notify the supervisor when it completes (via `CompletionNotifierMiddleware`).
+
+    Returns:
+        Dict with `parent_thread_id` and/or `parent_assistant_id` if available.
+        Empty dict if neither is available.
+    """
+    context: dict[str, str] = {}
+    config = runtime.config or {}
+    configurable = config.get("configurable") or {}
+    metadata = config.get("metadata") or {}
+
+    thread_id = configurable.get("thread_id")
+    if thread_id:
+        context["parent_thread_id"] = str(thread_id)
+
+    assistant_id = metadata.get("assistant_id")
+    if assistant_id:
+        context["parent_assistant_id"] = str(assistant_id)
+
+    return context
+
+
 def _build_start_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
@@ -244,18 +270,23 @@ def _build_start_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
+        parent_context = _extract_parent_context(runtime)
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create()
+            task_id = thread["thread_id"]
             run = client.runs.create(
-                thread_id=thread["thread_id"],
+                thread_id=task_id,
                 assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": description}]},
+                input={
+                    "messages": [{"role": "user", "content": description}],
+                    "task_id": task_id,
+                    **parent_context,
+                },
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
             return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": task_id,
@@ -284,18 +315,23 @@ def _build_start_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
+        parent_context = _extract_parent_context(runtime)
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()
+            task_id = thread["thread_id"]
             run = await client.runs.create(
-                thread_id=thread["thread_id"],
+                thread_id=task_id,
                 assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": description}]},
+                input={
+                    "messages": [{"role": "user", "content": description}],
+                    "task_id": task_id,
+                    **parent_context,
+                },
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
             return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": task_id,

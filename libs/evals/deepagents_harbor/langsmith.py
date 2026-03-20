@@ -343,42 +343,56 @@ def create_experiment(
 # ============================================================================
 
 
-def _extract_reward(trial_dir: Path) -> float | None:
+def _extract_reward(trial_dir: Path) -> tuple[float, str | None]:
     """Extract reward from trial's `result.json`.
+
+    Falls back to `0.0` when the verifier did not produce a usable reward
+    (e.g. `verifier_result` is missing, empty, or lacks a `rewards.reward`
+    key).
 
     Args:
         trial_dir: Path to the trial directory.
 
     Returns:
-        The reward score, or None if the reward could not be determined
-            (missing file, malformed JSON, or absent reward key).
+        A `(reward, comment)` tuple.  `comment` is `None` when the reward
+            was extracted normally, or a short explanation when a fallback
+            was used.
+
+    Raises:
+        FileNotFoundError: If `result.json` does not exist.
+        ValueError: If `result.json` contains malformed JSON.
     """
     result_path = trial_dir / "result.json"
     if not result_path.exists():
-        print(
-            f"  Warning: {result_path} does not exist, reward unavailable",
-            file=sys.stderr,
-        )
-        return None
+        msg = f"{result_path} does not exist"
+        raise FileNotFoundError(msg)
 
     try:
         with result_path.open() as f:
             result = json.load(f)
     except json.JSONDecodeError as exc:
-        print(f"  Warning: malformed JSON in {result_path}: {exc}", file=sys.stderr)
-        return None
+        msg = f"malformed JSON in {result_path}: {exc}"
+        raise ValueError(msg) from exc
 
     verifier_result = result.get("verifier_result")
-    if not verifier_result:
+    if not isinstance(verifier_result, dict):
         print(f"  Warning: no verifier_result in {result_path}", file=sys.stderr)
-        return None
+        return 0.0, "no verifier_result — agent likely failed or timed out"
 
     rewards = verifier_result.get("rewards")
-    if not rewards or "reward" not in rewards:
+    if not isinstance(rewards, dict) or "reward" not in rewards:
         print(f"  Warning: no reward key in {result_path}", file=sys.stderr)
-        return None
+        return 0.0, "no reward key in verifier_result"
 
-    return rewards["reward"]
+    raw = rewards["reward"]
+    if not isinstance(raw, int | float):
+        print(
+            f"  Warning: reward is {type(raw).__name__} in {result_path}",
+            file=sys.stderr,
+        )
+        return 0.0, f"reward value is {type(raw).__name__}, expected number"
+
+    return float(raw), None
 
 
 def _process_trial(
@@ -427,26 +441,35 @@ def _process_trial(
             file=sys.stderr,
         )
 
-    reward = _extract_reward(trial_dir)
-    if reward is None:
-        return {
-            "status": "error",
-            "message": "Could not extract reward from result.json",
-        }
+    try:
+        reward, comment = _extract_reward(trial_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        return {"status": "error", "message": str(exc)}
+
+    status = "fallback" if comment else "success"
 
     if not dry_run:
-        client.create_feedback(
-            run_id=run_id,
-            key="harbor_reward",
-            score=reward,
-        )
+        try:
+            client.create_feedback(
+                run_id=run_id,
+                key="harbor_reward",
+                score=reward,
+                comment=comment,
+            )
+        except Exception as exc:  # noqa: BLE001  # LangSmith API; any failure → error status
+            return {
+                "status": "error",
+                "message": f"Failed to submit feedback: {exc}",
+            }
         return {
-            "status": "success",
-            "message": f"Added harbor_reward feedback: {reward}",
+            "status": status,
+            "message": f"Added harbor_reward feedback: {reward}"
+            + (f" ({comment})" if comment else ""),
         }
     return {
-        "status": "success",
-        "message": f"Would add harbor_reward feedback: {reward}",
+        "status": status,
+        "message": f"Would add harbor_reward feedback: {reward}"
+        + (f" ({comment})" if comment else ""),
     }
 
 
@@ -467,7 +490,7 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     trial_dirs = [d for d in job_folder.iterdir() if d.is_dir()]
     print(f"Found {len(trial_dirs)} trial directories\n")
 
-    results = {"success": 0, "skipped": 0, "error": 0}
+    results = {"success": 0, "fallback": 0, "skipped": 0, "error": 0}
     client = Client()
 
     for i, trial_dir in enumerate(trial_dirs, 1):
@@ -486,6 +509,9 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
         if status == "success":
             print(f"  ✓ {message}")
             results["success"] += 1
+        elif status == "fallback":
+            print(f"  ⚠ {message}")
+            results["fallback"] += 1
         elif status == "skipped":
             print(f"  ⊘ {message}")
             results["skipped"] += 1
@@ -498,5 +524,6 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     print(f"{'=' * 80}")
     print(f"Total trials: {len(trial_dirs)}")
     print(f"Successfully updated: {results['success']}")
+    print(f"Fallback to 0.0 (no verifier result): {results['fallback']}")
     print(f"Skipped (already has feedback): {results['skipped']}")
     print(f"Errors: {results['error']}")

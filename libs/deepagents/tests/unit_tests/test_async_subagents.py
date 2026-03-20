@@ -10,12 +10,12 @@ from langgraph.types import Command
 
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
-    AsyncSubAgentJob,
     AsyncSubAgentMiddleware,
     AsyncSubAgentState,
+    AsyncTask,
     _build_async_subagent_tools,
-    _jobs_reducer,
     _resolve_headers,
+    _tasks_reducer,
 )
 
 
@@ -41,8 +41,8 @@ def _make_runtime(tool_call_id: str = "tc_test") -> ToolRuntime:
     )
 
 
-def _make_runtime_with_job(
-    job_id: str = "thread_abc",
+def _make_runtime_with_task(
+    task_id: str = "thread_abc",
     agent_name: str = "test-agent",
     run_id: str = "run_xyz",
     status: str = "running",
@@ -51,12 +51,12 @@ def _make_runtime_with_job(
     last_checked_at: str = "2024-01-15T10:30:00Z",
     last_updated_at: str = "2024-01-15T10:30:00Z",
 ) -> ToolRuntime:
-    """Create a runtime with a single tracked job in state."""
-    jobs: dict[str, AsyncSubAgentJob] = {
-        job_id: {
-            "job_id": job_id,
+    """Create a runtime with a single tracked task in state."""
+    tasks: dict[str, AsyncTask] = {
+        task_id: {
+            "task_id": task_id,
             "agent_name": agent_name,
-            "thread_id": job_id,
+            "thread_id": task_id,
             "run_id": run_id,
             "status": status,
             "created_at": created_at,
@@ -65,7 +65,7 @@ def _make_runtime_with_job(
         },
     }
     return ToolRuntime(
-        state={"async_subagent_jobs": jobs},
+        state={"async_subagent_tasks": tasks},
         context=None,
         tool_call_id=tool_call_id,
         store=None,
@@ -92,11 +92,11 @@ class TestAsyncSubAgentMiddleware:
         mw = AsyncSubAgentMiddleware(async_subagents=[_make_spec()])
         tool_names = {t.name for t in mw.tools}
         assert tool_names == {
-            "launch_async_subagent",
-            "check_async_subagent",
-            "update_async_subagent",
-            "cancel_async_subagent",
-            "list_async_subagent_jobs",
+            "launch_async_task",
+            "check_async_task",
+            "update_async_task",
+            "cancel_async_task",
+            "list_async_tasks",
         }
 
     def test_system_prompt_includes_agent_descriptions(self) -> None:
@@ -141,46 +141,46 @@ class TestResolveHeaders:
         assert headers["x-auth-scheme"] == "custom"
 
 
-class TestJobsReducer:
+class TestTasksReducer:
     def test_merge_into_empty(self) -> None:
-        job: AsyncSubAgentJob = {
-            "job_id": "t",
+        task: AsyncTask = {
+            "task_id": "t",
             "agent_name": "a",
             "thread_id": "t",
             "run_id": "r",
             "status": "running",
         }
-        result = _jobs_reducer(None, {"t": job})
-        assert result == {"t": job}
+        result = _tasks_reducer(None, {"t": task})
+        assert result == {"t": task}
 
     def test_merge_updates_existing(self) -> None:
-        old: AsyncSubAgentJob = {
-            "job_id": "t",
+        old: AsyncTask = {
+            "task_id": "t",
             "agent_name": "a",
             "thread_id": "t",
             "run_id": "r",
             "status": "running",
         }
-        updated: AsyncSubAgentJob = {**old, "status": "success"}
-        result = _jobs_reducer({"t": old}, {"t": updated})
+        updated: AsyncTask = {**old, "status": "success"}
+        result = _tasks_reducer({"t": old}, {"t": updated})
         assert result["t"]["status"] == "success"
 
     def test_merge_preserves_other_keys(self) -> None:
-        job1: AsyncSubAgentJob = {
-            "job_id": "t1",
+        task1: AsyncTask = {
+            "task_id": "t1",
             "agent_name": "a",
             "thread_id": "t1",
             "run_id": "r1",
             "status": "running",
         }
-        job2: AsyncSubAgentJob = {
-            "job_id": "t2",
+        task2: AsyncTask = {
+            "task_id": "t2",
             "agent_name": "a",
             "thread_id": "t2",
             "run_id": "r2",
             "status": "running",
         }
-        result = _jobs_reducer({"t1": job1}, {"t2": job2})
+        result = _tasks_reducer({"t1": task1}, {"t2": task2})
         assert len(result) == 2
         assert "t1" in result
         assert "t2" in result
@@ -192,11 +192,11 @@ class TestBuildAsyncSubagentTools:
         assert len(tools) == 5
         names = [t.name for t in tools]
         assert names == [
-            "launch_async_subagent",
-            "check_async_subagent",
-            "update_async_subagent",
-            "cancel_async_subagent",
-            "list_async_subagent_jobs",
+            "launch_async_task",
+            "check_async_task",
+            "update_async_task",
+            "cancel_async_task",
+            "list_async_tasks",
         ]
 
     def test_launch_description_includes_agent_info(self) -> None:
@@ -220,7 +220,7 @@ class TestLaunchTool:
         assert "`alpha`" in result
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_returns_command_with_job(self, mock_get_client: MagicMock) -> None:
+    def test_launch_returns_command_with_task(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
         mock_client.runs.create.return_value = {"run_id": "run_xyz"}
@@ -236,15 +236,15 @@ class TestLaunchTool:
 
         assert isinstance(result, Command)
         update = result.update
-        assert "async_subagent_jobs" in update
-        jobs = update["async_subagent_jobs"]
-        assert "thread_abc" in jobs
-        job = jobs["thread_abc"]
-        assert job["job_id"] == "thread_abc"
-        assert job["agent_name"] == "alpha"
-        assert job["thread_id"] == "thread_abc"
-        assert job["run_id"] == "run_xyz"
-        assert job["status"] == "running"
+        assert "async_subagent_tasks" in update
+        tasks = update["async_subagent_tasks"]
+        assert "thread_abc" in tasks
+        task = tasks["thread_abc"]
+        assert task["task_id"] == "thread_abc"
+        assert task["agent_name"] == "alpha"
+        assert task["thread_id"] == "thread_abc"
+        assert task["run_id"] == "run_xyz"
+        assert task["status"] == "running"
 
         msgs = update["messages"]
         assert len(msgs) == 1
@@ -265,10 +265,10 @@ class TestLaunchTool:
 
 class TestCheckTool:
     def _make_check_runtime(self, tool_call_id: str = "tc_check") -> ToolRuntime:
-        """Create a runtime with a tracked job in state."""
-        jobs: dict[str, AsyncSubAgentJob] = {
+        """Create a runtime with a tracked task in state."""
+        tasks: dict[str, AsyncTask] = {
             "thread_abc": {
-                "job_id": "thread_abc",
+                "task_id": "thread_abc",
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
@@ -279,7 +279,7 @@ class TestCheckTool:
             },
         }
         return ToolRuntime(
-            state={"async_subagent_jobs": jobs},
+            state={"async_subagent_tasks": tasks},
             context=None,
             tool_call_id=tool_call_id,
             store=None,
@@ -288,7 +288,7 @@ class TestCheckTool:
         )
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_running_job(self, mock_get_client: MagicMock) -> None:
+    def test_check_running_task(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "running"}
         mock_get_client.return_value = mock_client
@@ -296,7 +296,7 @@ class TestCheckTool:
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
         result = check.func(
-            job_id="thread_abc",
+            task_id="thread_abc",
             runtime=self._make_check_runtime("tc_check"),
         )
 
@@ -306,11 +306,11 @@ class TestCheckTool:
         assert parsed["status"] == "running"
         assert parsed["thread_id"] == "thread_abc"
 
-        jobs = result.update["async_subagent_jobs"]
-        assert jobs["thread_abc"]["status"] == "running"
+        tasks = result.update["async_subagent_tasks"]
+        assert tasks["thread_abc"]["status"] == "running"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_completed_job_returns_result(self, mock_get_client: MagicMock) -> None:
+    def test_check_completed_task_returns_result(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
         mock_client.threads.get.return_value = {
@@ -325,7 +325,7 @@ class TestCheckTool:
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
         result = check.func(
-            job_id="thread_abc",
+            task_id="thread_abc",
             runtime=self._make_check_runtime("tc_check"),
         )
 
@@ -334,11 +334,11 @@ class TestCheckTool:
         assert parsed["status"] == "success"
         assert parsed["result"] == "Analysis complete: found 3 issues."
 
-        jobs = result.update["async_subagent_jobs"]
-        assert jobs["thread_abc"]["status"] == "success"
+        tasks = result.update["async_subagent_tasks"]
+        assert tasks["thread_abc"]["status"] == "success"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_errored_job(self, mock_get_client: MagicMock) -> None:
+    def test_check_errored_task(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "error"}
         mock_get_client.return_value = mock_client
@@ -346,7 +346,7 @@ class TestCheckTool:
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
         result = check.func(
-            job_id="thread_abc",
+            task_id="thread_abc",
             runtime=self._make_check_runtime("tc_check"),
         )
 
@@ -355,22 +355,22 @@ class TestCheckTool:
         assert parsed["status"] == "error"
         assert "error" in parsed
 
-        jobs = result.update["async_subagent_jobs"]
-        assert jobs["thread_abc"]["status"] == "error"
+        tasks = result.update["async_subagent_tasks"]
+        assert tasks["thread_abc"]["status"] == "error"
 
 
 class TestUpdateTool:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_update_returns_command_with_same_job_id(self, mock_get_client: MagicMock) -> None:
+    def test_update_returns_command_with_same_task_id(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.create.return_value = {"run_id": "run_new"}
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        jobs_state: dict[str, AsyncSubAgentJob] = {
+        tasks_state: dict[str, AsyncTask] = {
             "thread_abc": {
-                "job_id": "thread_abc",
+                "task_id": "thread_abc",
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_old",
@@ -381,7 +381,7 @@ class TestUpdateTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": jobs_state},
+            state={"async_subagent_tasks": tasks_state},
             context=None,
             tool_call_id="tc_update",
             store=None,
@@ -389,19 +389,19 @@ class TestUpdateTool:
             config={},
         )
         result = update.func(
-            job_id="thread_abc",
+            task_id="thread_abc",
             message="Focus on security issues only",
             runtime=rt,
         )
 
         assert isinstance(result, Command)
-        jobs = result.update["async_subagent_jobs"]
+        tasks = result.update["async_subagent_tasks"]
 
-        # Same job_id, updated run_id
-        assert "thread_abc" in jobs
-        assert len(jobs) == 1
-        assert jobs["thread_abc"]["run_id"] == "run_new"
-        assert jobs["thread_abc"]["status"] == "running"
+        # Same task_id, updated run_id
+        assert "thread_abc" in tasks
+        assert len(tasks) == 1
+        assert tasks["thread_abc"]["run_id"] == "run_new"
+        assert tasks["thread_abc"]["status"] == "running"
 
         msgs = result.update["messages"]
         assert msgs[0].tool_call_id == "tc_update"
@@ -415,13 +415,13 @@ class TestUpdateTool:
         )
 
 
-class TestListJobsTool:
-    def test_empty_state_returns_no_jobs(self) -> None:
+class TestListTasksTool:
+    def test_empty_state_returns_no_tasks(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
         list_tool = tools[4]
         rt = _make_runtime()
         result = list_tool.func(runtime=rt)
-        assert "No async subagent jobs tracked" in result
+        assert "No async subagent tasks tracked" in result
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_returns_live_statuses(self, mock_get_client: MagicMock) -> None:
@@ -434,9 +434,9 @@ class TestListJobsTool:
 
         tools = _build_async_subagent_tools([_make_spec("test-agent")])
         list_tool = tools[4]
-        jobs: dict[str, AsyncSubAgentJob] = {
+        tasks: dict[str, AsyncTask] = {
             "t1": {
-                "job_id": "t1",
+                "task_id": "t1",
                 "agent_name": "test-agent",
                 "thread_id": "t1",
                 "run_id": "r1",
@@ -446,7 +446,7 @@ class TestListJobsTool:
                 "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
-                "job_id": "t2",
+                "task_id": "t2",
                 "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",
@@ -457,7 +457,7 @@ class TestListJobsTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": jobs},
+            state={"async_subagent_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -467,13 +467,13 @@ class TestListJobsTool:
         result = list_tool.func(runtime=rt)
         assert isinstance(result, Command)
         content = result.update["messages"][0].content
-        assert "2 tracked job(s)" in content
+        assert "2 tracked task(s)" in content
         assert "t1" in content
         assert "t2" in content
         assert "success" in content
         assert "running" in content
         # state should be updated with fresh statuses
-        updated = result.update["async_subagent_jobs"]
+        updated = result.update["async_subagent_tasks"]
         assert updated["t1"]["status"] == "success"
         assert updated["t2"]["status"] == "running"
 
@@ -484,9 +484,9 @@ class TestListJobsTool:
 
         tools = _build_async_subagent_tools([_make_spec("test-agent")])
         list_tool = tools[4]
-        jobs: dict[str, AsyncSubAgentJob] = {
+        tasks: dict[str, AsyncTask] = {
             "t1": {
-                "job_id": "t1",
+                "task_id": "t1",
                 "agent_name": "test-agent",
                 "thread_id": "t1",
                 "run_id": "r1",
@@ -496,7 +496,7 @@ class TestListJobsTool:
                 "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
-                "job_id": "t2",
+                "task_id": "t2",
                 "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",
@@ -506,7 +506,7 @@ class TestListJobsTool:
                 "last_updated_at": "2024-01-15T10:31:00Z",
             },
             "t3": {
-                "job_id": "t3",
+                "task_id": "t3",
                 "agent_name": "test-agent",
                 "thread_id": "t3",
                 "run_id": "r3",
@@ -517,7 +517,7 @@ class TestListJobsTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": jobs},
+            state={"async_subagent_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -528,7 +528,7 @@ class TestListJobsTool:
         assert isinstance(result, Command)
         mock_client.runs.get.assert_not_called()
         content = result.update["messages"][0].content
-        assert "3 tracked job(s)" in content
+        assert "3 tracked task(s)" in content
         assert "cancelled" in content
         assert "success" in content
         assert "error" in content
@@ -541,9 +541,9 @@ class TestListJobsTool:
 
         tools = _build_async_subagent_tools([_make_spec("test-agent")])
         list_tool = tools[4]
-        jobs: dict[str, AsyncSubAgentJob] = {
+        tasks: dict[str, AsyncTask] = {
             "t1": {
-                "job_id": "t1",
+                "task_id": "t1",
                 "agent_name": "test-agent",
                 "thread_id": "t1",
                 "run_id": "r1",
@@ -553,7 +553,7 @@ class TestListJobsTool:
                 "last_updated_at": "2024-01-15T10:30:00Z",
             },
             "t2": {
-                "job_id": "t2",
+                "task_id": "t2",
                 "agent_name": "test-agent",
                 "thread_id": "t2",
                 "run_id": "r2",
@@ -564,7 +564,7 @@ class TestListJobsTool:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": jobs},
+            state={"async_subagent_tasks": tasks},
             context=None,
             tool_call_id="tc_list",
             store=None,
@@ -574,16 +574,16 @@ class TestListJobsTool:
         result = list_tool.func(runtime=rt, status_filter="running")
         assert isinstance(result, Command)
         content = result.update["messages"][0].content
-        assert "1 tracked job(s)" in content
+        assert "1 tracked task(s)" in content
         assert "t1" in content
         assert "t2" not in content
 
-    async def test_async_list_returns_no_jobs(self) -> None:
+    async def test_async_list_returns_no_tasks(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
         list_tool = tools[4]
         rt = _make_runtime()
         result = await list_tool.coroutine(runtime=rt)
-        assert "No async subagent jobs tracked" in result
+        assert "No async subagent tasks tracked" in result
 
 
 _T = TypeVar("_T")
@@ -617,8 +617,8 @@ class TestAsyncTools:
 
         assert isinstance(result, Command)
         assert "thread_abc" in result.update["messages"][0].content
-        jobs = result.update["async_subagent_jobs"]
-        assert "thread_abc" in jobs
+        tasks = result.update["async_subagent_tasks"]
+        assert "thread_abc" in tasks
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_check_returns_command(self, mock_get_client: MagicMock) -> None:
@@ -629,9 +629,9 @@ class TestAsyncTools:
 
         tools = _build_async_subagent_tools([_make_spec()])
         check = tools[1]
-        tracked_jobs: dict[str, AsyncSubAgentJob] = {
+        tracked_tasks: dict[str, AsyncTask] = {
             "thread_abc": {
-                "job_id": "thread_abc",
+                "task_id": "thread_abc",
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
@@ -642,7 +642,7 @@ class TestAsyncTools:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": tracked_jobs},
+            state={"async_subagent_tasks": tracked_tasks},
             context=None,
             tool_call_id="tc_async_check",
             store=None,
@@ -650,7 +650,7 @@ class TestAsyncTools:
             config={},
         )
         result = await check.coroutine(
-            job_id="thread_abc",
+            task_id="thread_abc",
             runtime=rt,
         )
 
@@ -658,7 +658,7 @@ class TestAsyncTools:
         parsed = json.loads(result.update["messages"][0].content)
         assert parsed["status"] == "success"
         assert parsed["result"] == "Done!"
-        assert result.update["async_subagent_jobs"]["thread_abc"]["status"] == "success"
+        assert result.update["async_subagent_tasks"]["thread_abc"]["status"] == "success"
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_update_returns_command(self, mock_get_client: MagicMock) -> None:
@@ -668,9 +668,9 @@ class TestAsyncTools:
 
         tools = _build_async_subagent_tools([_make_spec()])
         update = tools[2]
-        jobs_state: dict[str, AsyncSubAgentJob] = {
+        tasks_state: dict[str, AsyncTask] = {
             "thread_abc": {
-                "job_id": "thread_abc",
+                "task_id": "thread_abc",
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_old",
@@ -681,7 +681,7 @@ class TestAsyncTools:
             },
         }
         rt = ToolRuntime(
-            state={"async_subagent_jobs": jobs_state},
+            state={"async_subagent_tasks": tasks_state},
             context=None,
             tool_call_id="tc_async_update",
             store=None,
@@ -689,14 +689,14 @@ class TestAsyncTools:
             config={},
         )
         result = await update.coroutine(
-            job_id="thread_abc",
+            task_id="thread_abc",
             message="New instructions",
             runtime=rt,
         )
 
         assert isinstance(result, Command)
-        assert "thread_abc" in result.update["async_subagent_jobs"]
-        assert result.update["async_subagent_jobs"]["thread_abc"]["run_id"] == "run_new"
+        assert "thread_abc" in result.update["async_subagent_tasks"]
+        assert result.update["async_subagent_tasks"]["thread_abc"]["run_id"] == "run_new"
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_async_cancel_returns_command(self, mock_get_client: MagicMock) -> None:
@@ -705,12 +705,12 @@ class TestAsyncTools:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        cancel = _get_tool(tools, "cancel_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_async_cancel")
-        result = await cancel.coroutine(job_id="thread_abc", runtime=rt)
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_async_cancel")
+        result = await cancel.coroutine(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
-        assert result.update["async_subagent_jobs"]["thread_abc"]["status"] == "cancelled"
+        assert result.update["async_subagent_tasks"]["thread_abc"]["status"] == "cancelled"
 
 
 class TestCancelTool:
@@ -720,14 +720,14 @@ class TestCancelTool:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        cancel = _get_tool(tools, "cancel_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_cancel")
-        result = cancel.func(job_id="thread_abc", runtime=rt)
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_cancel")
+        result = cancel.func(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
-        jobs = result.update["async_subagent_jobs"]
-        assert jobs["thread_abc"]["status"] == "cancelled"
-        assert jobs["thread_abc"]["job_id"] == "thread_abc"
+        tasks = result.update["async_subagent_tasks"]
+        assert tasks["thread_abc"]["status"] == "cancelled"
+        assert tasks["thread_abc"]["task_id"] == "thread_abc"
         msgs = result.update["messages"]
         assert msgs[0].tool_call_id == "tc_cancel"
         assert "thread_abc" in msgs[0].content
@@ -736,13 +736,13 @@ class TestCancelTool:
             run_id="run_xyz",
         )
 
-    def test_cancel_unknown_job_returns_error(self) -> None:
+    def test_cancel_unknown_task_returns_error(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        cancel = _get_tool(tools, "cancel_async_subagent")
+        cancel = _get_tool(tools, "cancel_async_task")
         rt = _make_runtime("tc_cancel")
-        result = cancel.func(job_id="nonexistent", runtime=rt)
+        result = cancel.func(task_id="nonexistent", runtime=rt)
         assert isinstance(result, str)
-        assert "No tracked job found" in result
+        assert "No tracked task found" in result
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_cancel_sdk_error_returns_error_string(self, mock_get_client: MagicMock) -> None:
@@ -751,32 +751,32 @@ class TestCancelTool:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        cancel = _get_tool(tools, "cancel_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_cancel")
-        result = cancel.func(job_id="thread_abc", runtime=rt)
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_cancel")
+        result = cancel.func(task_id="thread_abc", runtime=rt)
         assert isinstance(result, str)
         assert "Failed to cancel run" in result
         assert "connection refused" in result
 
 
-class TestUnknownJobId:
-    """Tests that check/update/cancel return error strings for unknown job IDs."""
+class TestUnknownTaskId:
+    """Tests that check/update/cancel return error strings for unknown task IDs."""
 
-    def test_check_unknown_job_returns_error(self) -> None:
+    def test_check_unknown_task_returns_error(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        check = _get_tool(tools, "check_async_subagent")
+        check = _get_tool(tools, "check_async_task")
         rt = _make_runtime()
-        result = check.func(job_id="nonexistent", runtime=rt)
+        result = check.func(task_id="nonexistent", runtime=rt)
         assert isinstance(result, str)
-        assert "No tracked job found" in result
+        assert "No tracked task found" in result
 
-    def test_update_unknown_job_returns_error(self) -> None:
+    def test_update_unknown_task_returns_error(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        update = _get_tool(tools, "update_async_subagent")
+        update = _get_tool(tools, "update_async_task")
         rt = _make_runtime()
-        result = update.func(job_id="nonexistent", message="hello", runtime=rt)
+        result = update.func(task_id="nonexistent", message="hello", runtime=rt)
         assert isinstance(result, str)
-        assert "No tracked job found" in result
+        assert "No tracked task found" in result
 
 
 class TestLaunchErrorHandling:
@@ -787,7 +787,7 @@ class TestLaunchErrorHandling:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec("alpha")])
-        launch = _get_tool(tools, "launch_async_subagent")
+        launch = _get_tool(tools, "launch_async_task")
         result = launch.func(
             description="do stuff",
             subagent_type="alpha",
@@ -804,9 +804,9 @@ class TestLaunchErrorHandling:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        update = _get_tool(tools, "update_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_update")
-        result = update.func(job_id="thread_abc", message="hello", runtime=rt)
+        update = _get_tool(tools, "update_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_update")
+        result = update.func(task_id="thread_abc", message="hello", runtime=rt)
         assert isinstance(result, str)
         assert "Failed to update" in result
         assert "timeout" in result
@@ -814,7 +814,7 @@ class TestLaunchErrorHandling:
 
 class TestCheckEdgeCases:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_errored_job_includes_server_error(self, mock_get_client: MagicMock) -> None:
+    def test_check_errored_task_includes_server_error(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {
             "run_id": "run_xyz",
@@ -824,9 +824,9 @@ class TestCheckEdgeCases:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        check = _get_tool(tools, "check_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_check")
-        result = check.func(job_id="thread_abc", runtime=rt)
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
         parsed = json.loads(result.update["messages"][0].content)
@@ -841,9 +841,9 @@ class TestCheckEdgeCases:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        check = _get_tool(tools, "check_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_check")
-        result = check.func(job_id="thread_abc", runtime=rt)
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
         parsed = json.loads(result.update["messages"][0].content)
@@ -858,9 +858,9 @@ class TestCheckEdgeCases:
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
-        check = _get_tool(tools, "check_async_subagent")
-        rt = _make_runtime_with_job(tool_call_id="tc_check")
-        result = check.func(job_id="thread_abc", runtime=rt)
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
 
         assert isinstance(result, Command)
         parsed = json.loads(result.update["messages"][0].content)

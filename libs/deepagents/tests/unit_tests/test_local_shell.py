@@ -95,3 +95,25 @@ class TestTimeoutErrorMessage:
             assert "5" in result.output
             assert "custom timeout" in result.output.lower()
             assert "may be stuck" in result.output.lower()
+
+
+class TestStdinHandling:
+    """Tests for non-interactive stdin behavior in execute()."""
+
+    def test_execute_uses_devnull_for_stdin(self) -> None:
+        """Execute should pass DEVNULL so commands don't hang waiting for stdin."""
+        backend = LocalShellBackend(inherit_env=True)
+        completed = subprocess.CompletedProcess(
+            args="echo ok",
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+        )
+
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            result = backend.execute("echo ok")
+
+        assert result.exit_code == 0
+        assert "ok" in result.output
+        assert mock_run.call_args is not None
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL

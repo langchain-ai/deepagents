@@ -379,16 +379,26 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
-def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+def validate_path(
+    path: str,
+    *,
+    allowed_prefixes: Sequence[str] | None = None,
+    virtual_mode: bool | None = None,
+) -> str:
     r"""Validate and normalize file path for security.
 
     Ensures paths are safe to use by preventing directory traversal attacks
     and enforcing consistent formatting. All paths are normalized to use
-    forward slashes and start with a leading slash.
+    forward slashes.
 
-    This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., `C:/...`, `F:/...`) to maintain consistency
-    and prevent path format ambiguity.
+    When ``virtual_mode`` is ``True`` or ``None`` (the default), relative
+    paths are converted to absolute virtual paths by prepending ``/``.
+    When ``virtual_mode`` is ``False``, relative paths are preserved as
+    relative so they can be resolved against the current working directory
+    by the backend.
+
+    This function rejects Windows absolute paths (e.g., ``C:/...``,
+    ``F:/...``) to maintain consistency and prevent path format ambiguity.
 
     Args:
         path: The path to validate and normalize.
@@ -396,9 +406,16 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
 
             If provided, the normalized path must start with one of
             these prefixes.
+        virtual_mode: Controls relative-path handling.
+
+            - ``True`` or ``None`` (default): relative paths are converted
+              to absolute virtual paths (backward-compatible behavior).
+            - ``False``: relative paths are kept relative.
 
     Returns:
-        Normalized canonical path starting with `/` and using forward slashes.
+        Normalized canonical path using forward slashes. Starts with ``/``
+        when *virtual_mode* is ``True`` or ``None``; may be relative when
+        *virtual_mode* is ``False``.
 
     Raises:
         ValueError: If path contains traversal sequences (`..` or `~`), is a
@@ -408,6 +425,7 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
     Example:
         ```python
         validate_path("foo/bar")  # Returns: "/foo/bar"
+        validate_path("foo/bar", virtual_mode=False)  # Returns: "foo/bar"
         validate_path("/./foo//bar")  # Returns: "/foo/bar"
         validate_path("../etc/passwd")  # Raises ValueError
         validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
@@ -430,7 +448,9 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
-    if not normalized.startswith("/"):
+    # In virtual mode (True/None — default), force absolute paths.
+    # In non-virtual mode (False), preserve relative paths as-is.
+    if virtual_mode is not False and not normalized.startswith("/"):
         normalized = f"/{normalized}"
 
     # Defense-in-depth: verify normpath didn't produce traversal

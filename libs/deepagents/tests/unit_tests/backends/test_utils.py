@@ -94,6 +94,26 @@ class TestValidatePath:
         assert validate_path(".") == "/."
         assert validate_path("") == "/."
 
+    def test_virtual_mode_false_preserves_relative_paths(self) -> None:
+        """Test that virtual_mode=False keeps relative paths relative."""
+        assert validate_path("foo/bar", virtual_mode=False) == "foo/bar"
+        assert validate_path("relative/path.txt", virtual_mode=False) == "relative/path.txt"
+        assert validate_path("foo\\bar\\baz", virtual_mode=False) == "foo/bar/baz"
+
+    def test_virtual_mode_false_preserves_absolute_paths(self) -> None:
+        """Test that virtual_mode=False still keeps absolute paths absolute."""
+        assert validate_path("/workspace/file.txt", virtual_mode=False) == "/workspace/file.txt"
+
+    def test_virtual_mode_true_converts_relative_to_absolute(self) -> None:
+        """Test that virtual_mode=True converts relative paths to absolute."""
+        assert validate_path("foo/bar", virtual_mode=True) == "/foo/bar"
+        assert validate_path("relative/path.txt", virtual_mode=True) == "/relative/path.txt"
+
+    def test_virtual_mode_none_defaults_to_virtual(self) -> None:
+        """Test that virtual_mode=None behaves like True (backward compat)."""
+        assert validate_path("foo/bar", virtual_mode=None) == "/foo/bar"
+        assert validate_path("foo/bar") == "/foo/bar"
+
 
 class TestGlobSearchFiles:
     """Tests for _glob_search_files."""

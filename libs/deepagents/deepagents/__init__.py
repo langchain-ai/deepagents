@@ -6,13 +6,21 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware_stack_factory import (
+    DeepAgentBuildContext,
+    DefaultMiddlewareStackFactory,
+    MiddlewareStackFactory,
+)
 
 __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
+    "DeepAgentBuildContext",
+    "DefaultMiddlewareStackFactory",
     "FilesystemMiddleware",
     "MemoryMiddleware",
+    "MiddlewareStackFactory",
     "SubAgent",
     "SubAgentMiddleware",
     "__version__",

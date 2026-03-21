@@ -4,11 +4,10 @@ from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
+from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
-from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
@@ -20,18 +19,17 @@ from langgraph.types import Checkpointer
 from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
-    SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware_stack_factory import (
+    DeepAgentBuildContext,
+    DefaultMiddlewareStackFactory,
+    MiddlewareStackFactory,
+)
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -79,12 +77,13 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
+    middleware_factory: MiddlewareStackFactory | None = None,
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -139,6 +138,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
             `SummarizationMiddleware`, `PatchToolCallsMiddleware`) but before
             `AnthropicPromptCachingMiddleware` and `MemoryMiddleware`.
+        middleware_factory: Optional factory used to build the middleware stacks
+            for the main agent, the default general-purpose subagent, and
+            declarative subagents. If omitted, the current default composition
+            is preserved.
         subagents: Optional subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -200,65 +203,62 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Returns:
         A configured deep agent.
     """
-    model = get_default_model() if model is None else resolve_model(model)
-    backend = backend if backend is not None else (StateBackend)
+    resolved_model = get_default_model() if model is None else resolve_model(model)
+    resolved_tools = list(tools or [])
+    resolved_backend = backend if backend is not None else StateBackend
+    stack_factory = middleware_factory or DefaultMiddlewareStackFactory()
 
-    # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if interrupt_on is not None:
-        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+    build_ctx = DeepAgentBuildContext(
+        model=resolved_model,
+        tools=resolved_tools,
+        backend=resolved_backend,
+        skills=skills,
+        memory=memory,
+        interrupt_on=interrupt_on,
+        user_middleware=middleware,
+    )
 
+    # Build default general-purpose subagent using the injected factory.
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
-        "model": model,
-        "tools": tools or [],
-        "middleware": gp_middleware,
+        "model": resolved_model,
+        "tools": resolved_tools,
+        "middleware": list(stack_factory.build_general_purpose_subagent_stack(build_ctx)),
     }
 
     # Set up subagent middleware
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
+
     for spec in subagents or []:
         if "graph_id" in spec:
             # Then spec is an AsyncSubAgent
             async_subagents.append(cast("AsyncSubAgent", spec))
             continue
+
         if "runnable" in spec:
             # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
-        else:
-            # SubAgent - fill in defaults and prepend base middleware
-            subagent_model = spec.get("model", model)
-            subagent_model = resolve_model(subagent_model)
+            continue
 
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
-            ]
-            subagent_skills = spec.get("skills")
-            if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        # SubAgent - fill in defaults and prepend base middleware
+        declarative_spec = cast("SubAgent", spec)
+        subagent_model = resolve_model(declarative_spec.get("model", resolved_model))
+        subagent_middleware = list(
+            stack_factory.build_subagent_stack(
+                build_ctx,
+                spec=declarative_spec,
+                model=subagent_model,
+            )
+        )
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-                **spec,
-                "model": subagent_model,
-                "tools": spec.get("tools", tools or []),
-                "middleware": subagent_middleware,
-            }
-            inline_subagents.append(processed_spec)
+        processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            **declarative_spec,
+            "model": subagent_model,
+            "tools": declarative_spec.get("tools", resolved_tools),
+            "middleware": subagent_middleware,
+        }
+        inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it
     # This is how you overwrite/configure general purpose subagent
@@ -267,51 +267,32 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
-    if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    deepagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-            ),
-            create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
-        ]
+    deepagent_middleware = list(
+        stack_factory.build_main_stack(
+            build_ctx,
+            inline_subagents=inline_subagents,
+            async_subagents=async_subagents,
+        )
     )
-
-    if async_subagents:
-        # Async here means that we run these subagents in a non-blocking manner.
-        # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
-
-    if middleware:
-        deepagent_middleware.extend(middleware)
-    # Caching + memory after all other middleware so memory updates don't
-    # invalidate the Anthropic prompt cache prefix.
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if memory is not None:
-        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
-    if interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
     # Combine system_prompt with BASE_AGENT_PROMPT
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
+        final_system_prompt = SystemMessage(
+            content_blocks=[
+                *system_prompt.content_blocks,
+                {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+            ]
+        )
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
     return create_agent(
-        model,
+        resolved_model,
         system_prompt=final_system_prompt,
-        tools=tools,
+        tools=resolved_tools,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,

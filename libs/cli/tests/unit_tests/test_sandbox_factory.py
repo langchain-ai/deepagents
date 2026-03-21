@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -39,12 +39,52 @@ def test_get_provider_raises_helpful_error_for_missing_optional_dependency(
         _get_provider(provider)
 
 
+def test_agentcore_get_or_create_raises_for_missing_dep() -> None:
+    """AgentCore should explain which package to install."""
+    error = (
+        r"The 'agentcore' sandbox provider requires the "
+        r"'langchain-agentcore-codeinterpreter' package"
+    )
+
+    with patch("boto3.Session") as mock_session:
+        mock_session.return_value.get_credentials.return_value = MagicMock()
+        provider = _get_provider("agentcore")
+
+    with (
+        patch(
+            "deepagents_cli.integrations.sandbox_factory.importlib.import_module",
+            side_effect=ImportError("missing dependency"),
+        ),
+        pytest.raises(ImportError, match=error),
+    ):
+        provider.get_or_create()
+
+
+def test_agentcore_raises_on_missing_aws_credentials() -> None:
+    """AgentCore should raise ValueError without AWS creds."""
+    with patch("boto3.Session") as mock_session:
+        mock_session.return_value.get_credentials.return_value = None
+        with pytest.raises(ValueError, match="AWS credentials not found"):
+            _get_provider("agentcore")
+
+
+def test_agentcore_rejects_sandbox_id() -> None:
+    """AgentCore should raise NotImplementedError for sandbox_id."""
+    with patch("boto3.Session") as mock_session:
+        mock_session.return_value.get_credentials.return_value = MagicMock()
+        provider = _get_provider("agentcore")
+
+    with pytest.raises(NotImplementedError, match="does not support reconnecting"):
+        provider.get_or_create(sandbox_id="some-id")
+
+
 class TestVerifySandboxDeps:
     """Tests for the early sandbox dependency check."""
 
     @pytest.mark.parametrize(
         ("provider", "expected_module"),
         [
+            ("agentcore", "langchain_agentcore_codeinterpreter"),
             ("daytona", "langchain_daytona"),
             ("modal", "langchain_modal"),
             ("runloop", "langchain_runloop"),
@@ -72,7 +112,7 @@ class TestVerifySandboxDeps:
 
     @pytest.mark.parametrize(
         "provider",
-        ["daytona", "modal", "runloop"],
+        ["agentcore", "daytona", "modal", "runloop"],
     )
     def test_passes_when_backend_installed(self, provider: str) -> None:
         """Should not raise when the backend module is found."""

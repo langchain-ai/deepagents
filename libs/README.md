@@ -20,6 +20,7 @@ partners/            # Sandbox provider integrations (see below)
 
 The `partners/` directory contains sandbox provider integrations:
 
+* [AgentCore](https://pypi.org/project/langchain-agentcore-codeinterpreter/)
 * [Daytona](https://pypi.org/project/langchain-daytona/)
 * [Modal](https://pypi.org/project/langchain-modal/)
 * [QuickJS](https://pypi.org/project/langchain-quickjs/)

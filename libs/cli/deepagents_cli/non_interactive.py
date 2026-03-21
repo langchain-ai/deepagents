@@ -782,7 +782,7 @@ async def run_non_interactive(
 
             These override config file values.
         sandbox_type: Type of sandbox (`'none'`, `'modal'`,
-            `'runloop'`, `'daytona'`, `'langsmith'`).
+            `'agentcore'`, `'runloop'`, `'daytona'`, `'langsmith'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.

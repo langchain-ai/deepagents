@@ -95,6 +95,21 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
         # Result: {"/file1.txt": FileData(...), "/file3.txt": FileData(...)}
         ```
     """
+    # Handle list inputs from LangGraph's parallel channel updates
+    if isinstance(left, list):
+        merged: dict[str, FileData] = {}
+        for item in left:
+            if isinstance(item, dict):
+                merged.update(item)
+        left = merged or None
+
+    if isinstance(right, list):
+        merged_right: dict[str, FileData | None] = {}
+        for item in right:
+            if isinstance(item, dict):
+                merged_right.update(item)
+        right = merged_right
+
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
 

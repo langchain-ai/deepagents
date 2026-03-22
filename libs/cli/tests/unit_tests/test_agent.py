@@ -1545,3 +1545,65 @@ class TestLsEntriesShim:
             "Delete `_ls_entries()` from test_end_to_end.py and inline "
             "`backend.ls(path).entries` at call sites."
         )
+
+
+class TestShellAllowListMiddleware:
+    """Tests for inline shell command validation middleware."""
+
+    async def test_allows_non_shell_tools(self) -> None:
+        """Non-shell tools pass through unconditionally."""
+        from unittest.mock import AsyncMock
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "write_file", "args": {}, "id": "tc1"}
+        handler = AsyncMock(return_value="ok")
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_awaited_once_with(request)
+        assert result == "ok"
+
+    async def test_allows_approved_shell_command(self) -> None:
+        """Shell commands in the allow-list pass through."""
+        from unittest.mock import AsyncMock
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "ls -la"},
+            "id": "tc2",
+        }
+        handler = AsyncMock(return_value="output")
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_awaited_once_with(request)
+        assert result == "output"
+
+    async def test_rejects_disallowed_shell_command(self) -> None:
+        """Shell commands not in the allow-list get rejected as error ToolMessage."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "rm -rf /"},
+            "id": "tc3",
+        }
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "rejected" in result.content
+        assert result.tool_call_id == "tc3"

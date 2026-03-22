@@ -859,7 +859,12 @@ async def run_non_interactive(
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
         )
+        # When shell is enabled with a restrictive allow-list, only gate
+        # shell execution — non-shell tools are always auto-approved in
+        # non-interactive mode, so interrupting on them just fragments
+        # LangSmith traces without adding value.
         use_auto_approve = not enable_shell or shell_is_unrestricted
+        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
 
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
@@ -869,6 +874,7 @@ async def run_non_interactive(
             model_name=model_name,
             model_params=model_params,
             auto_approve=use_auto_approve,
+            interrupt_shell_only=use_interrupt_shell_only,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,

@@ -17,7 +17,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -27,9 +27,12 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import ToolMessage
     from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
+    from langgraph.types import Command
 
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.output import OutputFormat
@@ -63,6 +66,65 @@ DEFAULT_AGENT_NAME = "agent"
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+
+class ShellAllowListMiddleware:
+    """Validate shell commands against an allow-list without HITL interrupts.
+
+    When the agent invokes a shell tool (`execute`), this middleware checks
+    the command against the configured allow-list **before execution**.
+    Rejected commands are returned as error `ToolMessage` objects — the graph
+    never pauses, so LangSmith traces stay as a single continuous run.
+
+    Use this middleware in non-interactive mode to avoid the
+    interrupt/resume cycle that fragments traces.
+    """
+
+    tools: list = []  # noqa: RUF012  # AgentMiddleware protocol expects `tools`
+
+    def __init__(self, allow_list: list[str]) -> None:
+        """Initialize with the shell allow-list to validate commands against.
+
+        Args:
+            allow_list: Allowed command names (e.g. `["ls", "cat", "grep"]`).
+        """
+        self._allow_list = allow_list
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Reject disallowed shell commands; pass everything else through.
+
+        Returns:
+            The tool execution result, or an error `ToolMessage` for rejected
+            shell commands.
+        """
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
+
+        tool_name = request.tool_call["name"]
+        if tool_name not in SHELL_TOOL_NAMES:
+            return await handler(request)
+
+        command = request.tool_call.get("args", {}).get("command", "")
+        if is_shell_command_allowed(command, self._allow_list):
+            return await handler(request)
+
+        # Reject: return an error ToolMessage without executing
+        allowed_str = ", ".join(self._allow_list)
+        return LCToolMessage(
+            content=(
+                f"Shell command rejected: `{command}` is not in the allow-list. "
+                f"Allowed commands: {allowed_str}. "
+                f"Please use an allowed command or try another approach."
+            ),
+            name=tool_name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
 
 
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
@@ -672,6 +734,7 @@ def create_cli_agent(
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    interrupt_shell_only: bool = False,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -711,6 +774,11 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        interrupt_shell_only: If `True`, only shell execution (`execute`)
+            triggers HITL interrupts; all other tools run automatically.
+            Used in non-interactive mode with a restrictive shell allow-list
+            to avoid splitting traces into multiple LangSmith runs.
+            Ignored when `auto_approve` is `True`.
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -877,6 +945,11 @@ def create_cli_agent(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )
 
+    # Shell allow-list middleware — validates commands inline (no interrupts),
+    # keeping the entire agent run in a single LangSmith trace.
+    if interrupt_shell_only and settings.shell_allow_list:
+        agent_middleware.append(ShellAllowListMiddleware(settings.shell_allow_list))
+
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
@@ -886,10 +959,14 @@ def create_cli_agent(
             cwd=effective_cwd,
         )
 
-    # Configure interrupt_on based on auto_approve setting
+    # Configure interrupt_on based on auto_approve / interrupt_shell_only
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve:  # noqa: SIM108  # if-else more readable for interrupt_on config
-        # No interrupts - all tools run automatically
+    if auto_approve or interrupt_shell_only:  # noqa: SIM108  # comment block is clearer than ternary
+        # No HITL interrupts — tools run automatically.
+        # When interrupt_shell_only is True, shell validation is handled by
+        # ShellAllowListMiddleware (added above) which rejects disallowed
+        # commands inline as error ToolMessages, keeping the entire run in
+        # a single LangSmith trace.
         interrupt_on = {}
     else:
         # Full HITL for destructive operations

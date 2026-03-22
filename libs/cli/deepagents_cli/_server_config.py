@@ -115,6 +115,7 @@ class ServerConfig:
     assistant_id: str = _DEFAULT_ASSISTANT_ID
     system_prompt: str | None = None
     auto_approve: bool = False
+    interrupt_shell_only: bool = False
     interactive: bool = True
     enable_shell: bool = True
     enable_ask_user: bool = False
@@ -157,6 +158,7 @@ class ServerConfig:
             "ASSISTANT_ID": self.assistant_id,
             "SYSTEM_PROMPT": self.system_prompt,
             "AUTO_APPROVE": str(self.auto_approve).lower(),
+            "INTERRUPT_SHELL_ONLY": str(self.interrupt_shell_only).lower(),
             "INTERACTIVE": str(self.interactive).lower(),
             "ENABLE_SHELL": str(self.enable_shell).lower(),
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
@@ -192,6 +194,7 @@ class ServerConfig:
             assistant_id=_read_env_str("ASSISTANT_ID") or _DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
+            interrupt_shell_only=_read_env_bool("INTERRUPT_SHELL_ONLY"),
             interactive=_read_env_bool("INTERACTIVE", default=True),
             enable_shell=_read_env_bool("ENABLE_SHELL", default=True),
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
@@ -220,7 +223,8 @@ class ServerConfig:
         model_params: dict[str, Any] | None,
         assistant_id: str,
         auto_approve: bool,
-        sandbox_type: str,
+        interrupt_shell_only: bool = False,
+        sandbox_type: str = "none",
         sandbox_id: str | None,
         sandbox_setup: str | None,
         enable_shell: bool,
@@ -242,6 +246,9 @@ class ServerConfig:
             model_params: Extra model kwargs.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
+            interrupt_shell_only: Only interrupt on shell execution tools.
+                When `True`, non-shell tools run without HITL interrupts,
+                reducing trace fragmentation in non-interactive mode.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
             sandbox_setup: Path to setup script for the sandbox.
@@ -262,6 +269,7 @@ class ServerConfig:
             model_params=model_params,
             assistant_id=assistant_id,
             auto_approve=auto_approve,
+            interrupt_shell_only=interrupt_shell_only,
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,

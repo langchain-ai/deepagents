@@ -120,6 +120,7 @@ class TestServerGraph:
             system_prompt=None,
             interactive=True,
             auto_approve=False,
+            interrupt_shell_only=False,
             enable_ask_user=False,
             enable_memory=True,
             enable_skills=True,

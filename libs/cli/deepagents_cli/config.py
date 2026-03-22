@@ -492,6 +492,110 @@ MAX_ARG_LENGTH = 150
 # Agent configuration
 config: RunnableConfig = {"recursion_limit": 1000}
 
+# ---------------------------------------------------------------------------
+# Stream config builder (consolidates textual_adapter + non_interactive)
+# ---------------------------------------------------------------------------
+
+_git_branch_cache: dict[str, str | None] = {}
+
+
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or `None` if not in a repo."""
+    import subprocess  # noqa: S404
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
+        return None
+    if cwd in _git_branch_cache:
+        return _git_branch_cache[cwd]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or None
+            _git_branch_cache[cwd] = branch
+            return branch
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not determine git branch", exc_info=True)
+    _git_branch_cache[cwd] = None
+    return None
+
+
+def build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
+) -> RunnableConfig:
+    """Build the LangGraph stream config dict.
+
+    Injects CLI and SDK versions into `metadata["versions"]` so LangSmith traces
+    can be correlated with specific releases.
+
+    Why the CLI sets *both* versions:
+
+    * `create_deep_agent` bakes `versions: {"deepagents": "X.Y.Z"}` into the
+        compiled graph via `with_config`. At stream time, LangGraph merges
+        the graph config with the runtime config passed here. Because the
+        metadata merge is shallow (effectively `{**graph_meta, **runtime_meta}`
+        for top-level keys), both configs containing a `versions` key means
+        the runtime dict **replaces** the graph dict entirely — the SDK
+        version would be lost.
+    * Including the SDK version here ensures it survives the merge.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None` if no
+            sandbox is active.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    import contextlib
+    import importlib.metadata as importlib_metadata
+    from datetime import UTC, datetime
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+
+    # Include SDK version alongside CLI version — see docstring for why.
+    versions: dict[str, str] = {"deepagents-cli": __version__}
+    with contextlib.suppress(importlib_metadata.PackageNotFoundError):
+        versions["deepagents"] = importlib_metadata.version("deepagents")
+
+    metadata: dict[str, Any] = {"versions": versions}
+    if cwd:
+        metadata["cwd"] = cwd
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
+
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
     """Sentinel subclass for unrestricted shell access.

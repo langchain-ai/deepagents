@@ -404,6 +404,102 @@ def parse_args() -> argparse.Namespace:
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
+    # ---- deploy subcommand ----
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Deploy agent to LangGraph Platform",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_deploy_help")),
+    )
+    deploy_parser.add_argument(
+        "--sandbox",
+        choices=["langsmith", "daytona", "modal", "runloop"],
+        default="langsmith",
+        help="Sandbox provider for the deployed agent",
+    )
+    deploy_parser.add_argument(
+        "-M",
+        "--model",
+        metavar="MODEL",
+        help="Model to deploy with (default: claude-sonnet-4-6)",
+    )
+    deploy_parser.add_argument(
+        "-a",
+        "--agent",
+        default=_DEFAULT_AGENT_NAME,
+        metavar="NAME",
+        help="Agent configuration to deploy",
+    )
+    deploy_parser.add_argument(
+        "--name",
+        dest="deployment_name",
+        metavar="NAME",
+        help="Deployment name on LangGraph Platform",
+    )
+    deploy_parser.add_argument(
+        "--env-file",
+        metavar="PATH",
+        help="Additional .env file for deployment secrets",
+    )
+    deploy_parser.add_argument(
+        "--api-key",
+        metavar="KEY",
+        help="LangSmith API key (or set LANGSMITH_API_KEY env var)",
+    )
+    deploy_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate deployment artifacts without deploying",
+    )
+
+    # ---- dev subcommand (deploy-mode dev server) ----
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Run deployed agent locally with LangGraph dev server",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_dev_help")),
+    )
+    dev_parser.add_argument(
+        "--sandbox",
+        choices=["langsmith", "daytona", "modal", "runloop"],
+        default="langsmith",
+        help="Sandbox provider for the agent",
+    )
+    dev_parser.add_argument(
+        "-M",
+        "--model",
+        metavar="MODEL",
+        help="Model to use (default: claude-sonnet-4-6)",
+    )
+    dev_parser.add_argument(
+        "-a",
+        "--agent",
+        default=_DEFAULT_AGENT_NAME,
+        metavar="NAME",
+        help="Agent configuration to use",
+    )
+    dev_parser.add_argument(
+        "--env-file",
+        metavar="PATH",
+        help="Additional .env file for secrets",
+    )
+    dev_parser.add_argument(
+        "--port",
+        type=int,
+        default=2024,
+        help="Port for the dev server",
+    )
+    dev_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for the dev server",
+    )
+    dev_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate artifacts without starting the server",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -1369,6 +1465,36 @@ def cli_main() -> None:
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
+        elif args.command == "deploy":
+            from deepagents_cli.deploy import DeployConfig, run_deploy
+
+            deploy_config = DeployConfig(
+                sandbox_type=getattr(args, "sandbox", "langsmith"),
+                model=getattr(args, "model", None),
+                agent_name=getattr(args, "agent", _DEFAULT_AGENT_NAME),
+                deployment_name=getattr(args, "deployment_name", None),
+                env_file=getattr(args, "env_file", None),
+                api_key=getattr(args, "api_key", None),
+                dry_run=getattr(args, "dry_run", False),
+            )
+            sys.exit(run_deploy(deploy_config))
+        elif args.command == "dev":
+            from deepagents_cli.deploy import DeployConfig, run_dev
+
+            dev_config = DeployConfig(
+                sandbox_type=getattr(args, "sandbox", "langsmith"),
+                model=getattr(args, "model", None),
+                agent_name=getattr(args, "agent", _DEFAULT_AGENT_NAME),
+                env_file=getattr(args, "env_file", None),
+                dry_run=getattr(args, "dry_run", False),
+            )
+            sys.exit(
+                run_dev(
+                    dev_config,
+                    port=getattr(args, "port", 2024),
+                    host=getattr(args, "host", "127.0.0.1"),
+                )
+            )
         elif args.non_interactive_message:
             # Check for optional tools before running agent (stderr so
             # --quiet piped output stays clean)

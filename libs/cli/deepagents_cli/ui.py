@@ -66,6 +66,12 @@ def show_help() -> None:
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
     )
+    console.print(
+        "  deepagents deploy [OPTIONS]                    Deploy to LangGraph Platform"
+    )
+    console.print(
+        "  deepagents dev [OPTIONS]                       Run deployed agent locally"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
@@ -137,6 +143,98 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents -n 'Fix tests' -S all           # Any command",
+        style=COLORS["dim"],
+    )
+    console.print()
+
+
+def show_deploy_help() -> None:
+    """Show help information for the `deploy` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents deploy [options]")
+    console.print()
+    console.print(
+        "Deploy the current agent to LangGraph Platform. Bundles AGENTS.md,",
+    )
+    console.print(
+        "skills, and configuration into a deployable package, then builds",
+    )
+    console.print(
+        "and pushes a Docker image via `langgraph deploy`.",
+    )
+    console.print()
+    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  --sandbox TYPE             Sandbox provider: langsmith (default),"
+        " daytona, modal, runloop"
+    )
+    console.print("  -M, --model MODEL          Model to deploy with")
+    console.print("  -a, --agent NAME           Agent configuration to deploy")
+    console.print("  --name NAME                Deployment name on LangGraph Platform")
+    console.print("  --env-file PATH            Additional .env file for secrets")
+    console.print("  --api-key KEY              LangSmith API key")
+    console.print("  --dry-run                  Generate artifacts without deploying")
+    console.print("  -h, --help                 Show this help message")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents deploy                              # Deploy with defaults",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents deploy --sandbox daytona            # Use Daytona sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents deploy --dry-run                    # Inspect artifacts only",
+        style=COLORS["dim"],
+    )
+    console.print()
+
+
+def show_dev_help() -> None:
+    """Show help information for the `dev` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents dev [options]")
+    console.print()
+    console.print(
+        "Run the deployed agent configuration locally using `langgraph dev`.",
+    )
+    console.print(
+        "Bundles the same artifacts as `deploy` but starts a local dev server",
+    )
+    console.print(
+        "instead of pushing to LangGraph Platform.",
+    )
+    console.print()
+    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  --sandbox TYPE             Sandbox provider: langsmith (default),"
+        " daytona, modal, runloop"
+    )
+    console.print("  -M, --model MODEL          Model to use")
+    console.print("  -a, --agent NAME           Agent configuration to use")
+    console.print("  --env-file PATH            Additional .env file for secrets")
+    console.print("  --port PORT                Dev server port (default: 2024)")
+    console.print("  --host HOST                Dev server host (default: 127.0.0.1)")
+    console.print(
+        "  --dry-run                  Generate artifacts without starting server"
+    )
+    console.print("  -h, --help                 Show this help message")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents dev                                 # Start local dev server",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents dev --port 8000                     # Custom port",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents dev --sandbox modal                 # Use Modal sandbox",
         style=COLORS["dim"],
     )
     console.print()

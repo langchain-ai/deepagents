@@ -31,6 +31,7 @@ from acp.schema import (
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
+    ForkSessionResponse,
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
@@ -40,10 +41,13 @@ from acp.schema import (
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
+    ResumeSessionResponse,
     SessionCapabilities,
+    SessionForkCapabilities,
     SessionInfo,
     SessionListCapabilities,
     SessionModeState,
+    SessionResumeCapabilities,
     SseMcpServer,
     TextContentBlock,
     ToolCallStart,
@@ -52,7 +56,7 @@ from acp.schema import (
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver  # Used as fallback in prompt()
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
@@ -141,11 +145,6 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> InitializeResponse:
         """Return server capabilities to the ACP client."""
-        # Build session capabilities if checkpointer is available
-        session_capabilities = None
-        if self._checkpointer is not None:
-            session_capabilities = SessionCapabilities(list=SessionListCapabilities())
-
         return InitializeResponse(
             protocol_version=protocol_version,
             agent_capabilities=AgentCapabilities(
@@ -153,7 +152,11 @@ class AgentServerACP(ACPAgent):
                     image=True,
                 ),
                 load_session=self._checkpointer is not None,
-                session_capabilities=session_capabilities,
+                session_capabilities=SessionCapabilities(
+                    fork=SessionForkCapabilities(),
+                    list=SessionListCapabilities(),
+                    resume=SessionResumeCapabilities(),
+                ),
             ),
         )
 
@@ -334,6 +337,92 @@ class AgentServerACP(ACPAgent):
             return LoadSessionResponse(modes=self._modes)
 
         return LoadSessionResponse()
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> ResumeSessionResponse:
+        """Resume an existing session without replaying history.
+
+        This is called when the user resumes a session from the history list.
+        Unlike load_session, Zed handles the history replay itself — we just
+        need to restore the session context so subsequent prompts work correctly.
+
+        Args:
+            session_id: The ID of the session to resume
+            cwd: The working directory for the session
+            mcp_servers: Optional list of MCP servers to connect to
+            **kwargs: Additional ACP protocol parameters
+
+        Returns:
+            ResumeSessionResponse with session configuration
+        """
+        if mcp_servers is None:
+            mcp_servers = []
+
+        self._session_cwds[session_id] = cwd
+
+        if self._modes is not None:
+            self._session_modes[session_id] = self._modes.current_mode_id
+            self._session_mode_states[session_id] = self._modes
+
+        self._reset_agent(session_id)
+
+        if self._modes is not None:
+            return ResumeSessionResponse(modes=self._modes)
+
+        return ResumeSessionResponse()
+
+    async def fork_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> ForkSessionResponse:
+        """Fork an existing session into a new independent session.
+
+        Creates a new session that starts from the current state of the source session.
+        The fork is independent — changes in the fork do not affect the original.
+
+        Args:
+            session_id: The ID of the session to fork from
+            cwd: The working directory for the new forked session
+            mcp_servers: Optional list of MCP servers to connect to
+            **kwargs: Additional ACP protocol parameters
+
+        Returns:
+            ForkSessionResponse with the new session ID
+        """
+        if mcp_servers is None:
+            mcp_servers = []
+
+        new_session_id = uuid4().hex
+        self._session_cwds[new_session_id] = cwd
+
+        if self._modes is not None:
+            self._session_modes[new_session_id] = self._modes.current_mode_id
+            self._session_mode_states[new_session_id] = self._modes
+
+        # Copy the latest checkpoint from source session to the new session
+        if self._checkpointer is not None:
+            source_config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            checkpoint_tuple = await self._checkpointer.aget_tuple(source_config)
+            if checkpoint_tuple is not None:
+                new_config: RunnableConfig = {"configurable": {"thread_id": new_session_id}}
+                await self._checkpointer.aput(
+                    new_config,
+                    checkpoint_tuple.checkpoint,
+                    checkpoint_tuple.metadata,
+                    checkpoint_tuple.checkpoint.get("channel_versions", {}),
+                )
+
+        self._reset_agent(new_session_id)
+
+        return ForkSessionResponse(session_id=new_session_id)
 
     async def list_sessions(
         self,
@@ -1054,30 +1143,33 @@ class AgentServerACP(ACPAgent):
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
     from dotenv import load_dotenv  # noqa: PLC0415  # Lazy import for dev-only entry point
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415  # Lazy import to avoid hard dependency
 
     load_dotenv()
 
-    checkpointer: Checkpointer = MemorySaver()
+    async with AsyncSqliteSaver.from_conn_string(
+        "/tmp/deepagents_sessions.db"
+    ) as checkpointer:
 
-    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
-        """Agent factory based in the given root directory."""
-        agent_root_dir = context.cwd
+        def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+            """Agent factory based in the given root directory."""
+            agent_root_dir = context.cwd
 
-        def create_backend(run_time: ToolRuntime) -> CompositeBackend:
-            ephemeral_backend = StateBackend(run_time)
-            return CompositeBackend(
-                default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
-                routes={
-                    "/memories/": ephemeral_backend,
-                    "/conversation_history/": ephemeral_backend,
-                },
+            def create_backend(run_time: ToolRuntime) -> CompositeBackend:
+                ephemeral_backend = StateBackend(run_time)
+                return CompositeBackend(
+                    default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
+                    routes={
+                        "/memories/": ephemeral_backend,
+                        "/conversation_history/": ephemeral_backend,
+                    },
+                )
+
+            return create_deep_agent(
+                model="openai:gpt-5.2",
+                checkpointer=checkpointer,
+                backend=create_backend,
             )
 
-        return create_deep_agent(
-            model="openai:gpt-5.2",
-            checkpointer=checkpointer,
-            backend=create_backend,
-        )
-
-    acp_agent = AgentServerACP(agent=build_agent)
-    await run_acp_agent(acp_agent)
+        acp_agent = AgentServerACP(agent=build_agent, checkpointer=checkpointer)
+        await run_acp_agent(acp_agent, use_unstable_protocol=True)

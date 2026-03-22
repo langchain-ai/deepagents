@@ -57,35 +57,77 @@ LC_CYAN = "#7DCFFF"
 # Semantic constants  (Rich markup — cannot use CSS variables)
 # ---------------------------------------------------------------------------
 PRIMARY = LC_BLUE
+"""Default accent for borders, links, and active elements."""
+
 PRIMARY_DEV = LC_ORANGE
+"""Accent used when running from an editable (dev) install."""
+
 SUCCESS = LC_GREEN
+"""Positive outcomes — tool success, approved actions."""
+
 WARNING = LC_AMBER
+"""Caution states — pending approval, auto-approve indicator."""
+
 ERROR = LC_PINK
+"""Errors, destructive actions, and failures."""
+
 MUTED = LC_MUTED
+"""De-emphasized text — timestamps, secondary labels."""
 
 MODE_BASH = LC_PINK
+"""Shell mode indicator — borders, prompts, and message prefixes."""
+
 MODE_COMMAND = LC_PURPLE
+"""Command mode indicator — borders, prompts, and message prefixes."""
 
 # Diff colors
 DIFF_ADD_FG = LC_GREEN
+"""Added-line foreground in inline diffs."""
+
 DIFF_ADD_BG = LC_GREEN_BG
+"""Added-line background in inline diffs."""
+
 DIFF_REMOVE_FG = LC_PINK
+"""Removed-line foreground in inline diffs."""
+
 DIFF_REMOVE_BG = LC_PINK_BG
+"""Removed-line background in inline diffs."""
+
 DIFF_CONTEXT = MUTED
+"""Unchanged context lines in inline diffs."""
 
 # Tool call widget
 TOOL_BORDER = LC_BORDER_DK
+"""Tool call card border."""
+
 TOOL_BORDER_HVR = LC_BORDER_LT
+"""Tool call card border on hover."""
+
 TOOL_HEADER = WARNING
+"""Tool call header text (tool name / label)."""
+
 TOOL_PENDING = WARNING
+"""Tool call status while awaiting result."""
+
 TOOL_SUCCESS = SUCCESS
+"""Tool call status on successful completion."""
+
 TOOL_ERROR = ERROR
+"""Tool call status on failure."""
 
 # File listing colors
 FILE_PYTHON = LC_BLUE
+"""Python files in tool-call file listings."""
+
 FILE_CONFIG = WARNING
+"""Config / data files in tool-call file listings."""
+
 FILE_DIR = SUCCESS
+"""Directories in tool-call file listings."""
 
 # Misc
 ERROR_BG = DIFF_REMOVE_BG
+"""Background for error message containers."""
+
 SPINNER = LC_BLUE
+"""Loading spinner color."""

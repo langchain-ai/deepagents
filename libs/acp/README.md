@@ -66,6 +66,12 @@ If you need to upgrade your version of Deep Agents, pull the latest changes and 
 git pull && uv sync --group examples
 ```
 
+Or for specific packages:
+
+```sh
+uv lock --upgrade-package langchain_anthropic # for example
+```
+
 ## Launch a custom Deep Agent with ACP
 
 ```sh

@@ -148,6 +148,78 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
+def _load_theme_preference() -> str:
+    """Load the saved theme name from config, or return the default.
+
+    Returns:
+        A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
+    """
+    try:
+        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+        if DEFAULT_CONFIG_PATH.exists():
+            import tomllib
+
+            with DEFAULT_CONFIG_PATH.open("rb") as f:
+                data = tomllib.load(f)
+            name = data.get("ui", {}).get("theme")
+            if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+                return name
+            if isinstance(name, str):
+                logger.warning(
+                    "Unknown theme '%s' in config; falling back to default",
+                    name,
+                )
+    except Exception:
+        logger.debug("Could not load theme preference", exc_info=True)
+    return theme.DEFAULT_THEME
+
+
+def save_theme_preference(name: str) -> bool:
+    """Persist theme preference to `~/.deepagents/config.toml`.
+
+    Args:
+        name: Textual theme name to save.
+
+    Returns:
+        `True` if the preference was saved, `False` if any error occurred.
+    """
+    import contextlib
+    import tempfile
+
+    try:
+        import tomllib
+
+        import tomli_w
+
+        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if DEFAULT_CONFIG_PATH.exists():
+            with DEFAULT_CONFIG_PATH.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "ui" not in data:
+            data["ui"] = {}
+        data["ui"]["theme"] = name
+
+        fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except Exception:
+        logger.exception("Could not save theme preference")
+        return False
+    return True
+
+
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
     """Extract `--model-params` and its JSON value from a `/model` arg string.
 
@@ -507,22 +579,27 @@ class DeepAgentsApp(App):
         """
         super().__init__(**kwargs)
 
-        # Register LangChain brand theme
-        self.register_theme(
-            Theme(
-                name="langchain",
-                primary=theme.PRIMARY,
-                secondary=theme.LC_PURPLE,
-                foreground=theme.LC_BODY,
-                background=theme.LC_DARK,
-                surface=theme.LC_CARD,
-                warning=theme.WARNING,
-                error=theme.ERROR,
-                success=theme.SUCCESS,
-                dark=True,
-            )
-        )
-        self.theme = "langchain"
+        # Register LangChain brand themes (dark + light)
+        for name, entry in theme.ThemeEntry.REGISTRY.items():
+            if entry.custom:
+                c = entry.colors
+                self.register_theme(
+                    Theme(
+                        name=name,
+                        primary=c.primary,
+                        secondary=c.secondary,
+                        foreground=c.foreground,
+                        background=c.background,
+                        surface=c.surface,
+                        warning=c.warning,
+                        error=c.error,
+                        success=c.success,
+                        dark=entry.dark,
+                    )
+                )
+
+        # Apply saved theme preference (or default)
+        self.theme = _load_theme_preference()
 
         self._agent = agent
         self._assistant_id = assistant_id
@@ -609,7 +686,7 @@ class DeepAgentsApp(App):
 
         return self._agent if isinstance(self._agent, RemoteAgent) else None
 
-    def get_theme_variable_defaults(self) -> dict[str, str]:  # noqa: PLR6301  # Textual override
+    def get_theme_variable_defaults(self) -> dict[str, str]:
         """Register custom CSS variables so `.tcss` files can use them.
 
         Textual only ships built-in variables (`$background`, `$primary`, …).
@@ -622,7 +699,11 @@ class DeepAgentsApp(App):
         Returns:
             Mapping of CSS variable names to hex color values.
         """
-        return dict(theme.CSS_VARIABLE_DEFAULTS)
+        entry = theme.ThemeEntry.REGISTRY.get(self.theme)
+        colors = entry.colors if entry else None
+        return theme.get_css_variable_defaults(
+            dark=self.current_theme.dark, colors=colors
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -2236,7 +2317,7 @@ class DeepAgentsApp(App):
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, "
-                "/remember, /tokens, /threads, /trace, /update, "
+                "/remember, /theme, /tokens, /threads, /trace, /update, "
                 "/changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -2381,6 +2462,8 @@ class DeepAgentsApp(App):
             return  # _handle_user_message already mounts the message
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd == "/theme":
+            await self._show_theme_selector()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -3786,6 +3869,33 @@ class DeepAgentsApp(App):
             current_provider=settings.model_provider,
             cli_profile_override=self._profile_override,
         )
+        self.push_screen(screen, handle_result)
+
+    async def _show_theme_selector(self) -> None:
+        """Show interactive theme selector as a modal screen."""
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        def handle_result(result: str | None) -> None:
+            """Handle the theme selector result."""
+            if result is not None:
+                self.theme = result
+                self.refresh_css(animate=False)
+
+                async def _persist() -> None:
+                    ok = await asyncio.to_thread(save_theme_preference, result)
+                    if not ok:
+                        self.notify(
+                            "Theme applied for this session but could not be"
+                            " saved. Check ~/.deepagents/ permissions.",
+                            severity="warning",
+                            timeout=6,
+                        )
+
+                self.call_later(_persist)
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ThemeSelectorScreen(current_theme=self.theme)
         self.push_screen(screen, handle_result)
 
     async def _show_mcp_viewer(self) -> None:

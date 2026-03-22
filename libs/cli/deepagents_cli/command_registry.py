@@ -119,6 +119,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/theme",
+        description="Switch color theme",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="dark light color appearance",
+    ),
+    SlashCommand(
         name="/threads",
         description="Browse and resume previous threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,

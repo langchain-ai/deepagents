@@ -23,13 +23,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.8.0",
+    "agent-client-protocol>=0.8.1",
     "deepagents",
     "python-dotenv>=1.2.1",
 ]
 
 [dependency-groups]
 test = [
+    "langgraph-checkpoint-sqlite>=3.0.3",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
@@ -41,7 +42,9 @@ test = [
     "ty>=0.0.1,<1.0.0",
 ]
 
-
+examples = [
+    "langgraph-checkpoint-sqlite>=3.0.3",
+]
 
 
 [project.urls]

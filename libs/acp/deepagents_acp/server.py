@@ -10,6 +10,7 @@ from uuid import uuid4
 from acp import (
     Agent as ACPAgent,
     InitializeResponse,
+    LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
     SetSessionModeResponse,
@@ -21,6 +22,7 @@ from acp import (
     tool_diff_content,
     update_agent_message,
     update_tool_call,
+    update_user_message,
 )
 from acp.exceptions import RequestError
 from acp.schema import (
@@ -32,11 +34,15 @@ from acp.schema import (
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
+    ListSessionsResponse,
     McpServerStdio,
     PermissionOption,
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
+    SessionCapabilities,
+    SessionInfo,
+    SessionListCapabilities,
     SessionModeState,
     SseMcpServer,
     TextContentBlock,
@@ -82,18 +88,29 @@ class AgentServerACP(ACPAgent):
     """ACP agent server that bridges Deep Agents with the Agent Client Protocol."""
 
     _conn: Client
+    _checkpointer: Checkpointer | None
 
     def __init__(
         self,
         agent: CompiledStateGraph | Callable[[AgentSessionContext], CompiledStateGraph],
         *,
         modes: SessionModeState | None = None,
+        checkpointer: Checkpointer | None = None,
     ) -> None:
-        """Initialize the ACP agent server with the given agent factory or compiled graph."""
+        """Initialize the ACP agent server with the given agent factory or compiled graph.
+
+        Args:
+            agent: Either a compiled graph or a factory function that creates one
+            modes: Optional session mode configuration
+            checkpointer: Optional checkpointer for session persistence. If provided,
+                the server will advertise loadSession capability and support loading
+                previous sessions. If None, sessions will only persist in memory.
+        """
         super().__init__()
         self._cwd = ""
         self._agent_factory = agent
         self._agent: CompiledStateGraph | None = None
+        self._checkpointer = checkpointer
 
         if isinstance(agent, CompiledStateGraph):
             if modes is not None:
@@ -124,12 +141,19 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> InitializeResponse:
         """Return server capabilities to the ACP client."""
+        # Build session capabilities if checkpointer is available
+        session_capabilities = None
+        if self._checkpointer is not None:
+            session_capabilities = SessionCapabilities(list=SessionListCapabilities())
+
         return InitializeResponse(
             protocol_version=protocol_version,
             agent_capabilities=AgentCapabilities(
                 prompt_capabilities=PromptCapabilities(
                     image=True,
-                )
+                ),
+                load_session=self._checkpointer is not None,
+                session_capabilities=session_capabilities,
             ),
         )
 
@@ -154,6 +178,234 @@ class AgentServerACP(ACPAgent):
             return NewSessionResponse(session_id=session_id)
 
         return NewSessionResponse(session_id=session_id)
+
+    def _extract_message_text(self, content: str | list) -> str:
+        """Extract text content from a message.
+
+        Args:
+            content: Message content (string or list of blocks)
+
+        Returns:
+            Extracted text as a string
+        """
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            return "".join(text_parts)
+
+        return ""
+
+    async def _replay_user_message(self, session_id: str, message: Any) -> None:
+        """Replay a user message to the client.
+
+        Args:
+            session_id: The session ID
+            message: The message to replay
+        """
+        content = getattr(message, "content", "")
+        text = self._extract_message_text(content)
+        if text:
+            update = update_user_message(text_block(text))
+            await self._conn.session_update(
+                session_id=session_id, update=update, source="DeepAgent"
+            )
+
+    async def _replay_ai_message(self, session_id: str, message: Any) -> None:
+        """Replay an AI message to the client.
+
+        Args:
+            session_id: The session ID
+            message: The message to replay
+        """
+        content = getattr(message, "content", "")
+        text = self._extract_message_text(content)
+        if text:
+            update = update_agent_message(text_block(text))
+            await self._conn.session_update(
+                session_id=session_id, update=update, source="DeepAgent"
+            )
+
+    async def _replay_conversation_history(self, session_id: str, state_history: list) -> None:
+        """Replay conversation history to the client.
+
+        Args:
+            session_id: The session ID
+            state_history: List of state history from checkpointer
+        """
+        if not state_history:
+            return
+
+        # Get the most recent state (first in the list since it's newest-first)
+        latest_state = state_history[0]
+        messages = latest_state.values.get("messages", [])
+
+        # Send each message in chronological order
+        for message in messages:
+            if not hasattr(message, "type"):
+                continue
+
+            msg_type = message.type
+            if msg_type == "human":
+                await self._replay_user_message(session_id, message)
+            elif msg_type == "ai":
+                await self._replay_ai_message(session_id, message)
+            # Note: We skip tool messages as they were already part of the conversation flow
+
+    async def _get_state_history(self, agent: CompiledStateGraph, session_id: str) -> list:
+        """Get state history for a session.
+
+        Args:
+            agent: The compiled agent graph
+            session_id: The session ID
+
+        Returns:
+            List of state history, or empty list if unavailable
+        """
+        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+        try:
+            # Use async method if available (for AsyncSqliteSaver, etc.)
+            if hasattr(agent, "aget_state_history"):
+                return [s async for s in agent.aget_state_history(config)]
+            return list(agent.get_state_history(config))
+        except Exception:  # noqa: BLE001  # Intentionally broad to handle any checkpointer error
+            # If we can't get history (e.g., session doesn't exist), return empty list
+            # The session will be treated as a new session
+            return []
+
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> LoadSessionResponse | None:
+        """Load an existing session and replay its conversation history.
+
+        This method restores a previous session by:
+        1. Setting up the session context (cwd, modes, etc.)
+        2. Initializing the agent with the configured checkpointer
+        3. Replaying the entire conversation history via session/update notifications
+
+        Args:
+            session_id: The ID of the session to load
+            cwd: The working directory for the session
+            mcp_servers: Optional list of MCP servers to connect to
+            **kwargs: Additional ACP protocol parameters
+
+        Returns:
+            LoadSessionResponse with session configuration, or None
+        """
+        if mcp_servers is None:
+            mcp_servers = []
+
+        # Store the session context
+        self._session_cwds[session_id] = cwd
+
+        # Initialize modes if applicable
+        if self._modes is not None:
+            self._session_modes[session_id] = self._modes.current_mode_id
+            self._session_mode_states[session_id] = self._modes
+
+        # Reset the agent to ensure it's initialized with the checkpointer
+        self._reset_agent(session_id)
+
+        if self._agent is None:
+            msg = "Agent initialization failed"
+            raise RuntimeError(msg)
+
+        # Ensure the agent has the checkpointer configured
+        if getattr(self._agent, "checkpointer", None) is None:
+            self._agent.checkpointer = self._checkpointer or MemorySaver()
+
+        # Get and replay the state history for this session
+        state_history = await self._get_state_history(self._agent, session_id)
+        await self._replay_conversation_history(session_id, state_history)
+
+        # Return the response with modes if applicable
+        if self._modes is not None:
+            return LoadSessionResponse(modes=self._modes)
+
+        return LoadSessionResponse()
+
+    async def list_sessions(
+        self,
+        cursor: str | None = None,  # noqa: ARG002  # Pagination not yet implemented
+        cwd: str | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> ListSessionsResponse:
+        """List available sessions, optionally filtered by working directory.
+
+        Args:
+            cwd: Optional working directory to filter sessions
+            cursor: Optional pagination cursor (not currently implemented)
+            **kwargs: Additional ACP protocol parameters
+
+        Returns:
+            ListSessionsResponse containing session information
+        """
+        if self._checkpointer is None:
+            # No checkpointer, return empty list
+            return ListSessionsResponse(sessions=[])
+
+        # Get all unique thread IDs from the checkpointer
+        # We need to iterate through checkpoints and extract unique thread_ids
+        seen_threads: dict[str, SessionInfo] = {}
+        checkpointer = self._checkpointer  # Type narrowing for type checker
+
+        if isinstance(checkpointer, bool):
+            return ListSessionsResponse(sessions=[])
+
+        try:
+            # Iterate through all checkpoints to find unique thread_ids
+            # We'll get the most recent checkpoint for each thread
+            async for checkpoint_tuple in checkpointer.alist(
+                config=None,  # Get all checkpoints
+                limit=None,  # No limit for now
+            ):
+                config = checkpoint_tuple.config
+                thread_id = config.get("configurable", {}).get("thread_id")
+
+                if thread_id and thread_id not in seen_threads:
+                    # Get the cwd for this session
+                    session_cwd = self._session_cwds.get(thread_id)
+
+                    # Filter by cwd if specified
+                    if cwd is not None and session_cwd != cwd:
+                        continue
+
+                    # Get the checkpoint to extract timestamp
+                    checkpoint = checkpoint_tuple.checkpoint
+                    updated_at = checkpoint.get("ts") if checkpoint else None
+
+                    # Create session info
+                    session_info = SessionInfo(
+                        session_id=thread_id,
+                        cwd=session_cwd or "/",  # Default to root if not tracked
+                        updated_at=updated_at,
+                    )
+
+                    seen_threads[thread_id] = session_info
+
+        except Exception:  # noqa: BLE001  # Intentionally broad to handle any checkpointer error
+            # If we can't list sessions, return empty list
+            return ListSessionsResponse(sessions=[])
+
+        # Convert to list and sort by updated_at (most recent first)
+        sessions = list(seen_threads.values())
+        sessions.sort(
+            key=lambda s: s.updated_at or "",
+            reverse=True,
+        )
+
+        return ListSessionsResponse(sessions=sessions)
 
     async def set_session_mode(
         self,
@@ -449,7 +701,8 @@ class AgentServerACP(ACPAgent):
             self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = MemorySaver()  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
+                # Use the configured checkpointer if available, otherwise use MemorySaver
+                self._agent.checkpointer = self._checkpointer or MemorySaver()  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
 
         if self._agent is None:
             msg = "Agent initialization failed"

@@ -223,3 +223,6 @@ libs/cli/TEXTUAL_PROGRESS.md
 */tmp/.DS_Store
 
 CLAUDE.md
+
+# DeepAgents ACP session data
+libs/acp/data/

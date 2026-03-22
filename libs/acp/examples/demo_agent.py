@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 from acp import (
     run_agent as run_acp_agent,
@@ -13,7 +14,7 @@ from acp.schema import (
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
 from langgraph.prebuilt import ToolRuntime
 
@@ -43,7 +44,23 @@ async def _serve_example_agent() -> None:
     """Run example agent from the root of the repository with ACP integration."""
     load_dotenv()
 
-    checkpointer: Checkpointer = MemorySaver()
+    # Create a data directory for storing session databases
+    # This keeps checkpoint databases out of project directories and gitignored
+    data_dir = Path(__file__).parent.parent / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    # Use a single database for all sessions
+    # Sessions are distinguished by thread_id (session_id)
+    db_path = data_dir / "sessions.db"
+
+    # Use AsyncSqliteSaver for persistent session storage with async support
+    # This allows sessions to be loaded across restarts with better performance
+    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+        await _serve_with_checkpointer(checkpointer)
+
+
+async def _serve_with_checkpointer(checkpointer: Checkpointer) -> None:
+    """Serve the agent with the provided checkpointer."""
 
     def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
         """Agent factory based in the given root directory."""
@@ -100,7 +117,7 @@ async def _serve_example_agent() -> None:
         ],
     )
 
-    acp_agent = AgentServerACP(agent=build_agent, modes=modes)
+    acp_agent = AgentServerACP(agent=build_agent, modes=modes, checkpointer=checkpointer)
     await run_acp_agent(acp_agent)
 
 

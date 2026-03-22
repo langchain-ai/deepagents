@@ -1,7 +1,8 @@
 import uuid
 
 import pytest
-from langchain.agents import AgentMiddleware, create_agent
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
@@ -9,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     FileData,
@@ -70,6 +71,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -79,6 +81,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -130,6 +133,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -139,6 +143,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -185,6 +190,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -226,6 +232,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -267,6 +274,7 @@ class TestFilesystem:
             "/test.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -276,6 +284,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Ember"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -345,6 +354,7 @@ class TestFilesystem:
             "/charmander.txt",
             {
                 "content": ["Hello world"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -412,6 +422,7 @@ class TestFilesystem:
             "/charmander.txt",
             {
                 "content": ["The fire burns brightly. The fire burns hot."],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -605,6 +616,7 @@ class TestFilesystem:
             "/config.py",
             {
                 "content": ["DEBUG = True"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -614,6 +626,7 @@ class TestFilesystem:
             "/settings.py",
             {
                 "content": ["SECRET_KEY = 'abc'"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -623,6 +636,7 @@ class TestFilesystem:
             "/notes.txt",
             {
                 "content": ["Important notes"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -659,6 +673,7 @@ class TestFilesystem:
             "/longterm.py",
             {
                 "content": ["# Longterm file"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -668,6 +683,7 @@ class TestFilesystem:
             "/longterm.txt",
             {
                 "content": ["Text file"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -757,6 +773,7 @@ class TestFilesystem:
             "/pokemon/charmander.txt",
             {
                 "content": ["Charmander is a fire type", "It evolves into Charmeleon"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -766,6 +783,7 @@ class TestFilesystem:
             "/pokemon/squirtle.txt",
             {
                 "content": ["Squirtle is a water type", "It evolves into Wartortle"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -775,6 +793,7 @@ class TestFilesystem:
             "/pokemon/bulbasaur.txt",
             {
                 "content": ["Bulbasaur is a grass type"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -811,6 +830,7 @@ class TestFilesystem:
             "/longterm_config.py",
             {
                 "content": ["DEBUG = True", "TESTING = False"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -820,6 +840,7 @@ class TestFilesystem:
             "/longterm_settings.py",
             {
                 "content": ["SECRET_KEY = 'abc'"],
+                "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
             },
@@ -916,7 +937,7 @@ class TestFilesystem:
         assert "write_file" in captured_tools
 
         # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
@@ -964,7 +985,7 @@ class TestFilesystem:
         assert "execute" not in prompt.lower() or "Execute Tool" not in prompt
 
         # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
@@ -988,7 +1009,7 @@ class TestFilesystem:
         """Verify _supports_execution correctly detects CompositeBackend capabilities."""
 
         # Mock sandbox backend
-        class MockSandboxBackend(StateBackend):
+        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
@@ -1055,7 +1076,7 @@ def assert_longterm_mem_tools(agent, store):
 
     # Edit the longterm memory file
     config4 = {"configurable": {"thread_id": uuid.uuid4()}}
-    response = agent.invoke(
+    agent.invoke(
         {"messages": [HumanMessage(content="Edit the haiku about Charmander at /memories/charmander.txt to use the word 'ember'")]},
         config=config4,
     )

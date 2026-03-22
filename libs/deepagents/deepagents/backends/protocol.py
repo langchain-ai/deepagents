@@ -7,12 +7,28 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
+import inspect
+import logging
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+FileFormat = Literal["v1", "v2"]
+r"""File storage format version.
+
+- `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
+  on `\\n`), no `encoding` field.
+- `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
+  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+  `"base64"`).
+"""
+
+logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
@@ -106,6 +122,35 @@ class GrepMatch(TypedDict):
     text: str
 
 
+class FileData(TypedDict):
+    """Data structure for storing file contents with metadata."""
+
+    content: str
+    """File content as a plain string (utf-8 text or base64-encoded binary)."""
+
+    encoding: str
+    """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
+
+    created_at: str
+    """ISO 8601 timestamp of file creation."""
+
+    modified_at: str
+    """ISO 8601 timestamp of last modification."""
+
+
+@dataclass
+class ReadResult:
+    """Result from backend read operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        file_data: FileData dict on success, None on failure.
+    """
+
+    error: str | None = None
+    file_data: FileData | None = None
+
+
 @dataclass
 class WriteResult:
     """Result from backend write operations.
@@ -158,47 +203,96 @@ class EditResult:
     occurrences: int | None = None
 
 
+@dataclass
+class LsResult:
+    """Result from backend ls operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        entries: List of file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    entries: list["FileInfo"] | None = None
+
+
+@dataclass
+class GrepResult:
+    """Result from backend grep operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        matches: List of grep match dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    matches: list["GrepMatch"] | None = None
+
+
+@dataclass
+class GlobResult:
+    """Result from backend glob operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        matches: List of matching file info dicts on success, None on failure.
+    """
+
+    error: str | None = None
+    matches: list["FileInfo"] | None = None
+
+
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
-    """Protocol for pluggable memory backends (single, unified).
+    r"""Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure:
-    {
-        "content": list[str], # Lines of text content
-        "created_at": str, # ISO format timestamp
-        "modified_at": str, # ISO format timestamp
-    }
+    All file data is represented as dicts with the following structure::
+
+        {
+            "content": str,  # Text content (utf-8) or base64-encoded binary
+            "encoding": str,  # "utf-8" for text, "base64" for binary data
+            "created_at": str,  # ISO format timestamp
+            "modified_at": str,  # ISO format timestamp
+        }
+
+    Note:
+        Legacy data may still contain `"content": list[str]` (lines split on
+        `\\n`).  Backends accept this for backwards compatibility and emit a
+        `DeprecationWarning`.
     """
 
-    def ls_info(self, path: str) -> list["FileInfo"]:
+    def ls(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            List of FileInfo dicts containing file metadata:
-
-            - `path` (required): Absolute file path
-            - `is_dir` (optional): True if directory
-            - `size` (optional): File size in bytes
-            - `modified_at` (optional): ISO 8601 timestamp
+            LsResult with directory entries or error.
         """
+        if type(self).ls_info is not BackendProtocol.ls_info:
+            warnings.warn(
+                "`ls_info` is deprecated; rename to `ls` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.ls_info(path)
+
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> list["FileInfo"]:
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+    async def als(self, path: str) -> "LsResult":
+        """Async version of `ls`."""
+        return await asyncio.to_thread(self.ls, path)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Read file content with line numbers.
 
         Args:
@@ -226,16 +320,16 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
+    ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
         Args:
@@ -262,25 +356,28 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   - "test[0-9].txt" - search test0.txt, test1.txt, etc.
 
         Returns:
-            On success: list[GrepMatch] with structured results containing:
-                - path: Absolute file path
-                - line: Line number (1-indexed)
-                - text: Full line content containing the match
-
-            On error: str with error message (e.g., invalid path, permission denied)
+            GrepResult with matches or error.
         """
+        if type(self).grep_raw is not BackendProtocol.grep_raw:
+            warnings.warn(
+                "`grep_raw` is deprecated; rename to `grep` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.grep_raw(pattern, path, glob)
+
         raise NotImplementedError
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
-        """Async version of grep_raw."""
-        return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
+    ) -> "GrepResult":
+        """Async version of `grep`."""
+        return await asyncio.to_thread(self.grep, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -295,13 +392,21 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                   The pattern is applied relative to this path.
 
         Returns:
-            list of FileInfo
+            GlobResult with matching files or error.
         """
+        if type(self).glob_info is not BackendProtocol.glob_info:
+            warnings.warn(
+                "`glob_info` is deprecated; rename to `glob` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return self.glob_info(pattern, path)
+
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path)
+    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob`."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     def write(
         self,
@@ -411,6 +516,96 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
 
+    # -- deprecated methods --------------------------------------------------
+
+    def ls_info(self, path: str) -> "LsResult":
+        """List all files in a directory with metadata.
+
+        !!! warning "Deprecated"
+            Use `ls` instead.
+        """
+        warnings.warn(
+            "`ls_info` is deprecated; use `ls` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ls(path)
+
+    async def als_info(self, path: str) -> "LsResult":
+        """Async version of `ls_info`.
+
+        !!! warning "Deprecated"
+            Use `als` instead.
+        """
+        warnings.warn(
+            "`als_info` is deprecated; use `als` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.als(path)
+
+    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Find files matching a glob pattern.
+
+        !!! warning "Deprecated"
+            Use `glob` instead.
+        """
+        warnings.warn(
+            "`glob_info` is deprecated; use `glob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.glob(pattern, path)
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+        """Async version of `glob_info`.
+
+        !!! warning "Deprecated"
+            Use `aglob` instead.
+        """
+        warnings.warn(
+            "`aglob_info` is deprecated; use `aglob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.aglob(pattern, path)
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> "GrepResult":
+        """Search for a literal text pattern in files.
+
+        !!! warning "Deprecated"
+            Use `grep` instead.
+        """
+        warnings.warn(
+            "`grep_raw` is deprecated; use `grep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.grep(pattern, path, glob)
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> "GrepResult":
+        """Async version of `grep_raw`.
+
+        !!! warning "Deprecated"
+            Use `agrep` instead.
+        """
+        warnings.warn(
+            "`agrep_raw` is deprecated; use `agrep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.agrep(pattern, path, glob)
+
 
 @dataclass
 class ExecuteResponse:
@@ -462,8 +657,9 @@ class SandboxBackendProtocol(BackendProtocol):
 
                 If None, uses the backend's default timeout.
 
-                Callers should provide positive integer values for portable
-                behavior across backends.
+                Callers should provide non-negative integer values for portable
+                behavior across backends. A value of 0 may disable timeouts on
+                backends that support no-timeout execution.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
@@ -479,7 +675,33 @@ class SandboxBackendProtocol(BackendProtocol):
         timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        # The middleware layer validates timeout support before calling, so
+        # this guard only protects direct callers bypassing the middleware.
+        if timeout is not None and execute_accepts_timeout(type(self)):
+            return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        return await asyncio.to_thread(self.execute, command)
+
+
+@lru_cache(maxsize=128)
+def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
+    """Check whether a backend class's `execute` accepts a `timeout` kwarg.
+
+    Older backend packages didn't lower-bound their SDK dependency, so they
+    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+
+    Results are cached per class to avoid repeated introspection overhead.
+    """
+    try:
+        sig = inspect.signature(cls.execute)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.execute; assuming timeout is not supported. This may indicate a backend packaging issue.",
+            cls.__qualname__,
+            exc_info=True,
+        )
+        return False
+    else:
+        return "timeout" in sig.parameters
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

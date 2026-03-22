@@ -1,10 +1,19 @@
 """Unit tests for DeepAgentsApp."""
 
+from __future__ import annotations
+
+import asyncio
+import inspect
 import io
 import os
+import signal
+import time
 import webbrowser
-from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING, ClassVar
+from unittest.mock import AsyncMock, MagicMock, call, patch
+
+if TYPE_CHECKING:
+    from deepagents_cli.sessions import ThreadInfo
 
 import pytest
 from textual import events
@@ -13,12 +22,14 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
+    _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
+    DeferredAction,
     QueuedMessage,
     TextualSessionState,
     _write_iterm_escape,
@@ -35,7 +46,6 @@ from deepagents_cli.widgets.messages import (
 class TestInitialPromptOnMount:
     """Test that -m initial prompt is submitted on mount."""
 
-    @pytest.mark.asyncio
     async def test_initial_prompt_triggers_handle_user_message(self) -> None:
         """When initial_prompt is set, the prompt should be auto-submitted."""
         mock_agent = MagicMock()
@@ -63,7 +73,6 @@ class TestInitialPromptOnMount:
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""
 
-    @pytest.mark.asyncio
     async def test_app_css_validates_on_mount(self) -> None:
         """App should mount without CSS validation errors.
 
@@ -78,24 +87,90 @@ class TestAppCSSValidation:
             assert app.is_running
 
 
+class TestThreadCachePrewarm:
+    """Tests for startup thread-cache prewarming."""
+
+    async def test_prewarm_uses_current_thread_limit(self) -> None:
+        """Prewarm helper should pass the resolved thread limit through."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        with (
+            patch("deepagents_cli.sessions.get_thread_limit", return_value=7),
+            patch(
+                "deepagents_cli.sessions.prewarm_thread_message_counts",
+                new_callable=AsyncMock,
+            ) as mock_prewarm,
+        ):
+            await app._prewarm_threads_cache()
+
+        mock_prewarm.assert_awaited_once_with(limit=7)
+
+    async def test_show_thread_selector_uses_cached_rows(self) -> None:
+        """Thread selector should receive prefetched rows when available."""
+        cached_threads = [
+            {
+                "thread_id": "thread-abc",
+                "agent_name": "agent1",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "message_count": 2,
+            }
+        ]
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_cli.sessions.get_thread_limit", return_value=9),
+                patch(
+                    "deepagents_cli.sessions.get_cached_threads",
+                    return_value=cached_threads,
+                ),
+                patch(
+                    "deepagents_cli.widgets.thread_selector.ThreadSelectorScreen"
+                ) as mock_screen_cls,
+                patch.object(app, "push_screen") as mock_push_screen,
+            ):
+                mock_screen = MagicMock()
+                mock_screen_cls.return_value = mock_screen
+                await app._show_thread_selector()
+
+                assert app._session_state is not None
+                mock_screen_cls.assert_called_once_with(
+                    current_thread=app._session_state.thread_id,
+                    thread_limit=9,
+                    initial_threads=cached_threads,
+                )
+                mock_push_screen.assert_called_once()
+
+
 class TestAppBindings:
     """Test app keybindings."""
 
-    def test_toggle_tool_output_has_ctrl_e_binding(self) -> None:
-        """Ctrl+E should be bound to toggle_tool_output with priority."""
+    def test_ctrl_c_binding_has_priority(self) -> None:
+        """Ctrl+C should be priority-bound so focused modal inputs don't swallow it."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        ctrl_e = bindings_by_key.get("ctrl+e")
+        ctrl_c = bindings_by_key.get("ctrl+c")
 
-        assert ctrl_e is not None
-        assert ctrl_e.action == "toggle_tool_output"
-        assert ctrl_e.priority is True
+        assert ctrl_c is not None
+        assert ctrl_c.action == "quit_or_interrupt"
+        assert ctrl_c.priority is True
 
-    def test_ctrl_o_not_bound_to_toggle_tool_output(self) -> None:
-        """Ctrl+O should not exist (replaced by Ctrl+E)."""
+    def test_toggle_tool_output_has_ctrl_o_binding(self) -> None:
+        """Ctrl+O should be bound to toggle_tool_output with priority."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        assert "ctrl+o" not in bindings_by_key
+        ctrl_o = bindings_by_key.get("ctrl+o")
+
+        assert ctrl_o is not None
+        assert ctrl_o.action == "toggle_tool_output"
+        assert ctrl_o.priority is True
+
+    def test_ctrl_e_not_bound(self) -> None:
+        """Ctrl+E must not be bound — it shadows TextArea cursor_line_end."""
+        bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
+        bindings_by_key = {b.key: b for b in bindings}
+        assert "ctrl+e" not in bindings_by_key
 
 
 class TestITerm2CursorGuide:
@@ -215,7 +290,6 @@ class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
 
     @staticmethod
-    @pytest.mark.asyncio
     async def test_escape_dismisses_modal_screen() -> None:
         """Escape should dismiss any active ModalScreen.
 
@@ -275,6 +349,424 @@ class TestModalScreenEscapeDismissal:
             assert app.interrupt_called is False
 
 
+class TestModalScreenCtrlDHandling:
+    """Tests for app-level Ctrl+D behavior while modals are open."""
+
+    async def test_ctrl_d_deletes_in_thread_selector_instead_of_quitting(self) -> None:
+        """App-level quit binding should delegate to thread delete in the modal."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                with patch.object(app, "exit") as mock_exit:
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    await pilot.pause()
+
+                assert screen._confirming_delete is True
+                mock_exit.assert_not_called()
+
+    async def test_escape_closes_thread_delete_confirm_without_dismissing_modal(
+        self,
+    ) -> None:
+        """Escape should close thread delete confirmation before dismissing modal."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert screen.is_delete_confirmation_open is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert app.screen is screen
+                assert screen.is_delete_confirmation_open is False
+
+    async def test_ctrl_d_twice_quits_from_delete_confirmation(self) -> None:
+        """Ctrl+D should use a double-press quit flow inside delete confirmation."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                with (
+                    patch.object(app, "notify") as notify_mock,
+                    patch.object(app, "exit") as exit_mock,
+                ):
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    notify_mock.assert_called_once_with(
+                        "Press Ctrl+D again to quit",
+                        timeout=3,
+                    )
+                    assert app._quit_pending is True
+                    exit_mock.assert_not_called()
+
+                    await pilot.press("ctrl+d")
+                    await pilot.pause()
+                    exit_mock.assert_called_once()
+
+    async def test_ctrl_c_still_works_from_delete_confirmation(self) -> None:
+        """Ctrl+C should preserve the normal double-press quit flow in confirmation."""
+        from deepagents_cli.widgets.thread_selector import (
+            DeleteThreadConfirmScreen,
+            ThreadSelectorScreen,
+        )
+
+        mock_threads: list[ThreadInfo] = [
+            {
+                "thread_id": "thread-123",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "created_at": "2026-03-08T01:00:00+00:00",
+                "initial_prompt": "prompt",
+            }
+        ]
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=mock_threads,
+        ):
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                screen = ThreadSelectorScreen(
+                    current_thread=None,
+                    initial_threads=mock_threads,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.pause()
+                assert isinstance(app.screen, DeleteThreadConfirmScreen)
+
+                with (
+                    patch.object(app, "notify") as notify_mock,
+                    patch.object(app, "exit") as exit_mock,
+                ):
+                    app.action_quit_or_interrupt()
+                    notify_mock.assert_called_once_with(
+                        "Press Ctrl+C again to quit",
+                        timeout=3,
+                    )
+                    assert app._quit_pending is True
+                    exit_mock.assert_not_called()
+
+                    app.action_quit_or_interrupt()
+                    exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_from_model_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+D should not be swallowed or ignored in the model selector."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.has_focus
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_from_mcp_viewer(self) -> None:
+        """Ctrl+D should still quit while the MCP viewer modal is open."""
+        from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = MCPViewerScreen(
+                server_info=[
+                    MCPServerInfo(
+                        name="filesystem",
+                        transport="stdio",
+                        tools=[
+                            MCPToolInfo(
+                                name="read_file",
+                                description="Read a file",
+                            )
+                        ],
+                    )
+                ]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+
+class TestModalScreenShiftTabHandling:
+    """Tests for app-level Shift+Tab behavior while modals are open."""
+
+    async def test_shift_tab_moves_backward_in_thread_selector(self) -> None:
+        """Shift+Tab should move backward in the thread selector controls."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ThreadSelectorScreen(
+                current_thread=None,
+                initial_threads=[
+                    {
+                        "thread_id": "thread-123",
+                        "agent_name": "agent",
+                        "updated_at": "2026-03-08T02:00:00+00:00",
+                        "created_at": "2026-03-08T01:00:00+00:00",
+                        "initial_prompt": "prompt",
+                    }
+                ],
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert app._auto_approve is False
+            filter_input = screen.query_one("#thread-filter", Input)
+            sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert filter_input.has_focus
+            assert app._auto_approve is False
+
+
+class TestModalScreenCtrlCHandling:
+    """Tests for app-level Ctrl+C behavior while modals are open."""
+
+    async def test_ctrl_c_quits_from_thread_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+C should reach the app even when the thread filter has focus."""
+        from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ThreadSelectorScreen(
+                current_thread=None,
+                initial_threads=[
+                    {
+                        "thread_id": "thread-123",
+                        "agent_name": "agent",
+                        "updated_at": "2026-03-08T02:00:00+00:00",
+                        "created_at": "2026-03-08T01:00:00+00:00",
+                        "initial_prompt": "prompt",
+                    }
+                ],
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#thread-filter", Input)
+            assert filter_input.has_focus
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
+    async def test_ctrl_c_quits_from_model_selector_with_input_focused(
+        self,
+    ) -> None:
+        """Ctrl+C should not be swallowed by the model filter input."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#model-filter", Input)
+            assert filter_input.has_focus
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
+    async def test_ctrl_c_quits_from_mcp_viewer(self) -> None:
+        """Ctrl+C should still trigger app quit flow while the MCP modal is open."""
+        from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = MCPViewerScreen(
+                server_info=[
+                    MCPServerInfo(
+                        name="filesystem",
+                        transport="stdio",
+                        tools=[
+                            MCPToolInfo(
+                                name="read_file",
+                                description="Read a file",
+                            )
+                        ],
+                    )
+                ]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with (
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                )
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+                await pilot.press("ctrl+c")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
+
 class TestMountMessageNoMatches:
     """Test _mount_message resilience when #messages container is missing.
 
@@ -283,7 +775,6 @@ class TestMountMessageNoMatches:
     (e.g. #messages container no longer exists), this should not crash.
     """
 
-    @pytest.mark.asyncio
     async def test_mount_message_no_crash_when_messages_missing(self) -> None:
         """_mount_message should not raise NoMatches when #messages is absent."""
         app = DeepAgentsApp()
@@ -305,7 +796,6 @@ class TestMountMessageNoMatches:
             # Before the fix, this raises NoMatches
             await app._mount_message(AppMessage("Interrupted by user"))
 
-    @pytest.mark.asyncio
     async def test_mount_error_message_no_crash_when_messages_missing(
         self,
     ) -> None:
@@ -337,15 +827,14 @@ class TestQueuedMessage:
 
     def test_fields(self) -> None:
         """QueuedMessage should store text and mode."""
-        msg = QueuedMessage(text="hello", mode="bash")
+        msg = QueuedMessage(text="hello", mode="shell")
         assert msg.text == "hello"
-        assert msg.mode == "bash"
+        assert msg.mode == "shell"
 
 
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 
-    @pytest.mark.asyncio
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
         app = DeepAgentsApp()
@@ -360,7 +849,40 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "queued msg"
             assert app._pending_messages[0].mode == "normal"
 
-    @pytest.mark.asyncio
+    async def test_message_queued_while_connecting(self) -> None:
+        """Messages submitted during server startup should be queued."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.post_message(ChatInput.Submitted("early msg", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "early msg"
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+
+    async def test_message_blocked_while_thread_switching(self) -> None:
+        """Submissions should be ignored while thread switching is in-flight."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+            with patch.object(app, "notify") as notify_mock:
+                app.post_message(ChatInput.Submitted("blocked msg", "normal"))
+                await pilot.pause()
+
+                assert len(app._pending_messages) == 0
+                user_msgs = app.query(UserMessage)
+                assert not any(w._content == "blocked msg" for w in user_msgs)
+                notify_mock.assert_called_once_with(
+                    "Thread switch in progress. Please wait.",
+                    severity="warning",
+                    timeout=3,
+                )
+
     async def test_queued_widget_mounted(self) -> None:
         """Queued messages should produce a QueuedUserMessage widget."""
         app = DeepAgentsApp()
@@ -375,7 +897,6 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
-    @pytest.mark.asyncio
     async def test_immediate_processing_when_agent_idle(self) -> None:
         """Messages should process immediately when agent is not running."""
         app = DeepAgentsApp()
@@ -392,7 +913,6 @@ class TestMessageQueue:
             user_msgs = app.query(UserMessage)
             assert any(w._content == "direct msg" for w in user_msgs)
 
-    @pytest.mark.asyncio
     async def test_fifo_order(self) -> None:
         """Queued messages should process in FIFO order."""
         app = DeepAgentsApp()
@@ -409,14 +929,12 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "first"
             assert app._pending_messages[1].text == "second"
 
-    @pytest.mark.asyncio
-    async def test_queue_cleared_on_interrupt(self) -> None:
-        """Interrupt should clear the message queue."""
+    async def test_escape_pops_last_queued_message(self) -> None:
+        """Escape should pop the last queued message (LIFO), not nuke all."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
-            # Simulate a worker so action_interrupt has something to cancel
             mock_worker = MagicMock()
             app._agent_worker = mock_worker
 
@@ -427,14 +945,123 @@ class TestMessageQueue:
 
             assert len(app._pending_messages) == 2
 
-            # Interrupt (escape key handler)
+            # First ESC pops the last queued message
             app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "msg1"
+            mock_worker.cancel.assert_not_called()
 
+            # Second ESC pops the remaining message
+            app.action_interrupt()
             assert len(app._pending_messages) == 0
-            assert len(app._queued_widgets) == 0
+            mock_worker.cancel.assert_not_called()
+
+            # Third ESC interrupts the agent
+            app.action_interrupt()
             mock_worker.cancel.assert_called_once()
 
-    @pytest.mark.asyncio
+    async def test_escape_restores_text_to_empty_input(self) -> None:
+        """Popped message text is restored to chat input when input is empty."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("restore me", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input is empty — text should be restored
+            chat.value = ""
+            app.action_interrupt()
+            assert chat.value == "restore me"
+
+    async def test_escape_preserves_existing_input_text(self) -> None:
+        """Popped message text is discarded when chat input already has content."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("queued msg", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input has content — should NOT be overwritten
+            chat.value = "draft text"
+            app.action_interrupt()
+            assert chat.value == "draft text"
+            assert len(app._pending_messages) == 0
+
+    async def test_escape_pop_shows_toast(self) -> None:
+        """Popping a queued message shows a differentiated toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Queue a message and pop with empty input — "moved to input"
+            app._pending_messages.append(QueuedMessage(text="a", mode="normal"))
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message moved to input", timeout=2
+                )
+
+            # Queue another and pop with non-empty input — "discarded"
+            app._pending_messages.append(QueuedMessage(text="b", mode="normal"))
+            chat.value = "existing"
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message discarded (input not empty)", timeout=3
+                )
+
+    async def test_escape_pop_single_then_interrupt(self) -> None:
+        """Single queued message is popped, then next ESC interrupts agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            app._pending_messages.append(QueuedMessage(text="only", mode="normal"))
+            app._queued_widgets.append(MagicMock())
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            mock_worker.cancel.assert_not_called()
+
+            app.action_interrupt()
+            mock_worker.cancel.assert_called_once()
+
+    async def test_escape_pop_handles_widget_desync(self) -> None:
+        """Pop completes gracefully when _queued_widgets is empty but messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Messages without corresponding widgets (desync scenario)
+            app._pending_messages.append(QueuedMessage(text="orphan", mode="normal"))
+            assert len(app._queued_widgets) == 0
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            # No crash — method handled the desync
+
     async def test_interrupt_dismisses_completion_without_stopping_agent(self) -> None:
         """Esc should dismiss completion popup without interrupting the agent."""
         app = DeepAgentsApp()
@@ -459,7 +1086,6 @@ class TestMessageQueue:
             mock_worker.cancel.assert_not_called()
             assert app._agent_running is True
 
-    @pytest.mark.asyncio
     async def test_interrupt_falls_through_when_no_completion(self) -> None:
         """Esc should interrupt the agent when completion is not active."""
         app = DeepAgentsApp()
@@ -478,7 +1104,6 @@ class TestMessageQueue:
 
             mock_worker.cancel.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_queue_cleared_on_ctrl_c(self) -> None:
         """Ctrl+C should clear the message queue."""
         app = DeepAgentsApp()
@@ -496,7 +1121,6 @@ class TestMessageQueue:
             assert len(app._pending_messages) == 0
             assert len(app._queued_widgets) == 0
 
-    @pytest.mark.asyncio
     async def test_process_next_from_queue_removes_widget(self) -> None:
         """Processing a queued message should remove its ephemeral widget."""
         app = DeepAgentsApp()
@@ -515,15 +1139,14 @@ class TestMessageQueue:
 
             assert len(app._queued_widgets) == 0
 
-    @pytest.mark.asyncio
-    async def test_bash_command_continues_chain(self) -> None:
-        """Bash/command messages should not break the queue processing chain."""
+    async def test_shell_command_continues_chain(self) -> None:
+        """Shell/command messages should not break the queue processing chain."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            # Queue a bash command followed by a normal message
-            app._pending_messages.append(QueuedMessage(text="!echo hi", mode="bash"))
+            # Queue a shell command followed by a normal message
+            app._pending_messages.append(QueuedMessage(text="!echo hi", mode="shell"))
             app._pending_messages.append(
                 QueuedMessage(text="hello agent", mode="normal")
             )
@@ -532,16 +1155,69 @@ class TestMessageQueue:
             await pilot.pause()
             await pilot.pause()
 
-            # The bash command should have been processed and the normal
+            # The shell command should have been processed and the normal
             # message should also have been picked up (mounted as UserMessage)
             user_msgs = app.query(UserMessage)
             assert any(w._content == "hello agent" for w in user_msgs)
 
 
+class TestAskUserLifecycle:
+    """Tests for ask_user widget cleanup flows."""
+
+    async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
+        """Timeout cleanup should cancel then remove the previous widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            old_widget = MagicMock()
+            old_widget.remove = AsyncMock()
+            app._pending_ask_user_widget = old_widget
+
+            with patch("deepagents_cli.app._monotonic", side_effect=[0.0, 31.0]):
+                await app._request_ask_user([{"question": "Name?", "type": "text"}])
+
+            old_widget.action_cancel.assert_called_once()
+            old_widget.remove.assert_awaited_once()
+            assert old_widget.mock_calls[:2] == [call.action_cancel(), call.remove()]
+            assert app._pending_ask_user_widget is not old_widget
+
+    async def test_on_ask_user_menu_answered_ignores_remove_errors(self) -> None:
+        """Answered handler should swallow remove races and clear tracking."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_ask_user_widget = widget
+
+            await app.on_ask_user_menu_answered(object())
+            await pilot.pause()
+
+            assert app._pending_ask_user_widget is None
+            widget.remove.assert_awaited_once()
+
+    async def test_on_ask_user_menu_cancelled_ignores_remove_errors(self) -> None:
+        """Cancelled handler should swallow remove races and clear tracking."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_ask_user_widget = widget
+
+            await app.on_ask_user_menu_cancelled(object())
+            await pilot.pause()
+
+            assert app._pending_ask_user_widget is None
+            widget.remove.assert_awaited_once()
+
+
 class TestTraceCommand:
     """Test /trace slash command."""
 
-    @pytest.mark.asyncio
     async def test_trace_opens_browser_when_configured(self) -> None:
         """Should open the LangSmith thread URL in the browser."""
         app = DeepAgentsApp()
@@ -551,7 +1227,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
                 ),
                 patch("deepagents_cli.app.webbrowser.open") as mock_open,
@@ -569,7 +1245,6 @@ class TestTraceCommand:
                 for w in app_msgs
             )
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
         app = DeepAgentsApp()
@@ -578,7 +1253,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState()
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 return_value=None,
             ):
                 await app._handle_trace_command("/trace")
@@ -587,7 +1262,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_no_session(self) -> None:
         """Should show error when there is no active session."""
         app = DeepAgentsApp()
@@ -601,7 +1275,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_shows_link_when_browser_fails(self) -> None:
         """Should still display the URL link even if the browser cannot open."""
         app = DeepAgentsApp()
@@ -611,7 +1284,7 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_cli.app.build_langsmith_thread_url",
+                    "deepagents_cli.config.build_langsmith_thread_url",
                     return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
                 patch(
@@ -628,7 +1301,6 @@ class TestTraceCommand:
                 for w in app_msgs
             )
 
-    @pytest.mark.asyncio
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when build_langsmith_thread_url raises."""
         app = DeepAgentsApp()
@@ -637,7 +1309,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState(thread_id="test-thread-123")
 
             with patch(
-                "deepagents_cli.app.build_langsmith_thread_url",
+                "deepagents_cli.config.build_langsmith_thread_url",
                 side_effect=RuntimeError("SDK error"),
             ):
                 await app._handle_trace_command("/trace")
@@ -646,7 +1318,6 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("Failed to resolve" in str(w._content) for w in app_msgs)
 
-    @pytest.mark.asyncio
     async def test_trace_routed_from_handle_command(self) -> None:
         """'/trace' should be correctly routed through _handle_command."""
         app = DeepAgentsApp()
@@ -661,10 +1332,9 @@ class TestTraceCommand:
             assert any("No active session" in str(w._content) for w in app_msgs)
 
 
-class TestRunAgentTaskImageTracker:
+class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
-    @pytest.mark.asyncio
     async def test_run_agent_task_passes_image_tracker(self) -> None:
         """`_run_agent_task` should forward the shared image tracker."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -673,15 +1343,16 @@ class TestRunAgentTaskImageTracker:
             assert app._ui_adapter is not None
 
             with patch(
-                "deepagents_cli.app.execute_task_textual", new_callable=AsyncMock
+                "deepagents_cli.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
 
             mock_execute.assert_awaited_once()
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
+            assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type
 
-    @pytest.mark.asyncio
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -693,7 +1364,7 @@ class TestRunAgentTaskImageTracker:
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
-                "deepagents_cli.app.execute_task_textual",
+                "deepagents_cli.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ):
@@ -710,7 +1381,6 @@ class TestRunAgentTaskImageTracker:
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""
 
-    @pytest.mark.asyncio
     async def test_app_focus_restores_chat_input(self) -> None:
         """Regaining terminal focus should re-focus the chat input."""
         app = DeepAgentsApp()
@@ -729,7 +1399,6 @@ class TestAppFocusRestoresChatInput:
             # chat_input.focus_input should have been called
             assert app._chat_input._text_area.has_focus
 
-    @pytest.mark.asyncio
     async def test_app_focus_skips_when_modal_open(self) -> None:
         """Regaining focus should not steal focus from an open modal."""
         app = DeepAgentsApp()
@@ -751,7 +1420,6 @@ class TestAppFocusRestoresChatInput:
 
             mock_focus.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_app_focus_skips_when_approval_pending(self) -> None:
         """Regaining focus should not steal focus from the approval widget."""
         app = DeepAgentsApp()
@@ -771,7 +1439,6 @@ class TestAppFocusRestoresChatInput:
 class TestPasteRouting:
     """Tests app-level paste routing when chat input focus lags."""
 
-    @pytest.mark.asyncio
     async def test_on_paste_routes_unfocused_event_to_chat_input(self) -> None:
         """Unfocused paste events should be forwarded to chat input handler."""
         app = DeepAgentsApp()
@@ -794,7 +1461,6 @@ class TestPasteRouting:
             mock_prevent.assert_called_once()
             mock_stop.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_on_paste_does_not_route_when_input_already_focused(self) -> None:
         """Focused input should keep normal TextArea paste handling path."""
         app = DeepAgentsApp()
@@ -816,3 +1482,1438 @@ class TestPasteRouting:
             mock_handle.assert_not_called()
             mock_prevent.assert_not_called()
             mock_stop.assert_not_called()
+
+
+class TestShellCommandInterrupt:
+    """Tests for interruptible shell commands (! prefix) using worker pattern."""
+
+    async def test_escape_cancels_shell_worker(self) -> None:
+        """Esc while shell command is running should cancel the worker."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._shell_running = True
+            mock_worker = MagicMock()
+            app._shell_worker = mock_worker
+
+            app.action_interrupt()
+
+            mock_worker.cancel.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_ctrl_c_cancels_shell_worker(self) -> None:
+        """Ctrl+C while shell command is running should cancel the worker."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._shell_running = True
+            mock_worker = MagicMock()
+            app._shell_worker = mock_worker
+
+            # Queue a message to verify it gets cleared
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+
+            app.action_quit_or_interrupt()
+
+            mock_worker.cancel.assert_called_once()
+            assert len(app._pending_messages) == 0
+            assert app._quit_pending is False
+
+    async def test_process_killed_on_cancelled_error(self) -> None:
+        """CancelledError in _run_shell_task should kill the process."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+            mock_proc.returncode = None
+            mock_proc.pid = 12345
+            mock_proc.wait = AsyncMock()
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=12345),
+                pytest.raises(asyncio.CancelledError),
+            ):
+                await app._run_shell_task("sleep 999")
+
+            mock_killpg.assert_called()
+
+    async def test_cleanup_clears_state(self) -> None:
+        """_cleanup_shell_task should reset all shell state."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._shell_running = True
+            app._shell_worker = MagicMock()
+            app._shell_worker.is_cancelled = False
+            app._shell_process = None
+
+            await app._cleanup_shell_task()
+
+            assert app._shell_process is None
+            assert app._shell_running is False
+            assert app._shell_worker is None
+
+    async def test_messages_queued_during_shell(self) -> None:
+        """Messages should be queued while shell command runs."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._shell_running = True
+
+            app.post_message(ChatInput.Submitted("queued msg", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "queued msg"
+
+    async def test_queue_drains_after_shell_completes(self) -> None:
+        """Pending messages should drain after _cleanup_shell_task."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._shell_running = True
+            app._shell_worker = MagicMock()
+            app._shell_worker.is_cancelled = False
+            app._shell_process = None
+
+            # Enqueue a message
+            app._pending_messages.append(
+                QueuedMessage(text="after shell", mode="normal")
+            )
+
+            await app._cleanup_shell_task()
+            await pilot.pause()
+
+            # Message should have been processed (mounted as UserMessage)
+            user_msgs = app.query(UserMessage)
+            assert any(w._content == "after shell" for w in user_msgs)
+
+    async def test_interrupted_shows_message(self) -> None:
+        """Cancelled worker should show 'Command interrupted'."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._shell_running = True
+            mock_worker = MagicMock()
+            mock_worker.is_cancelled = True
+            app._shell_worker = mock_worker
+            # Process still set means it was interrupted mid-flight
+            mock_proc = MagicMock()
+            mock_proc.returncode = None
+            app._shell_process = mock_proc
+
+            await app._cleanup_shell_task()
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("Command interrupted" in str(w._content) for w in app_msgs)
+
+    async def test_timeout_kills_and_shows_error(self) -> None:
+        """Timeout in _run_shell_task should kill process and show error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+            mock_proc.returncode = None
+            mock_proc.pid = 12345
+            mock_proc.wait = AsyncMock()
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch("os.killpg"),
+                patch("os.getpgid", return_value=12345),
+            ):
+                await app._run_shell_task("sleep 999")
+                await pilot.pause()
+
+            assert app._shell_process is None
+            error_msgs = app.query(ErrorMessage)
+            assert any("timed out" in w._content for w in error_msgs)
+
+    async def test_posix_killpg_called(self) -> None:
+        """On POSIX, _kill_shell_process should use os.killpg with SIGTERM."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = None
+            mock_proc.pid = 42
+            mock_proc.wait = AsyncMock()
+            app._shell_process = mock_proc
+
+            with (
+                patch("deepagents_cli.app.sys") as mock_sys,
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=42) as mock_getpgid,
+            ):
+                mock_sys.platform = "linux"
+                await app._kill_shell_process()
+
+            mock_getpgid.assert_called_once_with(42)
+            mock_killpg.assert_called_once_with(42, signal.SIGTERM)
+
+    async def test_sigkill_escalation(self) -> None:
+        """SIGKILL should be sent when SIGTERM times out."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = None
+            mock_proc.pid = 42
+            mock_proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+            mock_proc.kill = MagicMock()
+            app._shell_process = mock_proc
+
+            with (
+                patch("deepagents_cli.app.sys") as mock_sys,
+                patch("os.killpg") as mock_killpg,
+                patch("os.getpgid", return_value=42),
+            ):
+                mock_sys.platform = "linux"
+                await app._kill_shell_process()
+
+            # First call: SIGTERM, second call: SIGKILL
+            assert mock_killpg.call_count == 2
+            mock_killpg.assert_any_call(42, signal.SIGTERM)
+            mock_killpg.assert_any_call(42, signal.SIGKILL)
+
+    async def test_no_op_when_no_shell_running(self) -> None:
+        """Ctrl+C with no shell command running should fall through to quit hint."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert not app._shell_running
+            app.action_quit_or_interrupt()
+
+            assert app._quit_pending is True
+
+    async def test_oserror_shows_error_message(self) -> None:
+        """OSError from create_subprocess_shell should display error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                side_effect=OSError("Permission denied"),
+            ):
+                await app._run_shell_task("forbidden")
+                await pilot.pause()
+
+            assert app._shell_process is None
+            error_msgs = app.query(ErrorMessage)
+            assert any("Permission denied" in w._content for w in error_msgs)
+
+    async def test_handle_shell_command_sets_running_state(self) -> None:
+        """_handle_shell_command should set _shell_running and spawn worker."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._handle_shell_command("echo hi")
+
+            assert app._shell_running is True
+            assert app._shell_worker is not None
+            mock_rw.assert_called_once()
+            # Close the unawaited coroutine to suppress RuntimeWarning
+            coro = mock_rw.call_args[0][0]
+            coro.close()
+
+    async def test_kill_noop_when_already_exited(self) -> None:
+        """_kill_shell_process should no-op if process already exited."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            mock_proc = AsyncMock()
+            mock_proc.returncode = 0
+            mock_proc.pid = 42
+            app._shell_process = mock_proc
+
+            with patch("os.killpg") as mock_killpg:
+                await app._kill_shell_process()
+
+            mock_killpg.assert_not_called()
+            mock_proc.terminate.assert_not_called()
+
+    async def test_end_to_end_escape_during_shell(self) -> None:
+        """Esc during a running shell worker should cancel execution."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Simulate a running shell state with a mock worker
+            app._shell_running = True
+            mock_worker = MagicMock()
+            app._shell_worker = mock_worker
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            mock_worker.cancel.assert_called_once()
+
+
+class TestInterruptApprovalPriority:
+    """Tests for escape interrupt priority when HITL approval is pending."""
+
+    async def test_escape_rejects_approval_before_canceling_worker(self) -> None:
+        """When both HITL approval and worker are active, reject approval first."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        worker = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = True
+            app._agent_worker = worker
+
+            app.action_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+        worker.cancel.assert_not_called()
+
+    async def test_escape_pops_queue_before_cancelling_worker(self) -> None:
+        """Escape pops queued messages (LIFO) before cancelling the worker."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        queued_w1 = MagicMock()
+        queued_w2 = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = None
+            app._agent_running = True
+            app._agent_worker = worker
+            app._pending_messages.append(QueuedMessage(text="q1", mode="normal"))
+            app._pending_messages.append(QueuedMessage(text="q2", mode="normal"))
+            app._queued_widgets.append(queued_w1)
+            app._queued_widgets.append(queued_w2)
+
+            # First ESC pops last queued message, does not cancel worker
+            app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "q1"
+            queued_w2.remove.assert_called_once()
+            queued_w1.remove.assert_not_called()
+            worker.cancel.assert_not_called()
+
+            # Second ESC pops remaining message
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            queued_w1.remove.assert_called_once()
+            worker.cancel.assert_not_called()
+
+            # Third ESC finally cancels the worker
+            app.action_interrupt()
+            worker.cancel.assert_called_once()
+
+    async def test_escape_rejects_approval_when_no_worker(self) -> None:
+        """Approval rejection works even without an active agent worker."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = False
+            app._agent_worker = None
+
+            app.action_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+
+    async def test_ctrl_c_rejects_approval_before_canceling_worker(self) -> None:
+        """Ctrl+C should also reject approval before canceling worker."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        worker = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = True
+            app._agent_worker = worker
+
+            app.action_quit_or_interrupt()
+
+        approval.action_select_reject.assert_called_once()
+        worker.cancel.assert_not_called()
+        assert app._quit_pending is False
+
+
+class TestIsUserTyping:
+    """Unit tests for `_is_user_typing()` threshold logic."""
+
+    def test_returns_false_when_never_typed(self) -> None:
+        """Should return False if _last_typed_at is None."""
+        app = DeepAgentsApp()
+        assert app._is_user_typing() is False
+
+    def test_returns_true_within_threshold(self) -> None:
+        """Should return True right after a keystroke."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic()
+        assert app._is_user_typing() is True
+
+    def test_returns_false_after_threshold(self) -> None:
+        """Should return False once the idle threshold has elapsed."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic() - (_TYPING_IDLE_THRESHOLD_SECONDS + 0.1)
+        assert app._is_user_typing() is False
+
+    def test_boundary_just_within_threshold(self) -> None:
+        """Should return True when just inside the threshold window."""
+        app = DeepAgentsApp()
+        app._last_typed_at = time.monotonic() - (_TYPING_IDLE_THRESHOLD_SECONDS - 0.1)
+        assert app._is_user_typing() is True
+
+
+class TestRequestApprovalBranching:
+    """_request_approval should show a placeholder when the user is typing."""
+
+    async def test_placeholder_mounted_when_typing(self) -> None:
+        """If the user is typing, a Static placeholder is mounted instead of menu."""
+        app = DeepAgentsApp(agent=MagicMock())
+        # Simulate recent typing
+        app._last_typed_at = time.monotonic()
+
+        mounted_classes: list[str] = []
+
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
+            if isinstance(widget, Static):
+                mounted_classes.append(" ".join(widget.classes))
+
+        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
+
+        # Prevent actual worker from running; we just want to check branching.
+        run_worker_calls: list[object] = []
+
+        def _stub_worker(coro: object, **_: object) -> MagicMock:
+            # Consume the coroutine immediately to suppress RuntimeWarning.
+            if inspect.iscoroutine(coro):
+                coro.close()
+            run_worker_calls.append(coro)
+            return MagicMock()
+
+        app.run_worker = _stub_worker  # type: ignore[method-assign]
+
+        dummy_container = MagicMock()
+        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/x.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with patch.object(asyncio, "get_running_loop") as mock_loop:
+            mock_loop.return_value.create_future.return_value = future
+            returned = await app._request_approval(action_requests, None)
+
+        assert returned is future
+        assert any("approval-placeholder" in cls for cls in mounted_classes), (
+            f"Expected 'approval-placeholder' in mounted widget classes,"
+            f" got {mounted_classes}"
+        )
+        assert len(run_worker_calls) == 1, (
+            "run_worker should have been called once for the deferred swap"
+        )
+
+    async def test_placeholder_mount_failure_falls_back_to_menu(self) -> None:
+        """If placeholder mount fails, the ApprovalMenu is shown directly."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = time.monotonic()
+
+        mounted_types: list[type] = []
+
+        call_count = 0
+
+        async def failing_then_ok_mount(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                msg = "simulated mount failure"
+                raise RuntimeError(msg)
+            mounted_types.append(type(widget))
+
+        app._mount_before_queued = failing_then_ok_mount  # type: ignore[assignment]
+        app.call_after_refresh = MagicMock()  # type: ignore[method-assign]
+
+        dummy_container = MagicMock()
+        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/z.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with patch.object(asyncio, "get_running_loop") as mock_loop:
+            mock_loop.return_value.create_future.return_value = future
+            returned = await app._request_approval(action_requests, None)
+
+        assert returned is future
+        # Placeholder mount (1st call) fails, fallback menu mount (2nd call)
+        # succeeds. The menu is now mounted and the future awaits user input.
+        assert ApprovalMenu in mounted_types, (
+            f"Expected ApprovalMenu fallback mount, got {mounted_types}"
+        )
+
+    async def test_menu_mounted_directly_when_not_typing(self) -> None:
+        """If the user is NOT typing, the ApprovalMenu is mounted directly."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+
+        mounted_types: list[type] = []
+
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
+            mounted_types.append(type(widget))
+
+        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
+        app.call_after_refresh = MagicMock()  # type: ignore[method-assign]
+
+        dummy_container = MagicMock()
+        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+
+        action_requests = [
+            {"name": "write_file", "args": {"path": "/tmp/y.txt", "content": "hi"}}
+        ]
+        future = asyncio.get_running_loop().create_future()
+
+        with patch.object(asyncio, "get_running_loop") as mock_loop:
+            mock_loop.return_value.create_future.return_value = future
+            returned = await app._request_approval(action_requests, None)
+
+        assert returned is future
+        assert ApprovalMenu in mounted_types, (
+            f"Expected ApprovalMenu to be mounted, got {mounted_types}"
+        )
+
+
+class TestDeferredShowApproval:
+    """_deferred_show_approval should swap placeholder once idle."""
+
+    async def test_swaps_placeholder_for_menu_after_idle(self) -> None:
+        """Once typing stops, placeholder is removed and menu is mounted."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = time.monotonic()
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = True
+        remove_called = False
+
+        async def fake_remove() -> None:  # noqa: RUF029
+            nonlocal remove_called
+            remove_called = True
+
+        placeholder.remove = fake_remove
+
+        action_requests = [{"name": "write_file", "args": {}}]
+        future = asyncio.get_running_loop().create_future()
+        menu = ApprovalMenu(action_requests[0])
+        menu.set_future(future)
+
+        mount_called = False
+
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
+        ) -> None:
+            nonlocal mount_called
+            mount_called = True
+
+        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+
+        async def stop_typing() -> None:
+            await asyncio.sleep(0.05)
+            app._last_typed_at = None
+
+        typing_task = asyncio.create_task(stop_typing())
+        await app._deferred_show_approval(placeholder, menu, future)
+        await typing_task
+
+        assert remove_called, "placeholder.remove() should have been called"
+        assert mount_called, "_mount_approval_widget should have been called"
+
+    async def test_bails_if_placeholder_detached_and_cancels_future(self) -> None:
+        """If placeholder is detached, worker cancels the future and exits."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = False
+
+        mount_called = False
+
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
+        ) -> None:
+            nonlocal mount_called
+            mount_called = True
+
+        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+
+        action_requests = [{"name": "shell", "args": {"command": "ls"}}]
+        future = asyncio.get_running_loop().create_future()
+        menu = ApprovalMenu(action_requests[0])
+        menu.set_future(future)
+
+        await app._deferred_show_approval(placeholder, menu, future)
+
+        assert not mount_called, "_mount_approval_widget should NOT have been called"
+        assert future.cancelled(), "future should have been cancelled"
+        assert app._pending_approval_widget is None
+        assert app._approval_placeholder is None
+
+    async def test_timeout_shows_approval_after_deadline(self) -> None:
+        """If the user types continuously past the deadline, menu is shown anyway."""
+        from deepagents_cli.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        # Simulate user typing *forever* by keeping _last_typed_at fresh
+        app._last_typed_at = time.monotonic()
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = True
+
+        remove_called = False
+
+        async def fake_remove() -> None:  # noqa: RUF029
+            nonlocal remove_called
+            remove_called = True
+
+        placeholder.remove = fake_remove
+
+        mount_called = False
+
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
+        ) -> None:
+            nonlocal mount_called
+            mount_called = True
+
+        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+
+        action_requests = [{"name": "write_file", "args": {}}]
+        future = asyncio.get_running_loop().create_future()
+        menu = ApprovalMenu(action_requests[0])
+        menu.set_future(future)
+
+        # Patch the timeout to be tiny so the test doesn't actually wait 30s
+        with patch("deepagents_cli.app._DEFERRED_APPROVAL_TIMEOUT_SECONDS", 0.05):
+            await app._deferred_show_approval(placeholder, menu, future)
+
+        assert remove_called, "placeholder.remove() should have been called"
+        assert mount_called, (
+            "_mount_approval_widget should have been called after timeout"
+        )
+
+
+class TestOnChatInputTyping:
+    """on_chat_input_typing should set _last_typed_at."""
+
+    def test_sets_last_typed_at(self) -> None:
+        """Calling on_chat_input_typing records a recent monotonic time."""
+        app = DeepAgentsApp()
+        assert app._last_typed_at is None
+
+        event = MagicMock()
+        before = time.monotonic()
+        app.on_chat_input_typing(event)
+        after = time.monotonic()
+
+        assert app._last_typed_at is not None
+        assert before <= app._last_typed_at <= after
+
+    def test_updates_on_subsequent_calls(self) -> None:
+        """Each call should update _last_typed_at to a newer timestamp."""
+        app = DeepAgentsApp()
+        event = MagicMock()
+
+        app.on_chat_input_typing(event)
+        first = app._last_typed_at
+
+        app.on_chat_input_typing(event)
+        second = app._last_typed_at
+
+        assert second is not None
+        assert first is not None
+        assert second >= first
+
+
+class TestOnApprovalMenuDecidedCleanup:
+    """on_approval_menu_decided should defensively clean up placeholders."""
+
+    async def test_removes_attached_placeholder(self) -> None:
+        """An attached placeholder should be removed and nulled."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = True
+        remove_called = False
+
+        async def fake_remove() -> None:  # noqa: RUF029
+            nonlocal remove_called
+            remove_called = True
+
+        placeholder.remove = fake_remove
+        app._approval_placeholder = placeholder
+        app._pending_approval_widget = None
+
+        event = MagicMock()
+        app._chat_input = None
+        await app.on_approval_menu_decided(event)
+
+        assert remove_called
+        assert app._approval_placeholder is None
+
+    async def test_nulls_detached_placeholder(self) -> None:
+        """A detached placeholder should be nulled without calling remove."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        placeholder = MagicMock(spec=Static)
+        placeholder.is_attached = False
+        app._approval_placeholder = placeholder
+        app._pending_approval_widget = None
+
+        event = MagicMock()
+        app._chat_input = None
+        await app.on_approval_menu_decided(event)
+
+        assert app._approval_placeholder is None
+        placeholder.remove.assert_not_called()
+
+    async def test_no_placeholder_works_normally(self) -> None:
+        """When no placeholder exists, handler proceeds without error."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._approval_placeholder = None
+        app._pending_approval_widget = None
+
+        event = MagicMock()
+        app._chat_input = None
+        await app.on_approval_menu_decided(event)
+
+        assert app._approval_placeholder is None
+
+
+class TestActionOpenEditor:
+    """Tests for the external editor action."""
+
+    async def test_updates_text_on_successful_edit(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = "original"
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch("deepagents_cli.editor.open_in_editor", return_value="edited"),
+        ):
+            await app.action_open_editor()
+
+        assert text_area.text == "edited"
+        chat_input.focus_input.assert_called_once()
+
+    async def test_no_update_when_editor_returns_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = "original"
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch("deepagents_cli.editor.open_in_editor", return_value=None),
+        ):
+            await app.action_open_editor()
+
+        assert text_area.text == "original"
+        chat_input.focus_input.assert_called_once()
+
+    async def test_early_return_when_chat_input_is_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        app._chat_input = None
+
+        # Should not raise
+        await app.action_open_editor()
+
+    async def test_early_return_when_text_area_is_none(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        chat_input = MagicMock()
+        chat_input._text_area = None
+        app._chat_input = chat_input
+
+        await app.action_open_editor()
+
+    async def test_notifies_on_exception(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        text_area = MagicMock()
+        text_area.text = ""
+        chat_input = MagicMock()
+        chat_input._text_area = text_area
+        app._chat_input = chat_input
+
+        with (
+            patch.object(app, "suspend"),
+            patch(
+                "deepagents_cli.editor.open_in_editor",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            await app.action_open_editor()
+
+        mock_notify.assert_called_once()
+        assert "failed" in mock_notify.call_args[0][0].lower()
+        chat_input.focus_input.assert_called_once()
+
+
+class TestEditorSlashCommand:
+    """Test that /editor dispatches to action_open_editor."""
+
+    async def test_editor_command_calls_action(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "action_open_editor", new_callable=AsyncMock) as mock:
+            app._chat_input = MagicMock()
+            await app._handle_command("/editor")
+        mock.assert_awaited_once()
+
+
+class TestFetchThreadHistoryData:
+    """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
+
+    async def test_dict_messages_converted_to_message_objects(self) -> None:
+        """Dict-based messages from server mode are deserialized before conversion."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                {"type": "human", "content": "hello", "id": "h1"},
+                {
+                    "type": "ai",
+                    "content": "Hi there!",
+                    "id": "a1",
+                    "tool_calls": [],
+                },
+            ],
+        }
+
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert isinstance(result[0], MessageData)
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert isinstance(result[1], MessageData)
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "Hi there!"
+
+    async def test_server_mode_falls_back_to_checkpointer(self) -> None:
+        """When the server returns empty state, read SQLite checkpointer directly."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_cli.remote_client import RemoteAgent
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        # Server returns empty state (fresh restart, thread not loaded)
+        empty_state = MagicMock()
+        empty_state.values = {}
+
+        # spec=RemoteAgent so _remote_agent() isinstance check passes
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aget_state = AsyncMock(return_value=empty_state)
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        # Patch the checkpointer fallback to return messages
+        checkpointer_msgs = [
+            HumanMessage(content="hello", id="h1"),
+            AIMessage(content="world", id="a1"),
+        ]
+        with patch.object(
+            DeepAgentsApp,
+            "_read_channel_values_from_checkpointer",
+            return_value={"messages": checkpointer_msgs},
+        ):
+            result = await app._fetch_thread_history_data("t-1")
+
+        assert len(result) == 2
+        assert result[0].type == MessageType.USER
+        assert result[0].content == "hello"
+        assert result[1].type == MessageType.ASSISTANT
+        assert result[1].content == "world"
+
+
+class TestRemoteAgent:
+    """Tests for DeepAgentsApp._remote_agent()."""
+
+    def test_returns_instance_with_remote_agent(self) -> None:
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        agent = RemoteAgent("http://test:0")
+        app._agent = agent
+        assert app._remote_agent() is agent
+
+    def test_none_when_agent_is_none(self) -> None:
+        app = DeepAgentsApp()
+        assert app._remote_agent() is None
+
+    def test_none_with_non_remote_agent(self) -> None:
+        """Local Pregel-like agent returns None."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        assert app._remote_agent() is None
+
+    def test_none_with_mock_spec_pregel(self) -> None:
+        """MagicMock without RemoteAgent spec returns None."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock(spec=[])
+        assert app._remote_agent() is None
+
+
+class TestSlashCommandBypass:
+    """Test that certain slash commands bypass the queue gate."""
+
+    async def test_quit_bypasses_queue_when_agent_running(self) -> None:
+        """/quit should exit immediately even when agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_quit_bypasses_queue_when_connecting(self) -> None:
+        """/quit should exit immediately even when connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_quit_bypasses_thread_switching(self) -> None:
+        """/quit should exit even during a thread switch."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/quit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+    async def test_q_alias_bypasses_queue(self) -> None:
+        """/q alias should also bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/q", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_version_executes_during_connecting(self) -> None:
+        """/version should process immediately when only connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/version", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/version", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_version_queues_during_agent_running(self) -> None:
+        """/version should still queue when agent is actively running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/version", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/version"
+
+    async def test_model_no_args_opens_selector_during_agent_running(self) -> None:
+        """/model (no args) should process immediately during agent run."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/model", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_model_no_args_opens_selector_during_connecting(self) -> None:
+        """/model (no args) should process immediately during connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/model", "command")
+
+    async def test_model_with_args_still_queues(self) -> None:
+        """/model <name> (with args) should still queue normally."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/model gpt-4"
+
+    async def test_threads_opens_selector_during_agent_running(self) -> None:
+        """/threads should process immediately during agent run."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/threads", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_threads_opens_selector_during_connecting(self) -> None:
+        """/threads should process immediately during connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/threads", "command")
+
+    async def test_threads_blocked_during_thread_switching(self) -> None:
+        """/threads should NOT bypass the thread-switching guard."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/threads", "command"))
+                await pilot.pause()
+
+            pm.assert_not_called()
+            assert len(app._pending_messages) == 0
+
+    async def test_model_blocked_during_thread_switching(self) -> None:
+        """/model should NOT bypass the thread-switching guard."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/model", "command"))
+                await pilot.pause()
+
+            pm.assert_not_called()
+            assert len(app._pending_messages) == 0
+
+
+class TestBypassFrozensetDrift:
+    """Ensure bypass frozensets stay in sync with _handle_command dispatch.
+
+    Every slash command must appear in exactly one of the five policy
+    frozensets (derived from `command_registry.COMMANDS`) AND in
+    `_handle_command`. Adding a command to one without the other will fail
+    these tests.
+    """
+
+    @staticmethod
+    def _handled_commands() -> set[str]:
+        """Extract slash-command literals from `_handle_command` source."""
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(DeepAgentsApp._handle_command))
+        tree = ast.parse(source)
+
+        handled: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value.strip()
+                if val.startswith("/") and len(val) > 1:
+                    handled.add(val)
+        return handled
+
+    def test_all_bypass_commands_are_handled(self) -> None:
+        """Every command in a bypass frozenset must appear in _handle_command."""
+        from deepagents_cli.command_registry import (
+            ALWAYS_IMMEDIATE,
+            BYPASS_WHEN_CONNECTING,
+            IMMEDIATE_UI,
+            SIDE_EFFECT_FREE,
+        )
+
+        handled = self._handled_commands()
+        bypass = (
+            ALWAYS_IMMEDIATE | BYPASS_WHEN_CONNECTING | IMMEDIATE_UI | SIDE_EFFECT_FREE
+        )
+        missing = bypass - handled
+        assert not missing, (
+            f"Bypass commands {missing} are not handled in _handle_command. "
+            "Add a handler or remove from the bypass frozenset."
+        )
+
+    def test_all_handled_commands_are_classified(self) -> None:
+        """Every command in _handle_command must be in a policy frozenset."""
+        from deepagents_cli.command_registry import ALL_CLASSIFIED
+
+        handled = self._handled_commands()
+        missing = handled - ALL_CLASSIFIED
+        assert not missing, (
+            f"Commands {missing} in _handle_command are not in any bypass "
+            "or QUEUE_BOUND frozenset. Classify them explicitly."
+        )
+
+
+class TestDeferredActions:
+    """Test deferred action queueing and draining."""
+
+    async def test_deferred_actions_drain_after_agent_cleanup(self) -> None:
+        """Deferred actions should execute when agent task completes."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def action() -> None:  # noqa: RUF029
+                executed.append("ran")
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
+            app._agent_running = True
+
+            # Simulate agent finishing
+            await app._cleanup_agent_task()
+
+            assert executed == ["ran"]
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_drain_after_shell_cleanup(self) -> None:
+        """Deferred actions should execute when shell task completes."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def action() -> None:  # noqa: RUF029
+                executed.append("ran")
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
+            app._shell_running = True
+
+            await app._cleanup_shell_task()
+
+            assert executed == ["ran"]
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_not_drained_while_connecting(self) -> None:
+        """Deferred actions should NOT drain if still connecting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def action() -> None:  # noqa: RUF029
+                executed.append("ran")
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
+            app._agent_running = True
+            app._connecting = True
+
+            await app._cleanup_agent_task()
+
+            assert executed == []
+            assert len(app._deferred_actions) == 1
+
+    async def test_deferred_actions_cleared_on_interrupt(self) -> None:
+        """Deferred actions should be cleared when queue is discarded."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def action() -> None:
+                pass
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
+            app._discard_queue()
+
+            assert len(app._deferred_actions) == 0
+
+    async def test_deferred_actions_cleared_on_server_failure(self) -> None:
+        """Deferred actions should be cleared when server startup fails."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def action() -> None:
+                pass
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=action)
+            )
+            app._connecting = True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("test"))
+            )
+
+            assert len(app._deferred_actions) == 0
+
+    async def test_failing_deferred_action_does_not_block_others(self) -> None:
+        """A failing deferred action should not prevent subsequent ones."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def bad_action() -> None:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            async def good_action() -> None:  # noqa: RUF029
+                executed.append("ok")
+
+            app._deferred_actions.append(
+                DeferredAction(kind="model_switch", execute=bad_action)
+            )
+            app._deferred_actions.append(
+                DeferredAction(kind="thread_switch", execute=good_action)
+            )
+
+            await app._drain_deferred_actions()
+
+            assert executed == ["ok"]
+            assert len(app._deferred_actions) == 0
+
+    async def test_defer_action_deduplicates_by_kind(self) -> None:
+        """Deferring two actions of the same kind keeps only the last."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def first() -> None:  # noqa: RUF029
+                executed.append("first")
+
+            async def second() -> None:  # noqa: RUF029
+                executed.append("second")
+
+            app._defer_action(DeferredAction(kind="model_switch", execute=first))
+            app._defer_action(DeferredAction(kind="model_switch", execute=second))
+
+            assert len(app._deferred_actions) == 1
+            await app._drain_deferred_actions()
+            assert executed == ["second"]
+
+    async def test_can_bypass_queue_version_only_connecting(self) -> None:
+        """/version bypasses only during connection, not agent/shell."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Connecting only → bypass
+            app._connecting = True
+            app._agent_running = False
+            app._shell_running = False
+            assert app._can_bypass_queue("/version") is True
+
+            # Agent running (even if connecting) → no bypass
+            app._agent_running = True
+            assert app._can_bypass_queue("/version") is False
+
+            # Shell running (even if connecting) → no bypass
+            app._agent_running = False
+            app._shell_running = True
+            assert app._can_bypass_queue("/version") is False
+
+            # Not connecting → no bypass
+            app._connecting = False
+            app._shell_running = False
+            assert app._can_bypass_queue("/version") is False
+
+    async def test_can_bypass_queue_bare_model_bypasses(self) -> None:
+        """Bare /model should bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/model") is True
+            assert app._can_bypass_queue("/threads") is True
+
+    async def test_can_bypass_queue_model_with_args_no_bypass(self) -> None:
+        """/model with args should NOT bypass (direct switch must queue)."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/model gpt-4") is False
+            assert app._can_bypass_queue("/model --default foo") is False
+
+    async def test_model_with_args_still_queues(self) -> None:
+        """/model gpt-4 should be queued when busy, not bypass."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/model gpt-4", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/model gpt-4"
+
+    async def test_side_effect_free_bypasses_queue(self) -> None:
+        """SIDE_EFFECT_FREE commands bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+                assert app._can_bypass_queue(cmd) is True
+
+    async def test_queued_commands_do_not_bypass(self) -> None:
+        """QUEUED commands must not bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for cmd in ("/help", "/clear", "/tokens"):
+                assert app._can_bypass_queue(cmd) is False
+
+    async def test_can_bypass_queue_empty_string(self) -> None:
+        """Empty string should not bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("") is False
+
+    async def test_defer_action_mixed_kinds_preserves_ordering(self) -> None:
+        """Deferring mixed kinds keeps ordering; same-kind replaces in place."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            executed: list[str] = []
+
+            async def first_model() -> None:  # noqa: RUF029
+                executed.append("first_model")
+
+            async def thread_fn() -> None:  # noqa: RUF029
+                executed.append("thread")
+
+            async def second_model() -> None:  # noqa: RUF029
+                executed.append("second_model")
+
+            app._defer_action(DeferredAction(kind="model_switch", execute=first_model))
+            app._defer_action(DeferredAction(kind="thread_switch", execute=thread_fn))
+            app._defer_action(DeferredAction(kind="model_switch", execute=second_model))
+
+            assert len(app._deferred_actions) == 2
+            assert app._deferred_actions[0].kind == "thread_switch"
+            assert app._deferred_actions[1].kind == "model_switch"
+
+            await app._drain_deferred_actions()
+            assert executed == ["thread", "second_model"]

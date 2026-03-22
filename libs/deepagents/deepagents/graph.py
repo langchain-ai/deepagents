@@ -1,13 +1,12 @@
 """Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
-from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -18,8 +17,10 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -30,7 +31,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
+from deepagents.middleware.summarization import create_summarization_middleware
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -71,11 +72,10 @@ def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
     Returns:
-        `ChatAnthropic` instance configured with Claude Sonnet 4.5.
+        `ChatAnthropic` instance configured with Claude Sonnet 4.6.
     """
     return ChatAnthropic(
-        model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,
+        model_name="claude-sonnet-4-6",
     )
 
 
@@ -85,7 +85,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagents: list[SubAgent | CompiledSubAgent] | None = None,
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
@@ -115,9 +115,18 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Args:
         model: The model to use.
 
-            Defaults to `claude-sonnet-4-5-20250929`.
+            Defaults to `claude-sonnet-4-6`.
 
             Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models.
+
+            If an `openai:` model is used, the agent will use the OpenAI
+            Responses API by default. To use OpenAI chat completions instead,
+            initialize the model with
+            `init_chat_model("openai:...", use_responses_api=False)` and pass
+            the initialized model instance here. To disable data retention with
+            the Responses API, use
+            `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+            and pass the initialized model instance here.
         tools: The tools the agent should have access to.
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,
@@ -126,20 +135,38 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             prompt.
 
             If a string, it's concatenated with the base prompt.
-        middleware: Additional middleware to apply after the standard middleware stack
+        middleware: Additional middleware to apply after the base stack
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
-            `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
-            `PatchToolCallsMiddleware`).
-        subagents: The subagents to use.
+            `SummarizationMiddleware`, `PatchToolCallsMiddleware`) but before
+            `AnthropicPromptCachingMiddleware` and `MemoryMiddleware`.
+        subagents: Optional subagent specs available to the main agent.
 
-            Each subagent should be a `dict` with the following keys:
+            This collection supports three forms:
 
-            - `name`
-            - `description` (used by the main agent to decide whether to call the sub agent)
-            - `prompt` (used as the system prompt in the subagent)
-            - (optional) `tools`
-            - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
-            - (optional) `middleware` (list of `AgentMiddleware`)
+            - `SubAgent`: A declarative synchronous subagent spec.
+            - `CompiledSubAgent`: A pre-compiled runnable subagent.
+            - `AsyncSubAgent`: A remote/background subagent spec.
+
+            `SubAgent` entries are invoked through the `task` tool. They should
+            provide `name`, `description`, and `system_prompt`, and may also
+            override `tools`, `model`, `middleware`, `interrupt_on`, and
+            `skills`.
+
+            `CompiledSubAgent` entries are also exposed through the `task` tool,
+            but provide a pre-built `runnable` instead of a declarative prompt
+            and tool configuration.
+
+            `AsyncSubAgent` entries are identified by their async-subagent
+            fields (`graph_id`, and optionally `url`/`headers`) and are routed
+            into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
+            They should provide `name`, `description`, and `graph_id`, and may
+            optionally include `url` and `headers`. These subagents run as
+            background tasks and expose the async subagent tools for launching,
+            checking, updating, cancelling, and listing tasks.
+
+            If no subagent named `general-purpose` is provided, a default
+            general-purpose synchronous subagent is added automatically.
+
         skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
             Paths must be specified using POSIX conventions (forward slashes) and are relative
@@ -173,42 +200,19 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Returns:
         A configured deep agent.
     """
-    if model is None:
-        model = get_default_model()
-    elif isinstance(model, str):
-        if model.startswith("openai:"):
-            # Use Responses API by default. To use chat completions, use
-            # `model=init_chat_model("openai:...")`
-            # To disable data retention with the Responses API, use
-            # `model=init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-            model_init_params: dict = {"use_responses_api": True}
-        else:
-            model_init_params = {}
-
-        model = init_chat_model(model, **model_init_params)
-
-    # Compute summarization defaults based on model profile
-    summarization_defaults = _compute_summarization_defaults(model)
-
+    model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        SummarizationMiddleware(
-            model=model,
-            backend=backend,
-            trigger=summarization_defaults["trigger"],
-            keep=summarization_defaults["keep"],
-            trim_tokens_to_summarize=None,
-            truncate_args_settings=summarization_defaults["truncate_args_settings"],
-        ),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+        create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
@@ -219,38 +223,34 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         "middleware": gp_middleware,
     }
 
-    # Process user-provided subagents to fill in defaults for model, tools, and middleware
-    processed_subagents: list[SubAgent | CompiledSubAgent] = []
+    # Set up subagent middleware
+    inline_subagents: list[SubAgent | CompiledSubAgent] = []
+    async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
+        if "graph_id" in spec:
+            # Then spec is an AsyncSubAgent
+            async_subagents.append(cast("AsyncSubAgent", spec))
+            continue
         if "runnable" in spec:
             # CompiledSubAgent - use as-is
-            processed_subagents.append(spec)
+            inline_subagents.append(spec)
         else:
             # SubAgent - fill in defaults and prepend base middleware
             subagent_model = spec.get("model", model)
-            if isinstance(subagent_model, str):
-                subagent_model = init_chat_model(subagent_model)
+            subagent_model = resolve_model(subagent_model)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
-                SummarizationMiddleware(
-                    model=subagent_model,
-                    backend=backend,
-                    trigger=subagent_summarization_defaults["trigger"],
-                    keep=subagent_summarization_defaults["keep"],
-                    trim_tokens_to_summarize=None,
-                    truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
-                ),
-                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
+            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
@@ -258,17 +258,18 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
                 "tools": spec.get("tools", tools or []),
                 "middleware": subagent_middleware,
             }
-            processed_subagents.append(processed_spec)
+            inline_subagents.append(processed_spec)
 
-    # Combine GP with processed user-provided subagents
-    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
+    # If an agent with general purpose name already exists in subagents, then don't add it
+    # This is how you overwrite/configure general purpose subagent
+    if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+        # Add a general purpose subagent if it doesn't exist yet
+        inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
     ]
-    if memory is not None:
-        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
@@ -276,23 +277,25 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
                 backend=backend,
-                subagents=all_subagents,
+                subagents=inline_subagents,
             ),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=summarization_defaults["trigger"],
-                keep=summarization_defaults["keep"],
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=summarization_defaults["truncate_args_settings"],
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+            create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
     )
 
+    if async_subagents:
+        # Async here means that we run these subagents in a non-blocking manner.
+        # Currently this supports agents deployed via LangSmith deployments.
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+
     if middleware:
         deepagent_middleware.extend(middleware)
+    # Caching + memory after all other middleware so memory updates don't
+    # invalidate the Anthropic prompt cache prefix.
+    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if memory is not None:
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
@@ -317,4 +320,11 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    ).with_config(
+        {
+            "recursion_limit": 1000,
+            "metadata": {
+                "ls_integration": "deepagents",
+            },
+        }
+    )

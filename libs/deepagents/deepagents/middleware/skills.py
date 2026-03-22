@@ -118,6 +118,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.prebuilt import ToolRuntime
 
+from deepagents.backends.protocol import LsResult
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -422,14 +423,13 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = backend.ls_info(base_path)
+    ls_result = backend.ls(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -501,14 +501,13 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = await backend.als_info(base_path)
+    ls_result = await backend.als(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -668,7 +667,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
             if backend is None:
                 msg = "SkillsMiddleware requires a valid backend instance"
                 raise AssertionError(msg)
@@ -731,8 +730,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -743,7 +743,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -766,8 +766,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (async).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -778,7 +779,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:

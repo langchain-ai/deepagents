@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
@@ -19,14 +19,25 @@ if TYPE_CHECKING:
 from deepagents_cli import theme
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
+)
+from deepagents_cli.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
 )
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
+_WARNING_PREVIEW_LIMIT: int = 3
+_WARNING_TEXT_TRUNCATE_LENGTH: int = 220
 
 
 class ApprovalMenu(Container):
@@ -54,10 +65,10 @@ class ApprovalMenu(Container):
         Binding("enter", "select", "Select", show=False),
         Binding("1", "select_approve", "Approve", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_reject", "Reject", show=False),
-        Binding("n", "select_reject", "Reject", show=False),
-        Binding("3", "select_auto", "Auto-approve", show=False),
+        Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("3", "select_reject", "Reject", show=False),
+        Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
     ]
 
@@ -114,6 +125,7 @@ class ApprovalMenu(Container):
         self._command_expanded = False
         self._command_widget: Static | None = None
         self._has_expandable_command = self._check_expandable_command()
+        self._security_warnings = self._collect_security_warnings()
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
@@ -133,14 +145,14 @@ class ApprovalMenu(Container):
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
-    def _get_command_display(self, *, expanded: bool) -> str:
-        """Get the command display string (truncated or full).
+    def _get_command_display(self, *, expanded: bool) -> Content:
+        """Get the command display content (truncated or full).
 
         Args:
             expanded: Whether to show the full command or truncated version.
 
         Returns:
-            Formatted command string with Rich markup.
+            Styled Content for the command display.
 
         Raises:
             RuntimeError: If called with empty action_requests.
@@ -149,15 +161,46 @@ class ApprovalMenu(Container):
             msg = "_get_command_display called with empty action_requests"
             raise RuntimeError(msg)
         req = self._action_requests[0]
-        command = str(req.get("args", {}).get("command", ""))
+        command_raw = str(req.get("args", {}).get("command", ""))
+        command = strip_dangerous_unicode(command_raw)
+        issues = detect_dangerous_unicode(command_raw)
+
         hdr = theme.TOOL_HEADER
+
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
-            return f"[bold {hdr}]{escape_markup(command)}[/bold {hdr}]"
-        truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
-        escaped_truncated = escape_markup(truncated)
-        return (
-            f"[bold {hdr}]{escaped_truncated}[/bold {hdr}] "
-            "[dim](press 'e' to expand)[/dim]"
+            command_display = command
+        else:
+            command_display = (
+                command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            )
+
+        if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+            display = Content.from_markup(
+                f"[bold {hdr}]$cmd[/bold {hdr}] [dim](press 'e' to expand)[/dim]",
+                cmd=command_display,
+            )
+        else:
+            display = Content.from_markup(
+                f"[bold {hdr}]$cmd[/bold {hdr}]", cmd=command_display
+            )
+
+        if not issues:
+            return display
+
+        raw_with_markers = render_with_unicode_markers(command_raw)
+        if not expanded and len(raw_with_markers) > _WARNING_TEXT_TRUNCATE_LENGTH:
+            raw_with_markers = (
+                raw_with_markers[:_WARNING_TEXT_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            )
+
+        return Content.assemble(
+            display,
+            Content.from_markup(
+                "\n[yellow]Warning:[/yellow] hidden chars detected ($summary)\n"
+                "[dim]raw: $raw[/dim]",
+                summary=summarize_issues(issues),
+                raw=raw_with_markers,
+            ),
         )
 
     def compose(self) -> ComposeResult:
@@ -172,10 +215,30 @@ class ApprovalMenu(Container):
         # Title - show count if multiple tools
         count = len(self._action_requests)
         if count == 1:
-            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+            title = Content.from_markup(
+                ">>> $name Requires Approval <<<", name=self._tool_names[0]
+            )
         else:
-            title = f">>> {count} Tool Calls Require Approval <<<"
+            title = Content(f">>> {count} Tool Calls Require Approval <<<")
         yield Static(title, classes="approval-title")
+
+        if self._security_warnings:
+            parts: list[Content] = [
+                Content.from_markup(
+                    "[yellow]Warning:[/yellow] Potentially deceptive text"
+                ),
+            ]
+            parts.extend(
+                Content.from_markup("\n[dim]- $w[/dim]", w=warning)
+                for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
+            )
+            if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
+                remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
+                parts.append(Content.styled(f"\n- +{remaining} more warning(s)", "dim"))
+            yield Static(
+                Content.assemble(*parts),
+                classes="approval-security-warning",
+            )
 
         # For shell commands, show the command (expandable if long)
         if self._is_minimal and len(self._action_requests) == 1:
@@ -207,7 +270,7 @@ class ApprovalMenu(Container):
         glyphs = get_glyphs()
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/n/a quick keys {glyphs.bullet} Esc reject"
+            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -215,7 +278,7 @@ class ApprovalMenu(Container):
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             self.styles.border = ("ascii", "yellow")
 
         if not self._is_minimal:
@@ -238,8 +301,23 @@ class ApprovalMenu(Container):
 
             # Add tool header if multiple tools
             if len(self._action_requests) > 1:
-                header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
+                header = Static(
+                    Content.from_markup(
+                        "[bold]$num. $name[/bold]",
+                        num=i + 1,
+                        name=tool_name,
+                    )
+                )
                 await self._tool_info_container.mount(header)
+
+            # Show description if present
+            description = action_request.get("description")
+            if description:
+                desc_widget = Static(
+                    Content.from_markup("[dim]$desc[/dim]", desc=description),
+                    classes="approval-description",
+                )
+                await self._tool_info_container.mount(desc_widget)
 
             # Get the appropriate renderer for this tool
             renderer = get_renderer(tool_name)
@@ -253,14 +331,14 @@ class ApprovalMenu(Container):
         if count == 1:
             options = [
                 "1. Approve (y)",
-                "2. Reject (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                "3. Reject (n)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
-                f"2. Reject all {count} (n)",
-                "3. Auto-approve for this thread (a)",
+                "2. Auto-approve for this thread (a)",
+                f"3. Reject all {count} (n)",
             ]
 
         for i, (text, widget) in enumerate(
@@ -294,14 +372,14 @@ class ApprovalMenu(Container):
         self._update_options()
         self._handle_selection(0)
 
-    def action_select_reject(self) -> None:
-        """Select reject option."""
+    def action_select_auto(self) -> None:
+        """Select auto-approve option."""
         self._selected = 1
         self._update_options()
         self._handle_selection(1)
 
-    def action_select_auto(self) -> None:
-        """Select auto-approve option."""
+    def action_select_reject(self) -> None:
+        """Select reject option."""
         self._selected = 2
         self._update_options()
         self._handle_selection(2)
@@ -319,8 +397,8 @@ class ApprovalMenu(Container):
         """Handle the selected option."""
         decision_map = {
             0: "approve",
-            1: "reject",
-            2: "auto_approve_all",
+            1: "auto_approve_all",
+            2: "reject",
         }
         decision = {"type": decision_map[option]}
 
@@ -330,6 +408,37 @@ class ApprovalMenu(Container):
 
         # Post message
         self.post_message(self.Decided(decision))
+
+    def _collect_security_warnings(self) -> list[str]:
+        """Collect warning strings for suspicious Unicode and URL values.
+
+        Recursively inspects all nested string values in action arguments.
+
+        Returns:
+            Warning strings for the current action request batch.
+        """
+        warnings: list[str] = []
+        for action_request in self._action_requests:
+            tool_name = str(action_request.get("name", "unknown"))
+            args = action_request.get("args", {})
+            if not isinstance(args, dict):
+                continue
+            for arg_path, text in iter_string_values(args):
+                issues = detect_dangerous_unicode(text)
+                if issues:
+                    warnings.append(
+                        f"{tool_name}.{arg_path}: hidden Unicode "
+                        f"({summarize_issues(issues)})"
+                    )
+                if looks_like_url_key(arg_path):
+                    result = check_url_safety(text)
+                    if result.safe:
+                        continue
+                    detail = format_warning_detail(result.warnings)
+                    if result.decoded_domain:
+                        detail = f"{detail}; decoded host: {result.decoded_domain}"
+                    warnings.append(f"{tool_name}.{arg_path}: {detail}")
+        return warnings
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
         """Re-focus on blur to keep focus trapped until decision is made."""

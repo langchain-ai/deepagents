@@ -289,7 +289,7 @@ def _get_subagents_legacy(
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: list[SubAgent | CompiledSubAgent],
+    subagents: Sequence[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
 ) -> list[_SubagentSpec]:
     """Create subagent instances from specifications.
@@ -438,11 +438,11 @@ def _build_task_tool(  # noqa: C901
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = subagent.invoke(subagent_state)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -456,11 +456,11 @@ def _build_task_tool(  # noqa: C901
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = await subagent.ainvoke(subagent_state)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
@@ -546,7 +546,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         backend: BackendProtocol | BackendFactory | None = None,
-        subagents: list[SubAgent | CompiledSubAgent] | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
         **deprecated_kwargs: Unpack[_DeprecatedKwargs],

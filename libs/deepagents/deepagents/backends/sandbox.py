@@ -20,10 +20,15 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
+    GrepResult,
+    LsResult,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import _get_file_type, create_file_data
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -88,7 +93,7 @@ with open(file_path, 'w') as f:
     f.write(content)
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__"""
+__DEEPAGENTS_EOF__\n"""
 
 # Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
 # Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
@@ -146,42 +151,67 @@ with open(file_path, 'w') as f:
 print(count)
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__"""
+__DEEPAGENTS_EOF__\n"""
 
+# Use heredoc to pass read parameters via stdin, matching write/edit pattern.
+# Stdin format: base64-encoded JSON with
+#   {"path": str, "offset": int, "limit": int, "file_type": str}.
+# Output: JSON with {"encoding": str, "content": str} on success,
+#   {"error": str} on failure.
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
+import base64
+import json
 
-file_path = '{file_path}'
-offset = {offset}
-limit = {limit}
-
-# Check if file exists
-if not os.path.isfile(file_path):
-    print('Error: File not found')
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print(json.dumps({{'error': 'No payload received for read operation'}}))
     sys.exit(1)
 
-# Check if file is empty
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    offset = int(data['offset'])
+    limit = int(data['limit'])
+    file_type = data.get('file_type', 'text')
+except Exception as e:
+    print(json.dumps({{'error': f'Failed to decode read payload: {{e}}'}}))
+    sys.exit(1)
+
+if not os.path.isfile(file_path):
+    print(json.dumps({{'error': 'File not found'}}))
+    sys.exit(1)
+
 if os.path.getsize(file_path) == 0:
-    print('System reminder: File exists but has empty contents')
+    print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
     sys.exit(0)
 
-# Read file with offset and limit
-with open(file_path, 'r') as f:
-    lines = f.readlines()
+with open(file_path, 'rb') as f:
+    raw = f.read()
 
-# Apply offset and limit
-start_idx = offset
-end_idx = offset + limit
-selected_lines = lines[start_idx:end_idx]
+try:
+    content = raw.decode('utf-8')
+    encoding = 'utf-8'
+except UnicodeDecodeError:
+    content = base64.b64encode(raw).decode('ascii')
+    encoding = 'base64'
 
-# Format with line numbers (1-indexed, starting from offset + 1)
-for i, line in enumerate(selected_lines):
-    line_num = offset + i + 1
-    # Remove trailing newline for formatting, then add it back
-    line_content = line.rstrip('\\n')
-    print(f'{{line_num:6d}}\\t{{line_content}}')
-" 2>&1"""
+if encoding == 'utf-8' and file_type == 'text':
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = offset + limit
+    if start_idx >= len(lines):
+        print(json.dumps({{'error': f'Line offset {{offset}} exceeds file length ({{len(lines)}} lines)'}}))
+        sys.exit(1)
+    selected = lines[start_idx:end_idx]
+    content = '\\n'.join(selected)
+
+print(json.dumps({{'encoding': encoding, 'content': content}}))
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__\n"""
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
@@ -210,13 +240,15 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
+        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
 import os
 import json
+import base64
 
-path = '{path}'
+path = base64.b64decode('{path_b64}').decode('utf-8')
 
 try:
     with os.scandir(path) as it:
@@ -244,26 +276,39 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return LsResult(entries=file_infos)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers using a single shell command."""
-        # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+    ) -> ReadResult:
+        """Read file content using a single shell command."""
+        file_type = _get_file_type(file_path)
+        payload = json.dumps(
+            {
+                "path": file_path,
+                "offset": int(offset),
+                "limit": int(limit),
+                "file_type": file_type,
+            }
+        )
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd)
 
         output = result.output.rstrip()
-        exit_code = result.exit_code
 
-        if exit_code != 0 or "Error: File not found" in output:
-            return f"Error: File '{file_path}' not found"
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return output
+        if "error" in data:
+            return ReadResult(error=data["error"])
+
+        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
 
     def write(
         self,
@@ -325,12 +370,12 @@ except PermissionError:
         # External storage - no files_update needed
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
 
@@ -350,7 +395,7 @@ except PermissionError:
 
         output = result.output.rstrip()
         if not output:
-            return []
+            return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
@@ -366,10 +411,10 @@ except PermissionError:
                     }
                 )
 
-        return matches
+        return GrepResult(matches=matches)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Structured glob matching returning FileInfo dicts."""
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+        """Structured glob matching returning GlobResult."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
@@ -379,7 +424,7 @@ except PermissionError:
 
         output = result.output.strip()
         if not output:
-            return []
+            return GlobResult(matches=[])
 
         # Parse JSON output into FileInfo dicts
         file_infos: list[FileInfo] = []
@@ -395,7 +440,7 @@ except PermissionError:
             except json.JSONDecodeError:
                 continue
 
-        return file_infos
+        return GlobResult(matches=file_infos)
 
     @property
     @abstractmethod

@@ -1,4 +1,4 @@
-.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help lint_package
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark help lint_package
 
 .DEFAULT_GOAL := help
 
@@ -10,12 +10,13 @@ UV_FROZEN = true
 ######################
 
 TEST_FILE ?= tests/unit_tests/
+PYTEST_EXTRA ?=
 
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run --group test pytest -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
 integration_test: ## Run integration tests
 integration_test integration_tests:
@@ -41,6 +42,10 @@ lint: ## Run linters and type checker
 lint lint_diff lint_package:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
+	$(MAKE) type
+
+type: ## Run type checker
+type typecheck:
 	uv run --all-groups ty check langchain_runloop
 
 format: ## Run code formatters

@@ -34,6 +34,47 @@ if TYPE_CHECKING:
     from deepagents.middleware.summarization import SummarizationEvent
     from langgraph.runtime import Runtime
 
+    from deepagents_cli.mcp_tools import MCPServerInfo
+
+
+_TOOL_NAME_DISPLAY_LIMIT = 10
+
+
+def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
+    """Format MCP server/tool inventory for the system prompt.
+
+    Args:
+        servers: List of connected MCP server metadata.
+
+    Returns:
+        Formatted markdown string, or `""` if no servers.
+    """
+    if not servers:
+        return ""
+
+    total_tools = sum(len(s.tools) for s in servers)
+    lines = [f"**MCP Servers** ({len(servers)} servers, {total_tools} tools):"]
+
+    for server in servers:
+        if not server.tools:
+            lines.append(f"- **{server.name}** ({server.transport}): (no tools)")
+            continue
+
+        names = [t.name for t in server.tools]
+        if len(names) > _TOOL_NAME_DISPLAY_LIMIT:
+            shown = ", ".join(names[:_TOOL_NAME_DISPLAY_LIMIT])
+            remaining = len(names) - _TOOL_NAME_DISPLAY_LIMIT
+            lines.append(
+                f"- **{server.name}** ({server.transport}): "
+                f"{shown}, and {remaining} more"
+            )
+        else:
+            lines.append(
+                f"- **{server.name}** ({server.transport}): {', '.join(names)}"
+            )
+
+    return "\n".join(lines)
+
 
 @runtime_checkable
 class _ExecutableBackend(Protocol):
@@ -53,7 +94,8 @@ logger = logging.getLogger(__name__)
 # with `command -v` before use.
 #
 # The script is built from section functions so each piece can be tested
-# independently.
+# independently. Independent sections run as parallel background subshells;
+# see build_detect_script() for the orchestration logic.
 # ---------------------------------------------------------------------------
 
 
@@ -278,7 +320,7 @@ def _section_makefile() -> str:
     """First 20 lines of Makefile (falls back to git root in monorepos).
 
     Returns:
-        Bash snippet (requires `ROOT` from `_section_project`).
+        Bash snippet (requires `ROOT` from `_section_project` and `CWD` from header).
     """
     return r"""# --- Makefile ---
 MK=""
@@ -300,21 +342,41 @@ fi"""
 def build_detect_script() -> str:
     """Concatenate all section functions into the full detection script.
 
+    Independent sections run as parallel background jobs writing to temp
+    files, then results are concatenated in the original display order.
+    The header (CWD / IN_GIT) and project section (sets ROOT) run first
+    because later sections depend on their variables.
+
     Returns:
         Complete bash heredoc ready for `backend.execute()`.
     """
-    sections = [
-        _section_header(),
-        _section_project(),
-        _section_package_managers(),
-        _section_runtimes(),
-        _section_git(),
-        _section_test_command(),
-        _section_files(),
-        _section_tree(),
-        _section_makefile(),
+    # Header + project run synchronously (set CWD, IN_GIT, ROOT for others)
+    serial_prefix = f"{_section_header()}\n{_section_project()}"
+
+    # These sections are independent — run them in parallel.
+    # Subshells inherit parent variables (IN_GIT, ROOT, CWD) via fork.
+    # Individual exit codes are not tracked because sections legitimately
+    # exit non-zero when they have nothing to report (e.g. no runtimes).
+    parallel_sections = [
+        ("02_pkgmgr", _section_package_managers()),
+        ("03_runtimes", _section_runtimes()),
+        ("04_git", _section_git()),
+        ("05_testcmd", _section_test_command()),
+        ("06_files", _section_files()),
+        ("07_tree", _section_tree()),
+        ("08_makefile", _section_makefile()),
     ]
-    body = "\n".join(sections)
+
+    # Build parallel wrapper: each section runs in a subshell writing to a
+    # temp file. Stderr is captured per-section to prevent noise leakage.
+    parallel_setup = "_DCT=$(mktemp -d) || exit 1\ntrap 'rm -rf \"$_DCT\"' EXIT"
+    parallel_block = "\n".join(
+        f'(\n{body}\n) > "$_DCT/{name}" 2>"$_DCT/{name}.err" &'
+        for name, body in parallel_sections
+    )
+    cat_line = "cat " + " ".join(f'"$_DCT/{name}"' for name, _ in parallel_sections)
+
+    body = f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
     return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"
 
 
@@ -360,13 +422,20 @@ class LocalContextMiddleware(AgentMiddleware):
 
     state_schema = LocalContextState
 
-    def __init__(self, backend: _ExecutableBackend) -> None:
+    def __init__(
+        self,
+        backend: _ExecutableBackend,
+        *,
+        mcp_server_info: list[MCPServerInfo] | None = None,
+    ) -> None:
         """Initialize with a backend that supports shell execution.
 
         Args:
             backend: Backend instance that provides shell command execution.
+            mcp_server_info: MCP server metadata to include in the system prompt.
         """
         self.backend = backend
+        self._mcp_context = _build_mcp_context(mcp_server_info or [])
 
     def _run_detect_script(self) -> str | None:
         """Run the environment detection script.
@@ -436,7 +505,7 @@ class LocalContextMiddleware(AgentMiddleware):
         # (and should not) redeclare it.
         raw_event = state.get("_summarization_event")
         if raw_event is not None:
-            event: SummarizationEvent = raw_event  # type: ignore[assignment]
+            event: SummarizationEvent = raw_event
             cutoff = event.get("cutoff_index")
             refreshed_cutoff = state.get("_local_context_refreshed_at_cutoff")
             if cutoff != refreshed_cutoff:
@@ -459,9 +528,8 @@ class LocalContextMiddleware(AgentMiddleware):
             return {"local_context": output}
         return None
 
-    @staticmethod
-    def _get_modified_request(request: ModelRequest) -> ModelRequest | None:
-        """Append local context to the system prompt if available.
+    def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
+        """Append local context and MCP info to the system prompt if available.
 
         Args:
             request: The model request to potentially modify.
@@ -472,11 +540,12 @@ class LocalContextMiddleware(AgentMiddleware):
         state = cast("LocalContextState", request.state)
         local_context = state.get("local_context", "")
 
-        if not local_context:
+        parts = [p for p in (local_context, self._mcp_context) if p]
+        if not parts:
             return None
 
         system_prompt = request.system_prompt or ""
-        new_prompt = system_prompt + "\n\n" + local_context
+        new_prompt = system_prompt + "\n\n" + "\n\n".join(parts)
         return request.override(system_prompt=new_prompt)
 
     def wrap_model_call(

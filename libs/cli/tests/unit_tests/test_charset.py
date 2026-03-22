@@ -16,7 +16,7 @@ from deepagents_cli.config import (
     _detect_charset_mode,
     get_banner,
     get_glyphs,
-    is_ascii_fallback,
+    is_ascii_mode,
     reset_glyphs_cache,
 )
 
@@ -64,10 +64,6 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.box_horizontal) > 127
         assert ord(UNICODE_GLYPHS.box_double_horizontal) > 127
         assert ord(UNICODE_GLYPHS.gutter_bar) > 127
-        # Tree connectors (check first character of each)
-        assert ord(UNICODE_GLYPHS.tree_branch[0]) > 127
-        assert ord(UNICODE_GLYPHS.tree_last[0]) > 127
-        assert ord(UNICODE_GLYPHS.tree_vertical[0]) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
         """Test that ASCII_GLYPHS contains only ASCII characters."""
@@ -112,13 +108,6 @@ class TestGlyphs:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.gutter_bar:
             assert ord(char) < 128
-        # Tree connectors
-        for char in ASCII_GLYPHS.tree_branch:
-            assert ord(char) < 128
-        for char in ASCII_GLYPHS.tree_last:
-            assert ord(char) < 128
-        for char in ASCII_GLYPHS.tree_vertical:
-            assert ord(char) < 128
 
     def test_glyphs_frozen(self) -> None:
         """Test that Glyphs instances are immutable."""
@@ -148,10 +137,6 @@ class TestGlyphs:
             "box_horizontal",
             "box_double_horizontal",
             "gutter_bar",
-            # Tree connectors
-            "tree_branch",
-            "tree_last",
-            "tree_vertical",
         ]
         for field in required_fields:
             assert hasattr(UNICODE_GLYPHS, field)
@@ -293,28 +278,6 @@ class TestGlyphUsability:
         assert ASCII_GLYPHS.box_double_horizontal == "="
         assert ASCII_GLYPHS.gutter_bar == "|"
 
-    def test_unicode_tree_connectors(self) -> None:
-        """Test Unicode tree connectors are the expected strings."""
-        assert UNICODE_GLYPHS.tree_branch == "├── "
-        assert UNICODE_GLYPHS.tree_last == "└── "
-        assert UNICODE_GLYPHS.tree_vertical == "│   "
-
-    def test_ascii_tree_connectors(self) -> None:
-        """Test ASCII tree connectors are simple ASCII."""
-        assert ASCII_GLYPHS.tree_branch == "+-- "
-        assert ASCII_GLYPHS.tree_last == "`-- "
-        assert ASCII_GLYPHS.tree_vertical == "|   "
-
-    def test_tree_connectors_consistent_width(self) -> None:
-        """Test that tree connectors have consistent width for alignment."""
-        # All tree connectors should be exactly 4 characters
-        assert len(UNICODE_GLYPHS.tree_branch) == 4
-        assert len(UNICODE_GLYPHS.tree_last) == 4
-        assert len(UNICODE_GLYPHS.tree_vertical) == 4
-        assert len(ASCII_GLYPHS.tree_branch) == 4
-        assert len(ASCII_GLYPHS.tree_last) == 4
-        assert len(ASCII_GLYPHS.tree_vertical) == 4
-
 
 class TestGetBanner:
     """Tests for get_banner function."""
@@ -365,51 +328,19 @@ class TestGetBanner:
             assert ord(char) < 128, f"Non-ASCII character found: {char!r}"
 
 
-class TestIsAsciiFallback:
-    """Tests for is_ascii_fallback function."""
+class TestIsAsciiMode:
+    """Tests for is_ascii_mode helper."""
 
     def setup_method(self) -> None:
         """Reset glyphs cache before each test."""
         reset_glyphs_cache()
 
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_explicit_ascii_is_not_fallback(self) -> None:
-        """Test that explicit ASCII mode is not considered a fallback."""
-        assert is_ascii_fallback() is False
-
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_unicode_mode_is_not_fallback(self) -> None:
-        """Test that unicode mode is not a fallback."""
-        assert is_ascii_fallback() is False
+    def test_false_in_unicode_mode(self) -> None:
+        """Test that is_ascii_mode returns False in Unicode mode."""
+        assert is_ascii_mode() is False
 
-    @patch.dict(
-        "os.environ",
-        {"UI_CHARSET_MODE": "auto", "LANG": "C", "LC_ALL": ""},
-        clear=False,
-    )
-    def test_auto_with_no_utf_is_fallback(self) -> None:
-        """Test that auto mode without UTF-8 support is a fallback."""
-        mock_stdout = Mock()
-        mock_stdout.encoding = "ascii"
-        with patch.object(sys, "stdout", mock_stdout):
-            assert is_ascii_fallback() is True
-
-    @patch.dict(
-        "os.environ",
-        {"UI_CHARSET_MODE": "auto", "LANG": "en_US.UTF-8"},
-        clear=False,
-    )
-    def test_auto_with_utf_lang_is_not_fallback(self) -> None:
-        """Test that auto mode with UTF-8 LANG is not a fallback."""
-        assert is_ascii_fallback() is False
-
-    def test_default_env_with_utf_stdout_is_not_fallback(self) -> None:
-        """Test that default (no env var) with UTF-8 stdout is not a fallback."""
-        with (
-            patch.dict("os.environ", {"LANG": "C", "LC_ALL": ""}, clear=False),
-            patch.dict("os.environ", {}, clear=False),
-        ):
-            mock_stdout = Mock()
-            mock_stdout.encoding = "utf-8"
-            with patch.object(sys, "stdout", mock_stdout):
-                assert is_ascii_fallback() is False
+    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
+    def test_true_in_ascii_mode(self) -> None:
+        """Test that is_ascii_mode returns True in ASCII mode."""
+        assert is_ascii_mode() is True

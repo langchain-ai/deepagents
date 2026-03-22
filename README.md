@@ -1,9 +1,9 @@
 <div align="center">
   <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
-      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="50%">
     </picture>
   </a>
 </div>
@@ -21,7 +21,7 @@
 
 <br>
 
-Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
+Deep Agents is an agent harness. An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
 
 **What's included:**
 
@@ -52,6 +52,9 @@ result = agent.invoke({"messages": [{"role": "user", "content": "Research LangGr
 
 The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
 
+> [!TIP]
+> For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
+
 ## Customization
 
 Add your own tools, swap models, customize prompts, configure sub-agents, and more. See the [documentation](https://docs.langchain.com/oss/python/deepagents/overview) for full details.
@@ -70,14 +73,15 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 
 ## Deep Agents CLI
 
-Try Deep Agents instantly from the terminal:
+<p align="center">
+  <img src="libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
+</p>
 
 ```bash
-uv tool install deepagents-cli
-deepagents
+curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents CLI requires setting an API Key before running (ex: `ANTHROPIC_API_KEY`).
+Web search, remote sandboxes, persistent memory, human-in-the-loop approval, and more. See the [CLI README](libs/cli/) for the full feature set.
 
 ## LangGraph Native
 
@@ -88,10 +92,10 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 ### Why should I use this?
 
 - **100% open source** — MIT licensed, fully extensible
-- **Provider agnostic** — Works with Claude, OpenAI, Google, or any LangChain-compatible model
+- **Provider agnostic** — Works with any Large Language Model that supports tool calling, including both frontier and open models
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
-- **Get started in seconds** — `pip install deepagents` or `uv add deepagents` and you have a working agent
+- **Get started in seconds** — `uv add deepagents` and you have a working agent
 - **Customize in minutes** — Add tools, swap models, tune prompts when you need to
 
 ---
@@ -107,10 +111,15 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 ## Additional resources
 
 - **[Examples](examples/)** — Working agents and patterns
-- [API Reference](https://reference.langchain.com/python/deepagents/) – Detailed reference on navigating base packages and integrations for LangChain.
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
 
+---
+
+## Acknowledgements
+
+This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.
+
 ## Security
 
-Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police.
+Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police. See the [security policy](https://github.com/langchain-ai/deepagents?tab=security-ov-file) for more information.

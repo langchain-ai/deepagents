@@ -1,0 +1,58 @@
+# Reusable workflow: CodSpeed wall-time benchmarks
+#
+# Runs pytest-benchmark tests under CodSpeed instrumentation so that
+# regressions are tracked across commits on the CodSpeed dashboard.
+#
+# Authenticates via OpenID Connect (OIDC) — no repository secret required.
+
+name: "Benchmark"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Package directory (e.g. libs/deepagents)"
+        required: true
+        type: string
+      python-version:
+        description: "Python version"
+        required: false
+        type: string
+        # Pin 3.13.11 — CodSpeed walltime segfaults on 3.13.12+
+        # https://github.com/CodSpeedHQ/pytest-codspeed/issues/106
+        default: "3.13.11"
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  benchmark:
+    name: "CodSpeed"
+    runs-on: codspeed-macro
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v6
+
+      - name: "Set up Python + uv"
+        uses: ./.github/actions/uv_setup
+        with:
+          python-version: ${{ inputs.python-version }}
+          working-directory: ${{ inputs.working-directory }}
+          enable-cache: "true"
+          cache-suffix: benchmark-${{ inputs.python-version }}
+
+      - name: "Install dependencies"
+        run: uv sync --group test
+
+      - name: "Run benchmarks"
+        uses: CodSpeedHQ/action@v4
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          run: uv run --no-sync pytest ./tests -m benchmark --codspeed
+          mode: walltime

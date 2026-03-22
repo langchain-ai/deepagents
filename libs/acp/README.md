@@ -60,10 +60,10 @@ Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an op
 
 And that's it! You can now use the Deep Agent in Zed to interact with your project.
 
-If you need to upgrade your version of Deep Agents, run:
+If you need to upgrade your version of Deep Agents, pull the latest changes and re-sync:
 
 ```sh
-uv upgrade deepagents-acp
+git pull && uv sync --group examples
 ```
 
 ## Launch a custom Deep Agent with ACP

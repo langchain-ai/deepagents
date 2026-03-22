@@ -77,7 +77,6 @@ async def _serve_example_agent() -> None:
         return create_deep_agent(
             model=ChatAnthropic(
                 model_name="claude-opus-4-6",
-                max_tokens=20000,
             ),
             # model=ChatOpenAI(
             #     model_name="gpt-5.4",

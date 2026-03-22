@@ -193,8 +193,13 @@ class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
     UNICODE = "unicode"
+    """Always use Unicode glyphs (e.g. `⏺`, `✓`, `…`)."""
+
     ASCII = "ascii"
+    """Always use ASCII-safe fallbacks (e.g. `(*)`, `[OK]`, `...`)."""
+
     AUTO = "auto"
+    """Detect charset support at runtime and pick Unicode or ASCII."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +259,7 @@ UNICODE_GLYPHS = Glyphs(
     gutter_bar="▌",
     git_branch="↗",
 )
+"""Glyph set for terminals with full Unicode support."""
 
 ASCII_GLYPHS = Glyphs(
     tool_prefix="(*)",
@@ -279,6 +285,7 @@ ASCII_GLYPHS = Glyphs(
     gutter_bar="|",
     git_branch="git:",
 )
+"""Glyph set for terminals limited to 7-bit ASCII."""
 
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
@@ -421,8 +428,6 @@ def newline_shortcut() -> str:
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 
-# Text art banners (Unicode and ASCII variants)
-
 _UNICODE_BANNER = f"""
 ██████╗  ███████╗ ███████╗ ██████╗    ▄▓▓▄
 ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗  ▓•███▙
@@ -462,7 +467,8 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
-        Includes "(local)" suffix when installed in editable mode.
+
+            Includes "(local)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
         banner = _ASCII_BANNER
@@ -475,28 +481,27 @@ def get_banner() -> str:
     return banner
 
 
-# Interactive commands
-COMMANDS = {
-    "clear": "Clear screen and reset conversation",
-    "help": "Show help information",
-    "remember": "Review conversation and update memory/skills",
-    "tokens": "Show token usage for current thread",
-    "quit": "Exit the CLI",
-    "exit": "Exit the CLI",
-}
-
-
-# Maximum argument length for display
 MAX_ARG_LENGTH = 150
+"""Character limit for tool argument values in the UI.
 
-# Agent configuration
+Longer values are truncated with an ellipsis by `truncate_value`
+in `tool_display`.
+"""
+
 config: RunnableConfig = {"recursion_limit": 1000}
+"""Default LangGraph runnable config with a high recursion limit.
 
-# ---------------------------------------------------------------------------
-# Stream config builder (consolidates textual_adapter + non_interactive)
-# ---------------------------------------------------------------------------
+Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
+hitting the default LangGraph ceiling.
+"""
 
 _git_branch_cache: dict[str, str | None] = {}
+"""Per-cwd cache of resolved git branch names.
+
+Avoids repeated `git rev-parse` subprocess calls within the same session. Keyed
+by `str(Path.cwd())`; `None` values indicate the directory is not inside a git
+repository.
+"""
 
 
 def _get_git_branch() -> str | None:
@@ -679,50 +684,46 @@ class Settings:
     - Current project information
     - Tool availability (e.g., Tavily)
     - File system paths
-
-    Attributes:
-        openai_api_key: OpenAI API key if available.
-        anthropic_api_key: Anthropic API key if available.
-        google_api_key: Google API key if available.
-        nvidia_api_key: NVIDIA API key if available.
-        tavily_api_key: Tavily API key if available.
-        google_cloud_project: Google Cloud project ID for VertexAI
-            authentication.
-        deepagents_langchain_project: LangSmith project name for deepagents
-            agent tracing.
-        user_langchain_project: Original LANGSMITH_PROJECT from environment
-            (for user code).
-        model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g., openai, anthropic, google_genai).
-        model_context_limit: Maximum input token count from the model profile.
-        project_root: Current project root directory (if in a git project).
-        shell_allow_list: List of shell commands that don't require approval.
     """
 
-    # API keys
     openai_api_key: str | None
+    """OpenAI API key if available."""
+
     anthropic_api_key: str | None
+    """Anthropic API key if available."""
+
     google_api_key: str | None
+    """Google API key if available."""
+
     nvidia_api_key: str | None
+    """NVIDIA API key if available."""
+
     tavily_api_key: str | None
+    """Tavily API key if available."""
 
-    # Google Cloud configuration (for VertexAI)
     google_cloud_project: str | None
+    """Google Cloud project ID for VertexAI authentication."""
 
-    # LangSmith configuration
-    deepagents_langchain_project: str | None  # For deepagents agent tracing
-    user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
+    deepagents_langchain_project: str | None
+    """LangSmith project name for deepagents agent tracing."""
 
-    # Model configuration
-    model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
-    model_context_limit: int | None = None  # Max input tokens from model profile
+    user_langchain_project: str | None
+    """Original `LANGSMITH_PROJECT` from environment (for user code)."""
 
-    # Project information
+    model_name: str | None = None
+    """Currently active model name, set after model creation."""
+
+    model_provider: str | None = None
+    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
+
+    model_context_limit: int | None = None
+    """Maximum input token count from the model profile."""
+
     project_root: Path | None = None
+    """Current project root directory, or `None` if not in a git project."""
 
-    # Shell command allow-list for auto-approval
     shell_allow_list: list[str] | None = None
+    """Shell commands that don't require user approval."""
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
@@ -1195,28 +1196,13 @@ DANGEROUS_SHELL_PATTERNS = (
     "<",  # Input redirect
     "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
 )
+"""Literal substrings that indicate shell injection risk.
 
-# Recommended safe shell commands for non-interactive mode.
-# These commands are primarily read-only and do not modify the filesystem
-# when used without shell redirection operators (which the dangerous-patterns
-# check blocks).
-#
-# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
-# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
-# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
-# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
-# - Package managers: pip, npm, gem, apt, yum, brew, etc.
-# - Compilers: gcc, cc, make, cmake, etc.
-# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
-# - Archivers with shell escape: tar, zip, 7z, etc.
-# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
-# - Privilege tools: sudo, su, doas, pkexec, etc.
-# - Process tools: env, xargs, find (with -exec), etc.
-# - Git (can run hooks), docker, kubectl, etc.
-#
-# SAFE commands included below are primarily readers/formatters. File write and
-# injection are prevented by the dangerous-patterns check that blocks redirects,
-# command substitution, and other shell metacharacters.
+Used by `contains_dangerous_patterns` to reject commands that embed arbitrary
+execution via redirects, substitution operators, or control characters — even
+when the base command is on the allow-list.
+"""
+
 RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Directory listing
     "ls",
@@ -1251,6 +1237,13 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Process viewing (read-only)
     "ps",
 )
+"""Read-only commands auto-approved in non-interactive mode.
+
+Only includes readers and formatters — shells, editors, interpreters, package
+managers, network tools, archivers, and anything on GTFOBins/LOOBins is
+intentionally excluded. File-write and injection vectors are blocked separately
+by `DANGEROUS_SHELL_PATTERNS`.
+"""
 
 
 def contains_dangerous_patterns(command: str) -> bool:

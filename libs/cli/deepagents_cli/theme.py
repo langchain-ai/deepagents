@@ -1,8 +1,9 @@
 """LangChain brand colors and semantic constants for the CLI.
 
-This module is the single source of truth for all color values used across the
-TUI and Rich console output. It contains only plain string constants so it is
-safe to import from the argument-parsing path (no heavy deps).
+Single source of truth for color values used in Python code (Rich markup,
+`Content.styled`, `Content.from_markup`). CSS-side styling should reference
+Textual CSS variables (`$primary`, `$muted`, `$tool-border`, etc.) that are
+backed by these constants via `App.get_theme_variable_defaults()`.
 """
 
 # ---------------------------------------------------------------------------
@@ -50,14 +51,11 @@ LC_GREEN_BG = "#1C2A38"
 LC_PINK_BG = "#2A1F32"
 """Subtle pink-tinted background for diff removals / errors."""
 
-LC_CYAN = "#7DCFFF"
-"""Info / decorative accent."""
-
 # ---------------------------------------------------------------------------
-# Semantic constants  (Rich markup — cannot use CSS variables)
+# Semantic constants  (Rich markup + CSS variable defaults)
 # ---------------------------------------------------------------------------
 PRIMARY = LC_BLUE
-"""Default accent for borders, links, and active elements."""
+"""Default accent for headings, borders, links, and active elements."""
 
 PRIMARY_DEV = LC_ORANGE
 """Accent used when running from an editable (dev) install."""
@@ -66,7 +64,7 @@ SUCCESS = LC_GREEN
 """Positive outcomes — tool success, approved actions."""
 
 WARNING = LC_AMBER
-"""Caution states — pending approval, auto-approve indicator."""
+"""Caution and notice states — auto-approve off, pending tool calls, notices."""
 
 ERROR = LC_PINK
 """Errors, destructive actions, and failures."""
@@ -104,10 +102,10 @@ TOOL_BORDER_HVR = LC_BORDER_LT
 """Tool call card border on hover."""
 
 TOOL_HEADER = WARNING
-"""Tool call header text (tool name / label)."""
+"""Tool call headers, slash-command tokens, and approval-menu commands."""
 
 TOOL_PENDING = WARNING
-"""Tool call status while awaiting result."""
+"""Tool call status while awaiting result or after rejection."""
 
 TOOL_SUCCESS = SUCCESS
 """Tool call status on successful completion."""
@@ -131,3 +129,32 @@ ERROR_BG = DIFF_REMOVE_BG
 
 SPINNER = LC_BLUE
 """Loading spinner color."""
+
+
+CSS_VARIABLE_DEFAULTS: dict[str, str] = {
+    "muted": MUTED,
+    "tool-border": TOOL_BORDER,
+    "tool-border-hover": TOOL_BORDER_HVR,
+    "mode-bash": MODE_BASH,
+    "mode-command": MODE_COMMAND,
+    "diff-add-fg": DIFF_ADD_FG,
+    "diff-add-bg": DIFF_ADD_BG,
+    "diff-remove-fg": DIFF_REMOVE_FG,
+    "diff-remove-bg": DIFF_REMOVE_BG,
+    "error-bg": ERROR_BG,
+}
+"""Custom CSS variable defaults, referenced as `$muted`, `$tool-border`, etc.
+
+Textual's built-in theme variables (`$primary`, `$background`, ...) don't cover
+app-specific semantic tokens. This dict maps each custom variable name to its
+hex value and feeds two consumers:
+
+* `DeepAgentsApp.get_theme_variable_defaults()` — registers the variables so
+    `.tcss` stylesheets can resolve `$custom-var` references at parse time.
+* Test conftest — patches the same mapping onto plain `App[None]` subclasses
+    so unit tests resolve custom variables without instantiating the full
+    `DeepAgentsApp`.
+
+Keeping one shared dict avoids duplicate hardcoded mappings that would drift
+independently.
+"""

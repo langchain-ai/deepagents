@@ -367,6 +367,19 @@ class TestUserMessageModeRendering:
         assert content.plain == "> "
 
 
+class TestModeColorsDrift:
+    """Ensure `_MODE_COLORS` covers every mode in `MODE_PREFIXES`."""
+
+    def test_mode_colors_keys_match_mode_prefixes(self) -> None:
+        from deepagents_cli.config import MODE_PREFIXES
+        from deepagents_cli.widgets.messages import _MODE_COLORS
+
+        assert _MODE_COLORS.keys() == MODE_PREFIXES.keys(), (
+            f"_MODE_COLORS keys {set(_MODE_COLORS)} != "
+            f"MODE_PREFIXES keys {set(MODE_PREFIXES)}"
+        )
+
+
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 

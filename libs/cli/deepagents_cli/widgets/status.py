@@ -14,7 +14,6 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs
 
 logger = logging.getLogger(__name__)
@@ -73,8 +72,7 @@ class ModelLabel(Widget):
 class StatusBar(Horizontal):
     """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
 
-    DEFAULT_CSS = (
-        """
+    DEFAULT_CSS = """
     StatusBar {
         height: 1;
         dock: bottom;
@@ -92,13 +90,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.shell {
-        background: __MODE_BASH__;
+        background: $mode-bash;
         color: white;
         text-style: bold;
     }
 
     StatusBar .status-mode.command {
-        background: __MODE_CMD__;
+        background: $mode-command;
         color: white;
     }
 
@@ -108,12 +106,12 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-auto-approve.on {
-        background: __SUCCESS__;
+        background: $success;
         color: black;
     }
 
     StatusBar .status-auto-approve.off {
-        background: __WARNING__;
+        background: $warning;
         color: black;
     }
 
@@ -158,11 +156,8 @@ class StatusBar(Horizontal):
         color: $text-muted;
         text-align: right;
     }
-    """.replace("__MODE_BASH__", theme.MODE_BASH)
-        .replace("__MODE_CMD__", theme.MODE_COMMAND)
-        .replace("__SUCCESS__", theme.SUCCESS)
-        .replace("__WARNING__", theme.WARNING)
-    )
+    """
+    """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)

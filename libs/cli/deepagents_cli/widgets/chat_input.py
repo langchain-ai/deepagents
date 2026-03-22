@@ -17,7 +17,6 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
-from deepagents_cli import theme
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
@@ -820,11 +819,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell {
-        border: solid __MODE_BASH__;
+        border: solid $mode-bash;
     }
 
     ChatInput.mode-command {
-        border: solid __MODE_CMD__;
+        border: solid $mode-command;
     }
 
     ChatInput .input-row {
@@ -841,11 +840,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell .input-prompt {
-        color: __MODE_BASH__;
+        color: $mode-bash;
     }
 
     ChatInput.mode-command .input-prompt {
-        color: __MODE_CMD__;
+        color: $mode-command;
     }
 
     ChatInput ChatTextArea {
@@ -861,9 +860,8 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_BASH__", theme.MODE_BASH).replace(
-        "__MODE_CMD__", theme.MODE_COMMAND
-    )
+    """
+    """Border and prompt glyph change color per mode for immediate visual feedback."""
 
     class Submitted(Message):
         """Message sent when input is submitted."""

@@ -125,15 +125,15 @@ Screen {
 
 .diff-removed {
     height: auto;
-    color: #ff8787;
-    background: #2a1018;
+    color: $diff-remove-fg;
+    background: $diff-remove-bg;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
-    color: #8ce99a;
-    background: #0f2818;
+    color: $diff-add-fg;
+    background: $diff-add-bg;
     padding: 0 1;
 }
 

@@ -29,7 +29,7 @@ from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Static
 
-from deepagents_cli import theme as theme_colors
+from deepagents_cli import theme
 from deepagents_cli._cli_context import CLIContext
 from deepagents_cli._session_stats import (
     SessionStats,
@@ -511,14 +511,14 @@ class DeepAgentsApp(App):
         self.register_theme(
             Theme(
                 name="langchain",
-                primary=theme_colors.PRIMARY,
-                secondary=theme_colors.LC_PURPLE,
-                foreground=theme_colors.LC_BODY,
-                background=theme_colors.LC_DARK,
-                surface=theme_colors.LC_CARD,
-                warning=theme_colors.WARNING,
-                error=theme_colors.ERROR,
-                success=theme_colors.SUCCESS,
+                primary=theme.PRIMARY,
+                secondary=theme.LC_PURPLE,
+                foreground=theme.LC_BODY,
+                background=theme.LC_DARK,
+                surface=theme.LC_CARD,
+                warning=theme.WARNING,
+                error=theme.ERROR,
+                success=theme.SUCCESS,
                 dark=True,
             )
         )
@@ -608,6 +608,21 @@ class DeepAgentsApp(App):
         from deepagents_cli.remote_client import RemoteAgent
 
         return self._agent if isinstance(self._agent, RemoteAgent) else None
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:  # noqa: PLR6301  # Textual override
+        """Register custom CSS variables so `.tcss` files can use them.
+
+        Textual only ships built-in variables (`$background`, `$primary`, …).
+        This override injects app-specific variables (`$muted`,
+        `$tool-border`, `$diff-add-fg`, etc.) whose values are defined once
+        in `theme.py` and shared with Python-side styling (`Content.styled`,
+        Rich markup). Without this, every `$custom-var` in the stylesheet
+        would be unresolved at parse time.
+
+        Returns:
+            Mapping of CSS variable names to hex color values.
+        """
+        return dict(theme.CSS_VARIABLE_DEFAULTS)
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.

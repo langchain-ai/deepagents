@@ -232,16 +232,17 @@ class QueuedUserMessage(Static):
     This is an ephemeral widget that gets removed when the message is dequeued.
     """
 
-    DEFAULT_CSS = f"""
-    QueuedUserMessage {{
+    DEFAULT_CSS = """
+    QueuedUserMessage {
         height: auto;
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide {theme.MUTED};
+        border-left: wide $muted;
         opacity: 0.6;
-    }}
+    }
     """
+    """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a queued user message.
@@ -396,65 +397,66 @@ class ToolCallMessage(Vertical):
     Shows an animated "Running..." indicator while the tool is executing.
     """
 
-    DEFAULT_CSS = f"""
-    ToolCallMessage {{
+    DEFAULT_CSS = """
+    ToolCallMessage {
         height: auto;
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide {theme.TOOL_BORDER};
-    }}
+        border-left: wide $tool-border;
+    }
 
-    ToolCallMessage .tool-header {{
+    ToolCallMessage .tool-header {
         height: auto;
-    }}
+    }
 
-    ToolCallMessage .tool-args {{
-        color: {theme.MUTED};
+    ToolCallMessage .tool-args {
+        color: $muted;
         margin-left: 3;
-    }}
+    }
 
-    ToolCallMessage .tool-status {{
+    ToolCallMessage .tool-status {
         margin-left: 3;
-    }}
+    }
 
-    ToolCallMessage .tool-status.pending {{
-        color: {theme.TOOL_PENDING};
-    }}
+    ToolCallMessage .tool-status.pending {
+        color: $warning;
+    }
 
-    ToolCallMessage .tool-status.success {{
-        color: {theme.TOOL_SUCCESS};
-    }}
+    ToolCallMessage .tool-status.success {
+        color: $success;
+    }
 
-    ToolCallMessage .tool-status.error {{
-        color: {theme.TOOL_ERROR};
-    }}
+    ToolCallMessage .tool-status.error {
+        color: $error;
+    }
 
-    ToolCallMessage .tool-status.rejected {{
-        color: {theme.TOOL_PENDING};
-    }}
+    ToolCallMessage .tool-status.rejected {
+        color: $warning;
+    }
 
-    ToolCallMessage .tool-output {{
+    ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
-    }}
+    }
 
-    ToolCallMessage .tool-output-preview {{
+    ToolCallMessage .tool-output-preview {
         margin-left: 0;
         margin-top: 0;
-    }}
+    }
 
-    ToolCallMessage .tool-output-hint {{
+    ToolCallMessage .tool-output-hint {
         margin-left: 0;
-        color: {theme.MUTED};
-    }}
+        color: $muted;
+    }
 
-    ToolCallMessage:hover {{
-        border-left: wide {theme.TOOL_BORDER_HVR};
-    }}
+    ToolCallMessage:hover {
+        border-left: wide $tool-border-hover;
+    }
     """
+    """Left border tracks tool lifecycle; hover brightens for interactivity."""
 
     # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
@@ -1261,39 +1263,40 @@ class ToolCallMessage(Vertical):
 class DiffMessage(_TimestampClickMixin, Static):
     """Widget displaying a diff with syntax highlighting."""
 
-    DEFAULT_CSS = f"""
-    DiffMessage {{
+    DEFAULT_CSS = """
+    DiffMessage {
         height: auto;
         padding: 1;
         margin: 1 0;
         background: $surface;
         border: solid $primary;
-    }}
+    }
 
-    DiffMessage .diff-header {{
+    DiffMessage .diff-header {
         text-style: bold;
         margin-bottom: 1;
-    }}
+    }
 
-    DiffMessage .diff-add {{
-        color: {theme.DIFF_ADD_FG};
-        background: {theme.DIFF_ADD_BG};
-    }}
+    DiffMessage .diff-add {
+        color: $diff-add-fg;
+        background: $diff-add-bg;
+    }
 
-    DiffMessage .diff-remove {{
-        color: {theme.DIFF_REMOVE_FG};
-        background: {theme.DIFF_REMOVE_BG};
-    }}
+    DiffMessage .diff-remove {
+        color: $diff-remove-fg;
+        background: $diff-remove-bg;
+    }
 
-    DiffMessage .diff-context {{
+    DiffMessage .diff-context {
         color: $text-muted;
-    }}
+    }
 
-    DiffMessage .diff-hunk {{
+    DiffMessage .diff-hunk {
         color: $secondary;
         text-style: bold;
-    }}
+    }
     """
+    """Diff syntax coloring: green additions, red removals, muted context."""
 
     def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
         """Initialize a diff message.
@@ -1332,16 +1335,17 @@ class DiffMessage(_TimestampClickMixin, Static):
 class ErrorMessage(_TimestampClickMixin, Static):
     """Widget displaying an error message."""
 
-    DEFAULT_CSS = f"""
-    ErrorMessage {{
+    DEFAULT_CSS = """
+    ErrorMessage {
         height: auto;
         padding: 1;
         margin: 1 0;
-        background: {theme.ERROR_BG};
+        background: $error-bg;
         color: white;
         border-left: wide $error;
-    }}
+    }
     """
+    """Tinted background + red left border to visually separate errors from output."""
 
     def __init__(self, error: str, **kwargs: Any) -> None:
         """Initialize an error message.

@@ -18,6 +18,7 @@ Examples:
     ```
 """
 
+import asyncio
 from collections import defaultdict
 from dataclasses import replace
 from typing import cast
@@ -237,11 +238,10 @@ class CompositeBackend(BackendProtocol):
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
 
-        # At root, aggregate default and all routed backends
+        # At root, aggregate default backend listing with virtual route directories
         if path == "/":
-            results: list[FileInfo] = []
             default_result = self._coerce_ls_result(await self.default.als(path))
-            results.extend(default_result.entries or [])
+            results: list[FileInfo] = list(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
@@ -364,6 +364,9 @@ class CompositeBackend(BackendProtocol):
         """Async version of grep.
 
         See grep() for detailed documentation on routing behavior and parameters.
+
+        When searching all backends (path is None or "/"), queries are executed
+        concurrently via ``asyncio.gather`` for reduced latency.
         """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
@@ -377,17 +380,28 @@ class CompositeBackend(BackendProtocol):
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
 
-        # If path is None or "/", search default and all routed backends and merge
+        # If path is None or "/", search default and all routed backends concurrently
         # Otherwise, search only the default backend
         if path is None or path == "/":
-            all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+            # Build coroutines for all backends
+            coros = [self.default.agrep(pattern, path, glob)]
+            route_prefixes = list(self.routes.keys())
+            for _route_prefix, backend in self.routes.items():
+                coros.append(backend.agrep(pattern, "/", glob))
+
+            # Execute all searches concurrently
+            raw_results = await asyncio.gather(*coros)
+
+            # Process default backend result (index 0)
+            default_result = self._coerce_grep_result(raw_results[0])
             if default_result.error:
                 return default_result
-            all_matches.extend(default_result.matches or [])
 
-            for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
+            all_matches: list[GrepMatch] = list(default_result.matches or [])
+
+            # Process routed backend results (index 1+)
+            for i, route_prefix in enumerate(route_prefixes):
+                grep_result = self._coerce_grep_result(raw_results[i + 1])
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
@@ -428,9 +442,11 @@ class CompositeBackend(BackendProtocol):
         return GlobResult(matches=results)
 
     async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
-        """Async version of glob."""
-        results: list[FileInfo] = []
+        """Async version of glob.
 
+        When searching all backends (no specific route matched), queries are
+        executed concurrently via ``asyncio.gather`` for reduced latency.
+        """
         backend, backend_path, route_prefix = _route_for_path(
             default=self.default,
             sorted_routes=self.sorted_routes,
@@ -443,16 +459,28 @@ class CompositeBackend(BackendProtocol):
                 return glob_result
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob(pattern, path)
+        # Path doesn't match any specific route — search default and all routed
+        # backends concurrently.
+        route_prefixes = list(self.routes.keys())
+        coros = [self.default.aglob(pattern, path)]
+        for rp, be in self.routes.items():
+            route_pattern = _strip_route_from_pattern(pattern, rp)
+            coros.append(be.aglob(route_pattern, "/"))
+
+        raw_results = await asyncio.gather(*coros)
+
+        results: list[FileInfo] = []
+
+        # Default backend result (index 0)
+        default_result = raw_results[0]
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
-        for route_prefix, backend in self.routes.items():
-            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob(route_pattern, "/")
+        # Routed backend results (index 1+)
+        for i, rp in enumerate(route_prefixes):
+            sub_result = raw_results[i + 1]
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            results.extend(_remap_file_info_path(fi, rp) for fi in (sub_matches or []))
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
@@ -674,7 +702,10 @@ class CompositeBackend(BackendProtocol):
         return cast("list[FileUploadResponse]", results)
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Async version of upload_files."""
+        """Async version of upload_files.
+
+        Backend batches are uploaded concurrently via ``asyncio.gather``.
+        """
         # Pre-allocate result list
         results: list[FileUploadResponse | None] = [None] * len(files)
 
@@ -685,16 +716,20 @@ class CompositeBackend(BackendProtocol):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path, content))
 
-        # Process each backend's batch
+        # Build coroutines and metadata for all backend batches
+        batch_meta: list[tuple[tuple[int, ...], BackendProtocol]] = []
+        coros = []
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
+            batch_meta.append((indices, backend))
+            coros.append(backend.aupload_files(batch_files))
 
-            # Call backend once with all its files
-            batch_responses = await backend.aupload_files(batch_files)
+        # Execute all uploads concurrently
+        all_responses = await asyncio.gather(*coros)
 
-            # Place responses at original indices with original paths
+        # Place responses at original indices with original paths
+        for (indices, _backend), batch_responses in zip(batch_meta, all_responses, strict=False):
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileUploadResponse(
                     path=files[orig_idx][0],  # Original path
@@ -744,7 +779,10 @@ class CompositeBackend(BackendProtocol):
         return cast("list[FileDownloadResponse]", results)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Async version of download_files."""
+        """Async version of download_files.
+
+        Backend batches are downloaded concurrently via ``asyncio.gather``.
+        """
         # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
 
@@ -754,15 +792,19 @@ class CompositeBackend(BackendProtocol):
             backend, stripped_path = self._get_backend_and_key(path)
             backend_batches[backend].append((idx, stripped_path))
 
-        # Process each backend's batch
+        # Build coroutines and metadata for all backend batches
+        batch_meta: list[tuple[int, ...]] = []
+        coros = []
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths = zip(*batch, strict=False)
+            batch_meta.append(indices)
+            coros.append(backend.adownload_files(list(stripped_paths)))
 
-            # Call backend once with all its paths
-            batch_responses = await backend.adownload_files(list(stripped_paths))
+        # Execute all downloads concurrently
+        all_responses = await asyncio.gather(*coros)
 
-            # Place responses at original indices with original paths
+        # Place responses at original indices with original paths
+        for indices, batch_responses in zip(batch_meta, all_responses, strict=False):
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileDownloadResponse(
                     path=paths[orig_idx],  # Original path

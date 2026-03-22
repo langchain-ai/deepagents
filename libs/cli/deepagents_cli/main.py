@@ -577,6 +577,11 @@ def parse_args() -> argparse.Namespace:
         logger.warning("Unexpected error looking up SDK version", exc_info=True)
         sdk_version = "unknown"
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Check for and install updates, then exit",
+    )
+    parser.add_argument(
         "--acp",
         action="store_true",
         help="Run as an ACP server over stdio instead of launching the Textual UI",
@@ -608,6 +613,7 @@ async def run_textual_cli_async(
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
+    resume_thread: str | None = None,
     initial_prompt: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -633,7 +639,16 @@ async def run_textual_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
-        thread_id: Thread ID to use (new or resumed)
+        thread_id: Thread ID for the session.
+
+            `None` when `resume_thread` is provided (the TUI resolves the final
+            ID asynchronously).
+        resume_thread: Raw resume intent from `-r` flag.
+
+            `'__MOST_RECENT__'` for bare `-r`, a thread ID string for `-r <id>`,
+            or `None` for new sessions.
+
+            Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
@@ -648,29 +663,39 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_cli.app import run_textual_app
-    from deepagents_cli.config import console, create_model
-    from deepagents_cli.model_config import ModelConfigError, save_recent_model
+    from deepagents_cli.app import AppResult, run_textual_app
+    from deepagents_cli.config import (
+        _get_default_model_spec,
+        detect_provider,
+        settings,
+    )
+    from deepagents_cli.model_config import ModelConfigError, ModelSpec
+
+    # Resolve display-name cheaply (<1ms, no langchain) so the status
+    # bar can show the model on first paint. The expensive create_model()
+    # (~560ms) is deferred to a background worker.
 
     try:
-        result = create_model(
-            model_name,
-            extra_kwargs=model_params,
-            profile_overrides=profile_override,
-        )
+        resolved_spec = model_name or _get_default_model_spec()
     except ModelConfigError as e:
-        from deepagents_cli.app import AppResult
+        from deepagents_cli.config import console
 
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print(f"[bold red]Error:[/bold red] {e}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
-    result.apply_to_settings()
+    parsed = ModelSpec.try_parse(resolved_spec)
+    if parsed:
+        settings.model_provider = parsed.provider
+        settings.model_name = parsed.model
+    else:
+        settings.model_name = resolved_spec
+        settings.model_provider = detect_provider(resolved_spec) or ""
 
-    # Persist the resolved model so [models].recent is always populated,
-    # not only after an explicit /model switch.
-    save_recent_model(f"{result.provider}:{result.model_name}")
-
-    from deepagents_cli.app import AppResult
+    model_kwargs: dict[str, Any] = {
+        "model_spec": model_name,
+        "extra_kwargs": model_params,
+        "profile_overrides": profile_override,
+    }
 
     # Build kwargs for deferred server startup (runs inside the TUI)
     server_kwargs: dict[str, Any] = {
@@ -681,6 +706,7 @@ async def run_textual_cli_async(
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,
+        "enable_ask_user": True,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -702,13 +728,17 @@ async def run_textual_cli_async(
             auto_approve=auto_approve,
             cwd=Path.cwd(),
             thread_id=thread_id,
+            resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
+            model_kwargs=model_kwargs,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
+        from deepagents_cli.config import console
+
         error_text = Text("Application error: ", style="red")
         error_text.append(str(e))
         console.print(error_text)
@@ -1058,10 +1088,10 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Note: LANGSMITH_PROJECT is already overridden in config.py
-    # (before LangChain imports). This ensures agent traces use
-    # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
-    # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+    # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
+    # _ensure_bootstrap() (triggered on first access of `settings`).
+    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
@@ -1085,10 +1115,12 @@ def cli_main() -> None:
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
 
-    from deepagents_cli.config import console, settings
-
     try:
         args = parse_args()
+
+        # Import console/settings AFTER arg parsing so --help (which exits
+        # inside parse_args) never pays the settings bootstrap cost.
+        from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -1192,6 +1224,55 @@ def cli_main() -> None:
                 "--non-interactive (-n) or piped stdin"
             )
             sys.exit(2)
+
+        # Handle --update (headless, no session)
+        if args.update:
+            try:
+                from rich.markup import escape
+
+                from deepagents_cli._version import __version__ as cli_version
+                from deepagents_cli.update_check import (
+                    is_update_available,
+                    perform_upgrade,
+                    upgrade_command,
+                )
+
+                console.print("Checking for updates...", style="dim")
+                available, latest = is_update_available(bypass_cache=True)
+                if latest is None:
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] Could not "
+                        "reach PyPI. Check your network and try again."
+                    )
+                    sys.exit(1)
+                if not available:
+                    console.print(f"Already on the latest version (v{cli_version}).")
+                    sys.exit(0)
+
+                console.print(
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}). Upgrading..."
+                )
+                success, output = asyncio.run(perform_upgrade())
+                if success:
+                    console.print(f"[green]Updated to v{latest}.[/green]")
+                else:
+                    cmd = upgrade_command()
+                    detail = f": {escape(output[:200])}" if output else ""
+                    console.print(
+                        f"[bold red]Auto-update failed{detail}[/bold red]\n"
+                        f"Run manually: [cyan]{cmd}[/cyan]"
+                    )
+                    sys.exit(1)
+                sys.exit(0)
+            except Exception:
+                logger.warning("--update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Update failed.\n"
+                    "Run manually: [cyan]uv tool upgrade "
+                    "deepagents-cli[/cyan]"
+                )
+                sys.exit(1)
 
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
@@ -1349,72 +1430,15 @@ def cli_main() -> None:
                 build_langsmith_thread_url,
             )
             from deepagents_cli.sessions import (
-                find_similar_threads,
                 generate_thread_id,
-                get_most_recent,
-                get_thread_agent,
                 thread_exists,
             )
 
-            thread_id = None
-
-            if args.resume_thread == "__MOST_RECENT__":
-                # -r (no ID): Get most recent thread
-                # If --agent specified, filter by that agent; otherwise get
-                # most recent overall
-                agent_filter = args.agent if args.agent != _DEFAULT_AGENT_NAME else None
-                thread_id = asyncio.run(get_most_recent(agent_filter))
-                if thread_id:
-                    agent_name = asyncio.run(get_thread_agent(thread_id))
-                    if agent_name:
-                        args.agent = agent_name
-                else:
-                    if agent_filter:
-                        msg = Text("No previous thread for '", style="yellow")
-                        msg.append(args.agent)
-                        msg.append("', starting new.", style="yellow")
-                    else:
-                        msg = Text("No previous threads, starting new.", style="yellow")
-                    console.print(msg)
-
-            elif args.resume_thread:
-                # -r <ID>: Resume specific thread
-                if asyncio.run(thread_exists(args.resume_thread)):
-                    thread_id = args.resume_thread
-                    if args.agent == _DEFAULT_AGENT_NAME:
-                        agent_name = asyncio.run(get_thread_agent(thread_id))
-                        if agent_name:
-                            args.agent = agent_name
-                else:
-                    error_msg = Text("Thread '", style="red")
-                    error_msg.append(args.resume_thread)
-                    error_msg.append("' not found.", style="red")
-                    console.print(error_msg)
-
-                    # Check for similar thread IDs
-                    similar = asyncio.run(find_similar_threads(args.resume_thread))
-                    if similar:
-                        console.print()
-                        console.print("[yellow]Did you mean?[/yellow]")
-                        for tid in similar:
-                            hint = Text("  deepagents -r ", style="cyan")
-                            hint.append(str(tid), style="cyan")
-                            console.print(hint)
-                        console.print()
-
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see "
-                        "available threads.[/dim]"
-                    )
-                    console.print(
-                        "[dim]Use 'deepagents -r' to resume the most "
-                        "recent thread.[/dim]"
-                    )
-                    sys.exit(1)
-
-            # Generate new thread ID if not resuming
-            if thread_id is None:
-                thread_id = generate_thread_id()
+            # Instead of resolving thread_id here with synchronous asyncio.run()
+            # DB calls, pass the raw resume request to the TUI and let it
+            # resolve asynchronously during startup.
+            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
+            thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess
             if args.sandbox and args.sandbox not in {"none", "langsmith"}:
@@ -1447,6 +1471,7 @@ def cli_main() -> None:
                         model_params=model_params,
                         profile_override=profile_override,
                         thread_id=thread_id,
+                        resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
@@ -1467,21 +1492,22 @@ def cli_main() -> None:
 
             # Show LangSmith thread link for threads with checkpointed
             # content (same table that backs the `/threads` listing).
-            try:
-                thread_url = build_langsmith_thread_url(thread_id)
-                if thread_url and asyncio.run(thread_exists(thread_id)):
-                    console.print()
-                    ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                    ls_hint.append(
-                        thread_url,
-                        style=Style(dim=True, link=thread_url),
+            if thread_id:
+                try:
+                    thread_url = build_langsmith_thread_url(thread_id)
+                    if thread_url and asyncio.run(thread_exists(thread_id)):
+                        console.print()
+                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
+                        ls_hint.append(
+                            thread_url,
+                            style=Style(dim=True, link=thread_url),
+                        )
+                        console.print(ls_hint)
+                except Exception:
+                    logger.debug(
+                        "Could not display LangSmith thread URL on teardown",
+                        exc_info=True,
                     )
-                    console.print(ls_hint)
-            except Exception:
-                logger.debug(
-                    "Could not display LangSmith thread URL on teardown",
-                    exc_info=True,
-                )
 
             # Show resume hint on exit for threads with checkpointed content.
             if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
@@ -1490,9 +1516,29 @@ def cli_main() -> None:
                 hint = Text("deepagents -r ", style="cyan")
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
+
+            # Warn about available update on exit
+            try:
+                if result.update_available[0]:
+                    from deepagents_cli.update_check import upgrade_command
+
+                    latest = result.update_available[1]
+                    console.print()
+                    update_msg = Text("Update available: ", style="yellow bold")
+                    update_msg.append(f"v{latest}", style="yellow")
+                    console.print(update_msg)
+                    cmd_hint = Text("Run: ", style="dim")
+                    cmd_hint.append(upgrade_command(), style="cyan")
+                    console.print(cmd_hint)
+            except Exception:
+                logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C - suppress ugly traceback
-        console.print("\n\n[yellow]Interrupted[/yellow]")
+        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # `console` may not be bound if Ctrl+C arrives during config import.
+        try:
+            console.print("\n\n[yellow]Interrupted[/yellow]")
+        except NameError:
+            sys.stderr.write("\n\nInterrupted\n")
         sys.exit(0)
 
 

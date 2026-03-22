@@ -6,10 +6,9 @@ argparse tree.  It must stay lightweight — no SDK or langchain imports.
 
 from rich.markup import escape
 
-from deepagents_cli._version import __version__
+from deepagents_cli._version import DOCS_URL, __version__
 from deepagents_cli.config import (
     COLORS,
-    DOCS_URL,
     _get_editable_install_path,
     _is_editable_install,
     console,
@@ -115,6 +114,9 @@ def show_help() -> None:
     )
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
+    console.print(
+        "  --update                   Check for and install updates, then exit"
+    )
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show deepagents CLI and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")

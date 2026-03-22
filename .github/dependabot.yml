@@ -14,7 +14,7 @@ updates:
     directories:
       - "/libs/deepagents"
       - "/libs/cli"
-      - "/libs/harbor"
+      - "/libs/evals"
       - "/libs/acp"
       - "/libs/partners/daytona"
       - "/examples/content-builder-agent"

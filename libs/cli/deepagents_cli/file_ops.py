@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents_cli.config import settings
-
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -138,6 +136,8 @@ def resolve_physical_path(
         return None
     try:
         if assistant_id and path_str.startswith("/memories/"):
+            from deepagents_cli.config import settings
+
             agent_dir = settings.get_agent_dir(assistant_id)
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()

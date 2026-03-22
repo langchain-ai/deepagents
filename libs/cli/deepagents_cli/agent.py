@@ -672,6 +672,7 @@ def create_cli_agent(
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
@@ -710,6 +711,10 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
+            clarifying questions.
+
+            Disabled in non-interactive mode.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
@@ -795,9 +800,10 @@ def create_cli_agent(
     agent_middleware.append(ConfigurableModelMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
-    from deepagents_cli.ask_user import AskUserMiddleware
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
 
-    agent_middleware.append(AskUserMiddleware())
+        agent_middleware.append(AskUserMiddleware())
 
     # Add memory middleware
     if enable_memory:
@@ -923,23 +929,18 @@ def create_cli_agent(
     )
 
     # Create the agent
-    #
-    # TODO: revert to direct keyword arguments once the CLI pins SDK >=0.5.0.
-    # We use **kwargs here because `async_subagents` was added in SDK 0.5.0 but
-    # the CLI still pins 0.4.x. Passing an unknown kwarg — even as None — raises
-    # TypeError, so we must omit it from the dict entirely when unused.
-    agent_kwargs: dict[str, Any] = {
-        "model": model,
-        "system_prompt": system_prompt,
-        "tools": tools,
-        "backend": composite_backend,
-        "middleware": agent_middleware,
-        "interrupt_on": interrupt_on,
-        "checkpointer": checkpointer,
-        "subagents": custom_subagents or None,
-    }
-    if async_subagents:
-        agent_kwargs["async_subagents"] = async_subagents
-
-    agent = create_deep_agent(**agent_kwargs).with_config(config)
+    all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
+        *custom_subagents,
+        *(async_subagents or []),
+    ]
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        backend=composite_backend,
+        middleware=agent_middleware,
+        interrupt_on=interrupt_on,
+        checkpointer=checkpointer,
+        subagents=all_subagents or None,
+    ).with_config(config)
     return agent, composite_backend

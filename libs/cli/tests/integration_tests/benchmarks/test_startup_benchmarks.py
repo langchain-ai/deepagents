@@ -63,6 +63,11 @@ HEAVY_MODULES = frozenset(
         "deepagents_cli.sessions",
         "deepagents_cli.integrations.sandbox_factory",
         "deepagents_cli.tools",
+        # Deferred from config.py module level to lazy local imports
+        "dotenv",
+        "dotenv.main",
+        "deepagents_cli.model_config",
+        "deepagents_cli.project_utils",
     }
 )
 
@@ -136,6 +141,7 @@ class TestImportIsolation:
         [
             "from deepagents_cli.main import parse_args",
             "from deepagents_cli.main import check_cli_dependencies",
+            "from deepagents_cli.config import is_ascii_mode",
             "import deepagents_cli.ui",
             "import deepagents_cli.skills.commands",
             "from deepagents_cli._cli_context import CLIContext",
@@ -147,6 +153,7 @@ class TestImportIsolation:
         ids=[
             "main.parse_args",
             "main.check_cli_dependencies",
+            "config.is_ascii_mode",
             "ui",
             "skills.commands",
             "_cli_context.CLIContext",

@@ -63,6 +63,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset",
     ),
     SlashCommand(
+        name="/context",
+        description="Show position in conversation stack",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="stack depth",
+    ),
+    SlashCommand(
         name="/docs",
         description="Open documentation in browser",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
@@ -116,6 +122,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/remember",
         description="Update memory and skills from conversation",
+        bypass_tier=BypassTier.QUEUED,
+    ),
+    SlashCommand(
+        name="/return",
+        description="Return from subagent to parent context",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="back exit",
+    ),
+    SlashCommand(
+        name="/summary",
+        description="View/edit summary file for current branch",
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(

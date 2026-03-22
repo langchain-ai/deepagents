@@ -481,6 +481,9 @@ COMMANDS = {
     "help": "Show help information",
     "remember": "Review conversation and update memory/skills",
     "tokens": "Show token usage for current thread",
+    "context": "Show current position in conversation stack",
+    "return": "Return from subagent to parent context",
+    "summary": "View/edit the summary file for current branch",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
 }

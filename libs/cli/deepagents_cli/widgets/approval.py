@@ -66,8 +66,10 @@ class ApprovalMenu(Container):
         Binding("y", "select_approve", "Approve", show=False),
         Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
-        Binding("3", "select_reject", "Reject", show=False),
+        Binding("3", "select_auto_or_step", "Reject/Step", show=False),
         Binding("n", "select_reject", "Reject", show=False),
+        Binding("s", "select_step_into", "Step into", show=False),
+        Binding("4", "select_reject_when_task", "Reject (task)", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
     ]
 
@@ -120,6 +122,12 @@ class ApprovalMenu(Container):
         self._tool_info_container: Vertical | None = None
         # Minimal display if ALL tools are bash/shell
         self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
+        # Show "Step into" option for task tool (single request only)
+        self._is_task_tool = (
+            len(self._action_requests) == 1
+            and self._action_requests[0].get("name") == "task"
+        )
+        self._num_options = 4 if self._is_task_tool else 3
         # For expandable shell commands
         self._command_expanded = False
         self._command_widget: Static | None = None
@@ -257,17 +265,19 @@ class ApprovalMenu(Container):
 
         # Options container at bottom
         with Container(classes="approval-options-container"):
-            # Options - create 3 Static widgets
-            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
+            for i in range(self._num_options):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
 
         # Help text at the very bottom
         glyphs = get_glyphs()
+        quick_keys = "y/a/n" if not self._is_task_tool else "y/a/s/n"
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} {quick_keys} quick keys"
+            f" {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -325,7 +335,14 @@ class ApprovalMenu(Container):
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
         count = len(self._action_requests)
-        if count == 1:
+        if self._is_task_tool:
+            options = [
+                "1. Approve (y)",
+                "2. Auto-approve for this thread (a)",
+                "3. Step into (approve + interactive) (s)",
+                "4. Reject (n)",
+            ]
+        elif count == 1:
             options = [
                 "1. Approve (y)",
                 "2. Auto-approve for this thread (a)",
@@ -351,12 +368,12 @@ class ApprovalMenu(Container):
 
     def action_move_up(self) -> None:
         """Move selection up."""
-        self._selected = (self._selected - 1) % 3
+        self._selected = (self._selected - 1) % self._num_options
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
-        self._selected = (self._selected + 1) % 3
+        self._selected = (self._selected + 1) % self._num_options
         self._update_options()
 
     def action_select(self) -> None:
@@ -375,11 +392,34 @@ class ApprovalMenu(Container):
         self._update_options()
         self._handle_selection(1)
 
-    def action_select_reject(self) -> None:
-        """Select reject option."""
-        self._selected = 2
+    def action_select_auto_or_step(self) -> None:
+        """Handle '3' key -- step-into for task tool, reject otherwise."""
+        idx = 2
+        self._selected = idx
         self._update_options()
-        self._handle_selection(2)
+        self._handle_selection(idx)
+
+    def action_select_reject(self) -> None:
+        """Select reject option (last option, index varies by mode)."""
+        idx = self._num_options - 1
+        self._selected = idx
+        self._update_options()
+        self._handle_selection(idx)
+
+    def action_select_reject_when_task(self) -> None:
+        """Handle '4' key -- reject (task tool 4-option mode)."""
+        if self._is_task_tool:
+            idx = 3
+            self._selected = idx
+            self._update_options()
+            self._handle_selection(idx)
+
+    def action_select_step_into(self) -> None:
+        """Handle 's' key -- step into (only for task tool)."""
+        if self._is_task_tool:
+            self._selected = 2
+            self._update_options()
+            self._handle_selection(2)
 
     def action_toggle_expand(self) -> None:
         """Toggle shell command expansion."""
@@ -392,12 +432,24 @@ class ApprovalMenu(Container):
 
     def _handle_selection(self, option: int) -> None:
         """Handle the selected option."""
-        decision_map = {
-            0: "approve",
-            1: "auto_approve_all",
-            2: "reject",
-        }
+        if self._is_task_tool:
+            decision_map = {
+                0: "approve",
+                1: "auto_approve_all",
+                2: "step_into",
+                3: "reject",
+            }
+        else:
+            decision_map = {
+                0: "approve",
+                1: "auto_approve_all",
+                2: "reject",
+            }
         decision = {"type": decision_map[option]}
+
+        # For step_into, include the task args so the caller can create a context
+        if decision["type"] == "step_into":
+            decision["args"] = self._action_requests[0].get("args", {})
 
         # Resolve the future
         if self._future and not self._future.done():

@@ -420,7 +420,7 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+examples = [
     { name = "langchain-openai" },
 ]
 test = [
@@ -443,7 +443,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "langchain-openai", specifier = ">=1.1.11" }]
+examples = [{ name = "langchain-openai", specifier = ">=1.1.11" }]
 test = [
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-asyncio", specifier = ">=0.25.3" },

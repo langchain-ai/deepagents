@@ -20,7 +20,7 @@ Then, navigate into the newly created folder and run `uv sync`:
 
 ```sh
 cd deepagents/libs/acp
-uv sync --all-groups
+uv sync --group examples
 ```
 
 Rename the `.env.example` file to `.env` and add your [Anthropic](https://claude.com/platform/api) API key. You may also optionally set up tracing for your Deep Agent using [LangSmith](https://smith.langchain.com/) by populating the other env vars in the example file:

@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
+examples = [
     "langchain-openai>=1.1.11",
 ]
 test = [

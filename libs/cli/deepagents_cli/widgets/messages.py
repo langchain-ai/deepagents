@@ -78,7 +78,7 @@ class _TimestampClickMixin:
 
 
 _MODE_COLORS: dict[str, str] = {
-    "bash": theme.MODE_BASH,
+    "shell": theme.MODE_BASH,
     "command": theme.MODE_COMMAND,
 }
 """Map mode name to its color constant."""

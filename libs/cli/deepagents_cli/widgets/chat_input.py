@@ -820,7 +820,7 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell {
-        border: solid __MODE_SHELL__;
+        border: solid __MODE_BASH__;
     }
 
     ChatInput.mode-command {
@@ -841,7 +841,7 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell .input-prompt {
-        color: __MODE_SHELL__;
+        color: __MODE_BASH__;
     }
 
     ChatInput.mode-command .input-prompt {

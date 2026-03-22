@@ -167,7 +167,6 @@ class WelcomeBanner(Static):
             Content object containing the formatted banner.
         """
         parts: list[str | tuple[str, str | TStyle] | Content] = []
-        # Use orange for local, green for production
         banner_color = theme.PRIMARY_DEV if _is_editable_install() else theme.PRIMARY
         parts.append(
             (

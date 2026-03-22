@@ -17,6 +17,9 @@ LC_CARD = "#1A1B2E"
 LC_BORDER_DK = "#25283B"
 """Borders on dark backgrounds."""
 
+LC_BORDER_LT = "#3A3E57"
+"""Borders on lighter / hovered backgrounds."""
+
 LC_BODY = "#C0CAF5"
 """Body text — high contrast on dark backgrounds."""
 
@@ -38,6 +41,15 @@ LC_PINK = "#F7768E"
 LC_ORANGE = "#FF9E64"
 """Dev install indicator / warm accent."""
 
+LC_MUTED = "#545C7E"
+"""Muted / secondary text."""
+
+LC_GREEN_BG = "#1C2A38"
+"""Subtle green-tinted background for diff additions."""
+
+LC_PINK_BG = "#2A1F32"
+"""Subtle pink-tinted background for diff removals / errors."""
+
 LC_CYAN = "#7DCFFF"
 """Info / decorative accent."""
 
@@ -49,21 +61,21 @@ PRIMARY_DEV = LC_ORANGE
 SUCCESS = LC_GREEN
 WARNING = LC_AMBER
 ERROR = LC_PINK
-MUTED = "#545C7E"
+MUTED = LC_MUTED
 
 MODE_BASH = LC_PINK
 MODE_COMMAND = LC_PURPLE
 
 # Diff colors
-DIFF_ADD_FG = "#9ECE6A"
-DIFF_ADD_BG = "#1C2A38"
-DIFF_REMOVE_FG = "#F7768E"
-DIFF_REMOVE_BG = "#2A1F32"
+DIFF_ADD_FG = LC_GREEN
+DIFF_ADD_BG = LC_GREEN_BG
+DIFF_REMOVE_FG = LC_PINK
+DIFF_REMOVE_BG = LC_PINK_BG
 DIFF_CONTEXT = MUTED
 
 # Tool call widget
 TOOL_BORDER = LC_BORDER_DK
-TOOL_BORDER_HVR = "#3A3E57"
+TOOL_BORDER_HVR = LC_BORDER_LT
 TOOL_HEADER = WARNING
 TOOL_PENDING = WARNING
 TOOL_SUCCESS = SUCCESS
@@ -75,5 +87,5 @@ FILE_CONFIG = WARNING
 FILE_DIR = SUCCESS
 
 # Misc
-ERROR_BG = "#2A1F32"
+ERROR_BG = DIFF_REMOVE_BG
 SPINNER = LC_BLUE

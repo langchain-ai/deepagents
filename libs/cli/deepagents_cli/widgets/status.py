@@ -92,7 +92,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.shell {
-        background: __MODE_SHELL__;
+        background: __MODE_BASH__;
         color: white;
         text-style: bold;
     }

@@ -1607,3 +1607,41 @@ class TestShellAllowListMiddleware:
         assert result.status == "error"
         assert "rejected" in result.content
         assert result.tool_call_id == "tc3"
+        assert result.name == "execute"
+
+    async def test_rejects_missing_command(self) -> None:
+        """Shell tool call with no command arg is rejected, not an exception."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": {}, "id": "tc4"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
+    def test_rejects_empty_allow_list(self) -> None:
+        """Constructor rejects empty allow-list."""
+        import pytest
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            ShellAllowListMiddleware(allow_list=[])
+
+    def test_rejects_shell_allow_all(self) -> None:
+        """Constructor rejects SHELL_ALLOW_ALL sentinel."""
+        import pytest
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+        from deepagents_cli.config import SHELL_ALLOW_ALL
+
+        with pytest.raises(TypeError, match="SHELL_ALLOW_ALL"):
+            ShellAllowListMiddleware(allow_list=SHELL_ALLOW_ALL)

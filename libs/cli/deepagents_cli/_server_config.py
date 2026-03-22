@@ -246,9 +246,9 @@ class ServerConfig:
             model_params: Extra model kwargs.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
-            interrupt_shell_only: Only interrupt on shell execution tools.
-                When `True`, non-shell tools run without HITL interrupts,
-                reducing trace fragmentation in non-interactive mode.
+            interrupt_shell_only: Disable all HITL interrupts and validate shell
+                commands inline via middleware instead, reducing trace
+                fragmentation in non-interactive mode.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
             sandbox_setup: Path to setup script for the sandbox.

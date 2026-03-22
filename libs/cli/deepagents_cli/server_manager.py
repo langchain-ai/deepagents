@@ -212,7 +212,7 @@ async def start_server_and_get_agent(
         model_name: Model spec string.
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
-        interrupt_shell_only: Only interrupt on shell execution tools.
+        interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.
@@ -309,7 +309,7 @@ async def server_session(
         model_name: Model spec string.
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
-        interrupt_shell_only: Only interrupt on shell execution tools.
+        interrupt_shell_only: Validate shell commands via middleware instead of HITL.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.

@@ -622,7 +622,7 @@ class _AgentCoreProvider(SandboxProvider):
 
         # Validate AWS credentials early for a clear error message.
         try:
-            import boto3
+            import boto3  # ty: ignore[unresolved-import, unused-ignore-comment]
 
             session = boto3.Session()
             credentials = session.get_credentials()

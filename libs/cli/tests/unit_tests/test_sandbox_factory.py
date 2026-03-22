@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,8 +47,9 @@ def test_agentcore_get_or_create_raises_for_missing_dep() -> None:
         r"'langchain-agentcore-codeinterpreter' package"
     )
 
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
         provider = _get_provider("agentcore")
 
     with (
@@ -62,16 +64,20 @@ def test_agentcore_get_or_create_raises_for_missing_dep() -> None:
 
 def test_agentcore_raises_on_missing_aws_credentials() -> None:
     """AgentCore should raise ValueError without AWS creds."""
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.get_credentials.return_value = None
-        with pytest.raises(ValueError, match="AWS credentials not found"):
-            _get_provider("agentcore")
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = None
+    with (
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="AWS credentials not found"),
+    ):
+        _get_provider("agentcore")
 
 
 def test_agentcore_rejects_sandbox_id() -> None:
     """AgentCore should raise NotImplementedError for sandbox_id."""
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
         provider = _get_provider("agentcore")
 
     with pytest.raises(NotImplementedError, match="does not support reconnecting"):

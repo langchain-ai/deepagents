@@ -1460,7 +1460,7 @@ class ChatInput(Vertical):
                 except OSError as exc:
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
-                self.app.notify(msg, severity="warning", timeout=5)
+                self.app.notify(msg, severity="warning", timeout=5, markup=False)
 
             # Not a supported media file, keep as path
             logger.debug("Could not load media from dropped path: %s", path)

@@ -69,6 +69,86 @@ class ModelLabel(Widget):
         return Content("\u2026")
 
 
+class CwdLabel(Widget):
+    """A label that displays the current working directory with ellipsis truncation.
+
+    When the full path doesn't fit, it is left-truncated with a leading
+    ellipsis so the deepest directory segments stay visible.
+    """
+
+    cwd: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so `width: auto` works.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Character length of the formatted path.
+        """
+        return len(self.cwd)
+
+    def render(self) -> RenderResult:
+        """Render the cwd label with width-aware truncation.
+
+        Returns:
+            Text content, left-truncated with ellipsis when necessary.
+        """
+        width = self.content_size.width
+        if not self.cwd or width <= 0:
+            return ""
+        if len(self.cwd) <= width:
+            return Content(self.cwd)
+        if width > 1:
+            return Content("\u2026" + self.cwd[-(width - 1) :])
+        return Content("\u2026")
+
+
+class BranchLabel(Widget):
+    """A label that displays a git branch name with ellipsis truncation.
+
+    When the full icon + branch text doesn't fit, the branch name is
+    right-truncated with a trailing ellipsis so the prefix stays visible.
+    """
+
+    branch: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so `width: auto` works.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Character length of the full icon + branch string.
+        """
+        if not self.branch:
+            return 0
+        icon = get_glyphs().git_branch
+        return len(f"{icon} {self.branch}")
+
+    def render(self) -> RenderResult:
+        """Render the branch label with width-aware truncation.
+
+        Returns:
+            Text content, right-truncated with ellipsis when necessary.
+        """
+        width = self.content_size.width
+        if not self.branch or width <= 0:
+            return ""
+        icon = get_glyphs().git_branch
+        full = f"{icon} {self.branch}"
+        if len(full) <= width:
+            return Content(full)
+        # Left-truncate: keep icon + trailing branch segment visible
+        if width > 1:
+            return Content("\u2026" + full[-(width - 1) :])
+        return Content("\u2026")
+
+
 class StatusBar(Horizontal):
     """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
 
@@ -125,14 +205,15 @@ class StatusBar(Horizontal):
         color: $warning;
     }
 
-    StatusBar .status-cwd {
-        width: auto;
-        text-align: right;
+    StatusBar CwdLabel {
+        width: 1fr;
+        min-width: 0;
         color: $text-muted;
     }
 
-    StatusBar .status-branch {
-        width: auto;
+    StatusBar BranchLabel {
+        width: 1fr;
+        min-width: 0;
         color: $text-muted;
         padding: 0 1;
     }
@@ -192,8 +273,8 @@ class StatusBar(Horizontal):
         )
         with Horizontal(classes="status-left-collapsible"):
             yield Static("", classes="status-message", id="status-message")
-            yield Static("", classes="status-cwd", id="cwd-display")
-            yield Static("", classes="status-branch", id="branch-display")
+            yield CwdLabel(id="cwd-display")
+            yield BranchLabel(id="branch-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
@@ -209,11 +290,11 @@ class StatusBar(Horizontal):
         """
         width = event.size.width
         with suppress(NoMatches):
-            self.query_one("#branch-display", Static).display = (
+            self.query_one("#branch-display", BranchLabel).display = (
                 width >= self._BRANCH_WIDTH_THRESHOLD
             )
         with suppress(NoMatches):
-            self.query_one("#cwd-display", Static).display = (
+            self.query_one("#cwd-display", CwdLabel).display = (
                 width >= self._CWD_WIDTH_THRESHOLD
             )
 
@@ -263,19 +344,18 @@ class StatusBar(Horizontal):
     def watch_cwd(self, new_value: str) -> None:
         """Update cwd display when it changes."""
         try:
-            display = self.query_one("#cwd-display", Static)
+            label = self.query_one("#cwd-display", CwdLabel)
         except NoMatches:
             return
-        display.update(self._format_cwd(new_value))
+        label.cwd = self._format_cwd(new_value)
 
     def watch_branch(self, new_value: str) -> None:
         """Update branch display when it changes."""
         try:
-            display = self.query_one("#branch-display", Static)
+            label = self.query_one("#branch-display", BranchLabel)
         except NoMatches:
             return
-        icon = get_glyphs().git_branch
-        display.update(f"{icon} {new_value}" if new_value else "")
+        label.branch = new_value
 
     def watch_status_message(self, new_value: str) -> None:
         """Update status message display."""

@@ -6,7 +6,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size
 
-from deepagents_cli.widgets.status import StatusBar
+from deepagents_cli.widgets.status import BranchLabel, CwdLabel, StatusBar
 
 
 class StatusBarApp(App):
@@ -29,7 +29,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_shows_branch_name(self) -> None:
         """Setting branch reactive should update the display widget."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -39,7 +39,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_with_feature_branch(self) -> None:
         """Feature branch names with slashes should display correctly."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "feat/new-feature"
             await pilot.pause()
@@ -49,7 +49,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_clears_when_set_empty(self) -> None:
         """Setting branch to empty string should clear the display."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -60,7 +60,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_contains_git_icon(self) -> None:
         """Branch display should include the git branch glyph prefix."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "develop"
             await pilot.pause()
@@ -69,6 +69,75 @@ class TestBranchDisplay:
             from deepagents_cli.config import get_glyphs
 
             assert rendered.startswith(get_glyphs().git_branch)
+
+
+class TestBranchTruncation:
+    """Tests for BranchLabel ellipsis truncation."""
+
+    async def test_long_branch_truncated_with_ellipsis(self) -> None:
+        """A branch name that exceeds available width should end with ellipsis."""
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            label = pilot.app.query_one("#branch-display", BranchLabel)
+            long_name = (
+                "feature/very-long-branch-name-that-will"
+                "-definitely-exceed-the-available-width"
+            )
+            bar.branch = long_name
+            await pilot.pause()
+            rendered = str(label.render())
+            width = label.content_size.width
+            from deepagents_cli.config import get_glyphs
+
+            icon = get_glyphs().git_branch
+            full = f"{icon} {long_name}"
+            if len(full) > width > 0:
+                assert rendered.startswith("\u2026")
+                assert len(rendered) == width
+
+    async def test_short_branch_not_truncated(self) -> None:
+        """A short branch name should render without ellipsis."""
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            label = pilot.app.query_one("#branch-display", BranchLabel)
+            bar.branch = "main"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "main" in rendered
+            assert "\u2026" not in rendered
+
+
+class TestCwdTruncation:
+    """Tests for CwdLabel ellipsis truncation."""
+
+    async def test_long_cwd_truncated_with_leading_ellipsis(self) -> None:
+        """A cwd path that exceeds available width should start with ellipsis."""
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            label = pilot.app.query_one("#cwd-display", CwdLabel)
+            long_path = (
+                "~/projects/very/deeply/nested/directory"
+                "/structure/that/exceeds/available/width"
+            )
+            bar.cwd = long_path
+            await pilot.pause()
+            rendered = str(label.render())
+            width = label.content_size.width
+            if len(long_path) > width > 0:
+                assert rendered.startswith("\u2026")
+                assert len(rendered) == width
+                # Tail of the path should be preserved
+                assert rendered.endswith("width")
+
+    async def test_short_cwd_not_truncated(self) -> None:
+        """A short cwd path should render without ellipsis."""
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            label = pilot.app.query_one("#cwd-display", CwdLabel)
+            bar.cwd = "/tmp"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "\u2026" not in rendered
 
 
 class TestResizePriority:

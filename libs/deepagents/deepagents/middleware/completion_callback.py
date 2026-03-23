@@ -164,9 +164,10 @@ async def _notify_parent(
 
 
 _MAX_MESSAGE_LENGTH = 500
+_TRUNCATION_SUFFIX = "... [full result truncated]"
 
 
-def _extract_last_message(state: dict[str, Any]) -> str:
+def _extract_last_message(state: dict[str, Any], *, task_id: str | None = None) -> str:
     """Extract a summary from the subagent's final message.
 
     Returns at most 500 characters from the last message's content.
@@ -183,7 +184,9 @@ def _extract_last_message(state: dict[str, Any]) -> str:
 
     text_content = last.text
     if len(text_content) > _MAX_MESSAGE_LENGTH:
-        text_content = text_content[:_MAX_MESSAGE_LENGTH] + "... [full result truncated]"
+        text_content = text_content[:_MAX_MESSAGE_LENGTH] + _TRUNCATION_SUFFIX
+        if task_id:
+            text_content += f" Result truncated. Use `check_async_task(task_id={task_id!r})` to retrieve the full result if needed."
     return text_content
 
 
@@ -269,7 +272,9 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
         """After-agent hook for successful subagent completion."""
         state_dict = cast("dict[str, Any]", state)
         callback_thread_id = state_dict[_CALLBACK_THREAD_ID_KEY]
-        summary = _extract_last_message(state_dict)
+        config = get_config()
+        task_id = (config.get("configurable") or {}).get("thread_id")
+        summary = _extract_last_message(state_dict, task_id=task_id if isinstance(task_id, str) else None)
         notification = self._format_notification(f"Completed. Result: {summary}")
         await self._send_notification(callback_thread_id, notification)
         return None

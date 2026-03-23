@@ -21,26 +21,27 @@ from typing_extensions import TypedDict
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
 
-- `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
-  on `\\n`), no `encoding` field.
-- `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
-  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
-  `"base64"`).
+- `'v1'`: Legacy format — `content` stored as `list[str]` (lines split
+    on `\\n`), no `encoding` field.
+- `'v2'`: Current format — `content` stored as a plain `str` (UTF-8 text
+    or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+    `"base64"`).
 """
 
 logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
-    "file_not_found",  # Download: file doesn't exist
-    "permission_denied",  # Both: access denied
-    "is_directory",  # Download: tried to download directory as file
-    "invalid_path",  # Both: path syntax malformed (parent dir missing, invalid chars)
+    "file_not_found",
+    "permission_denied",
+    "is_directory",
+    "invalid_path",
 ]
 """Standardized error codes for file upload/download operations.
 
-These represent common, recoverable errors that an LLM can understand and potentially fix:
+These represent common, recoverable errors that an LLM can understand and
+potentially fix:
+
 - file_not_found: The requested file doesn't exist (download)
-- parent_not_found: The parent directory doesn't exist (upload)
 - permission_denied: Access denied for the operation
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
@@ -307,6 +308,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Returns an error string if the file doesn't exist or can't be read.
 
         !!! note
+
             - Use pagination (offset/limit) for large files to avoid context overflow
             - First scan: `read(path, limit=100)` to see file structure
             - Read more: `read(path, offset=100, limit=200)` for next section
@@ -334,29 +336,36 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             pattern: Literal string to search for (NOT regex).
-                     Performs exact substring matching within file content.
-                     Example: "TODO" matches any line containing "TODO"
+
+                Performs exact substring matching within file content.
+
+                Example: "TODO" matches any line containing "TODO"
 
             path: Optional directory path to search in.
-                  If None, searches in current working directory.
-                  Example: "/workspace/src"
+
+                If None, searches in current working directory.
+
+                Example: `'/workspace/src'`
 
             glob: Optional glob pattern to filter which FILES to search.
-                  Filters by filename/path, not content.
-                  Supports standard glob wildcards:
-                  - `*` matches any characters in filename
-                  - `**` matches any directories recursively
-                  - `?` matches single character
-                  - `[abc]` matches one character from set
+
+                Filters by filename/path, not content.
+
+                Supports standard glob wildcards:
+
+                - `*` matches any characters in filename
+                - `**` matches any directories recursively
+                - `?` matches single character
+                - `[abc]` matches one character from set
 
         Examples:
-                  - "*.py" - only search Python files
-                  - "**/*.txt" - search all .txt files recursively
-                  - "src/**/*.js" - search JS files under src/
-                  - "test[0-9].txt" - search test0.txt, test1.txt, etc.
+            - `'*.py'` - only search Python files
+            - `'**/*.txt'` - search all `.txt` files recursively
+            - `'src/**/*.js'` - search JS files under src/
+            - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
 
         Returns:
-            GrepResult with matches or error.
+            `GrepResult` with matches or error.
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
             warnings.warn(
@@ -382,14 +391,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             pattern: Glob pattern with wildcards to match file paths.
-                     Supports standard glob syntax:
-                     - `*` matches any characters within a filename/directory
-                     - `**` matches any directories recursively
-                     - `?` matches a single character
-                     - `[abc]` matches one character from set
 
-            path: Base directory to search from. Default: "/" (root).
-                  The pattern is applied relative to this path.
+                Supports standard glob syntax:
+
+                - `*` matches any characters within a filename/directory
+                - `**` matches any directories recursively
+                - `?` matches a single character
+                - `[abc]` matches one character from set
+
+            path: Base directory to search from.
+
+                Default: `'/'` (root).
+
+                The pattern is applied relative to this path.
 
         Returns:
             GlobResult with matching files or error.
@@ -417,7 +431,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             file_path: Absolute path where the file should be created.
-                       Must start with '/'.
+
+                Must start with '/'.
             content: String content to write to the file.
 
         Returns:
@@ -443,13 +458,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Perform exact string replacements in an existing file.
 
         Args:
-            file_path: Absolute path to the file to edit. Must start with '/'.
+            file_path: Absolute path to the file to edit. Must start with `'/'`.
             old_string: Exact string to search for and replace.
-                       Must match exactly including whitespace and indentation.
+
+                Must match exactly including whitespace and indentation.
             new_string: String to replace old_string with.
-                       Must be different from old_string.
-            replace_all: If True, replace all occurrences. If False (default),
-                        old_string must be unique in the file or the edit fails.
+
+                Must be different from old_string.
+            replace_all: If True, replace all occurrences.
+
+                If False (default), `old_string` must be unique in the file or
+                the edit fails.
 
         Returns:
             EditResult
@@ -469,16 +488,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
-        This API is designed to allow developers to use it either directly or
-        by exposing it to LLMs via custom tools.
+        This API is designed to allow developers to use it either directly or by
+        exposing it to LLMs via custom tools.
 
         Args:
             files: List of (path, content) tuples to upload.
 
         Returns:
             List of FileUploadResponse objects, one per input file.
-            Response order matches input order (response[i] for files[i]).
-            Check the error field to determine success/failure per file.
+
+                Response order matches input order (response[i] for files[i]).
+
+                Check the error field to determine success/failure per file.
 
         Examples:
             ```python
@@ -506,9 +527,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order (response[i] for paths[i]).
-            Check the error field to determine success/failure per file.
+            List of `FileDownloadResponse` objects, one per input path.
+
+                Response order matches input order (response[i] for paths[i]).
+
+                Check the error field to determine success/failure per file.
         """
         raise NotImplementedError
 
@@ -522,6 +545,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """List all files in a directory with metadata.
 
         !!! warning "Deprecated"
+
             Use `ls` instead.
         """
         warnings.warn(
@@ -535,6 +559,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `ls_info`.
 
         !!! warning "Deprecated"
+
             Use `als` instead.
         """
         warnings.warn(
@@ -548,6 +573,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Find files matching a glob pattern.
 
         !!! warning "Deprecated"
+
             Use `glob` instead.
         """
         warnings.warn(
@@ -561,6 +587,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `glob_info`.
 
         !!! warning "Deprecated"
+
             Use `aglob` instead.
         """
         warnings.warn(
@@ -579,6 +606,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Search for a literal text pattern in files.
 
         !!! warning "Deprecated"
+
             Use `grep` instead.
         """
         warnings.warn(
@@ -597,6 +625,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `grep_raw`.
 
         !!! warning "Deprecated"
+
             Use `agrep` instead.
         """
         warnings.warn(
@@ -618,7 +647,10 @@ class ExecuteResponse:
     """Combined stdout and stderr output of the executed command."""
 
     exit_code: int | None = None
-    """The process exit code. 0 indicates success, non-zero indicates failure."""
+    """The process exit code.
+
+    0 indicates success, non-zero indicates failure.
+    """
 
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
@@ -662,7 +694,7 @@ class SandboxBackendProtocol(BackendProtocol):
                 backends that support no-timeout execution.
 
         Returns:
-            ExecuteResponse with combined output, exit code, and truncation flag.
+            `ExecuteResponse` with combined output, exit code, and truncation flag.
         """
         raise NotImplementedError
 

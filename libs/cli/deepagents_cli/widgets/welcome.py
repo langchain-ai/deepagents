@@ -38,6 +38,7 @@ _TIPS: list[str] = [
     "Use /skill:<name> to invoke a skill directly",
     "Type /update to check for and install updates",
     "Use /theme to customize the CLI colors and style",
+    "Use /skill-creator to build reusable agent skills",
 ]
 """Rotating tips shown in the welcome footer.
 

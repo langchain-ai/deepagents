@@ -414,7 +414,7 @@ except PermissionError:
         return GrepResult(matches=matches)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
-        """Structured glob matching returning GlobResult."""
+        """Structured glob matching returning `GlobResult`."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
@@ -452,7 +452,7 @@ except PermissionError:
         """Upload multiple files to the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
-        and return errors in FileUploadResponse objects rather than raising.
+        and return errors in `FileUploadResponse` objects rather than raising.
         """
 
     @abstractmethod
@@ -460,5 +460,5 @@ except PermissionError:
         """Download multiple files from the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
-        and return errors in FileDownloadResponse objects rather than raising.
+        and return errors in `FileDownloadResponse` objects rather than raising.
         """

@@ -656,6 +656,28 @@ class TestListSkillsBuiltIn:
         assert "deepagents-cli-version" in creator["metadata"]
         assert creator["metadata"]["deepagents-cli-version"] == _cli_version
 
+    def test_real_remember_skill_ships(self) -> None:
+        """Verify the actual built-in remember SKILL.md exists and loads."""
+        built_in_dir = Settings.get_built_in_skills_dir()
+        skill_md = built_in_dir / "remember" / "SKILL.md"
+        assert skill_md.exists(), f"Expected {skill_md} to exist"
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        skill_names = {s["name"] for s in skills}
+        assert "remember" in skill_names
+
+        remember = next(s for s in skills if s["name"] == "remember")
+        assert remember["source"] == "built-in"
+        assert len(remember["description"]) > 0
+        assert remember["license"] == "MIT"
+        assert remember["compatibility"] == "designed for deepagents-cli"
+        assert "deepagents-cli-version" in remember["metadata"]
+        assert remember["metadata"]["deepagents-cli-version"] == _cli_version
+
     def test_oserror_in_one_source_does_not_break_others(self, tmp_path: Path) -> None:
         """An OSError in one source should not prevent other sources from loading.
 

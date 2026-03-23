@@ -131,7 +131,7 @@ class TestHelpBodyDrift:
         assert match, "Could not locate Commands section in help_body"
         commands_section = match.group(1)
 
-        help_cmds = set(re.findall(r"/[a-z]+", commands_section))
+        help_cmds = set(re.findall(r"/[a-z][-a-z]*", commands_section))
         registry_cmds = {cmd.name for cmd in COMMANDS}
 
         # Commands intentionally omitted from the help body

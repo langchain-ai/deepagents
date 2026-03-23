@@ -43,7 +43,6 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
-from deepagents_cli.prompts import REMEMBER_PROMPT
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -2492,7 +2491,8 @@ class DeepAgentsApp(App):
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, "
-                "/skill:<name>, /remember, /theme, /tokens, /threads, /trace, "
+                "/skill:<name>, /remember, /skill-creator, /theme, /tokens, "
+                "/threads, /trace, "
                 "/update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -2618,23 +2618,19 @@ class DeepAgentsApp(App):
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
         elif cmd == "/remember" or cmd.startswith("/remember "):
-            # Extract any additional context after /remember
-            additional_context = ""
-            if cmd.startswith("/remember "):
-                additional_context = command.strip()[len("/remember ") :].strip()
-
-            # Build the final prompt
-            if additional_context:
-                final_prompt = (
-                    f"{REMEMBER_PROMPT}\n\n"
-                    f"**Additional context from user:** {additional_context}"
-                )
-            else:
-                final_prompt = REMEMBER_PROMPT
-
-            # Send as a user message to the agent
-            await self._handle_user_message(final_prompt)
-            return  # _handle_user_message already mounts the message
+            # Convenience alias for /skill:remember — shorter and discoverable
+            # before skill loading completes.
+            args = command.strip()[len("/remember") :].strip()
+            rewritten = f"/skill:remember {args}" if args else "/skill:remember"
+            await self._handle_skill_command(rewritten)
+        elif cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
+            # Convenience alias for /skill:skill-creator — shorter and
+            # discoverable before skill loading completes.
+            args = command.strip()[len("/skill-creator") :].strip()
+            rewritten = (
+                f"/skill:skill-creator {args}" if args else "/skill:skill-creator"
+            )
+            await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
         elif cmd == "/theme":

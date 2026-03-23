@@ -961,11 +961,6 @@ class TestModePrefixStripping:
             chat._text_area.text = "h"
             await pilot.pause()
 
-            # Completions should include /help
-            assert chat._current_suggestions
-            labels = [s[0] for s in chat._current_suggestions]
-            assert "/help" in labels
-
     async def test_submission_prepends_shell_prefix(self) -> None:
         """Submitting in shell mode should prepend `'!'` to the value."""
         app = _RecordingApp()

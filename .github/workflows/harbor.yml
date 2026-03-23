@@ -134,7 +134,7 @@ jobs:
         run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
-    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }})"
+    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
     needs: prep
     runs-on: ubuntu-latest
     timeout-minutes: 360

@@ -10,17 +10,26 @@ variables (`$muted`, `$tool-border`, etc.) are backed by these constants via
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette,
 look up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
+
+Users can define custom themes in `~/.deepagents/config.toml` under
+`[themes.<name>]` sections. Each section must include `label` (str) and `dark`
+(bool); color fields are optional and fall back to the built-in dark/light
+palette based on the `dark` flag. See `_load_user_themes()` for details.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, fields
+from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Brand palette — dark  (originally tokyonight-inspired, LangChain blue primary)
@@ -276,6 +285,27 @@ class ThemeColors:
                 )
                 raise ValueError(msg)
 
+    @classmethod
+    def merged(cls, base: ThemeColors, overrides: dict[str, str]) -> ThemeColors:
+        """Create a new `ThemeColors` by overlaying overrides onto a base.
+
+        Fields present in `overrides` replace the corresponding base value;
+        missing fields inherit from `base`. This lets users specify only the
+        colors they want to customize.
+
+        Args:
+            base: Fallback color set for any field not in `overrides`.
+            overrides: Field-name to hex-color mapping. Unknown keys are
+                silently ignored.
+
+        Returns:
+            New `ThemeColors` with merged values.
+        """
+        valid_names = {f.name for f in fields(cls)}
+        kwargs = {f.name: getattr(base, f.name) for f in fields(cls)}
+        kwargs.update({k: v for k, v in overrides.items() if k in valid_names})
+        return cls(**kwargs)
+
 
 DARK_COLORS = ThemeColors(
     primary=LC_BLUE,
@@ -345,9 +375,9 @@ class ThemeEntry:
     """Resolved color set."""
 
     custom: bool = True
-    """Whether this theme is registered as a custom `Theme` with Textual.
+    """Whether this theme must be registered with Textual via `register_theme()`.
 
-    `True` for LangChain-branded themes (registered via `register_theme()`).
+    `True` for LangChain-branded themes and user-defined themes.
     `False` for Textual built-in themes that Textual already knows about.
     """
 
@@ -358,11 +388,11 @@ class ThemeEntry:
     """
 
 
-def _build_registry() -> MappingProxyType[str, ThemeEntry]:
-    """Build and freeze the theme registry.
+def _builtin_themes() -> dict[str, ThemeEntry]:
+    """Return the built-in theme entries as a mutable dict.
 
     Returns:
-        Read-only mapping of theme names to `ThemeEntry` instances.
+        Dict of built-in theme names to `ThemeEntry` instances.
     """
     r: dict[str, ThemeEntry] = {}
     r["langchain"] = ThemeEntry(
@@ -396,6 +426,156 @@ def _build_registry() -> MappingProxyType[str, ThemeEntry]:
         colors=DARK_COLORS,
         custom=False,
     )
+    return r
+
+
+_BUILTIN_NAMES: frozenset[str] = frozenset(_builtin_themes())
+"""Names reserved for built-in themes — user themes cannot shadow these.
+
+Derived from `_builtin_themes()` to stay in sync automatically.
+"""
+
+
+def _load_user_themes(
+    builtins: dict[str, ThemeEntry],
+    *,
+    config_path: Path | None = None,
+) -> None:
+    """Load user-defined themes from `config.toml` into `builtins` (mutated).
+
+    Each `[themes.<name>]` section must have:
+
+    - `label` (str) — human-readable name shown in the theme picker.
+    - `dark` (bool) — whether this is a dark-mode variant.
+
+    All `ThemeColors` fields are optional; omitted fields fall back to the
+    built-in dark or light palette based on the `dark` flag.
+
+    Invalid themes (bad hex, missing required keys, name collision with
+    built-ins) are logged as warnings and skipped — they never crash startup.
+
+    Example `config.toml` snippet:
+
+    ```toml
+    [themes.solarized-dark]
+    label = "Solarized Dark"
+    dark = true
+    primary = "#268BD2"
+    warning = "#B58900"
+    ```
+
+    Args:
+        builtins: Mutable dict to append user themes into.
+        config_path: Override for the config file path (testing).
+    """
+    if config_path is None:
+        try:
+            config_path = Path.home() / ".deepagents" / "config.toml"
+        except RuntimeError:
+            return
+
+    try:
+        if not config_path.exists():
+            return
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not read %s for user themes: %s",
+            config_path,
+            exc,
+        )
+        return
+
+    themes_section: Any = data.get("themes")
+    if not isinstance(themes_section, dict) or not themes_section:
+        return
+
+    for name, section in themes_section.items():
+        if not isinstance(section, dict):
+            logger.warning("Ignoring non-table [themes.%s]", name)
+            continue
+
+        if name in _BUILTIN_NAMES:
+            logger.warning(
+                "User theme '%s' shadows a built-in theme and will be ignored",
+                name,
+            )
+            continue
+
+        label = section.get("label")
+        dark = section.get("dark")
+        if not isinstance(label, str) or not label.strip():
+            logger.warning(
+                "User theme '%s' missing required 'label' (str); skipping",
+                name,
+            )
+            continue
+        if not isinstance(dark, bool):
+            logger.warning(
+                "User theme '%s' missing required 'dark' (bool); skipping",
+                name,
+            )
+            continue
+
+        base = DARK_COLORS if dark else LIGHT_COLORS
+        valid_color_names = {f.name for f in fields(ThemeColors)}
+        reserved = {"label", "dark"}
+        color_overrides: dict[str, str] = {}
+        for k, v in section.items():
+            if k in reserved:
+                continue
+            if not isinstance(v, str):
+                logger.warning(
+                    "User theme '%s' field '%s' must be a string, got %s; ignoring",
+                    name,
+                    k,
+                    type(v).__name__,
+                )
+                continue
+            if k in valid_color_names:
+                color_overrides[k] = v
+            else:
+                logger.warning(
+                    "User theme '%s' has unknown color field '%s'; ignoring",
+                    name,
+                    k,
+                )
+
+        try:
+            colors = ThemeColors.merged(base, color_overrides)
+        except ValueError as exc:
+            logger.warning(
+                "User theme '%s' has invalid colors: %s; skipping",
+                name,
+                exc,
+            )
+            continue
+
+        builtins[name] = ThemeEntry(
+            label=label,
+            dark=dark,
+            colors=colors,
+            custom=True,
+        )
+
+
+def _build_registry(
+    *, config_path: Path | None = None
+) -> MappingProxyType[str, ThemeEntry]:
+    """Build and freeze the theme registry (built-in + user themes).
+
+    Args:
+        config_path: Override for the config file path (testing).
+
+    Returns:
+        Read-only mapping of theme names to `ThemeEntry` instances.
+    """
+    r = _builtin_themes()
+    _load_user_themes(r, config_path=config_path)
     return MappingProxyType(r)
 
 

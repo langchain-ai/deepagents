@@ -593,7 +593,7 @@ class DeepAgentsApp(App):
         """
         super().__init__(**kwargs)
 
-        # Register LangChain brand themes (dark + light)
+        # Register custom themes (built-in LC themes + user-defined)
         for name, entry in theme.ThemeEntry.REGISTRY.items():
             if entry.custom:
                 c = entry.colors

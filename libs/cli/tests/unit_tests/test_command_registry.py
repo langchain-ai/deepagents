@@ -137,6 +137,9 @@ class TestHelpBodyDrift:
         # Commands intentionally omitted from the help body
         excluded = {"/version"}
 
+        # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
+        help_cmds.discard("/skill")
+
         missing = registry_cmds - help_cmds - excluded
         extra = help_cmds - registry_cmds
 

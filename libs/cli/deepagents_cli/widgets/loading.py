@@ -131,7 +131,8 @@ class LoadingWidget(Static):
 
         if self._spinner_widget:
             frame = self._spinner.next_frame()
-            self._spinner_widget.update(Content.styled(frame, theme.SPINNER))
+            colors = theme.get_theme_colors(self)
+            self._spinner_widget.update(Content.styled(frame, colors.spinner))
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)

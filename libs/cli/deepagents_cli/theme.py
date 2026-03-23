@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from textual.app import App
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -124,69 +126,72 @@ LC_LIGHT_PINK_BG = "#FEE2E2"
 
 
 # ---------------------------------------------------------------------------
-# Semantic constants  (Rich markup + CSS variable defaults)
+# Semantic constants  (ANSI color names for Rich console output)
 #
-# These are the *dark-mode* values, used directly in Python code that renders
-# via Rich's `Console.print()` (non-interactive output, `non_interactive.py`,
-# `main.py`). Textual widget code should prefer CSS variables. Python code
-# needing theme-aware values should look up the active `ThemeEntry` from
-# the registry.
+# These are ANSI color names resolved by the user's terminal palette, so they
+# adapt to both dark and light terminal backgrounds automatically. They are
+# used in Rich's `Console.print()` (non-interactive output, help screens,
+# `non_interactive.py`, `main.py`).
+#
+# Textual widget code should NOT use these. Instead, call
+# `get_theme_colors(self.app)` to obtain the active theme's `ThemeColors`
+# (hex values), or reference CSS variables (`$primary`, `$muted`, etc.).
 # ---------------------------------------------------------------------------
-PRIMARY = LC_BLUE
+PRIMARY = "blue"
 """Default accent for headings, borders, links, and active elements."""
 
-PRIMARY_DEV = LC_ORANGE
+PRIMARY_DEV = "bright_red"
 """Accent used when running from an editable (dev) install."""
 
-SUCCESS = LC_GREEN
+SUCCESS = "green"
 """Positive outcomes — tool success, approved actions."""
 
-WARNING = LC_AMBER
+WARNING = "yellow"
 """Caution and notice states — auto-approve off, pending tool calls, notices."""
 
-MUTED = LC_MUTED
+MUTED = "bright_black"
 """De-emphasized text — timestamps, secondary labels."""
 
-MODE_BASH = LC_PINK
+MODE_BASH = "red"
 """Shell mode indicator — borders, prompts, and message prefixes."""
 
-MODE_COMMAND = LC_PURPLE
+MODE_COMMAND = "magenta"
 """Command mode indicator — borders, prompts, and message prefixes."""
 
 # Diff colors
-DIFF_ADD_FG = LC_GREEN
+DIFF_ADD_FG = "green"
 """Added-line foreground in inline diffs."""
 
-DIFF_ADD_BG = LC_GREEN_BG
+DIFF_ADD_BG = "green"
 """Added-line background in inline diffs."""
 
-DIFF_REMOVE_FG = LC_PINK
+DIFF_REMOVE_FG = "red"
 """Removed-line foreground in inline diffs."""
 
-DIFF_REMOVE_BG = LC_PINK_BG
+DIFF_REMOVE_BG = "red"
 """Removed-line background in inline diffs."""
 
-DIFF_CONTEXT = MUTED
+DIFF_CONTEXT = "bright_black"
 """Unchanged context lines in inline diffs."""
 
 # Tool call widget
-TOOL_BORDER = LC_BORDER_DK
+TOOL_BORDER = "bright_black"
 """Tool call card border."""
 
-TOOL_HEADER = WARNING
+TOOL_HEADER = "yellow"
 """Tool call headers, slash-command tokens, and approval-menu commands."""
 
 # File listing colors
-FILE_PYTHON = LC_BLUE
+FILE_PYTHON = "blue"
 """Python files in tool-call file listings."""
 
-FILE_CONFIG = WARNING
+FILE_CONFIG = "yellow"
 """Config / data files in tool-call file listings."""
 
-FILE_DIR = SUCCESS
+FILE_DIR = "green"
 """Directories in tool-call file listings."""
 
-SPINNER = LC_BLUE
+SPINNER = "blue"
 """Loading spinner color."""
 
 
@@ -616,3 +621,30 @@ def get_css_variable_defaults(
         "diff-remove-bg": c.diff_remove_bg,
         "error-bg": c.error_bg,
     }
+
+
+def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
+    """Return the `ThemeColors` for the active Textual theme.
+
+    Textual widget code should call this instead of reading the module-level
+    ANSI constants, which are intended for Rich console output only.
+
+    Args:
+        widget_or_app: Textual `App`, a mounted widget, or `None`.
+
+    Returns:
+        `ThemeColors` for the active theme.
+    """
+    if widget_or_app is None:
+        return DARK_COLORS
+    # Resolve the App — widget_or_app may be a widget (has .app property)
+    # or an App directly.
+    app = (
+        widget_or_app.app  # type: ignore[attr-defined]
+        if hasattr(type(widget_or_app), "app")
+        else widget_or_app
+    )
+    entry = ThemeEntry.REGISTRY.get(app.theme)  # type: ignore[attr-defined]
+    if entry is not None:
+        return entry.colors
+    return DARK_COLORS if app.current_theme.dark else LIGHT_COLORS  # type: ignore[attr-defined]

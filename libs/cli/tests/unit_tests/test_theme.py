@@ -23,6 +23,7 @@ from deepagents_cli.theme import (
     _builtin_themes,
     _load_user_themes,
     get_css_variable_defaults,
+    get_theme_colors,
 )
 
 # ---------------------------------------------------------------------------
@@ -197,8 +198,31 @@ class TestGetCssVariableDefaults:
 # ---------------------------------------------------------------------------
 
 
+_ANSI_COLOR_NAMES = frozenset(
+    {
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "bright_black",
+        "bright_red",
+        "bright_green",
+        "bright_yellow",
+        "bright_blue",
+        "bright_magenta",
+        "bright_cyan",
+        "bright_white",
+    }
+)
+"""Standard Rich ANSI color names (base 16)."""
+
+
 class TestSemanticConstants:
-    """Module-level constants (PRIMARY, MUTED, etc.) are valid hex colors."""
+    """Module-level constants (PRIMARY, MUTED, etc.) are ANSI color names."""
 
     @pytest.mark.parametrize(
         "name",
@@ -223,13 +247,72 @@ class TestSemanticConstants:
             "SPINNER",
         ],
     )
-    def test_constant_is_valid_hex(self, name: str) -> None:
-        import re
-
+    def test_constant_is_valid_ansi_name(self, name: str) -> None:
         val = getattr(theme, name)
-        assert re.match(r"^#[0-9A-Fa-f]{6}$", val), (
-            f"theme.{name} = {val!r} is not a valid hex color"
+        assert isinstance(val, str), f"theme.{name} = {val!r} is not a string"
+        assert val in _ANSI_COLOR_NAMES, (
+            f"theme.{name} = {val!r} is not a valid ANSI color name"
         )
+
+
+# ---------------------------------------------------------------------------
+# get_theme_colors
+# ---------------------------------------------------------------------------
+
+
+class TestGetThemeColors:
+    """get_theme_colors() returns the correct ThemeColors."""
+
+    def test_none_returns_dark_colors(self) -> None:
+        assert get_theme_colors(None) is DARK_COLORS
+
+    def test_no_args_returns_dark_colors(self) -> None:
+        assert get_theme_colors() is DARK_COLORS
+
+    def test_known_dark_theme(self) -> None:
+        class FakeApp:
+            theme = "langchain"
+
+        assert get_theme_colors(FakeApp()) is DARK_COLORS
+
+    def test_known_light_theme(self) -> None:
+        class FakeApp:
+            theme = "langchain-light"
+
+        assert get_theme_colors(FakeApp()) is LIGHT_COLORS
+
+    def test_unknown_theme_dark_fallback(self) -> None:
+        class CurrentTheme:
+            dark = True
+
+        class FakeApp:
+            theme = "nonexistent"
+            current_theme = CurrentTheme()
+
+        assert get_theme_colors(FakeApp()) is DARK_COLORS
+
+    def test_unknown_theme_light_fallback(self) -> None:
+        class CurrentTheme:
+            dark = False
+
+        class FakeApp:
+            theme = "nonexistent"
+            current_theme = CurrentTheme()
+
+        assert get_theme_colors(FakeApp()) is LIGHT_COLORS
+
+    def test_widget_with_app_property(self) -> None:
+        """Simulates a mounted widget whose .app resolves to an App."""
+
+        class FakeApp:
+            theme = "langchain-light"
+
+        class FakeWidget:
+            @property
+            def app(self) -> FakeApp:
+                return FakeApp()
+
+        assert get_theme_colors(FakeWidget()) is LIGHT_COLORS
 
 
 # ---------------------------------------------------------------------------

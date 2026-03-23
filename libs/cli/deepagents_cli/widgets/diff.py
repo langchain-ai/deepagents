@@ -15,13 +15,21 @@ from deepagents_cli.config import get_glyphs, is_ascii_mode
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+    from deepagents_cli.theme import ThemeColors
 
-def format_diff_textual(diff: str, max_lines: int | None = 100) -> Content:
+
+def format_diff_textual(
+    diff: str,
+    max_lines: int | None = 100,
+    *,
+    colors: ThemeColors | None = None,
+) -> Content:
     """Format a unified diff with line numbers and colors.
 
     Args:
-        diff: Unified diff string
-        max_lines: Maximum number of diff lines to show (None for unlimited)
+        diff: Unified diff string.
+        max_lines: Maximum number of diff lines to show (None for unlimited).
+        colors: Theme color set for backgrounds. Falls back to `DARK_COLORS`.
 
     Returns:
         Styled `Content` with line numbers and color-coded diff lines.
@@ -29,6 +37,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> Content:
     if not diff:
         return Content.styled("No changes detected", "dim")
 
+    c = colors if colors is not None else theme.DARK_COLORS
     glyphs = get_glyphs()
     lines = diff.splitlines()
 
@@ -89,7 +98,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> Content:
                     (f"{glyphs.gutter_bar}", "red bold"),
                     (f"{old_num:>{width}}", "dim"),
                     " ",
-                    Content.styled(content, f"on {theme.DIFF_REMOVE_BG}"),
+                    Content.styled(content, f"on {c.diff_remove_bg}"),
                 )
             )
             old_num += 1
@@ -101,7 +110,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> Content:
                     (f"{glyphs.gutter_bar}", "green bold"),
                     (f"{new_num:>{width}}", "dim"),
                     " ",
-                    Content.styled(content, f"on {theme.DIFF_ADD_BG}"),
+                    Content.styled(content, f"on {c.diff_add_bg}"),
                 )
             )
             new_num += 1
@@ -210,7 +219,9 @@ class EnhancedDiff(Vertical):
             classes="diff-title",
         )
 
-        formatted = format_diff_textual(self._diff, self._max_lines)
+        formatted = format_diff_textual(
+            self._diff, self._max_lines, colors=theme.get_theme_colors(self)
+        )
         yield Static(formatted, classes="diff-content")
 
         additions, deletions = self._stats

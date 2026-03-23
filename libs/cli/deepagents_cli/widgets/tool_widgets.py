@@ -211,17 +211,17 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             yield Static(Content.styled("Adding:", "bold green"))
             yield from self._render_string_lines(new_string, is_addition=True)
 
-    @staticmethod
-    def _render_diff_line(line: str) -> Static | None:
+    def _render_diff_line(self, line: str) -> Static | None:
         """Render a single diff line with appropriate styling.
 
         Returns:
             Static widget with styled diff line, or None for empty/skipped lines.
         """
+        colors = theme.get_theme_colors(self)
         raw = line[1:] if len(line) > 1 else ""
 
         if line.startswith("-"):
-            rm_bg, rm_fg = theme.DIFF_REMOVE_BG, theme.DIFF_REMOVE_FG
+            rm_bg, rm_fg = colors.diff_remove_bg, colors.diff_remove_fg
             return Static(
                 Content.from_markup(
                     f"[on {rm_bg}][{rm_fg}]- $text[/{rm_fg}][/on {rm_bg}]",
@@ -229,7 +229,7 @@ class EditFileApprovalWidget(ToolApprovalWidget):
                 )
             )
         if line.startswith("+"):
-            add_bg, add_fg = theme.DIFF_ADD_BG, theme.DIFF_ADD_FG
+            add_bg, add_fg = colors.diff_add_bg, colors.diff_add_fg
             return Static(
                 Content.from_markup(
                     f"[on {add_bg}][{add_fg}]+ $text[/{add_fg}][/on {add_bg}]",
@@ -239,25 +239,25 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         if line.startswith(" "):
             return Static(
                 Content.from_markup(
-                    f"[{theme.DIFF_CONTEXT}]  $text[/{theme.DIFF_CONTEXT}]", text=raw
+                    f"[{colors.muted}]  $text[/{colors.muted}]", text=raw
                 )
             )
         if line.strip():
             return Static(line, markup=False)
         return None
 
-    @staticmethod
-    def _render_string_lines(text: str, *, is_addition: bool) -> ComposeResult:
+    def _render_string_lines(self, text: str, *, is_addition: bool) -> ComposeResult:
         """Render lines from a string with appropriate styling.
 
         Yields:
             Static widgets for each line with addition or deletion styling.
         """
+        colors = theme.get_theme_colors(self)
         lines = text.split("\n")
         if is_addition:
-            bg, fg, sign = theme.DIFF_ADD_BG, theme.DIFF_ADD_FG, "+"
+            bg, fg, sign = colors.diff_add_bg, colors.diff_add_fg, "+"
         else:
-            bg, fg, sign = theme.DIFF_REMOVE_BG, theme.DIFF_REMOVE_FG, "-"
+            bg, fg, sign = colors.diff_remove_bg, colors.diff_remove_fg, "-"
         style = f"[on {bg}][{fg}]{sign}"
         end_style = f"[/{fg}][/on {bg}]"
 

@@ -168,7 +168,8 @@ class WelcomeBanner(Static):
             Content object containing the formatted banner.
         """
         parts: list[str | tuple[str, str | TStyle] | Content] = []
-        banner_color = theme.PRIMARY_DEV if _is_editable_install() else theme.PRIMARY
+        colors = theme.get_theme_colors(self)
+        banner_color = colors.primary_dev if _is_editable_install() else colors.primary
         parts.append(
             (
                 get_banner() + "\n",
@@ -232,7 +233,7 @@ class WelcomeBanner(Static):
                 )
             )
         else:
-            parts.append(build_welcome_footer())
+            parts.append(build_welcome_footer(primary_color=colors.primary))
         return Content.assemble(*parts)
 
 
@@ -275,16 +276,22 @@ def build_connecting_footer(
     return Content.styled(text, "dim")
 
 
-def build_welcome_footer() -> Content:
+def build_welcome_footer(*, primary_color: str = theme.PRIMARY) -> Content:
     """Build the footer shown at the bottom of the welcome banner.
 
     Includes a randomly selected tip to help users discover features.
+
+    Args:
+        primary_color: Color string for the ready prompt.
+
+            Defaults to the module-level ANSI `PRIMARY` constant; widget callers
+            should pass the active theme's hex value.
 
     Returns:
         Content with the ready prompt and a tip.
     """
     tip = random.choice(_TIPS)  # noqa: S311
     return Content.assemble(
-        ("\nReady to code! What would you like to build?\n", theme.PRIMARY),
+        ("\nReady to code! What would you like to build?\n", primary_color),
         (f"Tip: {tip}", "dim italic"),
     )

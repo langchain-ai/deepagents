@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from pathlib import Path
 
 
@@ -76,6 +77,27 @@ def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
         return base
 
     monkeypatch.setattr(App, "get_theme_variable_defaults", _with_custom_vars)
+
+
+@pytest.fixture(autouse=True)
+def _provide_app_context() -> Generator[None]:
+    """Set Textual's `active_app` context var for sync widget tests.
+
+    Many unit tests construct widgets and call `compose()` directly without a
+    running Textual app. Widget code that calls `self.app` (e.g., for
+    theme-aware color lookups) needs a valid app in the context. This fixture
+    provides a minimal `App` instance so that `self.app` resolves without
+    requiring the full async `run_test()` machinery.
+    """
+    from textual._context import active_app
+    from textual.app import App
+
+    app = App()
+    token = active_app.set(app)
+    try:
+        yield
+    finally:
+        active_app.reset(token)
 
 
 @pytest.fixture(autouse=True)

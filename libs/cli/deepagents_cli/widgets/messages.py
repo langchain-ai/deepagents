@@ -77,29 +77,25 @@ class _TimestampClickMixin:
         _show_timestamp_toast(self)  # type: ignore[arg-type]
 
 
-_MODE_COLORS: dict[str, str] = {
-    "shell": theme.MODE_BASH,
-    "command": theme.MODE_COMMAND,
-}
-"""Map mode name to its color constant."""
-
-
-def _mode_color(mode: str | None) -> str:
-    """Return the color string for a mode, falling back to primary.
+def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
+    """Return the hex color string for a mode, falling back to primary.
 
     Args:
         mode: Mode name (e.g. `'shell'`, `'command'`) or `None`.
+        widget_or_app: Textual widget or `App` for theme-aware lookup.
 
     Returns:
-        Hex color string from theme.
+        Color string from the active theme's `ThemeColors`.
     """
+    colors = theme.get_theme_colors(widget_or_app)
     if not mode:
-        return theme.PRIMARY
-    color = _MODE_COLORS.get(mode)
-    if color is None:
-        logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
-        return theme.PRIMARY
-    return color
+        return colors.primary
+    if mode == "shell":
+        return colors.mode_bash
+    if mode == "command":
+        return colors.mode_command
+    logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
+    return colors.primary
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,13 +182,14 @@ class UserMessage(_TimestampClickMixin, Static):
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
+        colors = theme.get_theme_colors(self)
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            parts.append((f"{glyph} ", f"bold {_mode_color(mode)}"))
+            parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
             content = content[1:]
         else:
-            parts.append(("> ", f"bold {theme.PRIMARY}"))
+            parts.append(("> ", f"bold {colors.primary}"))
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -213,10 +210,10 @@ class UserMessage(_TimestampClickMixin, Static):
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
                 # /command at start
-                parts.append((token, f"bold {theme.TOOL_HEADER}"))
+                parts.append((token, f"bold {colors.warning}"))
             elif token.startswith("@"):
                 # @file mention
-                parts.append((token, f"bold {theme.PRIMARY}"))
+                parts.append((token, f"bold {colors.primary}"))
             last_end = end
 
         # Add remaining text after last match
@@ -257,7 +254,8 @@ class QueuedUserMessage(Static):
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
-            self.styles.border_left = ("ascii", theme.MUTED)
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.muted)
 
     def compose(self) -> ComposeResult:
         """Compose the queued user message layout.
@@ -265,15 +263,16 @@ class QueuedUserMessage(Static):
         Yields:
             Static widget containing the formatted queued message (greyed out).
         """
+        colors = theme.get_theme_colors(self)
         content = self._content
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            prefix = (f"{glyph} ", f"bold {theme.MUTED}")
+            prefix = (f"{glyph} ", f"bold {colors.muted}")
             content = content[1:]
         else:
-            prefix = ("> ", f"bold {theme.MUTED}")
-        yield Static(Content.assemble(prefix, (content, theme.MUTED)))
+            prefix = ("> ", f"bold {colors.muted}")
+        yield Static(Content.assemble(prefix, (content, colors.muted)))
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):
@@ -501,10 +500,11 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
+        colors = theme.get_theme_colors(self)
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(
             Content.from_markup(
-                f"[bold {theme.TOOL_HEADER}]$label[/bold {theme.TOOL_HEADER}]",
+                f"[bold {colors.warning}]$label[/bold {colors.warning}]",
                 label=tool_label,
             ),
             classes="tool-header",
@@ -532,7 +532,8 @@ class ToolCallMessage(Vertical):
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
         if is_ascii_mode():
-            self.styles.border_left = ("ascii", theme.TOOL_BORDER)
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.tool_border)
 
         self._status_widget = self.query_one("#status", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -903,7 +904,7 @@ class ToolCallMessage(Vertical):
             f"   {text}",
         )
 
-    def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_ls_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format ls output as a clean directory listing.
@@ -917,15 +918,16 @@ class ToolCallMessage(Vertical):
             if isinstance(items, list):
                 lines: list[Content] = []
                 max_items = 5 if is_preview else len(items)
+                tc = theme.get_theme_colors(self)
                 for item in items[:max_items]:
                     path = Path(str(item))
                     name = path.name
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
+                        lines.append(Content.styled(f"    {name}", tc.primary))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
+                        lines.append(Content.styled(f"    {name}", tc.warning))
                     elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
+                        lines.append(Content.styled(f"    {name}/", tc.success))
                     else:
                         lines.append(Content(f"    {name}"))
 
@@ -1323,7 +1325,8 @@ class DiffMessage(_TimestampClickMixin, Static):
             )
 
         # Render the diff with enhanced formatting
-        rendered = format_diff_textual(self._diff_content, max_lines=100)
+        colors = theme.get_theme_colors(self)
+        rendered = format_diff_textual(self._diff_content, max_lines=100, colors=colors)
         yield Static(rendered)
 
     def on_mount(self) -> None:

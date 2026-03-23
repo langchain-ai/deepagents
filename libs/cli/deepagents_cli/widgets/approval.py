@@ -165,7 +165,7 @@ class ApprovalMenu(Container):
         command = strip_dangerous_unicode(command_raw)
         issues = detect_dangerous_unicode(command_raw)
 
-        hdr = theme.TOOL_HEADER
+        hdr = theme.get_theme_colors(self).warning
 
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
             command_display = command

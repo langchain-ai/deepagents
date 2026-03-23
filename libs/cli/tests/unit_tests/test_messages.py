@@ -338,28 +338,32 @@ def _compose_content(widget: UserMessage | QueuedUserMessage) -> Content:
 
 
 class TestUserMessageModeRendering:
-    """Test `UserMessage` renders mode-specific prefix indicators and colors."""
+    """Test `UserMessage` renders mode-specific prefix indicators and colors.
+
+    Without an active Textual app, `get_theme_colors` falls back to
+    `DARK_COLORS`, so assertions check for hex values from that palette.
+    """
 
     def test_shell_prefix_renders_dollar_indicator(self) -> None:
         """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
         content = _compose_content(UserMessage("!ls"))
         assert content.plain == "$ ls"
         first_span = content._spans[0]
-        assert theme.MODE_BASH in str(first_span.style)
+        assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
         content = _compose_content(UserMessage("/help"))
         assert content.plain == "/ help"
         first_span = content._spans[0]
-        assert theme.MODE_COMMAND in str(first_span.style)
+        assert theme.DARK_COLORS.mode_command in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
         content = _compose_content(UserMessage("hello"))
         assert content.plain == "> hello"
         first_span = content._spans[0]
-        assert theme.PRIMARY in str(first_span.style)
+        assert theme.DARK_COLORS.primary in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""
@@ -368,16 +372,18 @@ class TestUserMessageModeRendering:
 
 
 class TestModeColorsDrift:
-    """Ensure `_MODE_COLORS` covers every mode in `MODE_PREFIXES`."""
+    """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
 
-    def test_mode_colors_keys_match_mode_prefixes(self) -> None:
+    def test_mode_color_returns_non_primary_for_all_modes(self) -> None:
         from deepagents_cli.config import MODE_PREFIXES
-        from deepagents_cli.widgets.messages import _MODE_COLORS
+        from deepagents_cli.widgets.messages import _mode_color
 
-        assert _MODE_COLORS.keys() == MODE_PREFIXES.keys(), (
-            f"_MODE_COLORS keys {set(_MODE_COLORS)} != "
-            f"MODE_PREFIXES keys {set(MODE_PREFIXES)}"
-        )
+        primary = _mode_color(None)
+        for mode in MODE_PREFIXES:
+            color = _mode_color(mode)
+            assert color != primary, (
+                f"_mode_color({mode!r}) returned primary; add a branch for this mode"
+            )
 
 
 class TestQueuedUserMessageModeRendering:

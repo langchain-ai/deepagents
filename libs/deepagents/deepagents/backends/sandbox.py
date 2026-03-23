@@ -123,11 +123,12 @@ Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
 to `_edit_via_upload()` which transfers old/new strings as temp files.
 """
 
-# Maximum combined byte size of old_string + new_string for inline server-side
-# edit.  Payloads above this use _edit_via_upload (temp file upload + server-side
-# replace) to avoid size limits on the execute() request body imposed by some
-# sandbox providers.
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
+"""Maximum combined byte size of old_string + new_string for inline server-side edit.
+
+Payloads above this use _edit_via_upload (temp file upload + server-side replace)
+to avoid size limits on the execute() request body imposed by some sandbox providers.
+"""
 
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
 import os, sys, json, base64

@@ -268,9 +268,9 @@ def _build_start_tool(
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create()
-            task_id = thread["thread_id"]
+            thread_id = thread["thread_id"]
             run = client.runs.create(
-                thread_id=task_id,
+                thread_id=thread_id,
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
@@ -282,20 +282,20 @@ def _build_start_tool(
             return f"Failed to launch async subagent '{subagent_type}': {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            "task_id": task_id,
+            "task_id": thread_id,
             "agent_name": subagent_type,
-            "thread_id": task_id,
+            "thread_id": thread_id,
             "run_id": run["run_id"],
             "status": "running",
             "created_at": now,
             "last_checked_at": now,
             "last_updated_at": now,
         }
-        msg = f"Launched async subagent. task_id: {task_id}"
+        msg = f"Launched async subagent. task_id: {thread_id}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {task_id: task},
+                "async_tasks": {thread_id: task},
             }
         )
 
@@ -312,9 +312,9 @@ def _build_start_tool(
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()
-            task_id = thread["thread_id"]
+            thread_id = thread["thread_id"]
             run = await client.runs.create(
-                thread_id=task_id,
+                thread_id=thread_id,
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
@@ -326,20 +326,20 @@ def _build_start_tool(
             return f"Failed to launch async subagent '{subagent_type}': {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            "task_id": task_id,
+            "task_id": thread_id,
             "agent_name": subagent_type,
-            "thread_id": task_id,
+            "thread_id": thread_id,
             "run_id": run["run_id"],
             "status": "running",
             "created_at": now,
             "last_checked_at": now,
             "last_updated_at": now,
         }
-        msg = f"Launched async subagent. task_id: {task_id}"
+        msg = f"Launched async subagent. task_id: {thread_id}"
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {task_id: task},
+                "async_tasks": {thread_id: task},
             }
         )
 

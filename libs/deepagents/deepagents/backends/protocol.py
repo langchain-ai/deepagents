@@ -82,16 +82,6 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
     return None
 
 
-FileTransferError: TypeAlias = str
-"""Error string returned by file transfer APIs.
-
-Backends should prefer the standardized `FileOperationError` literals when
-possible. When a backend encounters an unrecognized provider-specific failure,
-it may return the original error string to preserve partial-success behavior
-for batched transfers.
-"""
-
-
 @dataclass
 class FileDownloadResponse:
     """Result of a single file download operation.
@@ -105,10 +95,8 @@ class FileDownloadResponse:
         path: The file path that was requested. Included for easy correlation
             when processing batch results, especially useful for error messages.
         content: File contents as bytes on success, None on failure.
-        error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized.
-
-            `None` on success.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
 
     Examples:
         >>> # Success
@@ -119,7 +107,7 @@ class FileDownloadResponse:
 
     path: str
     content: bytes | None = None
-    error: FileTransferError | None = None
+    error: FileOperationError | None = None
 
 
 @dataclass
@@ -134,10 +122,8 @@ class FileUploadResponse:
     Attributes:
         path: The file path that was requested. Included for easy correlation
             when processing batch results and for clear error messages.
-        error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized.
-
-            `None` on success.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
 
     Examples:
         >>> # Success
@@ -147,7 +133,7 @@ class FileUploadResponse:
     """
 
     path: str
-    error: FileTransferError | None = None
+    error: FileOperationError | None = None
 
 
 class FileInfo(TypedDict):

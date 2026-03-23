@@ -335,11 +335,12 @@ except PermissionError:
         file_type = _get_file_type(file_path)
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
 
+        # Coerce to int to prevent injection if callers pass unvalidated strings.
         cmd = _READ_COMMAND_TEMPLATE.format(
             path_b64=path_b64,
             file_type=file_type,
-            offset=offset,
-            limit=limit,
+            offset=int(offset),
+            limit=int(limit),
         )
         result = self.execute(cmd)
         output = result.output.rstrip()

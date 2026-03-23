@@ -1777,6 +1777,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
+                markup=False,
             )
             with contextlib.suppress(NoMatches):
                 self.query_one("#thread-filter", Input).focus()

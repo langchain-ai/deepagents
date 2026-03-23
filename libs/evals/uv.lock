@@ -1227,6 +1227,7 @@ test = [
     { name = "pytest-xdist", specifier = ">=3.8.0,<4.0.0" },
     { name = "responses", specifier = ">=0.25.0,<1.0.0" },
     { name = "ruff", specifier = ">=0.14.0,<1.0.0" },
+    { name = "textual-dev", specifier = ">=1.7.0,<2.0.0" },
     { name = "twine", specifier = ">=6.0.0,<7.0.0" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]

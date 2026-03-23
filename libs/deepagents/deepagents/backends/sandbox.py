@@ -1,8 +1,8 @@
 """Base sandbox implementation with execute() as the only abstract method.
 
-This module provides a base class that implements all SandboxBackendProtocol
-methods using shell commands executed via execute(). Concrete implementations
-only need to implement the execute() method.
+This module provides a base class that implements SandboxBackendProtocol
+methods. Most operations use shell commands via execute(); write and edit
+delegate to upload_files/download_files to avoid OS `ARG_MAX` limits.
 
 It also defines the BaseSandbox implementation used by the CLI sandboxes.
 """
@@ -67,7 +67,7 @@ if os.path.exists(path):
 os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
 " 2>&1"""
 
-# Use heredoc to pass read parameters via stdin, matching write/edit pattern.
+# Use heredoc to pass read parameters via stdin to avoid ARG_MAX limits.
 # Stdin format: base64-encoded JSON with
 #   {"path": str, "offset": int, "limit": int, "file_type": str}.
 # Output: JSON with {"encoding": str, "content": str} on success,
@@ -260,7 +260,8 @@ except PermissionError:
         responses = self.download_files([file_path])
         resp = responses[0] if responses else None
         if not resp or resp.error or resp.content is None:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            detail = resp.error if resp and resp.error else "not found"
+            return EditResult(error=f"Error: Failed to read '{file_path}': {detail}")
 
         try:
             text = resp.content.decode("utf-8")

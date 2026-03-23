@@ -144,7 +144,6 @@ def test_sandbox_write_with_special_content() -> None:
 def test_sandbox_write_returns_error_on_existing_file() -> None:
     """Test that write() returns an error when the check command fails."""
     sandbox = MockSandbox()
-    sandbox._next_output = "Error: File already exists"
 
     def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
         sandbox.last_command = command
@@ -180,7 +179,7 @@ def test_sandbox_edit_file_not_found() -> None:
     result = sandbox.edit("/test/missing.txt", "old", "new")
 
     assert result.error is not None
-    assert "not found" in result.error
+    assert "Failed to read" in result.error
 
 
 def test_sandbox_edit_string_not_found() -> None:
@@ -304,8 +303,6 @@ def test_sandbox_edit_returns_error_on_upload_failure() -> None:
     sandbox = MockSandbox()
     sandbox._file_store["/test/file.txt"] = b"hello old world"
 
-    original_upload = sandbox.upload_files
-
     def failing_upload(
         files: list[tuple[str, bytes]],
     ) -> list[FileUploadResponse]:
@@ -317,7 +314,6 @@ def test_sandbox_edit_returns_error_on_upload_failure() -> None:
 
     assert result.error is not None
     assert "Error editing file" in result.error
-    sandbox.upload_files = original_upload  # restore
 
 
 def test_sandbox_edit_binary_file_returns_error() -> None:
@@ -342,3 +338,52 @@ def test_sandbox_edit_does_not_embed_content_in_command() -> None:
 
     # edit() should never call execute() — only download_files + upload_files
     assert sandbox.last_command is None
+
+
+def test_sandbox_write_returns_correct_result_on_success() -> None:
+    """Test that write() returns a well-formed WriteResult on success."""
+    sandbox = MockSandbox()
+
+    result = sandbox.write("/test/file.txt", "content")
+
+    assert result.error is None
+    assert result.path == "/test/file.txt"
+    assert result.files_update is None
+
+
+def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
+    """Test that write() handles upload_files returning an empty list."""
+    sandbox = MockSandbox()
+    sandbox.upload_files = lambda _files: []  # type: ignore[assignment]
+
+    result = sandbox.write("/test/file.txt", "content")
+
+    assert result.error is not None
+    assert "no response" in result.error
+
+
+def test_sandbox_edit_returns_error_on_empty_upload_response() -> None:
+    """Test that edit() handles upload_files returning an empty list."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/file.txt"] = b"hello old world"
+    sandbox.upload_files = lambda _files: []  # type: ignore[assignment]
+
+    result = sandbox.edit("/test/file.txt", "old", "new")
+
+    assert result.error is not None
+    assert "no response" in result.error
+
+
+def test_sandbox_edit_surfaces_download_error_code() -> None:
+    """Test that edit() includes the actual error code from download_files."""
+    sandbox = MockSandbox()
+
+    def download_with_error(paths: list[str]) -> list[FileDownloadResponse]:
+        return [FileDownloadResponse(path=paths[0], content=None, error="permission_denied")]
+
+    sandbox.download_files = download_with_error  # type: ignore[assignment]
+
+    result = sandbox.edit("/test/file.txt", "old", "new")
+
+    assert result.error is not None
+    assert "permission_denied" in result.error

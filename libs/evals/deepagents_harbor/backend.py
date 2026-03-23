@@ -11,6 +11,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -40,11 +41,35 @@ _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
 
 
-class HarborSandbox(SandboxBackendProtocol):
-    """A sandbox implementation using shell commands.
+def _map_file_operation_error(exc: Exception) -> FileOperationError | None:
+    """Map known download exceptions to standardized backend error codes."""
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    if isinstance(exc, IsADirectoryError):
+        return "is_directory"
+    if isinstance(exc, ValueError):
+        return "invalid_path"
 
-    Note: The edit operation requires python3 for JSON parsing. Other operations
-    (read, write, ls, grep, glob) use only standard shell utilities.
+    msg = str(exc).lower()
+    if "is a directory" in msg:
+        return "is_directory"
+    if "permission denied" in msg or "access denied" in msg:
+        return "permission_denied"
+    if "not found" in msg or "no such file" in msg or "does not exist" in msg:
+        return "file_not_found"
+    if "invalid path" in msg or "invalid argument" in msg:
+        return "invalid_path"
+    return None
+
+
+class HarborSandbox(SandboxBackendProtocol):
+    """A sandbox implementation using Harbor environments.
+
+    Write and edit use Harbor's native file transfer (upload/download) for
+    data content. Read, ls, grep, and glob execute shell commands in the
+    environment.
     """
 
     def __init__(self, environment: BaseEnvironment) -> None:
@@ -218,11 +243,14 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
 
         # Step 2: transfer content via Harbor's native file upload
         # (bypasses ARG_MAX entirely — data never touches the command line).
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".tmp", delete=False, encoding="utf-8"
-        ) as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".tmp", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(content)
+                tmp_path = Path(tmp.name)
+        except OSError as exc:
+            return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
         try:
             await self.environment.upload_file(tmp_path, file_path)
         except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
@@ -231,7 +259,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             try:
                 tmp_path.unlink()
             except OSError:
-                logger.debug("Failed to clean up temp file %s", tmp_path, exc_info=True)
+                logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
         return WriteResult(path=file_path, files_update=None)
 
@@ -240,7 +268,10 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file using shell commands."""
+        """Create a new file (sync).
+
+        Not supported; use `awrite`.
+        """
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aedit(
@@ -253,8 +284,8 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
         """Edit a file by replacing string occurrences.
 
         Downloads the file via Harbor's native file transfer, performs the
-        replacement locally, and re-uploads.  This avoids OS ARG_MAX limits
-        that the previous heredoc approach hit on large payloads.
+        replacement locally, and re-uploads. This keeps arbitrarily large
+        payloads off the command line, avoiding OS `ARG_MAX` limits.
         """
         # Download → local edit → upload (no ARG_MAX risk).
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -266,7 +297,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
                 return EditResult(error=f"Error: Failed to download '{file_path}': {exc}")
 
             try:
-                text = local.read_text(encoding="utf-8")
+                text = local.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
                 return EditResult(error=f"Error: File '{file_path}' is not a text file")
 
@@ -285,7 +316,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
                 else text.replace(old_string, new_string, 1)
             )
 
-            local.write_text(result_text, encoding="utf-8")
+            local.write_bytes(result_text.encode("utf-8"))
 
             try:
                 await self.environment.upload_file(local, file_path)
@@ -301,7 +332,10 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        """Edit a file by replacing string occurrences using shell commands."""
+        """Edit a file by replacing string occurrences (sync).
+
+        Not supported; use `aedit`.
+        """
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def als(self, path: str) -> LsResult:
@@ -474,20 +508,28 @@ done
         """Upload files using Harbor's native file transfer."""
         results: list[FileUploadResponse] = []
         for path, content in files:
-            with tempfile.NamedTemporaryFile(mode="wb", suffix=".tmp", delete=False) as tmp:
-                tmp.write(content)
-                tmp_path = Path(tmp.name)
+            try:
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".tmp", delete=False) as tmp:
+                    tmp.write(content)
+                    tmp_path = Path(tmp.name)
+            except OSError as exc:
+                logger.warning("Failed to create temp file for upload %s: %s", path, exc)
+                results.append(FileUploadResponse(path=path, error="invalid_path"))
+                continue
             try:
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
-            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
+            except Exception as exc:
+                error = _map_file_operation_error(exc)
+                if error is None:
+                    raise
                 logger.warning("Failed to upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error="invalid_path"))
+                results.append(FileUploadResponse(path=path, error=error))
             finally:
                 try:
                     tmp_path.unlink()
                 except OSError:
-                    logger.debug("Failed to clean up temp file %s", tmp_path, exc_info=True)
+                    logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
         return results
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -504,11 +546,12 @@ done
                     await self.environment.download_file(path, local)
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure type
+                except Exception as exc:
+                    error = _map_file_operation_error(exc)
+                    if error is None:
+                        raise
                     logger.warning("Failed to download %s: %s", path, exc)
-                    results.append(
-                        FileDownloadResponse(path=path, content=None, error="file_not_found")
-                    )
+                    results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

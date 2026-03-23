@@ -22,25 +22,26 @@ FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
 
 - `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
-  on `\\n`), no `encoding` field.
+    on `\\n`), no `encoding` field.
 - `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
-  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
-  `"base64"`).
+    or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+    `"base64"`).
 """
 
 logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
-    "file_not_found",  # Download: file doesn't exist
-    "permission_denied",  # Both: access denied
-    "is_directory",  # Download: tried to download directory as file
-    "invalid_path",  # Both: path syntax malformed (parent dir missing, invalid chars)
+    "file_not_found",
+    "permission_denied",
+    "is_directory",
+    "invalid_path",
 ]
 """Standardized error codes for file upload/download operations.
 
-These represent common, recoverable errors that an LLM can understand and potentially fix:
+These represent common, recoverable errors that an LLM can understand and
+potentially fix:
+
 - file_not_found: The requested file doesn't exist (download)
-- parent_not_found: The parent directory doesn't exist (upload)
 - permission_denied: Access denied for the operation
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters

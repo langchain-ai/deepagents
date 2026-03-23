@@ -84,7 +84,9 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.messages import AIMessage
 
 if TYPE_CHECKING:
-    from langchain.agents.middleware.types import Runtime
+    from collections.abc import Awaitable, Callable
+
+    from langchain.agents.middleware.types import ContextT, ModelRequest, ModelResponse, ResponseT, Runtime
 
 logger = logging.getLogger(__name__)
 

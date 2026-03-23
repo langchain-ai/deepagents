@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -638,6 +638,7 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
+    { name = "langgraph-sdk" },
     { name = "langsmith" },
     { name = "wcmatch" },
 ]
@@ -648,6 +649,7 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.2.19,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.0,<5.0.0" },
+    { name = "langgraph-sdk", specifier = ">=0.1.51" },
     { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]

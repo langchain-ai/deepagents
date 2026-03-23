@@ -691,8 +691,10 @@ class TestFormatOptionLabel:
             has_creds=True,
             status="deprecated",
         )
+        from deepagents_cli.theme import DARK_COLORS
+
         assert "(deprecated)" in label.plain
-        assert "[red]" in label.markup
+        assert DARK_COLORS.error in label.markup
 
     def test_non_deprecated_model_no_tag(self) -> None:
         """Models without deprecated status should not show the tag."""
@@ -715,8 +717,10 @@ class TestFormatOptionLabel:
             status="beta",
         )
         assert "(deprecated)" not in label.plain
+        from deepagents_cli.theme import DARK_COLORS
+
         assert "(beta)" in label.plain
-        assert "[yellow]" in label.markup
+        assert DARK_COLORS.warning in label.markup
 
     def test_all_suffixes_coexist(self) -> None:
         """Current + default + deprecated all render together."""
@@ -832,7 +836,9 @@ class TestModelDetailFooter:
         text = str(result)
         assert "*" in text
         assert "= override" in text
-        assert "[yellow]" in result.markup
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning in result.markup
 
     def test_format_footer_partial_profile(self) -> None:
         """Profile with only token counts still renders without crash."""

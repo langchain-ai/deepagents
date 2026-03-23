@@ -1,4 +1,4 @@
-"""Tests for the CompletionNotifierMiddleware."""
+"""Tests for the CompletionCallbackMiddleware."""
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,8 +7,8 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from deepagents.middleware.completion_notifier import (
-    CompletionNotifierMiddleware,
-    CompletionNotifierState,
+    CompletionCallbackMiddleware,
+    CompletionCallbackState,
     _extract_last_message,
     _notify_parent,
     _resolve_headers,
@@ -28,10 +28,10 @@ def _make_state(
     return state
 
 
-def _make_middleware(**kwargs: Any) -> CompletionNotifierMiddleware:
+def _make_middleware(**kwargs: Any) -> CompletionCallbackMiddleware:
     """Create a middleware with sensible defaults."""
     kwargs.setdefault("callback_graph_id", "parent-agent")
-    return CompletionNotifierMiddleware(**kwargs)
+    return CompletionCallbackMiddleware(**kwargs)
 
 
 class TestExtractLastMessage:
@@ -136,10 +136,10 @@ class TestNotifyParent:
         )
 
 
-class TestCompletionNotifierMiddleware:
+class TestCompletionCallbackMiddleware:
     def test_callback_graph_id_is_required(self) -> None:
         with pytest.raises(TypeError):
-            CompletionNotifierMiddleware()  # type: ignore[call-arg]
+            CompletionCallbackMiddleware()  # type: ignore[call-arg]
 
     def test_stores_callback_graph_id(self) -> None:
         mw = _make_middleware(callback_graph_id="my-parent")
@@ -299,10 +299,10 @@ class TestStateSchema:
         assert hasattr(mw, "state_schema")
 
     def test_state_schema_includes_callback_thread_id(self) -> None:
-        annotations = CompletionNotifierState.__annotations__
+        annotations = CompletionCallbackState.__annotations__
         assert "callback_thread_id" in annotations
 
     def test_state_schema_does_not_include_removed_fields(self) -> None:
-        annotations = CompletionNotifierState.__annotations__
+        annotations = CompletionCallbackState.__annotations__
         assert "parent_assistant_id" not in annotations
         assert "task_id" not in annotations

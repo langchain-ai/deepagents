@@ -1,18 +1,19 @@
-"""Completion notifier middleware for async subagents.
+"""Callback middleware for async subagents.
 
 !!! warning "Experimental"
     This middleware is experimental and may change in future releases.
 
-When an async subagent finishes (success or error), this middleware sends a
-message back to the callback thread so the callback agent wakes up and can
-proactively relay results to the user -- without the user having to poll via
+This middleware sends a notification to a callback thread when a subagent
+completes successfully or raises an error. The callback agent can then
+process that notification instead of relying only on polling via
 `check_async_task`.
 
 ## Architecture
 
-The async subagent protocol is inherently fire-and-forget: the parent agent
-launches a job via `start_async_task` and only learns about completion
-when someone calls `check_async_task`. This middleware closes that gap.
+A parent agent launches a subagent with `start_async_task` and can later
+inspect task state with `check_async_task`. This middleware adds an optional
+completion signal by creating a run on the callback thread when the subagent
+finishes.
 
 ```
 Parent                        Subagent
@@ -26,39 +27,37 @@ Parent                        Subagent
     |      callback_thread,      |
     |      "completed: ...")     |
     |                            |
-    |  (wakes up, sees result)   |
+    |  (processes result)        |
 ```
 
-The notifier calls `runs.create()` on the callback thread, which
-queues a new run. From the callback agent's perspective, it looks like a new
-user message arrived -- except the content is a structured notification
-from the subagent.
+The middleware calls `runs.create()` on the callback thread. From the
+callback agent's perspective, this appears as a new user message containing
+structured output from the subagent.
 
-## How callback context is propagated
+## Callback context
 
-- `callback_graph_id` is passed as a **constructor argument** to the middleware.
-  This is the parent graph ID (or assistant ID), which the subagent
-  developer knows at configuration time.
-- `url` and `headers` are optional constructor arguments for reaching the
-  callback destination on a remote deployment. Omit `url` for same-deployment
-  ASGI transport.
-- `callback_thread_id` is injected into the subagent's input state by the
-  parent's `start_async_task` tool. It survives thread interrupts and
-  updates because it lives in state, not config.
-- If `callback_thread_id` is not present in state, the notifier silently no-ops.
+- `callback_graph_id` identifies the callback graph or assistant. It is
+  provided when the middleware is constructed.
+- `url` and `headers` optionally configure a remote callback destination.
+  Omit `url` for same-deployment ASGI transport.
+- `callback_thread_id` is stored in the subagent state by the parent's
+  `start_async_task` tool. Because it is stored in state rather than config,
+  it survives thread updates and interrupts.
+- If `callback_thread_id` is not present in state, the middleware does
+  nothing.
 
 ## Usage
 
 Add this middleware to the subagent's middleware stack:
 
 ```python
-from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
+from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
 
 # Same deployment (ASGI transport -- callback agent and subagent share a server):
 notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
 
 # Remote deployment (callback destination on a different server):
-notifier = CompletionNotifierMiddleware(
+notifier = CompletionCallbackMiddleware(
     callback_graph_id="supervisor",
     url="url to your langsmith deployment",
 )
@@ -96,7 +95,7 @@ logger = logging.getLogger(__name__)
 _CALLBACK_THREAD_ID_KEY = "callback_thread_id"
 
 
-class CompletionNotifierState(AgentState):
+class CompletionCallbackState(AgentState):
     """State extension for subagents that use the completion notifier.
 
     !!! warning "Experimental"
@@ -190,7 +189,7 @@ def _extract_last_message(state: dict[str, Any]) -> str:
     return text_content
 
 
-class CompletionNotifierMiddleware(AgentMiddleware[CompletionNotifierState, ContextT, ResponseT]):
+class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, ContextT, ResponseT]):
     """Notifies another agent when work is complete.
 
     !!! warning "Experimental"
@@ -221,13 +220,13 @@ class CompletionNotifierMiddleware(AgentMiddleware[CompletionNotifierState, Cont
 
     Example:
         ```python
-        from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
+        from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
 
         # Same deployment (ASGI transport):
         notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
 
         # Remote deployment:
-        notifier = CompletionNotifierMiddleware(
+        notifier = CompletionCallbackMiddleware(
             callback_graph_id="supervisor",
             url="https://supervisor.langsmith.dev",
         )
@@ -240,7 +239,7 @@ class CompletionNotifierMiddleware(AgentMiddleware[CompletionNotifierState, Cont
         ```
     """
 
-    state_schema = CompletionNotifierState
+    state_schema = CompletionCallbackState
 
     def __init__(
         self,
@@ -249,7 +248,7 @@ class CompletionNotifierMiddleware(AgentMiddleware[CompletionNotifierState, Cont
         url: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Initialize the `CompletionNotifierMiddleware`."""
+        """Initialize the `CompletionCallbackMiddleware`."""
         super().__init__()
         self.callback_graph_id = callback_graph_id
         self.url = url

@@ -48,7 +48,7 @@ Use a **plain tool** when:
 """
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
+from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -63,7 +63,7 @@ __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
-    "CompletionNotifierMiddleware",
+    "CompletionCallbackMiddleware",
     "FilesystemMiddleware",
     "MemoryMiddleware",
     "SkillsMiddleware",

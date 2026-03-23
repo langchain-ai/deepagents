@@ -5,7 +5,6 @@ remaining command templates format correctly.
 """
 
 import base64
-import json
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -14,7 +13,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     _GLOB_COMMAND_TEMPLATE,
-    _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
 )
@@ -79,24 +77,76 @@ def test_glob_command_template_format() -> None:
     assert pattern_b64 in cmd
 
 
-def test_read_command_template_format() -> None:
-    """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    payload = json.dumps({"path": "/test/file.txt", "offset": 0, "limit": 100})
-    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+def test_read_uses_download_files() -> None:
+    """Test that read() delegates to download_files(), not execute()."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/file.txt"] = b"line one\nline two\nline three"
+    sandbox.last_command = None
 
-    assert "python3 -c" in cmd
-    assert payload_b64 in cmd
-    assert "__DEEPAGENTS_EOF__" in cmd
+    result = sandbox.read("/test/file.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "line one" in result.file_data["content"]
+    # read() should not call execute() at all
+    assert sandbox.last_command is None
 
 
-def test_read_command_template_ends_with_newline() -> None:
-    """Test that heredoc-based read template terminates with a trailing newline."""
-    payload = json.dumps({"path": "/test/file.txt", "offset": 0, "limit": 100})
-    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    read_cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+def test_read_offset_and_limit() -> None:
+    """Test that read() applies line-based offset and limit."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/file.txt"] = b"a\nb\nc\nd\ne"
 
-    assert read_cmd.endswith("\n")
+    result = sandbox.read("/test/file.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "b\nc"
+
+
+def test_read_offset_exceeds_length() -> None:
+    """Test that read() returns error when offset exceeds file length."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/file.txt"] = b"only one line"
+
+    result = sandbox.read("/test/file.txt", offset=5)
+
+    assert result.error is not None
+    assert "exceeds file length" in result.error
+
+
+def test_read_empty_file() -> None:
+    """Test that read() returns a sentinel message for empty files."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/empty.txt"] = b""
+
+    result = sandbox.read("/test/empty.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_read_binary_file() -> None:
+    """Test that read() base64-encodes non-UTF-8 content."""
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/binary.bin"] = b"\x80\x81\x82\xff"
+
+    result = sandbox.read("/test/binary.bin")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+
+
+def test_read_file_not_found() -> None:
+    """Test that read() returns error for missing files."""
+    sandbox = MockSandbox()
+
+    result = sandbox.read("/test/missing.txt")
+
+    assert result.error is not None
+    assert "not found" in result.error
 
 
 # -- write tests --------------------------------------------------------------
@@ -226,16 +276,16 @@ def test_sandbox_edit_with_special_strings() -> None:
 # -- remaining template tests --------------------------------------------------
 
 
-def test_sandbox_read_uses_payload() -> None:
-    """Test that read() bundles all params into a single base64 payload."""
+def test_sandbox_read_does_not_embed_path_in_command() -> None:
+    """Test that read() uses download_files, never leaking paths into execute()."""
     sandbox = MockSandbox()
-    sandbox._next_output = json.dumps({"content": "mock content", "encoding": "utf-8"})
+    sandbox._file_store["/test/file.txt"] = b"content"
+    sandbox.last_command = None
 
-    sandbox.read("/test/file.txt", offset=5, limit=50)
+    sandbox.read("/test/file.txt", offset=0, limit=50)
 
-    assert sandbox.last_command is not None
-    assert "__DEEPAGENTS_EOF__" in sandbox.last_command
-    assert "/test/file.txt" not in sandbox.last_command
+    # read() should only use download_files, not execute()
+    assert sandbox.last_command is None
 
 
 def test_sandbox_grep_literal_search() -> None:

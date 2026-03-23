@@ -17,15 +17,36 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
-import dotenv
-from rich.console import Console
-
 from deepagents_cli._version import __version__
-from deepagents_cli.project_utils import (
-    get_server_project_context as _get_server_project_context,
-)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
+# detection are deferred until first access of `settings` (via module
+# `__getattr__`).  This avoids disk I/O and path traversal during import for
+# callers that never touch `settings` (e.g. `deepagents --help`).
+# ---------------------------------------------------------------------------
+
+_bootstrap_done = False
+"""Whether `_ensure_bootstrap()` has executed."""
+
+_bootstrap_lock = threading.Lock()
+"""Guards `_ensure_bootstrap()` against concurrent access from the main
+thread and the prewarm worker thread."""
+
+_singleton_lock = threading.Lock()
+"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
+
+_bootstrap_start_path: Path | None = None
+"""Working directory captured at bootstrap time for dotenv and project discovery."""
+
+_original_langsmith_project: str | None = None
+"""Caller's `LANGSMITH_PROJECT` value before the CLI overrides it for agent traces.
+
+Captured inside `_ensure_bootstrap()` after dotenv loading but before the
+`LANGSMITH_PROJECT` override, so `.env`-only values are visible.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
@@ -45,7 +66,7 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
                 return candidate
         except OSError:
             logger.warning("Could not inspect .env candidate %s", candidate)
-            return None
+            continue
     return None
 
 
@@ -59,6 +80,8 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
     Returns:
         `True` when a dotenv file was loaded, `False` otherwise.
     """
+    import dotenv
+
     if start_path is None:
         return dotenv.load_dotenv(override=override)
 
@@ -68,51 +91,65 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
     return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
 
 
-_bootstrap_project_context = _get_server_project_context()
-_bootstrap_start_path = (
-    _bootstrap_project_context.user_cwd if _bootstrap_project_context else None
-)
+def _ensure_bootstrap() -> None:
+    """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
-_load_dotenv(start_path=_bootstrap_start_path)
+    Idempotent and thread-safe — subsequent calls are no-ops. Called
+    automatically by `_get_settings()` when `settings` is first accessed.
 
-# CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
-# LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
-# and preserve the user's original value for shell commands
-_deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
-_original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
-if _deepagents_project:
-    # Override LANGSMITH_PROJECT for agent traces
-    os.environ["LANGSMITH_PROJECT"] = _deepagents_project
+    The flag is set in `finally` so that partial failures (e.g. a
+    malformed `.env`) still mark bootstrap as done — preventing infinite retry
+    loops. Exceptions are caught and logged at ERROR level; the CLI proceeds
+    with the environment as-is.
+    """
+    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project  # noqa: PLW0603
 
-from deepagents_cli.model_config import (  # noqa: E402  # Import after os.environ setup above
-    ModelConfig,
-    ModelConfigError,
-    ModelSpec,
-)
-from deepagents_cli.project_utils import (  # noqa: E402
-    find_project_agent_md as _find_project_agent_md,
-    find_project_root as _find_project_root,
-)
+    if _bootstrap_done:
+        return
+
+    with _bootstrap_lock:
+        if _bootstrap_done:  # double-check after acquiring lock
+            return
+
+        try:
+            from deepagents_cli.project_utils import (
+                get_server_project_context as _get_server_project_context,
+            )
+
+            ctx = _get_server_project_context()
+            _bootstrap_start_path = ctx.user_cwd if ctx else None
+            _load_dotenv(start_path=_bootstrap_start_path)
+
+            # Capture AFTER dotenv loading so .env-only values are visible,
+            # but BEFORE the override below replaces it.
+            _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+
+            # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
+            # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
+            # time, so we override it here and preserve the user's original
+            # value for shell commands.
+            deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+            if deepagents_project:
+                os.environ["LANGSMITH_PROJECT"] = deepagents_project
+        except Exception:
+            logger.exception(
+                "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
+                "may be missing. The CLI will proceed with environment as-is.",
+            )
+        finally:
+            _bootstrap_done = True
+
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
+    from rich.console import Console
 
-DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
-"""URL for deepagents-cli documentation."""
-
-COLORS = {
-    "primary": "#10b981",
-    "primary_dev": "#f97316",
-    "dim": "#6b7280",
-    "user": "#ffffff",
-    "agent": "#10b981",
-    "thinking": "#34d399",
-    "tool": "#fbbf24",
-    "mode_shell": "#ff1493",
-    "mode_command": "#8b5cf6",
-}
-"""App color scheme."""
+    # Static type stubs for lazy module attributes resolved by __getattr__.
+    # At runtime these are created on first access by _get_settings() /
+    # _get_console() and cached in globals().
+    settings: Settings
+    console: Console
 
 MODE_PREFIXES: dict[str, str] = {
     "shell": "!",
@@ -143,8 +180,13 @@ class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
     UNICODE = "unicode"
+    """Always use Unicode glyphs (e.g. `⏺`, `✓`, `…`)."""
+
     ASCII = "ascii"
+    """Always use ASCII-safe fallbacks (e.g. `(*)`, `[OK]`, `...`)."""
+
     AUTO = "auto"
+    """Detect charset support at runtime and pick Unicode or ASCII."""
 
 
 @dataclass(frozen=True)
@@ -176,11 +218,6 @@ class Glyphs:
     # Diff-specific
     gutter_bar: str  # ▌ vs |
 
-    # Tree connectors (full prefixes for tree display)
-    tree_branch: str  # "├── " vs "+-- "
-    tree_last: str  # "└── " vs "`-- "
-    tree_vertical: str  # "│   " vs "|   "
-
     # Status bar
     git_branch: str  # "↗" vs "git:"
 
@@ -207,11 +244,9 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal="─",
     box_double_horizontal="═",
     gutter_bar="▌",
-    tree_branch="├── ",
-    tree_last="└── ",
-    tree_vertical="│   ",
     git_branch="↗",
 )
+"""Glyph set for terminals with full Unicode support."""
 
 ASCII_GLYPHS = Glyphs(
     tool_prefix="(*)",
@@ -235,11 +270,9 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal="-",
     box_double_horizontal="=",
     gutter_bar="|",
-    tree_branch="+-- ",
-    tree_last="`-- ",
-    tree_vertical="|   ",
     git_branch="git:",
 )
+"""Glyph set for terminals limited to 7-bit ASCII."""
 
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
@@ -358,6 +391,18 @@ def reset_glyphs_cache() -> None:
     _glyphs_cache = None
 
 
+def is_ascii_mode() -> bool:
+    """Check whether the terminal is in ASCII charset mode.
+
+    Convenience wrapper so widgets can branch on charset without importing
+    both `_detect_charset_mode` and `CharsetMode`.
+
+    Returns:
+        `True` when the detected charset mode is ASCII.
+    """
+    return _detect_charset_mode() == CharsetMode.ASCII
+
+
 def newline_shortcut() -> str:
     """Return the platform-native label for the newline keyboard shortcut.
 
@@ -369,8 +414,6 @@ def newline_shortcut() -> str:
     """
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
-
-# Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""
 ██████╗  ███████╗ ███████╗ ██████╗    ▄▓▓▄
@@ -411,7 +454,8 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
-        Includes "(local)" suffix when installed in editable mode.
+
+            Includes "(local)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
         banner = _ASCII_BANNER
@@ -424,25 +468,125 @@ def get_banner() -> str:
     return banner
 
 
-# Interactive commands
-COMMANDS = {
-    "clear": "Clear screen and reset conversation",
-    "help": "Show help information",
-    "remember": "Review conversation and update memory/skills",
-    "tokens": "Show token usage for current thread",
-    "quit": "Exit the CLI",
-    "exit": "Exit the CLI",
-}
-
-
-# Maximum argument length for display
 MAX_ARG_LENGTH = 150
+"""Character limit for tool argument values in the UI.
 
-# Agent configuration
+Longer values are truncated with an ellipsis by `truncate_value`
+in `tool_display`.
+"""
+
 config: RunnableConfig = {"recursion_limit": 1000}
+"""Default LangGraph runnable config with a high recursion limit.
 
-# Rich console instance
-console = Console(highlight=False)
+Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
+hitting the default LangGraph ceiling.
+"""
+
+_git_branch_cache: dict[str, str | None] = {}
+"""Per-cwd cache of resolved git branch names.
+
+Avoids repeated `git rev-parse` subprocess calls within the same session. Keyed
+by `str(Path.cwd())`; `None` values indicate the directory is not inside a git
+repository.
+"""
+
+
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or `None` if not in a repo."""
+    import subprocess  # noqa: S404
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
+        return None
+    if cwd in _git_branch_cache:
+        return _git_branch_cache[cwd]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or None
+            _git_branch_cache[cwd] = branch
+            return branch
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not determine git branch", exc_info=True)
+    _git_branch_cache[cwd] = None
+    return None
+
+
+def build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
+) -> RunnableConfig:
+    """Build the LangGraph stream config dict.
+
+    Injects CLI and SDK versions into `metadata["versions"]` so LangSmith traces
+    can be correlated with specific releases.
+
+    Why the CLI sets *both* versions:
+
+    * `create_deep_agent` bakes `versions: {"deepagents": "X.Y.Z"}` into the
+        compiled graph via `with_config`. At stream time, LangGraph merges
+        the graph config with the runtime config passed here. Because the
+        metadata merge is shallow (effectively `{**graph_meta, **runtime_meta}`
+        for top-level keys), both configs containing a `versions` key means
+        the runtime dict **replaces** the graph dict entirely — the SDK
+        version would be lost.
+    * Including the SDK version here ensures it survives the merge.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None` if no
+            sandbox is active.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    import contextlib
+    import importlib.metadata as importlib_metadata
+    from datetime import UTC, datetime
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+
+    # Include SDK version alongside CLI version — see docstring for why.
+    versions: dict[str, str] = {"deepagents-cli": __version__}
+    with contextlib.suppress(importlib_metadata.PackageNotFoundError):
+        versions["deepagents"] = importlib_metadata.version("deepagents")
+
+    metadata: dict[str, Any] = {"versions": versions}
+    if cwd:
+        metadata["cwd"] = cwd
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
@@ -518,6 +662,83 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     return unique
 
 
+def _read_config_toml_skills_dirs() -> list[str] | None:
+    """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
+
+    Returns:
+        List of path strings, or `None` if the key is absent or the file
+            cannot be read.
+    """
+    import tomllib
+
+    from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read skills config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    skills_section = data.get("skills", {})
+    dirs = skills_section.get("extra_allowed_dirs")
+    if isinstance(dirs, list):
+        return dirs
+    return None
+
+
+def _parse_extra_skills_dirs(
+    env_raw: str | None,
+    config_toml_dirs: list[str] | None = None,
+) -> list[Path] | None:
+    """Merge extra skill directories from env var and config.toml.
+
+    Extra skills directories extend the containment allowlist used by
+    `load_skill_content` to validate that a resolved skill path lives inside a
+    trusted root. They do **not** add new skill discovery locations — skills are
+    still discovered only from the standard directories. This exists so that
+    symlinks inside standard skill directories can legitimately point to targets
+    in user-specified locations without being rejected by the path
+    containment check.
+
+    The env var (`DEEPAGENTS_EXTRA_SKILLS_DIRS`, colon-separated) takes
+    precedence: when set, `config.toml` values are ignored.
+
+    Args:
+        env_raw: Value of `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated), or
+            `None` if unset.
+        config_toml_dirs: List of path strings from
+            `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+    Returns:
+        List of resolved `Path` objects, or `None` if not configured.
+    """
+    # Env var takes precedence when set
+    if env_raw:
+        dirs = [
+            Path(p.strip()).expanduser().resolve()
+            for p in env_raw.split(":")
+            if p.strip()
+        ]
+        return dirs or None
+
+    if config_toml_dirs:
+        dirs = [
+            Path(p).expanduser().resolve()
+            for p in config_toml_dirs
+            if isinstance(p, str) and p.strip()
+        ]
+        return dirs or None
+
+    return None
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -527,50 +748,59 @@ class Settings:
     - Current project information
     - Tool availability (e.g., Tavily)
     - File system paths
-
-    Attributes:
-        openai_api_key: OpenAI API key if available.
-        anthropic_api_key: Anthropic API key if available.
-        google_api_key: Google API key if available.
-        nvidia_api_key: NVIDIA API key if available.
-        tavily_api_key: Tavily API key if available.
-        google_cloud_project: Google Cloud project ID for VertexAI
-            authentication.
-        deepagents_langchain_project: LangSmith project name for deepagents
-            agent tracing.
-        user_langchain_project: Original LANGSMITH_PROJECT from environment
-            (for user code).
-        model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g., openai, anthropic, google_genai).
-        model_context_limit: Maximum input token count from the model profile.
-        project_root: Current project root directory (if in a git project).
-        shell_allow_list: List of shell commands that don't require approval.
     """
 
-    # API keys
     openai_api_key: str | None
+    """OpenAI API key if available."""
+
     anthropic_api_key: str | None
+    """Anthropic API key if available."""
+
     google_api_key: str | None
+    """Google API key if available."""
+
     nvidia_api_key: str | None
+    """NVIDIA API key if available."""
+
     tavily_api_key: str | None
+    """Tavily API key if available."""
 
-    # Google Cloud configuration (for VertexAI)
     google_cloud_project: str | None
+    """Google Cloud project ID for VertexAI authentication."""
 
-    # LangSmith configuration
-    deepagents_langchain_project: str | None  # For deepagents agent tracing
-    user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
+    deepagents_langchain_project: str | None
+    """LangSmith project name for deepagents agent tracing."""
 
-    # Model configuration
-    model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
-    model_context_limit: int | None = None  # Max input tokens from model profile
+    user_langchain_project: str | None
+    """Original `LANGSMITH_PROJECT` from environment (for user code)."""
 
-    # Project information
+    model_name: str | None = None
+    """Currently active model name, set after model creation."""
+
+    model_provider: str | None = None
+    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
+
+    model_context_limit: int | None = None
+    """Maximum input token count from the model profile."""
+
     project_root: Path | None = None
+    """Current project root directory, or `None` if not in a git project."""
 
-    # Shell command allow-list for auto-approval
     shell_allow_list: list[str] | None = None
+    """Shell commands that don't require user approval."""
+
+    extra_skills_dirs: list[Path] | None = None
+    """Extra directories added to the skill path containment allowlist.
+
+    These do NOT add new skill discovery locations — skills are still only
+    discovered from the standard directories. They exist so that symlinks inside
+    standard skill directories can point to targets in these additional
+    locations without being rejected by the containment check
+    in `load_skill_content`.
+
+    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+    """
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
@@ -593,19 +823,32 @@ class Settings:
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
-        # Note: LANGSMITH_PROJECT was already overridden at module import time (above)
-        # so we use the saved original value, not the current os.environ value
+        # When accessed via the module-level `settings` singleton,
+        # _ensure_bootstrap() has already run and may have overridden
+        # LANGSMITH_PROJECT. We use the saved original value, not the
+        # current os.environ value. Direct callers should ensure
+        # bootstrap has run if they depend on the override.
         deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
-        project_root = _find_project_root(start_path)
+        from deepagents_cli.project_utils import find_project_root
+
+        project_root = find_project_root(start_path)
 
         # Parse shell command allow-list from environment
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
         # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
         shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
         shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
+
+        # Parse extra skill containment roots from env var or config.toml.
+        # These extend the path allowlist for load_skill_content but do not
+        # add new skill discovery locations.
+        extra_skills_dirs = _parse_extra_skills_dirs(
+            os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+            _read_config_toml_skills_dirs(),
+        )
 
         return cls(
             openai_api_key=openai_key,
@@ -618,6 +861,7 @@ class Settings:
             user_langchain_project=user_langchain_project,
             project_root=project_root,
             shell_allow_list=shell_allow_list,
+            extra_skills_dirs=extra_skills_dirs,
         )
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
@@ -647,6 +891,9 @@ class Settings:
             "nvidia_api_key",
             "tavily_api_key",
         }
+        """Fields that hold API keys — used to mask values in change reports
+        so secrets are not logged as plaintext."""
+
         reloadable_fields = (
             "openai_api_key",
             "anthropic_api_key",
@@ -657,7 +904,14 @@ class Settings:
             "deepagents_langchain_project",
             "project_root",
             "shell_allow_list",
+            "extra_skills_dirs",
         )
+        """Fields refreshed on `/reload`.
+
+        Runtime model state (`model_name`, `model_provider`, `model_context_limit`)
+        and the original user LangSmith project are intentionally excluded —
+        they are set once and should not change across reloads.
+        """
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
@@ -673,7 +927,9 @@ class Settings:
             shell_allow_list = previous["shell_allow_list"]
 
         try:
-            project_root = _find_project_root(start_path)
+            from deepagents_cli.project_utils import find_project_root
+
+            project_root = find_project_root(start_path)
         except OSError:
             logger.warning(
                 "Could not detect project root during reload; keeping previous value"
@@ -692,6 +948,10 @@ class Settings:
             ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
+            "extra_skills_dirs": _parse_extra_skills_dirs(
+                os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+                _read_config_toml_skills_dirs(),
+            ),
         }
 
         for field, value in refreshed.items():
@@ -800,7 +1060,9 @@ class Settings:
         """
         if not self.project_root:
             return []
-        return _find_project_agent_md(self.project_root)
+        from deepagents_cli.project_utils import find_project_agent_md
+
+        return find_project_agent_md(self.project_root)
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
@@ -957,6 +1219,31 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
+    def get_user_claude_skills_dir() -> Path:
+        """Get user-level `~/.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `~/.claude/skills/`
+        """
+        return Path.home() / ".claude" / "skills"
+
+    def get_project_claude_skills_dir(self) -> Path | None:
+        """Get project-level `.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".claude" / "skills"
+
+    @staticmethod
     def get_built_in_skills_dir() -> Path:
         """Get the directory containing built-in skills that ship with the CLI.
 
@@ -965,9 +1252,16 @@ class Settings:
         """
         return Path(__file__).parent / "built_in_skills"
 
+    def get_extra_skills_dirs(self) -> list[Path]:
+        """Get user-configured extra skill directories.
 
-# Global settings instance (initialized once)
-settings = Settings.from_environment(start_path=_bootstrap_start_path)
+        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+        Returns:
+            List of extra skill directory paths, or empty list if not configured.
+        """
+        return self.extra_skills_dirs or []
 
 
 class SessionState:
@@ -1038,28 +1332,13 @@ DANGEROUS_SHELL_PATTERNS = (
     "<",  # Input redirect
     "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
 )
+"""Literal substrings that indicate shell injection risk.
 
-# Recommended safe shell commands for non-interactive mode.
-# These commands are primarily read-only and do not modify the filesystem
-# when used without shell redirection operators (which the dangerous-patterns
-# check blocks).
-#
-# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
-# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
-# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
-# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
-# - Package managers: pip, npm, gem, apt, yum, brew, etc.
-# - Compilers: gcc, cc, make, cmake, etc.
-# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
-# - Archivers with shell escape: tar, zip, 7z, etc.
-# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
-# - Privilege tools: sudo, su, doas, pkexec, etc.
-# - Process tools: env, xargs, find (with -exec), etc.
-# - Git (can run hooks), docker, kubectl, etc.
-#
-# SAFE commands included below are primarily readers/formatters. File write and
-# injection are prevented by the dangerous-patterns check that blocks redirects,
-# command substitution, and other shell metacharacters.
+Used by `contains_dangerous_patterns` to reject commands that embed arbitrary
+execution via redirects, substitution operators, or control characters — even
+when the base command is on the allow-list.
+"""
+
 RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Directory listing
     "ls",
@@ -1094,6 +1373,13 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Process viewing (read-only)
     "ps",
 )
+"""Read-only commands auto-approved in non-interactive mode.
+
+Only includes readers and formatters — shells, editors, interpreters, package
+managers, network tools, archivers, and anything on GTFOBins/LOOBins is
+intentionally excluded. File-write and injection vectors are blocked separately
+by `DANGEROUS_SHELL_PATTERNS`.
+"""
 
 
 def contains_dangerous_patterns(command: str) -> bool:
@@ -1199,8 +1485,8 @@ def get_langsmith_project_name() -> str | None:
     When both are present, resolves the project name with priority:
     `settings.deepagents_langchain_project` (from
     `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
-    environment (note: this may already have been overridden at import
-    time to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+    environment (note: this may already have been overridden at bootstrap time
+    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
@@ -1215,7 +1501,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        settings.deepagents_langchain_project
+        _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or "default"
     )
@@ -1369,12 +1655,14 @@ def detect_provider(model_name: str) -> str | None:
         return "openai"
 
     if model_lower.startswith("claude"):
-        if not settings.has_anthropic and settings.has_vertex_ai:
+        s = _get_settings()
+        if not s.has_anthropic and s.has_vertex_ai:
             return "google_vertexai"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        if settings.has_vertex_ai and not settings.has_google:
+        s = _get_settings()
+        if s.has_vertex_ai and not s.has_google:
             return "google_vertexai"
         return "google_genai"
 
@@ -1399,6 +1687,8 @@ def _get_default_model_spec() -> str:
     Raises:
         ModelConfigError: If no credentials are configured.
     """
+    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+
     config = ModelConfig.load()
     if config.default_model:
         return config.default_model
@@ -1406,15 +1696,16 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
-    if settings.has_openai:
+    s = _get_settings()
+    if s.has_openai:
         return "openai:gpt-5.2"
-    if settings.has_anthropic:
+    if s.has_anthropic:
         return "anthropic:claude-sonnet-4-6"
-    if settings.has_google:
+    if s.has_google:
         return "google_genai:gemini-3.1-pro-preview"
-    if settings.has_vertex_ai:
+    if s.has_vertex_ai:
         return "google_vertexai:gemini-3.1-pro-preview"
-    if settings.has_nvidia:
+    if s.has_nvidia:
         return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
@@ -1482,6 +1773,8 @@ def _get_provider_kwargs(
     Returns:
         Dictionary of provider-specific kwargs.
     """
+    from deepagents_cli.model_config import ModelConfig
+
     config = ModelConfig.load()
     result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
     base_url = config.get_base_url(provider)
@@ -1523,6 +1816,8 @@ def _create_model_from_class(
     from langchain_core.language_models import (
         BaseChatModel as _BaseChatModel,  # Runtime import; module level is typing only
     )
+
+    from deepagents_cli.model_config import ModelConfigError
 
     if ":" not in class_path:
         msg = (
@@ -1579,6 +1874,8 @@ def _create_model_via_init(
         ModelConfigError: On import, value, or runtime errors.
     """
     from langchain.chat_models import init_chat_model
+
+    from deepagents_cli.model_config import ModelConfigError
 
     try:
         if provider:
@@ -1645,9 +1942,10 @@ class ModelResult:
 
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
-        settings.model_name = self.model_name
-        settings.model_provider = self.provider
-        settings.model_context_limit = self.context_limit
+        s = _get_settings()
+        s.model_name = self.model_name
+        s.model_provider = self.provider
+        s.model_context_limit = self.context_limit
 
 
 def _apply_profile_overrides(
@@ -1676,6 +1974,8 @@ def _apply_profile_overrides(
         ModelConfigError: If `raise_on_failure` is `True` and the model
             rejects profile assignment.
     """
+    from deepagents_cli.model_config import ModelConfigError
+
     logger.debug("Applying %s profile overrides: %s", label, overrides)
     profile = getattr(model, "profile", None)
     merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
@@ -1738,6 +2038,8 @@ def create_model(
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
+    from deepagents_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
+
     if not model_spec:
         model_spec = _get_default_model_spec()
 
@@ -1837,6 +2139,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         a warning. Exits via sys.exit(1) if model profile explicitly indicates
         tool_calling=False.
     """
+    console = _get_console()
     profile = getattr(model, "profile", None)
 
     if profile is None:
@@ -1871,3 +2174,76 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"
         )
+
+
+def _get_console() -> Console:
+    """Return the lazily-initialized global `Console` instance.
+
+    Defers the `rich.console` import until console output is actually
+    needed. The result is cached in `globals()["console"]`.
+
+    Returns:
+        The global Rich `Console` singleton.
+    """
+    cached = globals().get("console")
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = globals().get("console")
+        if cached is not None:
+            return cached
+        from rich.console import Console
+
+        inst = Console(highlight=False)
+        globals()["console"] = inst
+        return inst
+
+
+def _get_settings() -> Settings:
+    """Return the lazily-initialized global `Settings` instance.
+
+    Ensures bootstrap has run before constructing settings. The result is cached
+    in `globals()["settings"]` so subsequent access — including
+    `from config import settings` in other modules — resolves instantly.
+
+    Returns:
+        The global `Settings` singleton.
+    """
+    cached = globals().get("settings")
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = globals().get("settings")
+        if cached is not None:
+            return cached
+        _ensure_bootstrap()
+        try:
+            inst = Settings.from_environment(start_path=_bootstrap_start_path)
+        except Exception:
+            logger.exception(
+                "Failed to initialize settings from environment (start_path=%s)",
+                _bootstrap_start_path,
+            )
+            raise
+        globals()["settings"] = inst
+        return inst
+
+
+def __getattr__(name: str) -> Settings | Console:
+    """Lazy module attributes for `settings` and `console`.
+
+    Defers heavy initialization until first access. Subsequent accesses hit
+    the module-level attribute directly (no `__getattr__` overhead).
+
+    Returns:
+        The requested lazy singleton.
+
+    Raises:
+        AttributeError: If *name* is not a lazily-provided attribute.
+    """
+    if name == "settings":
+        return _get_settings()
+    if name == "console":
+        return _get_console()
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

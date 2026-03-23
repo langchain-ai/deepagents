@@ -14,25 +14,25 @@ from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
 from textual.content import Content
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     MODE_DISPLAY_GLYPHS,
     PREFIX_TO_MODE,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets._links import open_style_link
-from deepagents_cli.widgets.diff import format_diff_textual
+from deepagents_cli.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
     from textual.timer import Timer
+    from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
@@ -78,24 +78,25 @@ class _TimestampClickMixin:
         _show_timestamp_toast(self)  # type: ignore[arg-type]
 
 
-def _mode_color(mode: str | None) -> str:
-    """Return the color string for a mode, falling back to primary.
+def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
+    """Return the hex color string for a mode, falling back to primary.
 
     Args:
         mode: Mode name (e.g. `'shell'`, `'command'`) or `None`.
+        widget_or_app: Textual widget or `App` for theme-aware lookup.
 
     Returns:
-        Hex color string from `COLORS`.
+        Color string from the active theme's `ThemeColors`.
     """
+    colors = theme.get_theme_colors(widget_or_app)
     if not mode:
-        return COLORS["primary"]
-    color = COLORS.get(f"mode_{mode}")
-    if color is None:
-        logger.warning(
-            "Missing color key 'mode_%s' in COLORS; falling back to primary.", mode
-        )
-        return COLORS["primary"]
-    return color
+        return colors.primary
+    if mode == "shell":
+        return colors.mode_bash
+    if mode == "command":
+        return colors.mode_command
+    logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
+    return colors.primary
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +150,7 @@ class UserMessage(_TimestampClickMixin, Static):
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide #10b981;
+        border-left: wide $primary;
     }
     """
 
@@ -164,18 +165,20 @@ class UserMessage(_TimestampClickMixin, Static):
         self._content = content
 
     def on_mount(self) -> None:
-        """Set border style based on charset mode and content prefix."""
+        """Add CSS classes for mode-specific border and ASCII border type."""
         mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        color = _mode_color(mode)
-        border_type = "ascii" if _detect_charset_mode() == CharsetMode.ASCII else "wide"
-        self.styles.border_left = (border_type, color)
+        if mode:
+            self.add_class(f"-mode-{mode}")
+        if is_ascii_mode():
+            self.add_class("-ascii")
 
-    def compose(self) -> ComposeResult:
-        """Compose the user message layout.
+    def render(self) -> Content:
+        """Render the styled user message.
 
-        Yields:
-            Static widget containing the formatted user message.
+        Returns:
+            Styled Content with mode prefix and highlighted mentions.
         """
+        colors = theme.get_theme_colors(self)
         parts: list[str | tuple[str, str]] = []
         content = self._content
 
@@ -185,10 +188,10 @@ class UserMessage(_TimestampClickMixin, Static):
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            parts.append((f"{glyph} ", f"bold {_mode_color(mode)}"))
+            parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
             content = content[1:]
         else:
-            parts.append(("> ", f"bold {COLORS['primary']}"))
+            parts.append(("> ", f"bold {colors.primary}"))
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -208,18 +211,18 @@ class UserMessage(_TimestampClickMixin, Static):
 
             # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
-                # /command at start - yellow/gold
-                parts.append((token, "bold #fbbf24"))
+                # /command at start
+                parts.append((token, f"bold {colors.warning}"))
             elif token.startswith("@"):
-                # @file mention - green
-                parts.append((token, "bold #10b981"))
+                # @file mention
+                parts.append((token, f"bold {colors.primary}"))
             last_end = end
 
         # Add remaining text after last match
         if last_end < len(content):
             parts.append(content[last_end:])
 
-        yield Static(Content.assemble(*parts))
+        return Content.assemble(*parts)
 
 
 class QueuedUserMessage(Static):
@@ -234,10 +237,11 @@ class QueuedUserMessage(Static):
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide #6b7280;
+        border-left: wide $panel;
         opacity: 0.6;
     }
     """
+    """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a queued user message.
@@ -250,25 +254,253 @@ class QueuedUserMessage(Static):
         self._content = content
 
     def on_mount(self) -> None:
-        """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "#6b7280")
+        """Add ASCII border class when in ASCII mode."""
+        if is_ascii_mode():
+            self.add_class("-ascii")
 
-    def compose(self) -> ComposeResult:
-        """Compose the queued user message layout.
+    def render(self) -> Content:
+        """Render the queued user message (greyed out).
 
-        Yields:
-            Static widget containing the formatted queued message (greyed out).
+        Returns:
+            Styled Content with dimmed prefix and body.
         """
+        colors = theme.get_theme_colors(self)
         content = self._content
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
-            prefix = (f"{glyph} ", f"bold {COLORS['dim']}")
+            prefix = (f"{glyph} ", f"bold {colors.muted}")
             content = content[1:]
         else:
-            prefix = ("> ", f"bold {COLORS['dim']}")
-        yield Static(Content.assemble(prefix, (content, "#9ca3af")))
+            prefix = ("> ", f"bold {colors.muted}")
+        return Content.assemble(prefix, (content, colors.muted))
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter delimited by `---` markers.
+
+    Args:
+        text: Raw `SKILL.md` content.
+
+    Returns:
+        Body text with frontmatter removed and leading whitespace stripped.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return text
+    # Find closing --- (skip the opening line)
+    end = stripped.find("\n---", 3)
+    if end == -1:
+        return text
+    # Skip past the closing --- and its trailing newline
+    after = end + 4  # len("\n---")
+    return stripped[after:].lstrip("\n")
+
+
+class SkillMessage(Vertical):
+    """Widget displaying a skill invocation with collapsible body.
+
+    Shows skill name, source badge, description, and user args as a compact
+    header. The full SKILL.md body (frontmatter stripped) is hidden behind a
+    preview/expand toggle (click or Ctrl+O).  The expanded view renders
+    markdown via Textual's `Markdown` widget.
+    """
+
+    DEFAULT_CSS = """
+    SkillMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0 0 0;
+        background: transparent;
+        border-left: wide #a78bfa;
+    }
+
+    SkillMessage .skill-header {
+        height: auto;
+    }
+
+    SkillMessage .skill-description {
+        color: #6b7280;
+        margin-left: 3;
+    }
+
+    SkillMessage .skill-args {
+        margin-left: 3;
+        margin-top: 0;
+    }
+
+    SkillMessage .skill-body-preview {
+        margin-left: 3;
+        margin-top: 0;
+        color: #6b7280;
+    }
+
+    SkillMessage #skill-md {
+        margin-left: 3;
+        margin-top: 0;
+        padding: 0;
+    }
+
+    SkillMessage .skill-hint {
+        margin-left: 3;
+        color: #6b7280;
+    }
+
+    SkillMessage:hover {
+        border-left: wide #c4b5fd;
+    }
+    """
+
+    _PREVIEW_LINES = 4
+    _PREVIEW_CHARS = 300
+
+    def __init__(
+        self,
+        skill_name: str,
+        description: str = "",
+        source: str = "",
+        body: str = "",
+        args: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a skill message.
+
+        Args:
+            skill_name: Skill identifier.
+            description: Short description of the skill.
+            source: Origin label (e.g., `'built-in'`, `'user'`).
+            body: Full SKILL.md content (frontmatter included).
+            args: User-provided arguments.
+            **kwargs: Additional arguments passed to parent.
+        """
+        super().__init__(**kwargs)
+        self._skill_name = skill_name
+        self._description = description
+        self._source = source
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        self._args = args
+        self._expanded: bool = False
+        self._preview_widget: Static | None = None
+        self._md_widget: Markdown | None = None
+        self._hint_widget: Static | None = None
+        self._deferred_expanded: bool = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the skill message layout.
+
+        Yields:
+            Widgets for header, description, args, and collapsible body.
+        """
+        from textual.widgets import Markdown as MdWidget
+
+        source_tag = f" [{self._source}]" if self._source else ""
+        yield Static(
+            Content.from_markup(
+                "[bold #a78bfa]$label[/bold #a78bfa]",
+                label=f"/skill:{self._skill_name}{source_tag}",
+            ),
+            classes="skill-header",
+        )
+        if self._description:
+            yield Static(
+                Content.styled(self._description, "dim"),
+                classes="skill-description",
+            )
+        if self._args:
+            yield Static(
+                Content.assemble(
+                    ("User request: ", "bold"),
+                    self._args,
+                ),
+                classes="skill-args",
+            )
+        yield Static("", classes="skill-body-preview", id="skill-preview")
+        yield MdWidget("", id="skill-md")
+        yield Static("", classes="skill-hint", id="skill-hint")
+
+    def on_mount(self) -> None:
+        """Cache widget references and set initial display state."""
+        from textual.widgets import Markdown as MdWidget
+
+        if is_ascii_mode():
+            self.styles.border_left = ("ascii", "#a78bfa")
+
+        self._preview_widget = self.query_one("#skill-preview", Static)
+        self._md_widget = self.query_one("#skill-md", MdWidget)
+        self._hint_widget = self.query_one("#skill-hint", Static)
+
+        self._preview_widget.display = False
+        self._md_widget.display = False
+        self._hint_widget.display = False
+
+        if self._deferred_expanded:
+            self._expanded = self._deferred_expanded
+            self._deferred_expanded = False
+
+        if self._stripped_body.strip():
+            self._update_body_display()
+
+    def toggle_body(self) -> None:
+        """Toggle between preview and full body display."""
+        if not self._stripped_body.strip():
+            return
+        self._expanded = not self._expanded
+        self._update_body_display()
+
+    def on_click(self, event: Click) -> None:
+        """Toggle body expansion, or show timestamp if no body."""
+        event.stop()
+        if self._stripped_body.strip():
+            self.toggle_body()
+        else:
+            _show_timestamp_toast(self)
+
+    def _update_body_display(self) -> None:
+        """Update the body display based on expanded state."""
+        if not self._preview_widget or not self._md_widget or not self._hint_widget:
+            return
+
+        body = self._stripped_body.strip()
+        if not body:
+            return
+
+        lines = body.split("\n")
+        total_lines = len(lines)
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
+        )
+
+        if self._expanded:
+            self._preview_widget.display = False
+            self._md_widget.update(body)
+            self._md_widget.display = True
+            self._hint_widget.update(
+                Content.styled("click or Ctrl+O to collapse", "dim italic")
+            )
+            self._hint_widget.display = True
+        elif needs_truncation:
+            self._md_widget.display = False
+            preview_lines = lines[: self._PREVIEW_LINES]
+            preview = "\n".join(preview_lines)
+            if len(preview) > self._PREVIEW_CHARS:
+                preview = preview[: self._PREVIEW_CHARS]
+            self._preview_widget.update(Content.styled(preview, "dim"))
+            self._preview_widget.display = True
+            remaining = total_lines - self._PREVIEW_LINES
+            ellipsis = get_glyphs().ellipsis
+            self._hint_widget.update(
+                Content.styled(
+                    f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
+                    "dim",
+                )
+            )
+            self._hint_widget.display = True
+        else:
+            self._preview_widget.display = False
+            self._md_widget.update(body)
+            self._md_widget.display = True
+            self._hint_widget.display = False
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):
@@ -314,10 +546,14 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         Yields:
             Markdown widget for rendering assistant content.
         """
+        from textual.widgets import Markdown
+
         yield Markdown("", id="assistant-content")
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
+        from textual.widgets import Markdown
+
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def _get_markdown(self) -> Markdown:
@@ -327,6 +563,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The Markdown widget for this message.
         """
         if self._markdown is None:
+            from textual.widgets import Markdown
+
             self._markdown = self.query_one("#assistant-content", Markdown)
         return self._markdown
 
@@ -337,6 +575,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             The MarkdownStream instance for streaming content.
         """
         if self._stream is None:
+            from textual.widgets import Markdown
+
             self._stream = Markdown.get_stream(self._get_markdown())
         return self._stream
 
@@ -410,7 +650,7 @@ class ToolCallMessage(Vertical):
     """Widget displaying a tool call with collapsible output.
 
     Tool outputs are shown as a 3-line preview by default.
-    Press Ctrl+E to expand/collapse the full output.
+    Press Ctrl+O to expand/collapse the full output.
     Shows an animated "Running..." indicator while the tool is executing.
     """
 
@@ -420,15 +660,17 @@ class ToolCallMessage(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide #3b3b3b;
+        border-left: wide $panel;
     }
 
     ToolCallMessage .tool-header {
         height: auto;
+        color: $warning;
+        text-style: bold;
     }
 
     ToolCallMessage .tool-args {
-        color: #6b7280;
+        color: $text-muted;
         margin-left: 3;
     }
 
@@ -437,19 +679,19 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage .tool-status.pending {
-        color: #f59e0b;
+        color: $warning;
     }
 
     ToolCallMessage .tool-status.success {
-        color: #10b981;
+        color: $success;
     }
 
     ToolCallMessage .tool-status.error {
-        color: #ef4444;
+        color: $error;
     }
 
     ToolCallMessage .tool-status.rejected {
-        color: #f59e0b;
+        color: $warning;
     }
 
     ToolCallMessage .tool-output {
@@ -466,13 +708,14 @@ class ToolCallMessage(Vertical):
 
     ToolCallMessage .tool-output-hint {
         margin-left: 0;
-        color: #6b7280;
+        color: $text-muted;
     }
 
     ToolCallMessage:hover {
-        border-left: wide #525252;
+        border-left: wide $secondary;
     }
     """
+    """Left border tracks tool lifecycle; hover brightens for interactivity."""
 
     # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
@@ -518,12 +761,7 @@ class ToolCallMessage(Vertical):
             Widgets for header, arguments, status, and output display.
         """
         tool_label = format_tool_display(self._tool_name, self._args)
-        yield Static(
-            Content.from_markup(
-                "[bold #f59e0b]$label[/bold #f59e0b]", label=tool_label
-            ),
-            classes="tool-header",
-        )
+        yield Static(tool_label, markup=False, classes="tool-header")
         # Only show args for tools where header doesn't capture the key info
         if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
@@ -546,8 +784,8 @@ class ToolCallMessage(Vertical):
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "#3b3b3b")
+        if is_ascii_mode():
+            self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -577,6 +815,7 @@ class ToolCallMessage(Vertical):
         self._deferred_expanded = False
 
         # Restore based on status (don't restart animations for running tools)
+        colors = theme.get_theme_colors(self)
         match status:
             case "success":
                 self._status = "success"
@@ -589,7 +828,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("error")
                     error_icon = get_glyphs().error
                     self._status_widget.update(
-                        Content.styled(f"{error_icon} Error", "red")
+                        Content.styled(f"{error_icon} Error", colors.error)
                     )
                     self._status_widget.display = True
                 self._update_output_display()
@@ -599,7 +838,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("rejected")
                     error_icon = get_glyphs().error
                     self._status_widget.update(
-                        Content.styled(f"{error_icon} Rejected", "yellow")
+                        Content.styled(f"{error_icon} Rejected", colors.warning)
                     )
                     self._status_widget.display = True
             case "skipped":
@@ -616,7 +855,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("pending")
                     frame = get_glyphs().spinner_frames[0]
                     self._status_widget.update(
-                        Content.styled(f"{frame} Running...", "yellow")
+                        Content.styled(f"{frame} Running...", colors.warning)
                     )
                     self._status_widget.display = True
             case _:
@@ -654,7 +893,9 @@ class ToolCallMessage(Vertical):
             elapsed = f" ({elapsed_secs}s)"
 
         text = f"{frame} Running...{elapsed}"
-        self._status_widget.update(Content.styled(text, "yellow"))
+        self._status_widget.update(
+            Content.styled(text, theme.get_theme_colors(self).warning)
+        )
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""
@@ -699,7 +940,10 @@ class ToolCallMessage(Vertical):
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("error")
             error_icon = get_glyphs().error
-            self._status_widget.update(Content.styled(f"{error_icon} Error", "red"))
+            colors = theme.get_theme_colors(self)
+            self._status_widget.update(
+                Content.styled(f"{error_icon} Error", colors.error)
+            )
             self._status_widget.display = True
         # Always show full error - errors should be visible
         self._expanded = True
@@ -714,7 +958,8 @@ class ToolCallMessage(Vertical):
             self._status_widget.add_class("rejected")
             error_icon = get_glyphs().error
             text = f"{error_icon} Rejected"
-            self._status_widget.update(Content.styled(text, "yellow"))
+            colors = theme.get_theme_colors(self)
+            self._status_widget.update(Content.styled(text, colors.warning))
             self._status_widget.display = True
 
     def set_skipped(self) -> None:
@@ -779,6 +1024,18 @@ class ToolCallMessage(Vertical):
         formatter = formatters.get(self._tool_name)
         if formatter:
             return formatter(output, is_preview=is_preview)
+
+        if is_preview:
+            # Fallback for unknown tools: use generic truncation
+            lines = output.split("\n")
+            if len(lines) > self._PREVIEW_LINES:
+                return self._format_lines_output(lines, is_preview=True)
+            if len(output) > self._PREVIEW_CHARS:
+                truncated = output[: self._PREVIEW_CHARS]
+                truncation = f"{len(output) - self._PREVIEW_CHARS} more chars"
+                return FormattedOutput(
+                    content=Content(truncated), truncation=truncation
+                )
 
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
@@ -851,12 +1108,13 @@ class ToolCallMessage(Vertical):
         except (ValueError, SyntaxError):
             return None
 
-    def _build_todo_stats(self, items: list) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _build_todo_stats(self, items: list) -> Content:
         """Build stats content for todo list.
 
         Returns:
             Styled `Content` showing active, pending, and completed counts.
         """
+        colors = theme.get_theme_colors(self)
         completed = sum(
             1 for i in items if isinstance(i, dict) and i.get("status") == "completed"
         )
@@ -867,19 +1125,20 @@ class ToolCallMessage(Vertical):
 
         parts: list[Content] = []
         if active:
-            parts.append(Content.styled(f"{active} active", "yellow"))
+            parts.append(Content.styled(f"{active} active", colors.warning))
         if pending:
             parts.append(Content.styled(f"{pending} pending", "dim"))
         if completed:
-            parts.append(Content.styled(f"{completed} done", "green"))
+            parts.append(Content.styled(f"{completed} done", colors.success))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_single_todo(self, item: dict | str) -> Content:
         """Format a single todo item.
 
         Returns:
             Styled `Content` with checkbox and status styling.
         """
+        colors = theme.get_theme_colors(self)
         if isinstance(item, dict):
             text = item.get("content", str(item))
             status = item.get("status", "pending")
@@ -893,12 +1152,12 @@ class ToolCallMessage(Vertical):
         glyphs = get_glyphs()
         if status == "completed":
             return Content.assemble(
-                Content.styled(f"    {glyphs.checkmark} done", "green"),
+                Content.styled(f"    {glyphs.checkmark} done", colors.success),
                 Content.styled(f"   {text}", "dim"),
             )
         if status == "in_progress":
             return Content.assemble(
-                Content.styled(f"    {glyphs.circle_filled} active", "yellow"),
+                Content.styled(f"    {glyphs.circle_filled} active", colors.warning),
                 f" {text}",
             )
         return Content.assemble(
@@ -924,11 +1183,11 @@ class ToolCallMessage(Vertical):
                     path = Path(str(item))
                     name = path.name
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", "#3b82f6"))
+                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", "#f59e0b"))
+                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
                     elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", "#10b981"))
+                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
                     else:
                         lines.append(Content(f"    {name}"))
 
@@ -1204,7 +1463,7 @@ class ToolCallMessage(Vertical):
             self._full_widget.display = True
             # Show collapse hint underneath
             self._hint_widget.update(
-                Content.styled("click or Ctrl+E to collapse", "dim italic")
+                Content.styled("click or Ctrl+O to collapse", "dim italic")
             )
             self._hint_widget.display = True
         else:
@@ -1220,11 +1479,11 @@ class ToolCallMessage(Vertical):
                 if result.truncation:
                     ellipsis = get_glyphs().ellipsis
                     hint = Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+E to expand",
+                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
                         "dim",
                     )
                 else:
-                    hint = Content.styled("click or Ctrl+E to expand", "dim italic")
+                    hint = Content.styled("click or Ctrl+O to expand", "dim italic")
                 self._hint_widget.update(hint)
                 self._hint_widget.display = True
             elif output_stripped:
@@ -1281,13 +1540,13 @@ class DiffMessage(_TimestampClickMixin, Static):
     }
 
     DiffMessage .diff-add {
-        color: #10b981;
-        background: #10b98120;
+        color: $text-success;
+        background: $success-muted;
     }
 
     DiffMessage .diff-remove {
-        color: #ef4444;
-        background: #ef444420;
+        color: $text-error;
+        background: $error-muted;
     }
 
     DiffMessage .diff-context {
@@ -1299,6 +1558,7 @@ class DiffMessage(_TimestampClickMixin, Static):
         text-style: bold;
     }
     """
+    """Diff syntax coloring per theme: additions, removals, muted context."""
 
     def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
         """Initialize a diff message.
@@ -1324,14 +1584,14 @@ class DiffMessage(_TimestampClickMixin, Static):
                 classes="diff-header",
             )
 
-        # Render the diff with enhanced formatting
-        rendered = format_diff_textual(self._diff_content, max_lines=100)
-        yield Static(rendered)
+        # Render the diff with per-line Statics (CSS-driven backgrounds)
+        yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border = ("ascii", "cyan")
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
 
 class ErrorMessage(_TimestampClickMixin, Static):
@@ -1342,11 +1602,12 @@ class ErrorMessage(_TimestampClickMixin, Static):
         height: auto;
         padding: 1;
         margin: 1 0;
-        background: #7f1d1d;
+        background: $error-muted;
         color: white;
         border-left: wide $error;
     }
     """
+    """Tinted background + left border to visually separate errors from output."""
 
     def __init__(self, error: str, **kwargs: Any) -> None:
         """Initialize an error message.
@@ -1357,15 +1618,25 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """
         # Store raw content for serialization
         self._content = error
-        super().__init__(
-            Content.from_markup("[bold red]Error: [/bold red]$err", err=error),
-            **kwargs,
+        super().__init__(**kwargs)
+
+    def render(self) -> Content:
+        """Render with theme-aware colors.
+
+        Returns:
+            Styled error content with theme-appropriate color.
+        """
+        colors = theme.get_theme_colors(self)
+        return Content.assemble(
+            Content.styled("Error: ", f"bold {colors.error}"),
+            self._content,
         )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border_left = ("ascii", "red")
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.error)
 
 
 class AppMessage(Static):
@@ -1434,11 +1705,20 @@ class SummarizationMessage(AppMessage):
                 Defaults to the standard summary notification.
             **kwargs: Additional arguments passed to parent.
         """
-        rendered: Content
-        if message is None:
-            rendered = Content.styled("✓ Conversation offloaded", "bold cyan")
-        elif isinstance(message, Content):
-            rendered = message
-        else:
-            rendered = Content.styled(message, "bold cyan")
-        super().__init__(rendered, **kwargs)
+        self._raw_message = message
+        # Pass the default text to AppMessage for _content serialization;
+        # render() supplies theme-aware styling at display time.
+        super().__init__(message or "✓ Conversation offloaded", **kwargs)
+
+    def render(self) -> Content:
+        """Render with theme-aware colors.
+
+        Returns:
+            Styled summarization content with theme-appropriate color.
+        """
+        colors = theme.get_theme_colors(self)
+        if self._raw_message is None:
+            return Content.styled("✓ Conversation offloaded", f"bold {colors.primary}")
+        if isinstance(self._raw_message, Content):
+            return self._raw_message
+        return Content.styled(self._raw_message, f"bold {colors.primary}")

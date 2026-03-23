@@ -26,11 +26,11 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, Key
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets._links import open_style_link
@@ -549,6 +549,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -712,7 +713,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 "Select Thread (current: ",
                 (
                     self._current_thread,
-                    TStyle(foreground=TColor.parse("cyan"), link=thread_url),
+                    TStyle(
+                        foreground=TColor.parse(theme.get_theme_colors(self).primary),
+                        link=thread_url,
+                    ),
                 ),
                 ")",
             )
@@ -871,9 +875,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def on_mount(self) -> None:
         """Fetch threads, configure border for ASCII terminals, and build the list."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one("#thread-selector-shell", Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
         filter_input = self._get_filter_input()
         self._filter_focus_order()
@@ -1778,6 +1783,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
+                markup=False,
             )
             with contextlib.suppress(NoMatches):
                 self.query_one("#thread-filter", Input).focus()

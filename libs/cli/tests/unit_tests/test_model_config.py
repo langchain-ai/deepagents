@@ -1502,6 +1502,10 @@ models = ["my-explicit-model"]
                 side_effect=mock_load,
             ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value={},
+            ),
         ):
             models = get_available_models()
 

@@ -171,6 +171,7 @@ def make_graph() -> Any:  # noqa: ANN401
         system_prompt=config.system_prompt,
         interactive=config.interactive,
         auto_approve=config.auto_approve,
+        enable_ask_user=config.enable_ask_user,
         enable_memory=config.enable_memory,
         enable_skills=config.enable_skills,
         enable_shell=config.enable_shell,

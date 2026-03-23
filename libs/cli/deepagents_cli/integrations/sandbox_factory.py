@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
+    from langsmith.sandbox import SandboxTemplate
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -71,11 +72,13 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
     "runloop": "/home/user",
 }
+"""Map of sandbox provider names to their default working directories."""
 
 
 @contextmanager
@@ -87,15 +90,17 @@ def create_sandbox(
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
-    This is the unified interface for sandbox creation using the provider abstraction.
+    This is the unified interface for sandbox creation using the
+    provider abstraction.
 
     Args:
-        provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        SandboxBackendProtocol instance
+        `SandboxBackendProtocol` instance
     """
     # Get provider instance
     provider_obj = _get_provider(provider)
@@ -151,7 +156,8 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("daytona", "langsmith", "modal", "runloop")
+        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
 
     Returns:
         Default working directory path as string
@@ -180,7 +186,7 @@ def _import_provider_module(
 
     Args:
         module_name: Python module name to import.
-        provider: Sandbox provider name (e.g. "daytona").
+        provider: Sandbox provider name (e.g. `'daytona'`).
         package: PyPI package name exposed by the CLI extra.
 
     Returns:
@@ -197,6 +203,171 @@ def _import_provider_module(
             f"Install it with: pip install 'deepagents-cli[{provider}]'"
         )
         raise ImportError(msg) from exc
+
+
+_LANGSMITH_DEFAULT_TEMPLATE = "deepagents-cli"
+"""Default LangSmith sandbox template name used when no template is specified."""
+
+_LANGSMITH_DEFAULT_IMAGE = "python:3"
+"""Default Docker image for LangSmith sandboxes when no image is provided."""
+
+
+class _LangSmithProvider(SandboxProvider):
+    """LangSmith sandbox provider implementation.
+
+    Manages LangSmith sandbox lifecycle using the LangSmith SDK.
+    """
+
+    def __init__(self, api_key: str | None = None) -> None:
+        """Initialize LangSmith provider.
+
+        Args:
+            api_key: LangSmith API key (defaults to `LANGSMITH_API_KEY` env var)
+
+        Raises:
+            ValueError: If `LANGSMITH_API_KEY` environment variable not set
+        """
+        from langsmith.sandbox import SandboxClient
+
+        self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
+        if not self._api_key:
+            msg = "LANGSMITH_API_KEY environment variable not set"
+            raise ValueError(msg)
+        self._client: SandboxClient = SandboxClient(api_key=self._api_key)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        template: str | None = None,
+        template_image: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get existing or create new LangSmith sandbox.
+
+        Args:
+            sandbox_id: Optional existing sandbox name to reuse
+            timeout: Timeout in seconds for sandbox startup
+            template: Template name for the sandbox
+            template_image: Docker image for the template
+            **kwargs: Additional LangSmith-specific parameters
+
+        Returns:
+            `LangSmithSandbox` instance
+
+        Raises:
+            RuntimeError: If sandbox connection or startup fails
+            TypeError: If unsupported keyword arguments are provided
+        """
+        from deepagents.backends.langsmith import LangSmithSandbox
+
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
+        if sandbox_id:
+            # Connect to existing sandbox by name
+            try:
+                sandbox = self._client.get_sandbox(name=sandbox_id)
+            except Exception as e:
+                msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
+                raise RuntimeError(msg) from e
+            return LangSmithSandbox(sandbox)
+
+        resolved_template_name, resolved_image_name = self._resolve_template(
+            template, template_image
+        )
+
+        # Create new sandbox - ensure template exists first
+        self._ensure_template(resolved_template_name, resolved_image_name)
+
+        try:
+            sandbox = self._client.create_sandbox(
+                template_name=resolved_template_name, timeout=timeout
+            )
+        except Exception as e:
+            msg = (
+                f"Failed to create sandbox from template "
+                f"'{resolved_template_name}': {e}"
+            )
+            raise RuntimeError(msg) from e
+
+        # Verify sandbox is ready by polling
+        for _ in range(timeout // 2):
+            try:
+                result = sandbox.run("echo ready", timeout=5)
+                if result.exit_code == 0:
+                    break
+            except Exception:  # noqa: S110, BLE001  # Sandbox not ready yet, continue polling
+                pass
+            time.sleep(2)
+        else:
+            # Cleanup on failure
+            with contextlib.suppress(Exception):
+                self._client.delete_sandbox(sandbox.name)
+            msg = f"LangSmith sandbox failed to start within {timeout} seconds"
+            raise RuntimeError(msg)
+
+        return LangSmithSandbox(sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # Required by SandboxFactory interface
+        """Delete a LangSmith sandbox.
+
+        Args:
+            sandbox_id: Sandbox name to delete
+            **kwargs: Additional parameters
+        """
+        self._client.delete_sandbox(sandbox_id)
+
+    @staticmethod
+    def _resolve_template(
+        template: SandboxTemplate | str | None,
+        template_image: str | None = None,
+    ) -> tuple[str, str]:
+        """Resolve template name and image from kwargs.
+
+        Returns:
+            Tuple of `(template_name, template_image)`.
+
+                Always returns values, using defaults if not provided.
+        """
+        resolved_image = template_image or _LANGSMITH_DEFAULT_IMAGE
+        if template is None:
+            return _LANGSMITH_DEFAULT_TEMPLATE, resolved_image
+        if isinstance(template, str):
+            return template, resolved_image
+        # SandboxTemplate object - extract image if not provided
+        if template_image is None and template.image:
+            resolved_image = template.image
+        return template.name, resolved_image
+
+    def _ensure_template(
+        self,
+        template_name: str,
+        template_image: str,
+    ) -> None:
+        """Ensure template exists, creating it if needed.
+
+        Raises:
+            RuntimeError: If template check or creation fails
+        """
+        from langsmith.sandbox import ResourceNotFoundError
+
+        try:
+            self._client.get_template(template_name)
+        except ResourceNotFoundError as e:
+            if e.resource_type != "template":
+                msg = f"Unexpected resource not found: {e}"
+                raise RuntimeError(msg) from e
+            # Template doesn't exist, create it
+            try:
+                self._client.create_template(name=template_name, image=template_image)
+            except Exception as create_err:
+                msg = f"Failed to create template '{template_name}': {create_err}"
+                raise RuntimeError(msg) from create_err
+        except Exception as e:
+            msg = f"Failed to check template '{template_name}': {e}"
+            raise RuntimeError(msg) from e
 
 
 class _DaytonaProvider(SandboxProvider):
@@ -235,10 +406,10 @@ class _DaytonaProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            DaytonaSandbox instance.
+            `DaytonaSandbox` instance.
 
         Raises:
-            NotImplementedError: If sandbox_id is provided.
+            NotImplementedError: If `sandbox_id` is provided.
             RuntimeError: If the sandbox fails to start.
         """
         daytona_backend = _import_provider_module(
@@ -309,7 +480,7 @@ class _ModalProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            ModalSandbox instance.
+            `ModalSandbox` instance.
 
         Raises:
             RuntimeError: If the sandbox fails to start.
@@ -385,11 +556,11 @@ class _RunloopProvider(SandboxProvider):
             **kwargs: Unused.
 
         Returns:
-            RunloopSandbox instance.
+            `RunloopSandbox` instance.
 
         Raises:
             RuntimeError: If the devbox fails to start.
-            SandboxNotFoundError: If sandbox_id does not exist.
+            SandboxNotFoundError: If `sandbox_id` does not exist.
         """
         runloop_backend = _import_provider_module(
             "langchain_runloop",
@@ -428,24 +599,152 @@ class _RunloopProvider(SandboxProvider):
         self._client.devboxes.shutdown(id=sandbox_id)
 
 
+class _AgentCoreProvider(SandboxProvider):
+    """AgentCore Code Interpreter sandbox provider.
+
+    Manages AgentCore session lifecycle. Sessions cannot be reconnected after
+    the CLI exits — the `sandbox_id` parameter is not supported.
+    """
+
+    def __init__(self, region: str | None = None) -> None:
+        """Initialize AgentCore provider.
+
+        Args:
+            region: AWS region (defaults to `AWS_REGION` /
+                `AWS_DEFAULT_REGION` / `us-west-2`).
+
+        Raises:
+            ValueError: If boto3 is installed and AWS credentials cannot
+                be resolved.
+        """
+        self._region = region or os.environ.get(
+            "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+        )
+
+        # Validate AWS credentials early for a clear error message.
+        try:
+            import boto3  # ty: ignore[unresolved-import]
+
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if credentials is None:
+                msg = (
+                    "AWS credentials not found. Configure via "
+                    "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN, "
+                    "~/.aws/credentials, or an IAM role."
+                )
+                raise ValueError(msg)  # noqa: TRY301  # intentional raise for early credential validation
+        except ImportError:
+            logger.debug("boto3 not installed; skipping credential pre-check")
+        except ValueError:
+            raise
+        except Exception:
+            logger.warning(
+                "AWS credential pre-validation failed — the session may "
+                "fail to start. Check your AWS configuration.",
+                exc_info=True,
+            )
+
+        self._active_interpreters: dict[str, Any] = {}
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        **kwargs: Any,  # noqa: ARG002  # required by SandboxProvider interface
+    ) -> SandboxBackendProtocol:
+        """Create a new AgentCore Code Interpreter session.
+
+        Args:
+            sandbox_id: Not supported — raises `NotImplementedError`
+                if provided.
+            **kwargs: Additional parameters (unused).
+
+        Returns:
+            `AgentCoreSandbox` instance wrapping the started interpreter.
+
+        Raises:
+            NotImplementedError: If `sandbox_id` is provided.
+        """
+        if sandbox_id:
+            msg = (
+                "AgentCore does not support reconnecting to existing sessions. "
+                "Remove the --sandbox-id option."
+            )
+            raise NotImplementedError(msg)
+
+        agentcore_module = _import_provider_module(
+            "bedrock_agentcore.tools.code_interpreter_client",
+            provider="agentcore",
+            package="langchain-agentcore-codeinterpreter",
+        )
+        agentcore_backend = _import_provider_module(
+            "langchain_agentcore_codeinterpreter",
+            provider="agentcore",
+            package="langchain-agentcore-codeinterpreter",
+        )
+
+        interpreter = agentcore_module.CodeInterpreter(
+            region=self._region,
+            integration_source="deepagents-cli",
+        )
+        try:
+            interpreter.start()
+        except Exception:
+            with contextlib.suppress(Exception):
+                interpreter.stop()
+            raise
+
+        backend = agentcore_backend.AgentCoreSandbox(interpreter=interpreter)
+        self._active_interpreters[backend.id] = interpreter
+        return backend
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # required by SandboxProvider interface
+        """Stop an AgentCore session.
+
+        Args:
+            sandbox_id: Session ID to stop.
+            **kwargs: Additional parameters (unused).
+        """
+        interpreter = self._active_interpreters.pop(sandbox_id, None)
+        if interpreter:
+            try:
+                interpreter.stop()
+                logger.info("AgentCore session %s stopped", sandbox_id)
+            except Exception:
+                logger.warning(
+                    "Failed to stop AgentCore session %s — the session may "
+                    "still be running and incurring costs. Check the AWS "
+                    "console to verify.",
+                    sandbox_id,
+                    exc_info=True,
+                )
+        else:
+            logger.info(
+                "AgentCore session %s not tracked (may have already expired)",
+                sandbox_id,
+            )
+
+
 def _get_provider(provider_name: str) -> SandboxProvider:
-    """Get a SandboxProvider instance for the specified provider (internal).
+    """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
+        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
+            `'modal'`, `'runloop'`)
 
     Returns:
-        SandboxProvider instance
+        `SandboxProvider` instance
 
     Raises:
-        ValueError: If provider_name is unknown.
+        ValueError: If `provider_name` is unknown.
     """
+    if provider_name == "agentcore":
+        return _AgentCoreProvider()
     if provider_name == "daytona":
         return _DaytonaProvider()
     if provider_name == "langsmith":
-        from deepagents_cli.integrations.langsmith import LangSmithProvider
-
-        return LangSmithProvider()
+        return _LangSmithProvider()
     if provider_name == "modal":
         return _ModalProvider()
     if provider_name == "runloop":
@@ -478,6 +777,7 @@ def verify_sandbox_deps(provider: str) -> None:
     # Only the backend module is checked because the underlying SDK is a
     # transitive dependency of the backend package.
     backend_modules: dict[str, tuple[str, str]] = {
+        "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
         "daytona": ("langchain_daytona", "daytona"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),

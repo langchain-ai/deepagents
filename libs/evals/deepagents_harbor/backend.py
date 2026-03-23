@@ -85,7 +85,7 @@ class HarborSandbox(SandboxBackendProtocol):
                 f"{'...' if len(command) > _COMMAND_PREVIEW_CHAR_LIMIT else ''}\n\n"
                 f"SUGGESTION: This command is taking too long. Consider:\n"
                 f"- Breaking it into smaller steps\n"
-                f"- Using a shorter timeout with the timeout_sec parameter\n"
+                f"- Using a shorter timeout with the timeout parameter\n"
                 f"- For package installs: use --no-install-recommends ...\n"
                 f"- For long builds: run in background with nohup ...",
                 exit_code=124,
@@ -395,11 +395,11 @@ done
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search for pattern in files using grep."""
+        """Search for a literal string in files using `grep -F`."""
         search_path = shlex.quote(path or ".")
 
         # Build grep command
-        grep_opts = "-rHn"  # recursive, with filename, with line number
+        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -449,7 +449,10 @@ done
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search for pattern in files using grep."""
+        """Search for a literal string in files using `grep -F` (sync).
+
+        Not supported; use `agrep`.
+        """
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aglob(self, pattern: str, path: str = "/") -> GlobResult:

@@ -70,7 +70,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     }
     """
 
-    def __init__(self, current_theme: str | None = None) -> None:
+    def __init__(self, current_theme: str) -> None:
         """Initialize the ThemeSelectorScreen.
 
         Args:
@@ -110,9 +110,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             yield Static(help_text, classes="theme-selector-help")
 
     def on_mount(self) -> None:
-        """Ensure original theme is captured and apply ASCII border if needed."""
-        if self._original_theme is None:
-            self._original_theme = self.app.theme
+        """Apply ASCII border if needed."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
@@ -150,9 +148,11 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         name = event.option.id
         if name is not None and name in theme.ThemeEntry.REGISTRY:
             self.dismiss(name)
+        else:
+            logger.warning("Selected theme '%s' is no longer available", name)
+            self.dismiss(None)
 
     def action_cancel(self) -> None:
         """Restore the original theme and dismiss."""
-        if self._original_theme is not None:
-            self.app.theme = self._original_theme
+        self.app.theme = self._original_theme
         self.dismiss(None)

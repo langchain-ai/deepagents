@@ -1360,13 +1360,18 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """
         # Store raw content for serialization
         self._content = error
-        colors = theme.get_theme_colors()
-        super().__init__(
-            Content.assemble(
-                Content.styled("Error: ", f"bold {colors.error}"),
-                error,
-            ),
-            **kwargs,
+        super().__init__(**kwargs)
+
+    def render(self) -> Content:
+        """Render with theme-aware colors.
+
+        Returns:
+            Styled error content with theme-appropriate color.
+        """
+        colors = theme.get_theme_colors(self)
+        return Content.assemble(
+            Content.styled("Error: ", f"bold {colors.error}"),
+            self._content,
         )
 
     def on_mount(self) -> None:
@@ -1442,14 +1447,20 @@ class SummarizationMessage(AppMessage):
                 Defaults to the standard summary notification.
             **kwargs: Additional arguments passed to parent.
         """
-        rendered: Content
-        colors = theme.get_theme_colors()
-        if message is None:
-            rendered = Content.styled(
-                "✓ Conversation offloaded", f"bold {colors.primary}"
-            )
-        elif isinstance(message, Content):
-            rendered = message
-        else:
-            rendered = Content.styled(message, f"bold {colors.primary}")
-        super().__init__(rendered, **kwargs)
+        self._raw_message = message
+        # Pass the default text to AppMessage for _content serialization;
+        # render() supplies theme-aware styling at display time.
+        super().__init__(message or "✓ Conversation offloaded", **kwargs)
+
+    def render(self) -> Content:
+        """Render with theme-aware colors.
+
+        Returns:
+            Styled summarization content with theme-appropriate color.
+        """
+        colors = theme.get_theme_colors(self)
+        if self._raw_message is None:
+            return Content.styled("✓ Conversation offloaded", f"bold {colors.primary}")
+        if isinstance(self._raw_message, Content):
+            return self._raw_message
+        return Content.styled(self._raw_message, f"bold {colors.primary}")

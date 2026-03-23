@@ -164,16 +164,18 @@ def _load_theme_preference() -> str:
 
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
-        name = data.get("ui", {}).get("theme")
-        if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
-            return name
-        if isinstance(name, str):
-            logger.warning(
-                "Unknown theme '%s' in config; falling back to default",
-                name,
-            )
-    except Exception:
-        logger.warning("Could not load theme preference", exc_info=True)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for theme preference: %s", exc)
+        return theme.DEFAULT_THEME
+
+    name = data.get("ui", {}).get("theme")
+    if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+        return name
+    if isinstance(name, str):
+        logger.warning(
+            "Unknown theme '%s' in config; falling back to default",
+            name,
+        )
     return theme.DEFAULT_THEME
 
 
@@ -2519,8 +2521,11 @@ class DeepAgentsApp(App):
                 return
 
             # Reload user themes from config.toml and re-register with Textual
-            theme.reload_registry()
-            self._register_custom_themes()
+            try:
+                theme.reload_registry()
+                self._register_custom_themes()
+            except Exception:
+                logger.warning("Failed to reload user themes", exc_info=True)
 
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
@@ -3880,25 +3885,32 @@ class DeepAgentsApp(App):
         for name, entry in theme.ThemeEntry.REGISTRY.items():
             if entry.custom:
                 c = entry.colors
-                self.register_theme(
-                    Theme(
-                        name=name,
-                        primary=c.primary,
-                        secondary=c.secondary,
-                        accent=c.accent,
-                        foreground=c.foreground,
-                        background=c.background,
-                        surface=c.surface,
-                        panel=c.panel,
-                        warning=c.warning,
-                        error=c.error,
-                        success=c.success,
-                        dark=entry.dark,
-                        variables={
-                            "footer-key-foreground": c.primary,
-                        },
+                try:
+                    self.register_theme(
+                        Theme(
+                            name=name,
+                            primary=c.primary,
+                            secondary=c.secondary,
+                            accent=c.accent,
+                            foreground=c.foreground,
+                            background=c.background,
+                            surface=c.surface,
+                            panel=c.panel,
+                            warning=c.warning,
+                            error=c.error,
+                            success=c.success,
+                            dark=entry.dark,
+                            variables={
+                                "footer-key-foreground": c.primary,
+                            },
+                        )
                     )
-                )
+                except Exception:
+                    logger.warning(
+                        "Failed to register theme '%s'; skipping",
+                        name,
+                        exc_info=True,
+                    )
 
     async def _show_theme_selector(self) -> None:
         """Show interactive theme selector as a modal screen."""
@@ -3933,6 +3945,13 @@ class DeepAgentsApp(App):
                         logger.warning(
                             "Failed to persist theme preference",
                             exc_info=True,
+                        )
+                        self.notify(
+                            "Theme applied for this session but could not"
+                            " be saved. Check logs for details.",
+                            severity="warning",
+                            timeout=6,
+                            markup=False,
                         )
 
                 self.call_later(_persist)

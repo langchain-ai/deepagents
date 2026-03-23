@@ -368,6 +368,17 @@ class ThemeEntry:
     """
 
     REGISTRY: ClassVar[Mapping[str, ThemeEntry]]
+
+    def __post_init__(self) -> None:
+        """Validate that the label is a non-empty string.
+
+        Raises:
+            ValueError: If `label` is empty or whitespace-only.
+        """
+        if not self.label.strip():
+            msg = "ThemeEntry.label must be a non-empty string"
+            raise ValueError(msg)
+
     """All registered theme entries, keyed by Textual theme name.
 
     Read-only after module load (`MappingProxyType`).
@@ -458,8 +469,8 @@ def _load_user_themes(
     Example `config.toml` snippet:
 
     ```toml
-    [themes.solarized-dark]
-    label = "Solarized Dark"
+    [themes.my-solarized]
+    label = "My Solarized"
     dark = true
     primary = "#268BD2"
     warning = "#B58900"
@@ -473,6 +484,7 @@ def _load_user_themes(
         try:
             config_path = Path.home() / ".deepagents" / "config.toml"
         except RuntimeError:
+            logger.debug("Cannot determine home directory; skipping user theme loading")
             return
 
     try:
@@ -649,11 +661,11 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
 
     Reads standard properties (primary, secondary, etc.) from the resolved
     theme so Python-side styling matches CSS.  App-specific fields (muted,
-    mode_bash, mode_command, primary_dev) fall back to the dark/light base
-    since they have no Textual equivalent.
+    mode_bash, mode_command, primary_dev) fall back to the dark/light base since
+    they have no Textual equivalent.
 
-    Non-hex values (e.g. ``ansi_blue`` in the ANSI theme) are detected and
-    fall back to the base palette automatically.
+    Non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected and fall
+    back to the base palette automatically.
 
     Args:
         app: The Textual App instance.
@@ -707,7 +719,14 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
         `ThemeColors` for the active theme.
     """
     if widget_or_app is None:
-        return DARK_COLORS
+        # Fall back to the active Textual app context var when no explicit
+        # widget/app is passed (e.g. from @staticmethod helpers).
+        try:
+            from textual._context import active_app  # noqa: PLC2701
+
+            widget_or_app = active_app.get()
+        except (ImportError, LookupError):
+            return DARK_COLORS
     app = _resolve_app(widget_or_app)
     entry = ThemeEntry.REGISTRY.get(app.theme)  # type: ignore[attr-defined]
     # Custom themes (LC-branded / user-defined) use pre-built colors.
@@ -718,7 +737,7 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
     try:
         return _colors_from_textual_theme(app)
     except Exception:
-        logger.debug("Could not resolve theme colors dynamically", exc_info=True)
+        logger.warning("Could not resolve theme colors dynamically", exc_info=True)
         if entry is not None:
             return entry.colors
         return DARK_COLORS

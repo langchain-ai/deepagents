@@ -805,3 +805,165 @@ primay = "#FF0000"
         assert "typo" in builtins
         # Misspelled field ignored; primary stays at base
         assert builtins["typo"].colors.primary == DARK_COLORS.primary
+
+
+# ---------------------------------------------------------------------------
+# ThemeEntry.__post_init__ validation
+# ---------------------------------------------------------------------------
+
+
+class TestThemeEntryPostInit:
+    """ThemeEntry validates label in __post_init__."""
+
+    def test_empty_label_rejected(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            ThemeEntry(label="", dark=True, colors=DARK_COLORS)
+
+    def test_whitespace_only_label_rejected(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            ThemeEntry(label="   ", dark=True, colors=DARK_COLORS)
+
+    def test_valid_label_accepted(self) -> None:
+        entry = ThemeEntry(label="My Theme", dark=True, colors=DARK_COLORS)
+        assert entry.label == "My Theme"
+
+
+# ---------------------------------------------------------------------------
+# save_theme_preference overwrite round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestSaveThemePreferenceOverwrite:
+    """save_theme_preference correctly overwrites an existing theme value."""
+
+    def test_overwrite_existing_theme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tomllib
+
+        from deepagents_cli.app import save_theme_preference
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_cli.model_config.DEFAULT_CONFIG_PATH", config)
+
+        # Save initial theme
+        assert save_theme_preference("langchain") is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+
+        # Overwrite with a different theme
+        assert save_theme_preference("langchain-light") is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain-light"
+        # Old value should be replaced, not duplicated
+        assert data["ui"]["theme"] == "langchain-light"
+
+
+# ---------------------------------------------------------------------------
+# ThemeSelectorScreen
+# ---------------------------------------------------------------------------
+
+
+def _register_lc_theme(app: object) -> None:
+    """Register the LangChain theme on a test app so ThemeSelectorScreen works."""
+    from textual.theme import Theme as TextualTheme
+
+    c = DARK_COLORS
+    app.register_theme(  # type: ignore[attr-defined]
+        TextualTheme(
+            name="langchain",
+            primary=c.primary,
+            secondary=c.secondary,
+            accent=c.accent,
+            foreground=c.foreground,
+            background=c.background,
+            surface=c.surface,
+            panel=c.panel,
+            warning=c.warning,
+            error=c.error,
+            success=c.success,
+            dark=True,
+        )
+    )
+    app.theme = "langchain"  # type: ignore[attr-defined]
+
+
+class TestThemeSelectorScreen:
+    """ThemeSelectorScreen widget tests."""
+
+    async def test_compose_shows_all_registry_themes(self) -> None:
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+            option_list = screen.query_one("#theme-options", OptionList)
+            assert option_list.option_count == len(theme.ThemeEntry.REGISTRY)
+
+    async def test_current_theme_highlighted(self) -> None:
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+            option_list = screen.query_one("#theme-options", OptionList)
+            assert option_list.highlighted is not None
+            highlighted = option_list.get_option_at_index(option_list.highlighted)
+            assert highlighted.id == "langchain"
+
+    async def test_escape_restores_original_theme(self) -> None:
+        from textual.app import App
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        results: list[str | None] = []
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+
+            def on_result(result: str | None) -> None:
+                results.append(result)
+
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen, on_result)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.theme == "langchain"
+            assert results == [None]
+
+    async def test_enter_selects_theme(self) -> None:
+        from textual.app import App
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        results: list[str | None] = []
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+
+            def on_result(result: str | None) -> None:
+                results.append(result)
+
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen, on_result)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(results) == 1
+            assert results[0] is not None
+            assert results[0] in theme.ThemeEntry.REGISTRY

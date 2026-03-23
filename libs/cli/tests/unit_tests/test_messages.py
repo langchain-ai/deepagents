@@ -67,7 +67,7 @@ class TestErrorMessageMarkupSafety:
     def test_error_message_has_prefix_and_body(self) -> None:
         """ErrorMessage content should have `'Error: '` prefix followed by the body."""
         msg = ErrorMessage("something broke")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg.render()
         assert isinstance(rendered, Content)
         assert rendered.plain == "Error: something broke"
 

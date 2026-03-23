@@ -106,7 +106,9 @@ class FileDownloadResponse:
             when processing batch results, especially useful for error messages.
         content: File contents as bytes on success, None on failure.
         error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized. `None` on success.
+            string when the failure cannot be normalized.
+
+            `None` on success.
 
     Examples:
         >>> # Success
@@ -133,7 +135,9 @@ class FileUploadResponse:
         path: The file path that was requested. Included for easy correlation
             when processing batch results and for clear error messages.
         error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized. `None` on success.
+            string when the failure cannot be normalized.
+
+            `None` on success.
 
     Examples:
         >>> # Success

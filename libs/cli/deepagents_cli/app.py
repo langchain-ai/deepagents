@@ -449,11 +449,17 @@ class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
     TITLE = "Deep Agents"
-    CSS_PATH = "app.tcss"
-    ENABLE_COMMAND_PALETTE = False
+    """Textual application title."""
 
-    # Scroll speed (default is 3 lines per scroll event)
+    CSS_PATH = "app.tcss"
+    """Path to the Textual CSS stylesheet for the app layout."""
+
+    ENABLE_COMMAND_PALETTE = False
+    """Disable Textual's built-in command palette in favor of the custom slash
+    command system."""
+
     SCROLL_SENSITIVITY_Y = 1.0
+    """Vertical scroll speed in lines per scroll event (Textual default is 3)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),

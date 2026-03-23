@@ -8,6 +8,8 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
+from deepagents_cli import theme
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -158,15 +160,16 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Returns:
             Styled Content showing additions and deletions.
         """
+        colors = theme.get_theme_colors()
         parts: list[str | tuple[str, str] | Content] = []
         if additions:
             if parts:
                 parts.append(" ")
-            parts.append((f"+{additions}", "green"))
+            parts.append((f"+{additions}", colors.success))
         if deletions:
             if parts:
                 parts.append(" ")
-            parts.append((f"-{deletions}", "red"))
+            parts.append((f"-{deletions}", colors.error))
         return Content.assemble(*parts) if parts else Content("")
 
     def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
@@ -200,13 +203,14 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Yields:
             Static widgets showing removed and added content with styling.
         """
+        colors = theme.get_theme_colors()
         if old_string:
-            yield Static(Content.styled("Removing:", "bold red"))
+            yield Static(Content.styled("Removing:", f"bold {colors.error}"))
             yield from self._render_string_lines(old_string, is_addition=False)
             yield Static("")
 
         if new_string:
-            yield Static(Content.styled("Adding:", "bold green"))
+            yield Static(Content.styled("Adding:", f"bold {colors.success}"))
             yield from self._render_string_lines(new_string, is_addition=True)
 
     @staticmethod
@@ -220,18 +224,16 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
         if line.startswith("-"):
             return Static(
-                Content.from_markup(
-                    "[on #4a2020][#ff8787]- $text[/#ff8787][/on #4a2020]", text=raw
-                )
+                Content.from_markup("- $text", text=raw), classes="diff-removed"
             )
         if line.startswith("+"):
             return Static(
-                Content.from_markup(
-                    "[on #1e4620][#8ce99a]+ $text[/#8ce99a][/on #1e4620]", text=raw
-                )
+                Content.from_markup("+ $text", text=raw), classes="diff-added"
             )
         if line.startswith(" "):
-            return Static(Content.from_markup("[#aaaaaa]  $text[/#aaaaaa]", text=raw))
+            return Static(
+                Content.from_markup("  $text", text=raw), classes="diff-context"
+            )
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -244,13 +246,11 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             Static widgets for each line with addition or deletion styling.
         """
         lines = text.split("\n")
-        style = "[on #1e4620][#8ce99a]+" if is_addition else "[on #4a2020][#ff8787]-"
-        end_style = (
-            "[/#8ce99a][/on #1e4620]" if is_addition else "[/#ff8787][/on #4a2020]"
-        )
+        sign = "+" if is_addition else "-"
+        cls = "diff-added" if is_addition else "diff-removed"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            yield Static(Content.from_markup(f"{style} $text{end_style}", text=line))
+            yield Static(Content.from_markup(f"{sign} $text", text=line), classes=cls)
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES

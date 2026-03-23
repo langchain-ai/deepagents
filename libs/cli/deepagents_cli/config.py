@@ -151,19 +151,6 @@ if TYPE_CHECKING:
     settings: Settings
     console: Console
 
-COLORS = {
-    "primary": "#10b981",
-    "primary_dev": "#f97316",
-    "dim": "#6b7280",
-    "user": "#ffffff",
-    "agent": "#10b981",
-    "thinking": "#34d399",
-    "tool": "#fbbf24",
-    "mode_shell": "#ff1493",
-    "mode_command": "#8b5cf6",
-}
-"""App color scheme."""
-
 MODE_PREFIXES: dict[str, str] = {
     "shell": "!",
     "command": "/",

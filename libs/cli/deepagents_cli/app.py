@@ -26,8 +26,10 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
+from textual.theme import Theme
 from textual.widgets import Static
 
+from deepagents_cli import theme
 from deepagents_cli._cli_context import CLIContext
 from deepagents_cli._session_stats import (
     SessionStats,
@@ -144,6 +146,86 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
+
+
+def _load_theme_preference() -> str:
+    """Load the saved theme name from config, or return the default.
+
+    Returns:
+        A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
+    """
+    try:
+        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+        if not DEFAULT_CONFIG_PATH.exists():
+            return theme.DEFAULT_THEME
+
+        import tomllib
+
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for theme preference: %s", exc)
+        return theme.DEFAULT_THEME
+
+    name = data.get("ui", {}).get("theme")
+    if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+        return name
+    if isinstance(name, str):
+        logger.warning(
+            "Unknown theme '%s' in config; falling back to default",
+            name,
+        )
+    return theme.DEFAULT_THEME
+
+
+def save_theme_preference(name: str) -> bool:
+    """Persist theme preference to `~/.deepagents/config.toml`.
+
+    Args:
+        name: Textual theme name to save.
+
+    Returns:
+        `True` if the preference was saved, `False` if any error occurred.
+    """
+    if name not in theme.ThemeEntry.REGISTRY:
+        logger.warning("Refusing to save unknown theme '%s'", name)
+        return False
+
+    import contextlib
+    import tempfile
+
+    try:
+        import tomllib
+
+        import tomli_w
+
+        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if DEFAULT_CONFIG_PATH.exists():
+            with DEFAULT_CONFIG_PATH.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if "ui" not in data:
+            data["ui"] = {}
+        data["ui"]["theme"] = name
+
+        fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except Exception:
+        logger.exception("Could not save theme preference")
+        return False
+    return True
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -369,11 +451,17 @@ class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
     TITLE = "Deep Agents"
-    CSS_PATH = "app.tcss"
-    ENABLE_COMMAND_PALETTE = False
+    """Textual application title."""
 
-    # Scroll speed (default is 3 lines per scroll event)
+    CSS_PATH = "app.tcss"
+    """Path to the Textual CSS stylesheet for the app layout."""
+
+    ENABLE_COMMAND_PALETTE = False
+    """Disable Textual's built-in command palette in favor of the custom slash
+    command system."""
+
     SCROLL_SENSITIVITY_Y = 1.0
+    """Vertical scroll speed in lines per scroll event (Textual default is 3)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -420,6 +508,8 @@ class DeepAgentsApp(App):
         Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
+    """App-level keybindings for interrupt, quit, toggles, and approval menu
+    navigation."""
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""
@@ -504,6 +594,12 @@ class DeepAgentsApp(App):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+
+        self._register_custom_themes()
+
+        # Apply saved theme preference (or default)
+        self.theme = _load_theme_preference()
+
         self._agent = agent
         self._assistant_id = assistant_id
         self._backend = backend
@@ -588,6 +684,20 @@ class DeepAgentsApp(App):
         from deepagents_cli.remote_client import RemoteAgent
 
         return self._agent if isinstance(self._agent, RemoteAgent) else None
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        """Return custom CSS variable defaults for the current theme.
+
+        Most styling uses Textual's built-in variables (`$primary`,
+        `$text-muted`, `$error-muted`, etc.).  This override injects the
+        few app-specific variables (`$mode-bash`, `$mode-command`) that
+        have no Textual equivalent.
+
+        Returns:
+            Dict of CSS variable names to hex color values.
+        """
+        colors = theme.get_theme_colors(self)
+        return theme.get_css_variable_defaults(colors=colors)
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -906,7 +1016,7 @@ class DeepAgentsApp(App):
                 hint = f"Thread '{resume}' not found."
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
-                self.notify(hint, severity="warning", markup=False)
+                self.notify(hint, severity="warning", timeout=6, markup=False)
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -2199,7 +2309,7 @@ class DeepAgentsApp(App):
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /reload, "
-                "/remember, /tokens, /threads, /trace, /update, "
+                "/remember, /theme, /tokens, /threads, /trace, /update, "
                 "/changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -2344,6 +2454,8 @@ class DeepAgentsApp(App):
             return  # _handle_user_message already mounts the message
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd == "/theme":
+            await self._show_theme_selector()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -2407,6 +2519,14 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+
+            # Reload user themes from config.toml and re-register with Textual
+            try:
+                theme.reload_registry()
+                self._register_custom_themes()
+            except Exception:
+                logger.warning("Failed to reload user themes", exc_info=True)
+
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
                     f"  - {change}" for change in changes
@@ -2414,6 +2534,7 @@ class DeepAgentsApp(App):
             else:
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
+            report += "\nTheme registry reloaded."
             await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
@@ -3424,9 +3545,15 @@ class DeepAgentsApp(App):
             self.screen.action_cancel()
             return
 
-        # If a modal screen is active, dismiss it
+        # If a modal screen is active, let it cancel itself (so it can
+        # restore state, e.g. the theme selector reverts the previewed theme).
+        # Fall back to a plain dismiss for modals without action_cancel.
         if isinstance(self.screen, ModalScreen):
-            self.screen.dismiss(None)
+            cancel = getattr(self.screen, "action_cancel", None)
+            if cancel is not None:
+                cancel()
+            else:
+                self.screen.dismiss(None)
             return
 
         # Close completion popup or exit slash/shell command mode
@@ -3751,6 +3878,91 @@ class DeepAgentsApp(App):
             current_provider=settings.model_provider,
             cli_profile_override=self._profile_override,
         )
+        self.push_screen(screen, handle_result)
+
+    def _register_custom_themes(self) -> None:
+        """Register all custom themes (built-in LC + user-defined) with Textual."""
+        for name, entry in theme.ThemeEntry.REGISTRY.items():
+            if entry.custom:
+                c = entry.colors
+                try:
+                    self.register_theme(
+                        Theme(
+                            name=name,
+                            primary=c.primary,
+                            secondary=c.secondary,
+                            accent=c.accent,
+                            foreground=c.foreground,
+                            background=c.background,
+                            surface=c.surface,
+                            panel=c.panel,
+                            warning=c.warning,
+                            error=c.error,
+                            success=c.success,
+                            dark=entry.dark,
+                            variables={
+                                "footer-key-foreground": c.primary,
+                            },
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to register theme '%s'; skipping",
+                        name,
+                        exc_info=True,
+                    )
+
+    async def _show_theme_selector(self) -> None:
+        """Show interactive theme selector as a modal screen."""
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        # Capture scroll state.  The submit handler may have already caused
+        # a reflow that re-anchored to the bottom, so we save the *current*
+        # offset and release the anchor to prevent further drift while the
+        # modal is open.
+        chat = self.query_one("#chat", VerticalScroll)
+        saved_y = chat.scroll_y
+        was_anchored = chat.is_anchored
+        chat.release_anchor()
+
+        def handle_result(result: str | None) -> None:
+            """Handle the theme selector result."""
+            if result is not None:
+                self.theme = result
+                self.refresh_css(animate=False)
+
+                async def _persist() -> None:
+                    try:
+                        ok = await asyncio.to_thread(save_theme_preference, result)
+                        if not ok:
+                            self.notify(
+                                "Theme applied for this session but could not"
+                                " be saved. Check logs for details.",
+                                severity="warning",
+                                timeout=6,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist theme preference",
+                            exc_info=True,
+                        )
+                        self.notify(
+                            "Theme applied for this session but could not"
+                            " be saved. Check logs for details.",
+                            severity="warning",
+                            timeout=6,
+                            markup=False,
+                        )
+
+                self.call_later(_persist)
+            # Restore scroll position, then re-anchor if it was anchored.
+            chat.scroll_to(y=saved_y, animate=False)
+            if was_anchored:
+                chat.anchor()
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ThemeSelectorScreen(current_theme=self.theme)
         self.push_screen(screen, handle_result)
 
     async def _show_mcp_viewer(self) -> None:

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, Key
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -548,6 +549,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -711,7 +713,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 "Select Thread (current: ",
                 (
                     self._current_thread,
-                    TStyle(foreground=TColor.parse("cyan"), link=thread_url),
+                    TStyle(
+                        foreground=TColor.parse(theme.get_theme_colors(self).primary),
+                        link=thread_url,
+                    ),
                 ),
                 ")",
             )
@@ -872,7 +877,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Fetch threads, configure border for ASCII terminals, and build the list."""
         if is_ascii_mode():
             container = self.query_one("#thread-selector-shell", Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
         filter_input = self._get_filter_input()
         self._filter_focus_order()

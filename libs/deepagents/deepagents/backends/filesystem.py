@@ -334,14 +334,15 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(file_data=create_file_data(empty_msg))
 
             lines = content.splitlines()
+            total = len(lines)
             start_idx = offset
-            end_idx = min(start_idx + limit, len(lines))
+            end_idx = min(start_idx + limit, total)
 
-            if start_idx >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+            if start_idx >= total:
+                return ReadResult(error=f"Line offset {offset} exceeds file length ({total} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
+            return ReadResult(file_data=create_file_data("\n".join(selected_lines)), total_lines=total)
         except OSError as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

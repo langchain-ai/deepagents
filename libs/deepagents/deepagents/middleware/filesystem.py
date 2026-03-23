@@ -627,7 +627,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             content = format_content_with_line_numbers(content, start_line=offset + 1)
             # We apply truncation again after formatting content as continuation lines
             # can increase line count
-            return _truncate(content, validated_path, limit)
+            content = _truncate(content, validated_path, limit)
+
+            # Append remaining-lines notice when the read window doesn't cover
+            # the full file, so the agent knows whether to paginate further.
+            total_lines = read_result.total_lines
+            if total_lines is not None:
+                end_line = min(offset + limit, total_lines)
+                lines_read = end_line - offset
+                remaining = total_lines - end_line
+                if remaining > 0:
+                    content += (
+                        f"\n\n[Read {lines_read} lines (lines {offset + 1}-{end_line} "
+                        f"of {total_lines} total). {remaining} lines remaining.]"
+                    )
+
+            return content
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],

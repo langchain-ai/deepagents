@@ -1366,6 +1366,72 @@ class TestFilesystemMiddleware:
         assert isinstance(result, str)
         assert result == EMPTY_CONTENT_WARNING
 
+    def test_read_file_shows_remaining_lines_notice(self):
+        """Read_file should append a notice showing remaining lines on paginated reads."""
+        middleware = FilesystemMiddleware()
+        content = "\n".join(f"line {i}" for i in range(500))
+        state = FilesystemState(messages=[], files={"/big.txt": create_file_data(content)})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="read-remaining",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke(
+            {"file_path": "/big.txt", "offset": 0, "limit": 100, "runtime": runtime}
+        )
+
+        assert isinstance(result, str)
+        assert "[Read 100 lines (lines 1-100 of 500 total). 400 lines remaining.]" in result
+
+    def test_read_file_no_remaining_notice_when_all_lines_read(self):
+        """Read_file should NOT append remaining notice when reading the full file."""
+        middleware = FilesystemMiddleware()
+        content = "\n".join(f"line {i}" for i in range(50))
+        state = FilesystemState(messages=[], files={"/small.txt": create_file_data(content)})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="read-all",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke(
+            {"file_path": "/small.txt", "offset": 0, "limit": 100, "runtime": runtime}
+        )
+
+        assert isinstance(result, str)
+        assert "remaining" not in result
+
+    def test_read_file_remaining_lines_with_offset(self):
+        """Read_file should correctly compute remaining lines when offset is used."""
+        middleware = FilesystemMiddleware()
+        content = "\n".join(f"line {i}" for i in range(300))
+        state = FilesystemState(messages=[], files={"/offset.txt": create_file_data(content)})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="read-offset",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke(
+            {"file_path": "/offset.txt", "offset": 200, "limit": 50, "runtime": runtime}
+        )
+
+        assert isinstance(result, str)
+        assert "[Read 50 lines (lines 201-250 of 300 total). 50 lines remaining.]" in result
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})

@@ -173,3 +173,61 @@ def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
     for file_type in _EXTENSION_TO_FILE_TYPE.values():
         block = {"type": file_type, "base64": "dGVzdA==", "mime_type": "application/octet-stream"}
         _content_block_adapter.validate_python(block)
+
+
+class TestSliceReadResponse:
+    """Tests for slice_read_response with total_lines support."""
+
+    def test_returns_total_lines_for_paginated_read(self) -> None:
+        """slice_read_response should return a ReadResult with total_lines."""
+        from deepagents.backends.protocol import ReadResult
+        from deepagents.backends.utils import create_file_data, slice_read_response
+
+        content = "\n".join(f"line {i}" for i in range(500))
+        file_data = create_file_data(content)
+        result = slice_read_response(file_data, offset=0, limit=100)
+
+        assert isinstance(result, ReadResult)
+        assert result.total_lines == 500
+        assert result.error is None
+        assert result.file_data is not None
+        # Should contain only the first 100 lines
+        lines = result.file_data["content"].splitlines()
+        assert len(lines) == 100
+
+    def test_returns_total_lines_with_offset(self) -> None:
+        """total_lines should reflect full file length regardless of offset."""
+        from deepagents.backends.protocol import ReadResult
+        from deepagents.backends.utils import create_file_data, slice_read_response
+
+        content = "\n".join(f"line {i}" for i in range(200))
+        file_data = create_file_data(content)
+        result = slice_read_response(file_data, offset=150, limit=100)
+
+        assert isinstance(result, ReadResult)
+        assert result.total_lines == 200
+        # Should contain only lines 150-199
+        lines = result.file_data["content"].splitlines()
+        assert len(lines) == 50
+
+    def test_offset_exceeds_length_returns_error(self) -> None:
+        """Offset beyond file length should return error with line count."""
+        from deepagents.backends.protocol import ReadResult
+        from deepagents.backends.utils import create_file_data, slice_read_response
+
+        content = "line1\nline2\nline3"
+        file_data = create_file_data(content)
+        result = slice_read_response(file_data, offset=10, limit=100)
+
+        assert isinstance(result, ReadResult)
+        assert result.error is not None
+        assert "3 lines" in result.error
+
+    def test_empty_content_returns_string(self) -> None:
+        """Empty file content should return empty string (legacy compat)."""
+        from deepagents.backends.utils import create_file_data, slice_read_response
+
+        file_data = create_file_data("")
+        result = slice_read_response(file_data, offset=0, limit=100)
+        assert isinstance(result, str)
+        assert result == ""

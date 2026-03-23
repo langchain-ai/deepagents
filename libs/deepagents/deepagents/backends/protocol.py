@@ -145,10 +145,13 @@ class ReadResult:
     Attributes:
         error: Error message on failure, None on success.
         file_data: FileData dict on success, None on failure.
+        total_lines: Total number of lines in the file. Used by the
+            middleware to show a remaining-lines notice after paginated reads.
     """
 
     error: str | None = None
     file_data: FileData | None = None
+    total_lines: int | None = None
 
 
 @dataclass

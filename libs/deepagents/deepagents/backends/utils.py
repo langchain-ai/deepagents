@@ -263,8 +263,9 @@ def slice_read_response(
 ) -> str | ReadResult:
     """Slice file data to the requested line range without formatting.
 
-    Returns raw text for the requested window. Line-number formatting
-    is applied downstream by the middleware layer.
+    Returns a ``ReadResult`` with raw text for the requested window and
+    ``total_lines`` set so the middleware can display a remaining-lines
+    notice.  Line-number formatting is applied downstream.
 
     Args:
         file_data: FileData dict.
@@ -272,8 +273,10 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content string on success, or `ReadResult` with
-        `error` set when the offset exceeds the file length.
+        ``ReadResult`` on success (with ``file_data`` and ``total_lines``),
+        or ``ReadResult`` with ``error`` when the offset exceeds the file length.
+        May also return a plain ``str`` for empty/whitespace-only content
+        (legacy compatibility).
     """
     content = file_data_to_string(file_data)
 
@@ -281,14 +284,23 @@ def slice_read_response(
         return content
 
     lines = content.splitlines()
+    total = len(lines)
     start_idx = offset
-    end_idx = min(start_idx + limit, len(lines))
+    end_idx = min(start_idx + limit, total)
 
-    if start_idx >= len(lines):
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+    if start_idx >= total:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({total} lines)")
 
     selected_lines = lines[start_idx:end_idx]
-    return "\n".join(selected_lines)
+    return ReadResult(
+        file_data=FileData(
+            content="\n".join(selected_lines),
+            encoding=file_data.get("encoding", "utf-8"),
+            created_at=file_data.get("created_at", ""),
+            modified_at=file_data.get("modified_at", ""),
+        ),
+        total_lines=total,
+    )
 
 
 def format_read_response(

@@ -198,8 +198,10 @@ except UnicodeDecodeError:
     content = base64.b64encode(raw).decode('ascii')
     encoding = 'base64'
 
+total_lines = None
 if encoding == 'utf-8' and file_type == 'text':
     lines = content.splitlines()
+    total_lines = len(lines)
     start_idx = offset
     end_idx = offset + limit
     if start_idx >= len(lines):
@@ -208,7 +210,10 @@ if encoding == 'utf-8' and file_type == 'text':
     selected = lines[start_idx:end_idx]
     content = '\\n'.join(selected)
 
-print(json.dumps({{'encoding': encoding, 'content': content}}))
+result = {{'encoding': encoding, 'content': content}}
+if total_lines is not None:
+    result['total_lines'] = total_lines
+print(json.dumps(result))
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
 __DEEPAGENTS_EOF__\n"""
@@ -308,7 +313,10 @@ except PermissionError:
         if "error" in data:
             return ReadResult(error=data["error"])
 
-        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
+        return ReadResult(
+            file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")),
+            total_lines=data.get("total_lines"),
+        )
 
     def write(
         self,

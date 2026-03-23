@@ -478,6 +478,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+D again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -531,6 +532,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+C again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -678,6 +680,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -715,6 +718,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -758,6 +762,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -2611,8 +2616,13 @@ class TestBypassFrozensetDrift:
     these tests.
     """
 
-    @staticmethod
-    def _handled_commands() -> set[str]:
+    # Dynamic namespace prefixes handled via startswith() rather than
+    # static command dispatch.  These are not registered in COMMANDS and
+    # should be excluded from the drift check.
+    _DYNAMIC_PREFIXES = frozenset({"/skill:"})
+
+    @classmethod
+    def _handled_commands(cls) -> set[str]:
         """Extract slash-command literals from `_handle_command` source."""
         import ast
         import inspect
@@ -2627,7 +2637,13 @@ class TestBypassFrozensetDrift:
                 val = node.value.strip()
                 if val.startswith("/") and len(val) > 1:
                     handled.add(val)
-        return handled
+        # Exclude dynamic namespace prefixes (e.g. /skill:*) and their
+        # derivatives (e.g. /skill:<name> from help text).
+        return {
+            cmd
+            for cmd in handled
+            if not any(cmd.startswith(p) for p in cls._DYNAMIC_PREFIXES)
+        }
 
     def test_all_bypass_commands_are_handled(self) -> None:
         """Every command in a bypass frozenset must appear in _handle_command."""

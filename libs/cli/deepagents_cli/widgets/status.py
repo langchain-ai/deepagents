@@ -14,7 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from deepagents_cli.config import COLORS, get_glyphs
+from deepagents_cli.config import get_glyphs
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +90,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.shell {
-        background: __MODE_SHELL__;
+        background: $mode-bash;
         color: white;
         text-style: bold;
     }
 
     StatusBar .status-mode.command {
-        background: __MODE_CMD__;
+        background: $mode-command;
         color: white;
     }
 
@@ -106,13 +106,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-auto-approve.on {
-        background: #10b981;
-        color: black;
+        background: $success;
+        color: $background;
     }
 
     StatusBar .status-auto-approve.off {
-        background: #f59e0b;
-        color: black;
+        background: $warning;
+        color: $background;
     }
 
     StatusBar .status-message {
@@ -156,9 +156,8 @@ class StatusBar(Horizontal):
         color: $text-muted;
         text-align: right;
     }
-    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
-    )
+    """
+    """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)

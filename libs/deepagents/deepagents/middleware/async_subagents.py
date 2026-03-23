@@ -233,7 +233,7 @@ def _extract_callback_context(runtime: ToolRuntime) -> dict[str, str]:
 
     The thread ID is included in the subagent's input state so the subagent
     can notify the parent when it completes (via
-    `CompletionNotifierMiddleware`).
+    `CompletionCallbackMiddleware`).
 
     Returns:
         Dict with `parent_thread_id` if available. Empty dict otherwise.

@@ -51,7 +51,7 @@ structured output from the subagent.
 Add this middleware to the subagent's middleware stack:
 
 ```python
-from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
+from deepagents.middleware.completion_callback import CompletionCallbackMiddleware
 
 # Same deployment (ASGI transport -- callback agent and subagent share a server):
 notifier = CompletionCallbackMiddleware(callback_graph_id="supervisor")
@@ -69,9 +69,9 @@ graph = create_agent(
 )
 ```
 
-The middleware will read `callback_thread_id` from the agent's state at the
-end of execution. This is injected automatically by the parent's
-`start_async_task` tool when it creates the run.
+The middleware reads `callback_thread_id` from the agent state at the end of
+execution. This value is injected by the parent's `start_async_task` tool when
+it creates the run.
 """
 
 from __future__ import annotations
@@ -91,18 +91,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# State key where the launch tool stores callback context.
 _CALLBACK_THREAD_ID_KEY = "callback_thread_id"
 
 
 class CompletionCallbackState(AgentState):
-    """State extension for subagents that use the completion notifier.
+    """State extension for subagents that use completion callbacks.
 
     !!! warning "Experimental"
         This state schema is experimental and may change in future releases.
 
-    `callback_thread_id` is written by the parent's `start_async_task`
-    tool and read by `CompletionCallbackMiddleware` when sending callback
+    `callback_thread_id` is written by the parent's `start_async_task` tool
+    and read by `CompletionCallbackMiddleware` when sending callback
     notifications.
     """
 
@@ -164,7 +163,7 @@ async def _notify_parent(
         )
 
 
-_MAX_MESSAGE_LENGTH = 500  # max characters to include in notification summary
+_MAX_MESSAGE_LENGTH = 500
 
 
 def _extract_last_message(state: dict[str, Any]) -> str:
@@ -183,44 +182,39 @@ def _extract_last_message(state: dict[str, Any]) -> str:
         raise TypeError(msg)
 
     text_content = last.text
-
     if len(text_content) > _MAX_MESSAGE_LENGTH:
         text_content = text_content[:_MAX_MESSAGE_LENGTH] + "... [full result truncated]"
     return text_content
 
 
 class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, ContextT, ResponseT]):
-    """Notifies another agent when work is complete.
+    """Send callback notifications when a subagent finishes.
 
     !!! warning "Experimental"
         This middleware is experimental and may change in future releases.
 
-    This middleware is added to a subagent's middleware stack. When the
-    subagent finishes (success or error), it sends a message to the callback
-    thread via `runs.create()`, waking the callback agent so it can
-    proactively relay results.
+    This middleware is added to a subagent's middleware stack. On success or
+    model-call error, it sends a notification to the configured callback
+    thread by calling `runs.create()`.
 
-    The `callback_thread_id` is read from the subagent's own state
-    (injected by the callback agent's `start_async_task` tool at launch time).
-    The `callback_graph_id` is provided as a constructor argument since it's
-    static configuration known at deployment time.
+    The callback destination is configured with `callback_graph_id` and
+    optional `url` and `headers`. The target thread is read from
+    `callback_thread_id` in the subagent state.
 
-    If `callback_thread_id` is not present in state, the middleware silently
-    does nothing.
+    If `callback_thread_id` is not present in state, the middleware does
+    nothing.
 
     Args:
-        callback_graph_id: The callback graph ID (or assistant ID). Used
-            as the `assistant_id` parameter when calling `runs.create()` to
-            send notifications to the callback destination.
-        url: URL of the callback LangGraph server (e.g.,
-            `"https://my-deployment.langsmith.dev"`). Omit to use ASGI
-            transport for same-deployment communication.
-        headers: Additional headers to include in requests to the
-            callback server.
+        callback_graph_id: Callback graph or assistant identifier used as the
+            `assistant_id` argument in `runs.create()`.
+        url: URL of the callback LangGraph server. Omit to use same-deployment
+            ASGI transport.
+        headers: Additional headers to include in requests to the callback
+            server.
 
     Example:
         ```python
-        from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
+        from deepagents.middleware.completion_callback import CompletionCallbackMiddleware
 
         notifier = CompletionCallbackMiddleware(callback_graph_id="supervisor")
 
@@ -272,10 +266,7 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
         state: StateT,
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """After-agent hook: fires when the subagent completes successfully.
-
-        Extracts the last message as a summary and sends it to the callback destination.
-        """
+        """After-agent hook for successful subagent completion."""
         state_dict = cast("dict[str, Any]", state)
         callback_thread_id = state_dict[_CALLBACK_THREAD_ID_KEY]
         summary = _extract_last_message(state_dict)
@@ -288,11 +279,7 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT]:
-        """Wrap model calls to catch errors and notify the callback destination.
-
-        If a model call raises an exception, the error is reported before
-        re-raising so the callback agent can inform the user.
-        """
+        """Wrap model calls to send callback notifications on model-call errors."""
         try:
             return await handler(request)
         except Exception:
@@ -301,6 +288,3 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
                 notification = self._format_notification("The agent encountered an error while calling the model.")
                 await self._send_notification(callback_thread_id, notification)
             raise
-
-
-a

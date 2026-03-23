@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage
 
-from deepagents.middleware.completion_notifier import (
+from deepagents.middleware.completion_callback import (
     CompletionCallbackMiddleware,
     CompletionCallbackState,
     _extract_last_message,
@@ -163,8 +163,8 @@ class TestCompletionCallbackMiddleware:
 
 
 class TestAfterAgent:
-    @patch("deepagents.middleware.completion_notifier.get_config")
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback.get_config")
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_sends_completion_notification(self, mock_notify: AsyncMock, mock_get_config: MagicMock) -> None:
         mw = _make_middleware(callback_graph_id="parent-agent")
         state = _make_state(
@@ -183,8 +183,8 @@ class TestAfterAgent:
         notification = mock_notify.call_args[0][2]
         assert notification == "[task_id=task-789]Completed. Result: Here is the result"
 
-    @patch("deepagents.middleware.completion_notifier.get_config")
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback.get_config")
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_notification_includes_task_id_from_config(self, mock_notify: AsyncMock, mock_get_config: MagicMock) -> None:
         mw = _make_middleware()
         state = _make_state(
@@ -199,8 +199,8 @@ class TestAfterAgent:
         notification = mock_notify.call_args[0][2]
         assert "[task_id=task-789]" in notification
 
-    @patch("deepagents.middleware.completion_notifier.get_config")
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback.get_config")
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_aafter_agent_raises_outside_runnable_context(self, mock_notify: AsyncMock, mock_get_config: MagicMock) -> None:
         mw = _make_middleware()
         state = _make_state(
@@ -215,7 +215,7 @@ class TestAfterAgent:
 
         mock_notify.assert_not_awaited()
 
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_aafter_agent_raises_without_callback_thread_id(self, mock_notify: AsyncMock) -> None:
         mw = _make_middleware()
         state = _make_state(messages=[AIMessage(content="result")])
@@ -228,7 +228,7 @@ class TestAfterAgent:
 
 
 class TestWrapModelCall:
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_passes_through_on_success(self, mock_notify: AsyncMock) -> None:
         mw = _make_middleware()
         mock_response = MagicMock()
@@ -243,8 +243,8 @@ class TestWrapModelCall:
         handler.assert_awaited_once_with(request)
         mock_notify.assert_not_awaited()
 
-    @patch("deepagents.middleware.completion_notifier.get_config")
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback.get_config")
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_sends_generic_error_notification_on_exception(self, mock_notify: AsyncMock, mock_get_config: MagicMock) -> None:
         mw = _make_middleware()
         handler = AsyncMock(side_effect=ValueError("model crashed"))
@@ -261,7 +261,7 @@ class TestWrapModelCall:
         assert "The agent encountered an error while calling the model." in notification
         assert "model crashed" not in notification
 
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_no_error_notification_without_callback_thread_id(self, mock_notify: AsyncMock) -> None:
         mw = _make_middleware()
         handler = AsyncMock(side_effect=ValueError("model crashed"))
@@ -274,8 +274,8 @@ class TestWrapModelCall:
 
         mock_notify.assert_not_awaited()
 
-    @patch("deepagents.middleware.completion_notifier.get_config")
-    @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
+    @patch("deepagents.middleware.completion_callback.get_config")
+    @patch("deepagents.middleware.completion_callback._notify_parent", new_callable=AsyncMock)
     async def test_error_notification_on_each_exception(self, mock_notify: AsyncMock, mock_get_config: MagicMock) -> None:
         mw = _make_middleware()
         handler = AsyncMock(side_effect=ValueError("fail"))

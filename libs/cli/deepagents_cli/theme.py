@@ -133,9 +133,6 @@ SUCCESS = LC_GREEN
 WARNING = LC_AMBER
 """Caution and notice states — auto-approve off, pending tool calls, notices."""
 
-ERROR = LC_PINK
-"""Errors, destructive actions, and failures."""
-
 MUTED = LC_MUTED
 """De-emphasized text — timestamps, secondary labels."""
 
@@ -165,20 +162,8 @@ DIFF_CONTEXT = MUTED
 TOOL_BORDER = LC_BORDER_DK
 """Tool call card border."""
 
-TOOL_BORDER_HVR = LC_BORDER_LT
-"""Tool call card border on hover."""
-
 TOOL_HEADER = WARNING
 """Tool call headers, slash-command tokens, and approval-menu commands."""
-
-TOOL_PENDING = WARNING
-"""Tool call status while awaiting result or after rejection."""
-
-TOOL_SUCCESS = SUCCESS
-"""Tool call status on successful completion."""
-
-TOOL_ERROR = ERROR
-"""Tool call status on failure."""
 
 # File listing colors
 FILE_PYTHON = LC_BLUE
@@ -189,10 +174,6 @@ FILE_CONFIG = WARNING
 
 FILE_DIR = SUCCESS
 """Directories in tool-call file listings."""
-
-# Misc
-ERROR_BG = DIFF_REMOVE_BG
-"""Background for error message containers."""
 
 SPINNER = LC_BLUE
 """Loading spinner color."""

@@ -35,7 +35,7 @@ _TIPS: list[str] = [
     "Press ctrl+x to compose prompts in your external editor",
     "Press ctrl+u to delete to the start of the line in the chat input",
     "Type /update to check for and install updates",
-    "Use /theme to switch between dark and light themes",
+    "Use /theme to customize the CLI colors and style",
 ]
 """Rotating tips shown in the welcome footer.
 

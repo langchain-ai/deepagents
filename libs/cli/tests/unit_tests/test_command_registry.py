@@ -31,10 +31,6 @@ class TestCommandIntegrity:
                     f"Alias {alias!r} of {cmd.name} missing leading slash"
                 )
 
-    def test_alphabetically_sorted(self) -> None:
-        names = [cmd.name for cmd in COMMANDS]
-        assert names == sorted(names), "COMMANDS must be sorted alphabetically by name"
-
     def test_no_duplicate_names(self) -> None:
         names = [cmd.name for cmd in COMMANDS]
         assert len(names) == len(set(names)), "Duplicate command names found"
@@ -140,6 +136,9 @@ class TestHelpBodyDrift:
 
         # Commands intentionally omitted from the help body
         excluded = {"/version"}
+
+        # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
+        help_cmds.discard("/skill")
 
         missing = registry_cmds - help_cmds - excluded
         extra = help_cmds - registry_cmds

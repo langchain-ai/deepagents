@@ -151,19 +151,6 @@ if TYPE_CHECKING:
     settings: Settings
     console: Console
 
-COLORS = {
-    "primary": "#10b981",
-    "primary_dev": "#f97316",
-    "dim": "#6b7280",
-    "user": "#ffffff",
-    "agent": "#10b981",
-    "thinking": "#34d399",
-    "tool": "#fbbf24",
-    "mode_shell": "#ff1493",
-    "mode_command": "#8b5cf6",
-}
-"""App color scheme."""
-
 MODE_PREFIXES: dict[str, str] = {
     "shell": "!",
     "command": "/",
@@ -193,8 +180,13 @@ class CharsetMode(StrEnum):
     """Character set mode for TUI display."""
 
     UNICODE = "unicode"
+    """Always use Unicode glyphs (e.g. `⏺`, `✓`, `…`)."""
+
     ASCII = "ascii"
+    """Always use ASCII-safe fallbacks (e.g. `(*)`, `[OK]`, `...`)."""
+
     AUTO = "auto"
+    """Detect charset support at runtime and pick Unicode or ASCII."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +246,7 @@ UNICODE_GLYPHS = Glyphs(
     gutter_bar="▌",
     git_branch="↗",
 )
+"""Glyph set for terminals with full Unicode support."""
 
 ASCII_GLYPHS = Glyphs(
     tool_prefix="(*)",
@@ -279,6 +272,7 @@ ASCII_GLYPHS = Glyphs(
     gutter_bar="|",
     git_branch="git:",
 )
+"""Glyph set for terminals limited to 7-bit ASCII."""
 
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
@@ -421,8 +415,6 @@ def newline_shortcut() -> str:
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 
-# Text art banners (Unicode and ASCII variants)
-
 _UNICODE_BANNER = f"""
 ██████╗  ███████╗ ███████╗ ██████╗    ▄▓▓▄
 ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗  ▓•███▙
@@ -462,7 +454,8 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
-        Includes "(local)" suffix when installed in editable mode.
+
+            Includes "(local)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
         banner = _ASCII_BANNER
@@ -475,22 +468,125 @@ def get_banner() -> str:
     return banner
 
 
-# Interactive commands
-COMMANDS = {
-    "clear": "Clear screen and reset conversation",
-    "help": "Show help information",
-    "remember": "Review conversation and update memory/skills",
-    "tokens": "Show token usage for current thread",
-    "quit": "Exit the CLI",
-    "exit": "Exit the CLI",
-}
-
-
-# Maximum argument length for display
 MAX_ARG_LENGTH = 150
+"""Character limit for tool argument values in the UI.
 
-# Agent configuration
+Longer values are truncated with an ellipsis by `truncate_value`
+in `tool_display`.
+"""
+
 config: RunnableConfig = {"recursion_limit": 1000}
+"""Default LangGraph runnable config with a high recursion limit.
+
+Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
+hitting the default LangGraph ceiling.
+"""
+
+_git_branch_cache: dict[str, str | None] = {}
+"""Per-cwd cache of resolved git branch names.
+
+Avoids repeated `git rev-parse` subprocess calls within the same session. Keyed
+by `str(Path.cwd())`; `None` values indicate the directory is not inside a git
+repository.
+"""
+
+
+def _get_git_branch() -> str | None:
+    """Return the current git branch name, or `None` if not in a repo."""
+    import subprocess  # noqa: S404
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
+        return None
+    if cwd in _git_branch_cache:
+        return _git_branch_cache[cwd]
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or None
+            _git_branch_cache[cwd] = branch
+            return branch
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        logger.debug("Could not determine git branch", exc_info=True)
+    _git_branch_cache[cwd] = None
+    return None
+
+
+def build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+    *,
+    sandbox_type: str | None = None,
+) -> RunnableConfig:
+    """Build the LangGraph stream config dict.
+
+    Injects CLI and SDK versions into `metadata["versions"]` so LangSmith traces
+    can be correlated with specific releases.
+
+    Why the CLI sets *both* versions:
+
+    * `create_deep_agent` bakes `versions: {"deepagents": "X.Y.Z"}` into the
+        compiled graph via `with_config`. At stream time, LangGraph merges
+        the graph config with the runtime config passed here. Because the
+        metadata merge is shallow (effectively `{**graph_meta, **runtime_meta}`
+        for top-level keys), both configs containing a `versions` key means
+        the runtime dict **replaces** the graph dict entirely — the SDK
+        version would be lost.
+    * Including the SDK version here ensures it survives the merge.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+        sandbox_type: Sandbox provider name for trace metadata, or `None` if no
+            sandbox is active.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    import contextlib
+    import importlib.metadata as importlib_metadata
+    from datetime import UTC, datetime
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory", exc_info=True)
+        cwd = ""
+
+    # Include SDK version alongside CLI version — see docstring for why.
+    versions: dict[str, str] = {"deepagents-cli": __version__}
+    with contextlib.suppress(importlib_metadata.PackageNotFoundError):
+        versions["deepagents"] = importlib_metadata.version("deepagents")
+
+    metadata: dict[str, Any] = {"versions": versions}
+    if cwd:
+        metadata["cwd"] = cwd
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    branch = _get_git_branch()
+    if branch:
+        metadata["git_branch"] = branch
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass
@@ -566,6 +662,83 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     return unique
 
 
+def _read_config_toml_skills_dirs() -> list[str] | None:
+    """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
+
+    Returns:
+        List of path strings, or `None` if the key is absent or the file
+            cannot be read.
+    """
+    import tomllib
+
+    from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read skills config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    skills_section = data.get("skills", {})
+    dirs = skills_section.get("extra_allowed_dirs")
+    if isinstance(dirs, list):
+        return dirs
+    return None
+
+
+def _parse_extra_skills_dirs(
+    env_raw: str | None,
+    config_toml_dirs: list[str] | None = None,
+) -> list[Path] | None:
+    """Merge extra skill directories from env var and config.toml.
+
+    Extra skills directories extend the containment allowlist used by
+    `load_skill_content` to validate that a resolved skill path lives inside a
+    trusted root. They do **not** add new skill discovery locations — skills are
+    still discovered only from the standard directories. This exists so that
+    symlinks inside standard skill directories can legitimately point to targets
+    in user-specified locations without being rejected by the path
+    containment check.
+
+    The env var (`DEEPAGENTS_EXTRA_SKILLS_DIRS`, colon-separated) takes
+    precedence: when set, `config.toml` values are ignored.
+
+    Args:
+        env_raw: Value of `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated), or
+            `None` if unset.
+        config_toml_dirs: List of path strings from
+            `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+    Returns:
+        List of resolved `Path` objects, or `None` if not configured.
+    """
+    # Env var takes precedence when set
+    if env_raw:
+        dirs = [
+            Path(p.strip()).expanduser().resolve()
+            for p in env_raw.split(":")
+            if p.strip()
+        ]
+        return dirs or None
+
+    if config_toml_dirs:
+        dirs = [
+            Path(p).expanduser().resolve()
+            for p in config_toml_dirs
+            if isinstance(p, str) and p.strip()
+        ]
+        return dirs or None
+
+    return None
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -575,50 +748,59 @@ class Settings:
     - Current project information
     - Tool availability (e.g., Tavily)
     - File system paths
-
-    Attributes:
-        openai_api_key: OpenAI API key if available.
-        anthropic_api_key: Anthropic API key if available.
-        google_api_key: Google API key if available.
-        nvidia_api_key: NVIDIA API key if available.
-        tavily_api_key: Tavily API key if available.
-        google_cloud_project: Google Cloud project ID for VertexAI
-            authentication.
-        deepagents_langchain_project: LangSmith project name for deepagents
-            agent tracing.
-        user_langchain_project: Original LANGSMITH_PROJECT from environment
-            (for user code).
-        model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g., openai, anthropic, google_genai).
-        model_context_limit: Maximum input token count from the model profile.
-        project_root: Current project root directory (if in a git project).
-        shell_allow_list: List of shell commands that don't require approval.
     """
 
-    # API keys
     openai_api_key: str | None
+    """OpenAI API key if available."""
+
     anthropic_api_key: str | None
+    """Anthropic API key if available."""
+
     google_api_key: str | None
+    """Google API key if available."""
+
     nvidia_api_key: str | None
+    """NVIDIA API key if available."""
+
     tavily_api_key: str | None
+    """Tavily API key if available."""
 
-    # Google Cloud configuration (for VertexAI)
     google_cloud_project: str | None
+    """Google Cloud project ID for VertexAI authentication."""
 
-    # LangSmith configuration
-    deepagents_langchain_project: str | None  # For deepagents agent tracing
-    user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
+    deepagents_langchain_project: str | None
+    """LangSmith project name for deepagents agent tracing."""
 
-    # Model configuration
-    model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
-    model_context_limit: int | None = None  # Max input tokens from model profile
+    user_langchain_project: str | None
+    """Original `LANGSMITH_PROJECT` from environment (for user code)."""
 
-    # Project information
+    model_name: str | None = None
+    """Currently active model name, set after model creation."""
+
+    model_provider: str | None = None
+    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
+
+    model_context_limit: int | None = None
+    """Maximum input token count from the model profile."""
+
     project_root: Path | None = None
+    """Current project root directory, or `None` if not in a git project."""
 
-    # Shell command allow-list for auto-approval
     shell_allow_list: list[str] | None = None
+    """Shell commands that don't require user approval."""
+
+    extra_skills_dirs: list[Path] | None = None
+    """Extra directories added to the skill path containment allowlist.
+
+    These do NOT add new skill discovery locations — skills are still only
+    discovered from the standard directories. They exist so that symlinks inside
+    standard skill directories can point to targets in these additional
+    locations without being rejected by the containment check
+    in `load_skill_content`.
+
+    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+    """
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
@@ -660,6 +842,14 @@ class Settings:
         shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
         shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
 
+        # Parse extra skill containment roots from env var or config.toml.
+        # These extend the path allowlist for load_skill_content but do not
+        # add new skill discovery locations.
+        extra_skills_dirs = _parse_extra_skills_dirs(
+            os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+            _read_config_toml_skills_dirs(),
+        )
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -671,6 +861,7 @@ class Settings:
             user_langchain_project=user_langchain_project,
             project_root=project_root,
             shell_allow_list=shell_allow_list,
+            extra_skills_dirs=extra_skills_dirs,
         )
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
@@ -700,6 +891,9 @@ class Settings:
             "nvidia_api_key",
             "tavily_api_key",
         }
+        """Fields that hold API keys — used to mask values in change reports
+        so secrets are not logged as plaintext."""
+
         reloadable_fields = (
             "openai_api_key",
             "anthropic_api_key",
@@ -710,7 +904,14 @@ class Settings:
             "deepagents_langchain_project",
             "project_root",
             "shell_allow_list",
+            "extra_skills_dirs",
         )
+        """Fields refreshed on `/reload`.
+
+        Runtime model state (`model_name`, `model_provider`, `model_context_limit`)
+        and the original user LangSmith project are intentionally excluded —
+        they are set once and should not change across reloads.
+        """
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
@@ -747,6 +948,10 @@ class Settings:
             ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
+            "extra_skills_dirs": _parse_extra_skills_dirs(
+                os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+                _read_config_toml_skills_dirs(),
+            ),
         }
 
         for field, value in refreshed.items():
@@ -1014,6 +1219,31 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
+    def get_user_claude_skills_dir() -> Path:
+        """Get user-level `~/.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `~/.claude/skills/`
+        """
+        return Path.home() / ".claude" / "skills"
+
+    def get_project_claude_skills_dir(self) -> Path | None:
+        """Get project-level `.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".claude" / "skills"
+
+    @staticmethod
     def get_built_in_skills_dir() -> Path:
         """Get the directory containing built-in skills that ship with the CLI.
 
@@ -1021,6 +1251,17 @@ class Settings:
             Path to the `built_in_skills/` directory within the package.
         """
         return Path(__file__).parent / "built_in_skills"
+
+    def get_extra_skills_dirs(self) -> list[Path]:
+        """Get user-configured extra skill directories.
+
+        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+        Returns:
+            List of extra skill directory paths, or empty list if not configured.
+        """
+        return self.extra_skills_dirs or []
 
 
 class SessionState:
@@ -1091,28 +1332,13 @@ DANGEROUS_SHELL_PATTERNS = (
     "<",  # Input redirect
     "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
 )
+"""Literal substrings that indicate shell injection risk.
 
-# Recommended safe shell commands for non-interactive mode.
-# These commands are primarily read-only and do not modify the filesystem
-# when used without shell redirection operators (which the dangerous-patterns
-# check blocks).
-#
-# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
-# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
-# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
-# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
-# - Package managers: pip, npm, gem, apt, yum, brew, etc.
-# - Compilers: gcc, cc, make, cmake, etc.
-# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
-# - Archivers with shell escape: tar, zip, 7z, etc.
-# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
-# - Privilege tools: sudo, su, doas, pkexec, etc.
-# - Process tools: env, xargs, find (with -exec), etc.
-# - Git (can run hooks), docker, kubectl, etc.
-#
-# SAFE commands included below are primarily readers/formatters. File write and
-# injection are prevented by the dangerous-patterns check that blocks redirects,
-# command substitution, and other shell metacharacters.
+Used by `contains_dangerous_patterns` to reject commands that embed arbitrary
+execution via redirects, substitution operators, or control characters — even
+when the base command is on the allow-list.
+"""
+
 RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Directory listing
     "ls",
@@ -1147,6 +1373,13 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Process viewing (read-only)
     "ps",
 )
+"""Read-only commands auto-approved in non-interactive mode.
+
+Only includes readers and formatters — shells, editors, interpreters, package
+managers, network tools, archivers, and anything on GTFOBins/LOOBins is
+intentionally excluded. File-write and injection vectors are blocked separately
+by `DANGEROUS_SHELL_PATTERNS`.
+"""
 
 
 def contains_dangerous_patterns(command: str) -> bool:

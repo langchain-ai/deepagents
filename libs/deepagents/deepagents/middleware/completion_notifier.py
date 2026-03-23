@@ -78,15 +78,16 @@ end of execution. This is injected automatically by the parent's
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, NotRequired
+from typing import TYPE_CHECKING, Any, NotRequired, cast
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ResponseT, StateT
 from langchain.messages import AIMessage
+from langgraph.config import get_config
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from langchain.agents.middleware.types import ContextT, ModelRequest, ModelResponse, ResponseT, Runtime
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse, Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ def _resolve_headers(headers: dict[str, str] | None) -> dict[str, str]:
 async def _notify_parent(
     callback_graph_id: str,
     callback_thread_id: str,
-    notification: str,
+    message: str,
     *,
     url: str | None = None,
     headers: dict[str, str] | None = None,
@@ -135,7 +136,7 @@ async def _notify_parent(
         callback_graph_id: The callback graph ID used as `assistant_id`
             in the `runs.create` call.
         callback_thread_id: The callback thread ID.
-        notification: The message content to send.
+        message: The message content to send.
         url: URL of the callback LangGraph server. Omit for ASGI
             transport (same deployment).
         headers: Additional headers for the request.
@@ -148,7 +149,7 @@ async def _notify_parent(
             thread_id=callback_thread_id,
             assistant_id=callback_graph_id,
             input={
-                "messages": [{"role": "user", "content": notification}],
+                "messages": [{"role": "user", "content": message}],
             },
         )
         logger.info(
@@ -189,7 +190,7 @@ def _extract_last_message(state: dict[str, Any]) -> str:
     return text_content
 
 
-class CompletionNotifierMiddleware(AgentMiddleware):
+class CompletionNotifierMiddleware(AgentMiddleware[StateT, ContextT, ResponseT]):
     """Notifies another agent when work is complete.
 
     !!! warning "Experimental"
@@ -253,13 +254,6 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         self.callback_graph_id = callback_graph_id
         self.url = url
         self.headers = headers
-        self._notified = False
-
-    def _should_notify(self, state: dict[str, Any]) -> bool:
-        """Check whether we should send a notification."""
-        if self._notified:
-            return False
-        return bool(state.get(_CALLBACK_THREAD_ID_KEY))
 
     async def _send_notification(self, callback_thread_id: str, message: str) -> None:
         """Send a notification to the callback destination if conditions are met."""
@@ -271,41 +265,28 @@ class CompletionNotifierMiddleware(AgentMiddleware):
             headers=self.headers,
         )
 
-    @staticmethod
-    def _get_task_id() -> str | None:
-        """Read the subagent's own thread_id from config.
-
-        The subagent's `thread_id` is the same as the `task_id` from the
-        callback agent's perspective. Available via `get_config()` at runtime.
-        """
-        try:
-            from langgraph.config import get_config  # noqa: PLC0415
-
-            config = get_config()
-            return (config.get("configurable") or {}).get("thread_id")
-        except RuntimeError:
-            return None
-
     def _format_notification(self, body: str) -> str:
         """Build a notification string with task_id and subagent name."""
-        task_id = self._get_task_id()
-        prefix = f"[task_id={task_id}]" if task_id else ""
+        config = get_config()
+        thread_id = (config.get("configurable") or {}).get("thread_id")
+        if not isinstance(thread_id, str):
+            msg = f"Expected `thread_id` to be str, got {type(thread_id)}"
+            raise TypeError(msg)
+        prefix = f"[task_id={thread_id}]" if thread_id else ""
         return f"{prefix}{body}"
 
     async def aafter_agent(
         self,
-        state: dict[str, Any],
-        runtime: Runtime,  # noqa: ARG002
+        state: StateT,
+        runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """After-agent hook: fires when the subagent completes successfully.
 
         Extracts the last message as a summary and sends it to the callback destination.
         """
-        if not self._should_notify(state):
-            return None
-        self._notified = True
-        callback_thread_id = state[_CALLBACK_THREAD_ID_KEY]
-        summary = _extract_last_message(state)
+        state_dict = cast("dict[str, Any]", state)
+        callback_thread_id = state_dict[_CALLBACK_THREAD_ID_KEY]
+        summary = _extract_last_message(state_dict)
         notification = self._format_notification(f"Completed. Result: {summary}")
         await self._send_notification(callback_thread_id, notification)
         return None
@@ -322,10 +303,9 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         """
         try:
             return await handler(request)
-        except Exception as e:
-            if self._should_notify(request.state):
-                self._notified = True
-                callback_thread_id = request.state[_CALLBACK_THREAD_ID_KEY]
-                notification = self._format_notification(f"Error: {e!s}")
+        except Exception:
+            callback_thread_id = request.state.get(_CALLBACK_THREAD_ID_KEY)
+            if isinstance(callback_thread_id, str):
+                notification = self._format_notification("The agent encountered an error while calling the model.")
                 await self._send_notification(callback_thread_id, notification)
             raise

@@ -4,18 +4,18 @@
     This middleware is experimental and may change in future releases.
 
 When an async subagent finishes (success or error), this middleware sends a
-message back to the **supervisor's** thread so the supervisor wakes up and can
+message back to the callback thread so the callback agent wakes up and can
 proactively relay results to the user -- without the user having to poll via
 `check_async_task`.
 
 ## Architecture
 
-The async subagent protocol is inherently fire-and-forget: the supervisor
+The async subagent protocol is inherently fire-and-forget: the parent agent
 launches a job via `start_async_task` and only learns about completion
 when someone calls `check_async_task`. This middleware closes that gap.
 
 ```
-Supervisor                    Subagent
+Parent                        Subagent
     |                            |
     |--- start_async_task -----> |
     |<-- task_id (immediately) - |
@@ -23,29 +23,29 @@ Supervisor                    Subagent
     |                            |  (done!)
     |                            |
     |<-- runs.create(            |
-    |      supervisor_thread,    |
+    |      callback_thread,      |
     |      "completed: ...")     |
     |                            |
     |  (wakes up, sees result)   |
 ```
 
-The notifier calls `runs.create()` on the supervisor's thread, which
-queues a new run. From the supervisor's perspective, it looks like a new
+The notifier calls `runs.create()` on the callback thread, which
+queues a new run. From the callback agent's perspective, it looks like a new
 user message arrived -- except the content is a structured notification
 from the subagent.
 
-## How parent context is propagated
+## How callback context is propagated
 
-- `parent_graph_id` is passed as a **constructor argument** to the middleware.
-  This is the supervisor's graph ID (or assistant ID), which the subagent
+- `callback_graph_id` is passed as a **constructor argument** to the middleware.
+  This is the parent graph ID (or assistant ID), which the subagent
   developer knows at configuration time.
 - `url` and `headers` are optional constructor arguments for reaching the
-  supervisor on a remote deployment. Omit `url` for same-deployment ASGI
-  transport.
-- `parent_thread_id` is injected into the subagent's input state by the
-  supervisor's `start_async_task` tool. It survives thread interrupts and
+  callback destination on a remote deployment. Omit `url` for same-deployment
+  ASGI transport.
+- `callback_thread_id` is injected into the subagent's input state by the
+  parent's `start_async_task` tool. It survives thread interrupts and
   updates because it lives in state, not config.
-- If `parent_thread_id` is not present in state, the notifier silently no-ops.
+- If `callback_thread_id` is not present in state, the notifier silently no-ops.
 
 ## Usage
 
@@ -54,13 +54,13 @@ Add this middleware to the subagent's middleware stack:
 ```python
 from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
 
-# Same deployment (ASGI transport -- supervisor and subagent share a server):
-notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
+# Same deployment (ASGI transport -- callback agent and subagent share a server):
+notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
 
-# Remote deployment (supervisor on a different server):
+# Remote deployment (callback destination on a different server):
 notifier = CompletionNotifierMiddleware(
-    parent_graph_id="supervisor",
-    url="https://supervisor.langsmith.dev",
+    callback_graph_id="supervisor",
+    url="url to your langsmith deployment",
 )
 
 graph = create_agent(
@@ -70,8 +70,8 @@ graph = create_agent(
 )
 ```
 
-The middleware will read `parent_thread_id` from the agent's state at the
-end of execution. This is injected automatically by the supervisor's
+The middleware will read `callback_thread_id` from the agent's state at the
+end of execution. This is injected automatically by the parent's
 `start_async_task` tool when it creates the run.
 """
 
@@ -81,17 +81,16 @@ import logging
 from typing import TYPE_CHECKING, Any, NotRequired
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.messages import AIMessage
+
+if TYPE_CHECKING:
+    from langchain.agents.middleware.types import Runtime
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
-    from langchain.agents.middleware.types import ContextT, ModelRequest, ModelResponse, ResponseT, Runtime
-
-
-# State keys where the supervisor's launch tool stores parent context.
-_PARENT_THREAD_ID_KEY = "parent_thread_id"
+# State key where the launch tool stores callback context.
+_CALLBACK_THREAD_ID_KEY = "callback_thread_id"
 
 
 class CompletionNotifierState(AgentState):
@@ -100,17 +99,17 @@ class CompletionNotifierState(AgentState):
     !!! warning "Experimental"
         This state schema is experimental and may change in future releases.
 
-    These fields are injected by the supervisor's `start_async_task`
+    These fields are injected by the parent's `start_async_task`
     tool and read by `CompletionNotifierMiddleware` to send notifications
-    back to the supervisor's thread.
+    back to the parent's thread.
     """
 
-    parent_thread_id: NotRequired[str | None]
-    """The supervisor's thread ID. Used to address the notification."""
+    callback_thread_id: NotRequired[str | None]
+    """The callback thread ID. Used to address the notification."""
 
 
 def _resolve_headers(headers: dict[str, str] | None) -> dict[str, str]:
-    """Build headers for the supervisor's LangGraph server.
+    """Build headers for the parent's LangGraph server.
 
     Ensures `x-auth-scheme: langsmith` is present unless explicitly overridden.
     """
@@ -121,21 +120,21 @@ def _resolve_headers(headers: dict[str, str] | None) -> dict[str, str]:
 
 
 async def _notify_parent(
-    parent_thread_id: str,
-    parent_graph_id: str,
+    callback_graph_id: str,
+    callback_thread_id: str,
     notification: str,
     *,
     url: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> None:
-    """Send a notification run to the parent supervisor's thread.
+    """Send a notification run to the callback thread.
 
     Args:
-        parent_thread_id: The supervisor's thread ID.
-        parent_graph_id: The supervisor's graph ID (used as `assistant_id`
-            in the `runs.create` call).
+        callback_graph_id: The callback graph ID used as `assistant_id`
+            in the `runs.create` call.
+        callback_thread_id: The callback thread ID.
         notification: The message content to send.
-        url: URL of the supervisor's LangGraph server. Omit for ASGI
+        url: URL of the callback LangGraph server. Omit for ASGI
             transport (same deployment).
         headers: Additional headers for the request.
     """
@@ -144,23 +143,26 @@ async def _notify_parent(
     try:
         client = get_client(url=url, headers=_resolve_headers(headers))
         await client.runs.create(
-            thread_id=parent_thread_id,
-            assistant_id=parent_graph_id,
+            thread_id=callback_thread_id,
+            assistant_id=callback_graph_id,
             input={
                 "messages": [{"role": "user", "content": notification}],
             },
         )
         logger.info(
-            "Notified parent thread %s via graph '%s'",
-            parent_thread_id,
-            parent_graph_id,
+            "Notified callback thread %s via graph '%s'",
+            callback_thread_id,
+            callback_graph_id,
         )
     except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         logger.warning(
-            "Failed to notify parent thread %s",
-            parent_thread_id,
+            "Failed to notify callback thread %s",
+            callback_thread_id,
             exc_info=True,
         )
+
+
+_MAX_MESSAGE_LENGTH = 500  # max characters to include in notification summary
 
 
 def _extract_last_message(state: dict[str, Any]) -> str:
@@ -170,58 +172,60 @@ def _extract_last_message(state: dict[str, Any]) -> str:
     """
     messages = state.get("messages", [])
     if not messages:
-        return "(no output)"
+        msg = f"Expected at least one message in state {state}"
+        raise AssertionError(msg)
     last = messages[-1]
-    if hasattr(last, "content"):
-        content = last.content
-        return content[:500] if isinstance(content, str) else str(content)[:500]
-    if isinstance(last, dict):
-        return str(last.get("content", ""))[:500]
-    return str(last)[:500]
+
+    if not isinstance(last, AIMessage):
+        msg = f"Expected an AIMessage, got {type(last)} instead"
+        raise TypeError(msg)
+
+    text_content = last.text
+
+    if len(text_content) > _MAX_MESSAGE_LENGTH:
+        text_content = text_content[:_MAX_MESSAGE_LENGTH] + "... [full result truncated]"
+    return text_content
 
 
 class CompletionNotifierMiddleware(AgentMiddleware):
-    """Notifies the supervisor when an async subagent completes or errors.
+    """Notifies another agent when work is complete.
 
     !!! warning "Experimental"
         This middleware is experimental and may change in future releases.
 
-    This middleware is added to the **subagent's** middleware stack (not the
-    supervisor's). When the subagent finishes, it sends a message to the
-    supervisor's thread via `runs.create()`, waking the supervisor so it can
+    This middleware is added to a subagent's middleware stack. When the
+    subagent finishes (success or error), it sends a message to the callback
+    thread via `runs.create()`, waking the callback agent so it can
     proactively relay results.
 
-    The supervisor's `parent_thread_id` is read from the subagent's own state
-    (injected by the supervisor's `start_async_task` tool at launch time).
-    The `parent_graph_id` is provided as a constructor argument since it's
+    The `callback_thread_id` is read from the subagent's own state
+    (injected by the callback agent's `start_async_task` tool at launch time).
+    The `callback_graph_id` is provided as a constructor argument since it's
     static configuration known at deployment time.
 
-    If `parent_thread_id` is not present in state (e.g., the subagent was
-    launched manually without a supervisor), the middleware silently does
-    nothing.
+    If `callback_thread_id` is not present in state, the middleware silently
+    does nothing.
 
     Args:
-        parent_graph_id: The supervisor's graph ID (or assistant ID). Used
+        callback_graph_id: The callback graph ID (or assistant ID). Used
             as the `assistant_id` parameter when calling `runs.create()` to
-            send notifications back to the supervisor.
-        url: URL of the supervisor's LangGraph server (e.g.,
+            send notifications to the callback destination.
+        url: URL of the callback LangGraph server (e.g.,
             `"https://my-deployment.langsmith.dev"`). Omit to use ASGI
             transport for same-deployment communication.
         headers: Additional headers to include in requests to the
-            supervisor's server.
+            callback server.
 
     Example:
         ```python
-        from deepagents.middleware.completion_notifier import (
-            CompletionNotifierMiddleware,
-        )
+        from deepagents.middleware.completion_notifier import CompletionNotifierMiddleware
 
         # Same deployment (ASGI transport):
-        notifier = CompletionNotifierMiddleware(parent_graph_id="supervisor")
+        notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
 
         # Remote deployment:
         notifier = CompletionNotifierMiddleware(
-            parent_graph_id="supervisor",
+            callback_graph_id="supervisor",
             url="https://supervisor.langsmith.dev",
         )
 
@@ -237,14 +241,14 @@ class CompletionNotifierMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        parent_graph_id: str,
+        callback_graph_id: str,
         *,
         url: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         """Initialize the `CompletionNotifierMiddleware`."""
         super().__init__()
-        self.parent_graph_id = parent_graph_id
+        self.callback_graph_id = callback_graph_id
         self.url = url
         self.headers = headers
         self._notified = False
@@ -253,16 +257,13 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         """Check whether we should send a notification."""
         if self._notified:
             return False
-        return bool(state.get(_PARENT_THREAD_ID_KEY))
+        return bool(state.get(_CALLBACK_THREAD_ID_KEY))
 
-    async def _send_notification(self, state: dict[str, Any], message: str) -> None:
-        """Send a notification to the parent if conditions are met."""
-        if not self._should_notify(state):
-            return
-        self._notified = True
+    async def _send_notification(self, callback_thread_id: str, message: str) -> None:
+        """Send a notification to the callback destination if conditions are met."""
         await _notify_parent(
-            state[_PARENT_THREAD_ID_KEY],
-            self.parent_graph_id,
+            self.callback_graph_id,
+            callback_thread_id,
             message,
             url=self.url,
             headers=self.headers,
@@ -273,7 +274,7 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         """Read the subagent's own thread_id from config.
 
         The subagent's `thread_id` is the same as the `task_id` from the
-        supervisor's perspective. Available via `get_config()` at runtime.
+        callback agent's perspective. Available via `get_config()` at runtime.
         """
         try:
             from langgraph.config import get_config  # noqa: PLC0415
@@ -296,11 +297,15 @@ class CompletionNotifierMiddleware(AgentMiddleware):
     ) -> dict[str, Any] | None:
         """After-agent hook: fires when the subagent completes successfully.
 
-        Extracts the last message as a summary and sends it to the supervisor.
+        Extracts the last message as a summary and sends it to the callback destination.
         """
+        if not self._should_notify(state):
+            return None
+        self._notified = True
+        callback_thread_id = state[_CALLBACK_THREAD_ID_KEY]
         summary = _extract_last_message(state)
         notification = self._format_notification(f"Completed. Result: {summary}")
-        await self._send_notification(state, notification)
+        await self._send_notification(callback_thread_id, notification)
         return None
 
     async def awrap_model_call(
@@ -308,14 +313,17 @@ class CompletionNotifierMiddleware(AgentMiddleware):
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT]:
-        """Wrap model calls to catch errors and notify the supervisor.
+        """Wrap model calls to catch errors and notify the callback destination.
 
-        If a model call raises an exception, the error is reported to the
-        supervisor before re-raising so the supervisor can inform the user.
+        If a model call raises an exception, the error is reported before
+        re-raising so the callback agent can inform the user.
         """
         try:
             return await handler(request)
         except Exception as e:
-            notification = self._format_notification(f"Error: {e!s}")
-            await self._send_notification(request.state, notification)
+            if self._should_notify(request.state):
+                self._notified = True
+                callback_thread_id = request.state[_CALLBACK_THREAD_ID_KEY]
+                notification = self._format_notification(f"Error: {e!s}")
+                await self._send_notification(callback_thread_id, notification)
             raise

@@ -228,11 +228,11 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
     return None
 
 
-def _extract_parent_context(runtime: ToolRuntime) -> dict[str, str]:
-    """Extract the supervisor's thread ID from the tool runtime.
+def _extract_callback_context(runtime: ToolRuntime) -> dict[str, str]:
+    """Extract the parent thread ID from the tool runtime.
 
     The thread ID is included in the subagent's input state so the subagent
-    can notify the supervisor when it completes (via
+    can notify the parent when it completes (via
     `CompletionNotifierMiddleware`).
 
     Returns:
@@ -264,7 +264,7 @@ def _build_start_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
-        parent_context = _extract_parent_context(runtime)
+        callback_context = _extract_callback_context(runtime)
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create()
@@ -308,7 +308,7 @@ def _build_start_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
-        parent_context = _extract_parent_context(runtime)
+        callback_context = _extract_callback_context(runtime)
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()

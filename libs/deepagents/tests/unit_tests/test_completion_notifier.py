@@ -17,20 +17,20 @@ from deepagents.middleware.completion_notifier import (
 
 def _make_state(
     *,
-    parent_thread_id: str | None = None,
+    callback_thread_id: str | None = None,
     messages: list | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {}
     if messages is not None:
         state["messages"] = messages
-    if parent_thread_id is not None:
-        state["parent_thread_id"] = parent_thread_id
+    if callback_thread_id is not None:
+        state["callback_thread_id"] = callback_thread_id
     return state
 
 
 def _make_middleware(**kwargs: Any) -> CompletionNotifierMiddleware:
     """Create a middleware with sensible defaults."""
-    kwargs.setdefault("parent_graph_id", "supervisor")
+    kwargs.setdefault("callback_graph_id", "parent-agent")
     return CompletionNotifierMiddleware(**kwargs)
 
 
@@ -86,15 +86,15 @@ class TestNotifyParent:
         mock_get_client.return_value = mock_client
 
         await _notify_parent(
-            parent_thread_id="thread-123",
-            parent_graph_id="supervisor",
+            callback_graph_id="parent-agent",
+            callback_thread_id="thread-123",
             notification="Job completed",
         )
 
         mock_get_client.assert_called_once_with(url=None, headers={"x-auth-scheme": "langsmith"})
         mock_client.runs.create.assert_awaited_once_with(
             thread_id="thread-123",
-            assistant_id="supervisor",
+            assistant_id="parent-agent",
             input={
                 "messages": [{"role": "user", "content": "Job completed"}],
             },
@@ -106,15 +106,15 @@ class TestNotifyParent:
         mock_get_client.return_value = mock_client
 
         await _notify_parent(
-            parent_thread_id="thread-123",
-            parent_graph_id="supervisor",
+            callback_graph_id="parent-agent",
+            callback_thread_id="thread-123",
             notification="done",
-            url="https://supervisor.langsmith.dev",
+            url="https://parent.langsmith.dev",
             headers={"x-custom": "val"},
         )
 
         mock_get_client.assert_called_once_with(
-            url="https://supervisor.langsmith.dev",
+            url="https://parent.langsmith.dev",
             headers={"x-custom": "val", "x-auth-scheme": "langsmith"},
         )
 
@@ -126,28 +126,28 @@ class TestNotifyParent:
 
         # Should not raise
         await _notify_parent(
-            parent_thread_id="thread-123",
-            parent_graph_id="supervisor",
+            callback_graph_id="parent-agent",
+            callback_thread_id="thread-123",
             notification="Job completed",
         )
 
 
 class TestCompletionNotifierMiddleware:
-    def test_parent_graph_id_is_required(self):
+    def test_callback_graph_id_is_required(self):
         with pytest.raises(TypeError):
             CompletionNotifierMiddleware()  # type: ignore[call-arg]
 
-    def test_stores_parent_graph_id(self):
-        mw = _make_middleware(parent_graph_id="my-supervisor")
-        assert mw.parent_graph_id == "my-supervisor"
+    def test_stores_callback_graph_id(self):
+        mw = _make_middleware(callback_graph_id="my-parent")
+        assert mw.callback_graph_id == "my-parent"
 
     def test_url_defaults_to_none(self):
         mw = _make_middleware()
         assert mw.url is None
 
     def test_stores_url(self):
-        mw = _make_middleware(url="https://supervisor.langsmith.dev")
-        assert mw.url == "https://supervisor.langsmith.dev"
+        mw = _make_middleware(url="https://parent.langsmith.dev")
+        assert mw.url == "https://parent.langsmith.dev"
 
     def test_headers_defaults_to_none(self):
         mw = _make_middleware()
@@ -157,28 +157,28 @@ class TestCompletionNotifierMiddleware:
         mw = _make_middleware(headers={"x-custom": "val"})
         assert mw.headers == {"x-custom": "val"}
 
-    def test_should_notify_false_when_no_parent_thread_id(self):
+    def test_should_notify_false_when_no_callback_thread_id(self):
         mw = _make_middleware()
         assert not mw._should_notify({})
 
-    def test_should_notify_true_when_parent_thread_id_present(self):
+    def test_should_notify_true_when_callback_thread_id_present(self):
         mw = _make_middleware()
-        state = _make_state(parent_thread_id="thread-123")
+        state = _make_state(callback_thread_id="thread-123")
         assert mw._should_notify(state)
 
     def test_should_notify_false_after_already_notified(self):
         mw = _make_middleware()
         mw._notified = True
-        state = _make_state(parent_thread_id="thread-123")
+        state = _make_state(callback_thread_id="thread-123")
         assert not mw._should_notify(state)
 
 
 class TestAfterAgent:
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
     async def test_sends_completion_notification(self, mock_notify):
-        mw = _make_middleware(parent_graph_id="supervisor")
+        mw = _make_middleware(callback_graph_id="parent-agent")
         state = _make_state(
-            parent_thread_id="thread-123",
+            callback_thread_id="thread-123",
             messages=[AIMessage(content="Here is the result")],
         )
         runtime = MagicMock()
@@ -187,8 +187,8 @@ class TestAfterAgent:
 
         assert result is None
         mock_notify.assert_awaited_once()
-        assert mock_notify.call_args[0][0] == "thread-123"
-        assert mock_notify.call_args[0][1] == "supervisor"
+        assert mock_notify.call_args[0][0] == "parent-agent"
+        assert mock_notify.call_args[0][1] == "thread-123"
         notification = mock_notify.call_args[0][2]
         assert "Here is the result" in notification
 
@@ -196,7 +196,7 @@ class TestAfterAgent:
     async def test_notification_includes_task_id_from_config(self, mock_notify):
         mw = _make_middleware()
         state = _make_state(
-            parent_thread_id="thread-123",
+            callback_thread_id="thread-123",
             messages=[AIMessage(content="result")],
         )
         runtime = MagicMock()
@@ -214,7 +214,7 @@ class TestAfterAgent:
     async def test_notification_without_task_id_omits_prefix(self, mock_notify):
         mw = _make_middleware()
         state = _make_state(
-            parent_thread_id="thread-123",
+            callback_thread_id="thread-123",
             messages=[AIMessage(content="result")],
         )
         runtime = MagicMock()
@@ -229,7 +229,7 @@ class TestAfterAgent:
         assert "[task_id=" not in notification
 
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
-    async def test_no_notification_without_parent_thread_id(self, mock_notify):
+    async def test_no_notification_without_callback_thread_id(self, mock_notify):
         mw = _make_middleware()
         state = _make_state(messages=[AIMessage(content="result")])
         runtime = MagicMock()
@@ -242,7 +242,7 @@ class TestAfterAgent:
     async def test_notifies_only_once(self, mock_notify):
         mw = _make_middleware()
         state = _make_state(
-            parent_thread_id="thread-123",
+            callback_thread_id="thread-123",
             messages=[AIMessage(content="result")],
         )
         runtime = MagicMock()
@@ -261,7 +261,7 @@ class TestWrapModelCall:
         handler = AsyncMock(return_value=mock_response)
 
         request = MagicMock()
-        request.state = _make_state(parent_thread_id="thread-123")
+        request.state = _make_state(callback_thread_id="thread-123")
 
         result = await mw.awrap_model_call(request, handler)
 
@@ -275,7 +275,7 @@ class TestWrapModelCall:
         handler = AsyncMock(side_effect=ValueError("model crashed"))
 
         request = MagicMock()
-        request.state = _make_state(parent_thread_id="thread-123")
+        request.state = _make_state(callback_thread_id="thread-123")
 
         with pytest.raises(ValueError, match="model crashed"):
             await mw.awrap_model_call(request, handler)
@@ -285,7 +285,7 @@ class TestWrapModelCall:
         assert "model crashed" in notification
 
     @patch("deepagents.middleware.completion_notifier._notify_parent", new_callable=AsyncMock)
-    async def test_no_error_notification_without_parent_thread_id(self, mock_notify):
+    async def test_no_error_notification_without_callback_thread_id(self, mock_notify):
         mw = _make_middleware()
         handler = AsyncMock(side_effect=ValueError("model crashed"))
 
@@ -304,7 +304,7 @@ class TestWrapModelCall:
         handler = AsyncMock(side_effect=ValueError("fail"))
 
         request = MagicMock()
-        request.state = _make_state(parent_thread_id="thread-123")
+        request.state = _make_state(callback_thread_id="thread-123")
 
         with pytest.raises(ValueError, match="fail"):
             await mw.awrap_model_call(request, handler)
@@ -343,9 +343,9 @@ class TestStateSchema:
         mw = _make_middleware()
         assert hasattr(mw, "state_schema")
 
-    def test_state_schema_includes_parent_thread_id(self):
+    def test_state_schema_includes_callback_thread_id(self):
         annotations = CompletionNotifierState.__annotations__
-        assert "parent_thread_id" in annotations
+        assert "callback_thread_id" in annotations
 
     def test_state_schema_does_not_include_removed_fields(self):
         annotations = CompletionNotifierState.__annotations__

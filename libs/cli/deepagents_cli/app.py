@@ -1060,12 +1060,6 @@ class DeepAgentsApp(App):
         """Handle background server startup failure."""
         self._connecting = False
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
-        self.notify(
-            f"Failed to start server: {event.error}",
-            severity="error",
-            timeout=30,
-            markup=False,
-        )
         # Update banner to show persistent failure state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)

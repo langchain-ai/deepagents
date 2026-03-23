@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,7 @@ import pytest
 
 from deepagents_cli.integrations.sandbox_factory import (
     _get_provider,
+    get_default_working_dir,
     verify_sandbox_deps,
 )
 
@@ -82,6 +84,171 @@ def test_agentcore_rejects_sandbox_id() -> None:
 
     with pytest.raises(NotImplementedError, match="does not support reconnecting"):
         provider.get_or_create(sandbox_id="some-id")
+
+
+def test_agentcore_init_without_boto3_does_not_raise() -> None:
+    """Provider construction should succeed when boto3 is not installed."""
+    env_clear = dict.fromkeys(("AWS_REGION", "AWS_DEFAULT_REGION"), "")
+    with (
+        patch.dict(sys.modules, {"boto3": None}),
+        patch.dict(os.environ, env_clear, clear=False),
+    ):
+        for k in env_clear:
+            os.environ.pop(k, None)
+        provider = _get_provider("agentcore")
+    assert provider._region == "us-west-2"  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"AWS_REGION": "eu-west-1"}, "eu-west-1"),
+        ({"AWS_DEFAULT_REGION": "ap-southeast-1"}, "ap-southeast-1"),
+        (
+            {"AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "eu-west-1"},
+            "us-east-1",
+        ),
+        ({}, "us-west-2"),
+    ],
+)
+def test_agentcore_region_resolution(env: dict[str, str], expected: str) -> None:
+    """Region should follow AWS_REGION > AWS_DEFAULT_REGION > us-west-2."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with (
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        patch.dict(os.environ, env, clear=False),
+        patch.dict(
+            os.environ,
+            {k: "" for k in ("AWS_REGION", "AWS_DEFAULT_REGION") if k not in env},
+            clear=False,
+        ),
+    ):
+        # Clear env vars not in this test case
+        for k in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+            if k not in env:
+                os.environ.pop(k, None)
+        provider = _get_provider("agentcore")
+    assert provider._region == expected  # ty: ignore[unresolved-attribute]
+
+
+def test_agentcore_get_or_create_happy_path() -> None:
+    """Successful get_or_create should start interpreter and track it."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        provider = _get_provider("agentcore")
+
+    mock_interpreter = MagicMock()
+    mock_backend = MagicMock()
+    mock_backend.id = "session-123"
+
+    mock_ci_module = MagicMock()
+    mock_ci_module.CodeInterpreter.return_value = mock_interpreter
+    mock_backend_module = MagicMock()
+    mock_backend_module.AgentCoreSandbox.return_value = mock_backend
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if "code_interpreter_client" in module_name:
+            return mock_ci_module
+        return mock_backend_module
+
+    with patch(
+        "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+        side_effect=fake_import,
+    ):
+        result = provider.get_or_create()
+
+    mock_interpreter.start.assert_called_once()
+    assert result is mock_backend
+    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore[unresolved-attribute]
+
+
+def test_agentcore_start_failure_cleans_up() -> None:
+    """If interpreter.start() fails, interpreter.stop() should be called."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        provider = _get_provider("agentcore")
+
+    mock_interpreter = MagicMock()
+    mock_interpreter.start.side_effect = RuntimeError("connection failed")
+
+    mock_ci_module = MagicMock()
+    mock_ci_module.CodeInterpreter.return_value = mock_interpreter
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if "code_interpreter_client" in module_name:
+            return mock_ci_module
+        return MagicMock()
+
+    with (
+        patch(
+            "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+            side_effect=fake_import,
+        ),
+        pytest.raises(RuntimeError, match="connection failed"),
+    ):
+        provider.get_or_create()
+
+    mock_interpreter.stop.assert_called_once()
+    assert not provider._active_interpreters  # ty: ignore[unresolved-attribute]
+
+
+def test_agentcore_delete_stops_tracked_interpreter() -> None:
+    """delete() should call stop() on a tracked interpreter."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        provider = _get_provider("agentcore")
+
+    mock_interpreter = MagicMock()
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+
+    provider.delete(sandbox_id="sess-1")
+
+    mock_interpreter.stop.assert_called_once()
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+
+
+def test_agentcore_delete_swallows_stop_exception() -> None:
+    """delete() should not propagate if interpreter.stop() raises."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        provider = _get_provider("agentcore")
+
+    mock_interpreter = MagicMock()
+    mock_interpreter.stop.side_effect = RuntimeError("network error")
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+
+    provider.delete(sandbox_id="sess-1")  # should not raise
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+
+
+def test_agentcore_delete_untracked_session() -> None:
+    """delete() should not raise for an untracked session ID."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value.get_credentials.return_value = MagicMock()
+    with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        provider = _get_provider("agentcore")
+
+    provider.delete(sandbox_id="nonexistent")  # should not raise
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("agentcore", "/tmp"),
+        ("daytona", "/home/daytona"),
+        ("langsmith", "/tmp"),
+        ("modal", "/workspace"),
+        ("runloop", "/home/user"),
+    ],
+)
+def test_get_default_working_dir(provider: str, expected: str) -> None:
+    """Each provider should map to the correct default working directory."""
+    assert get_default_working_dir(provider) == expected
 
 
 class TestVerifySandboxDeps:

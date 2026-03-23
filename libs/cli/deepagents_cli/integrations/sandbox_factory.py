@@ -614,7 +614,8 @@ class _AgentCoreProvider(SandboxProvider):
                 `AWS_DEFAULT_REGION` / `us-west-2`).
 
         Raises:
-            ValueError: If AWS credentials cannot be resolved.
+            ValueError: If boto3 is installed and AWS credentials cannot
+                be resolved.
         """
         self._region = region or os.environ.get(
             "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
@@ -622,23 +623,27 @@ class _AgentCoreProvider(SandboxProvider):
 
         # Validate AWS credentials early for a clear error message.
         try:
-            import boto3  # ty: ignore[unresolved-import, unused-ignore-comment]
+            import boto3  # ty: ignore[unresolved-import]
 
             session = boto3.Session()
             credentials = session.get_credentials()
             if credentials is None:
                 msg = (
                     "AWS credentials not found. Configure via "
-                    "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SECRET_ACCESS_TOKEN, "
+                    "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN, "
                     "~/.aws/credentials, or an IAM role."
                 )
-                raise ValueError(msg)  # noqa: TRY301
+                raise ValueError(msg)  # noqa: TRY301  # intentional raise for early credential validation
         except ImportError:
-            pass  # boto3 will fail later with a clear message
+            logger.debug("boto3 not installed; skipping credential pre-check")
         except ValueError:
             raise
         except Exception:
-            logger.debug("Could not validate AWS credentials", exc_info=True)
+            logger.warning(
+                "AWS credential pre-validation failed — the session may "
+                "fail to start. Check your AWS configuration.",
+                exc_info=True,
+            )
 
         self._active_interpreters: dict[str, Any] = {}
 
@@ -646,7 +651,7 @@ class _AgentCoreProvider(SandboxProvider):
         self,
         *,
         sandbox_id: str | None = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002  # required by SandboxProvider interface
     ) -> SandboxBackendProtocol:
         """Create a new AgentCore Code Interpreter session.
 
@@ -683,13 +688,18 @@ class _AgentCoreProvider(SandboxProvider):
             region=self._region,
             integration_source="deepagents-cli",
         )
-        interpreter.start()
+        try:
+            interpreter.start()
+        except Exception:
+            with contextlib.suppress(Exception):
+                interpreter.stop()
+            raise
 
         backend = agentcore_backend.AgentCoreSandbox(interpreter=interpreter)
         self._active_interpreters[backend.id] = interpreter
         return backend
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # required by SandboxProvider interface
         """Stop an AgentCore session.
 
         Args:
@@ -703,7 +713,9 @@ class _AgentCoreProvider(SandboxProvider):
                 logger.info("AgentCore session %s stopped", sandbox_id)
             except Exception:
                 logger.warning(
-                    "Failed to stop AgentCore session %s",
+                    "Failed to stop AgentCore session %s — the session may "
+                    "still be running and incurring costs. Check the AWS "
+                    "console to verify.",
                     sandbox_id,
                     exc_info=True,
                 )

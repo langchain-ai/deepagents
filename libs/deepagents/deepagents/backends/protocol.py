@@ -87,16 +87,16 @@ class FileDownloadResponse:
     """Result of a single file download operation.
 
     The response is designed to allow partial success in batch operations.
-    The errors are standardized using FileOperationError literals
-    for certain recoverable conditions for use cases that involve
-    LLMs performing file operations.
+    Known recoverable errors use `FileOperationError` literals; unknown
+    errors fall back to `str(exc)` so the caller still gets a meaningful
+    message.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
             when processing batch results, especially useful for error messages.
         content: File contents as bytes on success, None on failure.
-        error: Standardized error code on failure, None on success.
-            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+        error: A `FileOperationError` literal for known conditions, an
+            arbitrary string for unexpected errors, or None on success.
 
     Examples:
         >>> # Success
@@ -107,7 +107,7 @@ class FileDownloadResponse:
 
     path: str
     content: bytes | None = None
-    error: FileOperationError | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -115,15 +115,15 @@ class FileUploadResponse:
     """Result of a single file upload operation.
 
     The response is designed to allow partial success in batch operations.
-    The errors are standardized using FileOperationError literals
-    for certain recoverable conditions for use cases that involve
-    LLMs performing file operations.
+    Known recoverable errors use `FileOperationError` literals; unknown
+    errors fall back to `str(exc)` so the caller still gets a meaningful
+    message.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
             when processing batch results and for clear error messages.
-        error: Standardized error code on failure, None on success.
-            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+        error: A `FileOperationError` literal for known conditions, an
+            arbitrary string for unexpected errors, or None on success.
 
     Examples:
         >>> # Success
@@ -133,7 +133,7 @@ class FileUploadResponse:
     """
 
     path: str
-    error: FileOperationError | None = None
+    error: str | None = None
 
 
 class FileInfo(TypedDict):

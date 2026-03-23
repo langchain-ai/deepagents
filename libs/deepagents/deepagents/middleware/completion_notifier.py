@@ -190,7 +190,7 @@ def _extract_last_message(state: dict[str, Any]) -> str:
     return text_content
 
 
-class CompletionNotifierMiddleware(AgentMiddleware[StateT, ContextT, ResponseT]):
+class CompletionNotifierMiddleware(AgentMiddleware[CompletionNotifierState, ContextT, ResponseT]):
     """Notifies another agent when work is complete.
 
     !!! warning "Experimental"

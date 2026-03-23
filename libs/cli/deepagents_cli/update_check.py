@@ -61,7 +61,7 @@ def _parse_version(v: str) -> Version:
     Returns:
         A `packaging.version.Version` instance.
     """
-    return Version(v.strip())
+    return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
 def _latest_from_releases(
@@ -71,7 +71,7 @@ def _latest_from_releases(
 ) -> str | None:
     """Pick the newest version from a PyPI `releases` mapping.
 
-    Skips versions with no uploaded files (yanked / empty) and, when
+    Skips versions with no uploaded files (empty entries) and, when
     *include_prereleases* is `False`, skips pre-release versions.
 
     Args:
@@ -89,6 +89,7 @@ def _latest_from_releases(
         try:
             ver = Version(ver_str)
         except InvalidVersion:
+            logger.debug("Skipping unparseable release key: %s", ver_str)
             continue
         if not include_prereleases and ver.is_prerelease:
             continue
@@ -122,11 +123,10 @@ def get_latest_version(
     try:
         if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-            if time.time() - data.get("checked_at", 0) < CACHE_TTL:
-                cached = data.get(cache_key)
-                if cached is not None:
-                    return cached
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            fresh = time.time() - data.get("checked_at", 0) < CACHE_TTL
+            if fresh and cache_key in data:
+                return data[cache_key]
+    except (OSError, json.JSONDecodeError, TypeError):
         logger.debug("Failed to read update-check cache", exc_info=True)
 
     try:
@@ -148,6 +148,8 @@ def get_latest_version(
         payload = resp.json()
         stable: str = payload["info"]["version"]
         releases: dict[str, list[object]] = payload.get("releases", {})
+        if not releases:
+            logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
@@ -192,7 +194,11 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
     try:
         installed = _parse_version(__version__)
     except InvalidVersion:
-        logger.debug("Installed version %s is not PEP 440 compliant", __version__)
+        logger.warning(
+            "Installed version %r is not PEP 440 compliant; "
+            "update checks disabled for this install",
+            __version__,
+        )
         return False, None
 
     include_prereleases = installed.is_prerelease
@@ -403,6 +409,6 @@ def should_show_whats_new() -> bool:
         return False
     try:
         return _parse_version(__version__) > _parse_version(seen)
-    except (InvalidVersion, TypeError):
+    except InvalidVersion:
         logger.debug("Failed to compare versions for what's-new check", exc_info=True)
         return False

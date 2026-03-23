@@ -171,6 +171,23 @@ class TestGetLatestVersion:
         assert result == "1.6.0a1"
         mock_get.assert_not_called()
 
+    def test_cached_null_prerelease_is_cache_hit(self, cache_file) -> None:
+        """Cache with null prerelease returns None without hitting PyPI."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "version": "1.5.0",
+                    "version_prerelease": None,
+                    "checked_at": time.time(),
+                }
+            )
+        )
+        with patch("requests.get") as mock_get:
+            result = get_latest_version(include_prereleases=True)
+
+        assert result is None
+        mock_get.assert_not_called()
+
     def test_cached_missing_prerelease_key_triggers_fetch(self, cache_file) -> None:
         """Cache without pre-release key triggers PyPI fetch."""
         cache_file.write_text(
@@ -301,7 +318,7 @@ class TestIsUpdateAvailable:
         assert latest == "1.0.0"
 
     def test_stable_user_does_not_see_prerelease(self) -> None:
-        """Stable user is not nudged to a pre-release."""
+        """Stable user on current version sees no update available."""
         with (
             patch(
                 "deepagents_cli.update_check.get_latest_version",
@@ -339,3 +356,25 @@ class TestIsUpdateAvailable:
             is_update_available()
 
         mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
+
+    def test_invalid_installed_version(self) -> None:
+        """Non-PEP 440 installed version disables update check gracefully."""
+        with patch("deepagents_cli.update_check.__version__", "not-a-version"):
+            available, latest = is_update_available()
+
+        assert available is False
+        assert latest is None
+
+    def test_unparseable_pypi_version(self) -> None:
+        """Malformed PyPI version string does not crash."""
+        with (
+            patch(
+                "deepagents_cli.update_check.get_latest_version",
+                return_value="not-a-version",
+            ),
+            patch("deepagents_cli.update_check.__version__", "1.0.0"),
+        ):
+            available, latest = is_update_available()
+
+        assert available is False
+        assert latest is None

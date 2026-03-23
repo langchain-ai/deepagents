@@ -478,6 +478,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+D again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -531,6 +532,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+C again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -678,6 +680,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -715,6 +718,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -758,6 +762,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()

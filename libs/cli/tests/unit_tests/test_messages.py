@@ -6,7 +6,7 @@ import pytest
 from rich.style import Style
 from textual.content import Content
 
-from deepagents_cli.config import COLORS
+from deepagents_cli import theme
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -69,7 +69,7 @@ class TestErrorMessageMarkupSafety:
     def test_error_message_has_prefix_and_body(self) -> None:
         """ErrorMessage content should have `'Error: '` prefix followed by the body."""
         msg = ErrorMessage("something broke")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg.render()
         assert isinstance(rendered, Content)
         assert rendered.plain == "Error: something broke"
 
@@ -156,10 +156,10 @@ class TestToolCallMessageMarkupSafety:
         )
 
         # `task` has no inline args widget, so this validates the header markup.
+        # Header uses markup=False so bracket content is shown verbatim.
         header = next(iter(msg.compose()))
-        content = header._Static__content
-        assert isinstance(content, Content)
-        assert "[/dim]" in content.plain
+        rendered = header.render()
+        assert "[/dim]" in rendered.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
         """Inline args line should escape bracket content in argument values."""
@@ -330,43 +330,60 @@ class TestUserMessageHighlighting:
         assert len(matches) == 0
 
 
-def _compose_content(widget: UserMessage | QueuedUserMessage) -> Content:
-    """Extract the `Content` object from a message widget's first yielded Static."""
-    statics = list(widget.compose())
-    assert statics, "compose() yielded no widgets"
-    result = statics[0]._Static__content  # type: ignore[attr-defined]
+def _render_content(widget: UserMessage | QueuedUserMessage) -> Content:
+    """Extract the `Content` object from a message widget's render method."""
+    result = widget.render()
     assert isinstance(result, Content)
     return result
 
 
 class TestUserMessageModeRendering:
-    """Test `UserMessage` renders mode-specific prefix indicators and colors."""
+    """Test `UserMessage` renders mode-specific prefix indicators and colors.
+
+    Without an active Textual app, `get_theme_colors` falls back to
+    `DARK_COLORS`, so assertions check for hex values from that palette.
+    """
 
     def test_shell_prefix_renders_dollar_indicator(self) -> None:
         """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
-        content = _compose_content(UserMessage("!ls"))
+        content = _render_content(UserMessage("!ls"))
         assert content.plain == "$ ls"
         first_span = content._spans[0]
-        assert COLORS["mode_shell"] in str(first_span.style)
+        assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
-        content = _compose_content(UserMessage("/help"))
+        content = _render_content(UserMessage("/help"))
         assert content.plain == "/ help"
         first_span = content._spans[0]
-        assert COLORS["mode_command"] in str(first_span.style)
+        assert theme.DARK_COLORS.mode_command in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
-        content = _compose_content(UserMessage("hello"))
+        content = _render_content(UserMessage("hello"))
         assert content.plain == "> hello"
         first_span = content._spans[0]
-        assert COLORS["primary"] in str(first_span.style)
+        assert theme.DARK_COLORS.primary in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""
-        content = _compose_content(UserMessage(""))
+        content = _render_content(UserMessage(""))
         assert content.plain == "> "
+
+
+class TestModeColorsDrift:
+    """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
+
+    def test_mode_color_returns_non_primary_for_all_modes(self) -> None:
+        from deepagents_cli.config import MODE_PREFIXES
+        from deepagents_cli.widgets.messages import _mode_color
+
+        primary = _mode_color(None)
+        for mode in MODE_PREFIXES:
+            color = _mode_color(mode)
+            assert color != primary, (
+                f"_mode_color({mode!r}) returned primary; add a branch for this mode"
+            )
 
 
 class TestQueuedUserMessageModeRendering:
@@ -374,22 +391,22 @@ class TestQueuedUserMessageModeRendering:
 
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
-        content = _compose_content(QueuedUserMessage("!ls"))
+        content = _render_content(QueuedUserMessage("!ls"))
         assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
         """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
-        content = _compose_content(QueuedUserMessage("/help"))
+        content = _render_content(QueuedUserMessage("/help"))
         assert content.plain == "/ help"
 
     def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
         """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
-        content = _compose_content(QueuedUserMessage("hello"))
+        content = _render_content(QueuedUserMessage("hello"))
         assert content.plain == "> hello"
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
-        content = _compose_content(QueuedUserMessage(""))
+        content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
 
 

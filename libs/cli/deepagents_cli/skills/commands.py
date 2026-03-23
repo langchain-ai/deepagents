@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from deepagents_cli.output import OutputFormat
 
+from deepagents_cli import theme
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -152,7 +153,7 @@ def _list(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+    from deepagents_cli.config import Settings, console, get_glyphs
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
@@ -173,7 +174,7 @@ def _list(
             console.print(
                 "[dim]Project skills require a .git directory "
                 "in the project root.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
@@ -197,12 +198,12 @@ def _list(
             console.print(
                 f"[dim]Project skills will be created in {project_skills_dir}/ "
                 "when you add them.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print(
                 "\n[dim]Create a project skill:\n"
                 "  deepagents skills create my-skill --project[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
@@ -219,7 +220,7 @@ def _list(
             write_json("skills list", [dict(s) for s in skills])
             return
 
-        console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
+        console.print("\n[bold]Project Skills:[/bold]\n", style=theme.PRIMARY)
     else:
         # Load skills from all directories (including built-in)
         skills = list_skills(
@@ -248,16 +249,16 @@ def _list(
                 "  3. ~/.agents/skills/               user skills\n"
                 "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
                 "  5. <package>/built_in_skills/      built-in skills[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print(
                 "\n[dim]Create your first skill:\n"
                 "  deepagents skills create my-skill[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 
-        console.print("\n[bold]Available Skills:[/bold]\n", style=COLORS["primary"])
+        console.print("\n[bold]Available Skills:[/bold]\n", style=theme.PRIMARY)
 
     # Group skills by source
     user_skills = [s for s in skills if s["source"] == "user"]
@@ -266,20 +267,20 @@ def _list(
 
     # Show user skills
     if user_skills and not project:
-        console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
+        console.print("[bold cyan]User Skills:[/bold cyan]", style=theme.PRIMARY)
         bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
             name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
             console.print(
                 f"    {escape_markup(str(skill_path.parent))}/",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print()
             console.print(
                 f"    {escape_markup(skill['description'])}",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print()
 
@@ -287,22 +288,20 @@ def _list(
     if project_skills_list:
         if not project and user_skills:
             console.print()
-        console.print(
-            "[bold green]Project Skills:[/bold green]", style=COLORS["primary"]
-        )
+        console.print("[bold green]Project Skills:[/bold green]", style=theme.PRIMARY)
         bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
             name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
             console.print(
                 f"    {escape_markup(str(skill_path.parent))}/",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print()
             console.print(
                 f"    {escape_markup(skill['description'])}",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print()
 
@@ -311,16 +310,16 @@ def _list(
         if user_skills or project_skills_list:
             console.print()
         console.print(
-            "[bold magenta]Built-in Skills:[/bold magenta]", style=COLORS["primary"]
+            "[bold magenta]Built-in Skills:[/bold magenta]", style=theme.PRIMARY
         )
         bullet = get_glyphs().bullet
         for skill in built_in_skills_list:
             name = escape_markup(skill["name"])
-            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=theme.PRIMARY)
             console.print()
             console.print(
                 f"    {escape_markup(skill['description'])}",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             console.print()
 
@@ -413,7 +412,7 @@ def _create(
             If False, create in user skills directory.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+    from deepagents_cli.config import Settings, console, get_glyphs
 
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -423,7 +422,7 @@ def _create(
             "[dim]Per Agent Skills spec: names must be lowercase alphanumeric "
             "with hyphens only.\n"
             "Examples: web-research, code-review, data-analysis[/dim]",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         return
 
@@ -435,7 +434,7 @@ def _create(
             console.print(
                 "[dim]Project skills require a .git directory "
                 "in the project root.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
         skills_dir = settings.ensure_project_skills_dir()
@@ -485,9 +484,9 @@ def _create(
     checkmark = get_glyphs().checkmark
     console.print(
         f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
-    console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
+    console.print(f"Location: {skill_dir}\n", style=theme.MUTED)
     console.print(
         "[dim]Edit the SKILL.md file to customize:\n"
         "  1. Update the description in YAML frontmatter\n"
@@ -502,7 +501,7 @@ def _create(
         "\n"
         "   Copy an example:\n"
         "   cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
 
 
@@ -524,7 +523,7 @@ def _info(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_cli.config import COLORS, Settings, console
+    from deepagents_cli.config import Settings, console
     from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
@@ -558,9 +557,9 @@ def _info(
 
     if not skill:
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
         for s in skills:
-            console.print(f"  - {s['name']}", style=COLORS["dim"])
+            console.print(f"  - {s['name']}", style=theme.MUTED)
         return
 
     if output_format == "json":
@@ -601,7 +600,7 @@ def _info(
     console.print(
         f"\n[bold]Skill: {escape_markup(skill['name'])}[/bold] "
         f"[bold {source_color}]({source_label})[/bold {source_color}]\n",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
     if shadowed_user_skill:
         console.print(
@@ -610,18 +609,18 @@ def _info(
         )
     console.print(
         f"[bold]Location:[/bold] {escape_markup(str(skill_path.parent))}/\n",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
     console.print(
         f"[bold]Description:[/bold] {escape_markup(skill['description'])}\n",
-        style=COLORS["dim"],
+        style=theme.MUTED,
     )
 
     # Show optional metadata fields
     for label, value in _format_info_fields(skill):
         console.print(
             f"[bold]{label}:[/bold] {escape_markup(value)}\n",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
 
     # List supporting files
@@ -629,14 +628,14 @@ def _info(
     supporting_files = [f for f in skill_dir.iterdir() if f.name != "SKILL.md"]
 
     if supporting_files:
-        console.print("[bold]Supporting Files:[/bold]", style=COLORS["dim"])
+        console.print("[bold]Supporting Files:[/bold]", style=theme.MUTED)
         for file in supporting_files:
-            console.print(f"  - {escape_markup(file.name)}", style=COLORS["dim"])
+            console.print(f"  - {escape_markup(file.name)}", style=theme.MUTED)
         console.print()
 
     # Show the full SKILL.md content
-    console.print("[bold]Full SKILL.md Content:[/bold]\n", style=COLORS["primary"])
-    console.print(skill_content, style=COLORS["dim"])
+    console.print("[bold]Full SKILL.md Content:[/bold]\n", style=theme.PRIMARY)
+    console.print(skill_content, style=theme.MUTED)
     console.print()
 
 
@@ -668,7 +667,7 @@ def _delete(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_cli.config import COLORS, Settings, console, get_glyphs
+    from deepagents_cli.config import Settings, console, get_glyphs
     from deepagents_cli.skills.load import list_skills
 
     # Validate skill name first (per Agent Skills spec)
@@ -707,10 +706,10 @@ def _delete(
 
     if not skill:
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
         for s in skills:
             source_tag = "[project]" if s["source"] == "project" else "[user]"
-            console.print(f"  - {s['name']} {source_tag}", style=COLORS["dim"])
+            console.print(f"  - {s['name']} {source_tag}", style=theme.MUTED)
         return
 
     skill_path = Path(skill["path"])
@@ -744,21 +743,21 @@ def _delete(
         console.print(
             f"\n[bold]Skill:[/bold] {escape_markup(skill_name)}"
             f" [bold {source_color}]({source_label})[/bold {source_color}]",
-            style=COLORS["primary"],
+            style=theme.PRIMARY,
         )
         console.print(
             f"[bold]Location:[/bold] {escape_markup(str(skill_dir))}/",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         if file_count >= 0:
             console.print(
                 f"[bold]Files:[/bold] {file_count} file(s) will be deleted\n",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
         else:
             console.print(
                 "[bold]Files:[/bold] (unable to count files)\n",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
 
     # Confirmation (skip in JSON mode — no interactive prompt)
@@ -818,7 +817,7 @@ def _delete(
     checkmark = get_glyphs().checkmark
     console.print(
         f"{checkmark} Skill '{skill_name}' deleted successfully!",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
 
 
@@ -985,7 +984,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     Args:
         args: Parsed command line arguments with skills_command attribute
     """
-    from deepagents_cli.config import COLORS, console
+    from deepagents_cli.config import console
 
     # validate agent argument
     if args.agent:
@@ -997,7 +996,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             console.print(
                 "[dim]Agent names must only contain letters, numbers, "
                 "hyphens, and underscores.[/dim]",
-                style=COLORS["dim"],
+                style=theme.MUTED,
             )
             return
 

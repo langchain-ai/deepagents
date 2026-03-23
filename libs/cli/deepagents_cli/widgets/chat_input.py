@@ -17,9 +17,9 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
+from deepagents_cli import theme
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
-    COLORS,
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
@@ -90,6 +90,7 @@ class CompletionOption(Static):
 
     CompletionOption.completion-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -820,11 +821,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell {
-        border: solid __MODE_SHELL__;
+        border: solid $mode-bash;
     }
 
     ChatInput.mode-command {
-        border: solid __MODE_CMD__;
+        border: solid $mode-command;
     }
 
     ChatInput .input-row {
@@ -841,11 +842,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell .input-prompt {
-        color: __MODE_SHELL__;
+        color: $mode-bash;
     }
 
     ChatInput.mode-command .input-prompt {
-        color: __MODE_CMD__;
+        color: $mode-command;
     }
 
     ChatInput ChatTextArea {
@@ -861,9 +862,8 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
-    )
+    """
+    """Border and prompt glyph change color per mode for immediate visual feedback."""
 
     class Submitted(Message):
         """Message sent when input is submitted."""
@@ -962,7 +962,8 @@ class ChatInput(Vertical):
     def on_mount(self) -> None:
         """Initialize components after mount."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "cyan")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
@@ -1481,7 +1482,7 @@ class ChatInput(Vertical):
                 except OSError as exc:
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
-                self.app.notify(msg, severity="warning", timeout=5)
+                self.app.notify(msg, severity="warning", timeout=5, markup=False)
 
             # Not a supported media file, keep as path
             logger.debug("Could not load media from dropped path: %s", path)

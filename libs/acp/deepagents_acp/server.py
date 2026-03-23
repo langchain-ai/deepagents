@@ -419,6 +419,9 @@ class AgentServerACP(ACPAgent):
 
     def _reset_agent(self, session_id: str) -> None:
         """Reset the agent instance, re-creating it from the factory if applicable."""
+        cwd = self._session_cwds.get(session_id)
+        if cwd is not None:
+            self._cwd = cwd
         if isinstance(self._agent_factory, CompiledStateGraph):
             self._agent = self._agent_factory
         else:
@@ -443,9 +446,6 @@ class AgentServerACP(ACPAgent):
     ) -> PromptResponse:
         """Process a user prompt and stream the agent response."""
         if self._agent is None:
-            cwd = self._session_cwds.get(session_id)
-            if cwd is not None:
-                self._cwd = cwd
             self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:

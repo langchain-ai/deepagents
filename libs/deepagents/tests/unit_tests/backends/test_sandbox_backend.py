@@ -41,19 +41,30 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
-        # Simulate the _EDIT_TMPFILE_TEMPLATE server-side script
-        if "old_path = base64.b64decode(" in command and ".deepagents_edit_" in str(self._file_store):
+        # Detect temp-file upload path: upload_files() stores .deepagents_edit_*
+        # keys in _file_store before execute() is called.
+        has_tmp = any(".deepagents_edit_" in k for k in self._file_store)
+        if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
         output = self._next_output
         self._next_output = "1"
         return ExecuteResponse(output=output, exit_code=0, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
-        """Simulate the _EDIT_TMPFILE_TEMPLATE server-side script."""
+        """Simulate the server-side temp-file edit script.
+
+        Reads temp file entries placed in `_file_store` by `upload_files()`,
+        performs the replacement on the target file, and removes the temp
+        entries.
+        """
         old_m = re.search(r"old_path = base64\.b64decode\('([^']+)'\)", command)
         new_m = re.search(r"new_path = base64\.b64decode\('([^']+)'\)", command)
         tgt_m = re.search(r"target = base64\.b64decode\('([^']+)'\)", command)
         ra_m = re.search(r"replace_all = (True|False)", command)
+        assert old_m is not None, "Could not parse old_path from command"
+        assert new_m is not None, "Could not parse new_path from command"
+        assert tgt_m is not None, "Could not parse target from command"
+        assert ra_m is not None, "Could not parse replace_all from command"
 
         old_path = base64.b64decode(old_m.group(1)).decode("utf-8")
         new_path = base64.b64decode(new_m.group(1)).decode("utf-8")
@@ -386,7 +397,7 @@ def test_sandbox_edit_inline_does_not_download() -> None:
 # -- edit tests (upload path: large strings → temp file upload + server-side replace)
 
 
-def test_sandbox_edit_transfer_basic() -> None:
+def test_sandbox_edit_upload_basic() -> None:
     """Test that edit() with large strings uses temp-file upload + server-side replace."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
@@ -399,7 +410,7 @@ def test_sandbox_edit_transfer_basic() -> None:
     assert sandbox._file_store["/test/file.txt"] == b"prefix new suffix"
 
 
-def test_sandbox_edit_transfer_file_not_found() -> None:
+def test_sandbox_edit_upload_file_not_found() -> None:
     """Test that upload-path edit returns error when file doesn't exist."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
@@ -410,7 +421,7 @@ def test_sandbox_edit_transfer_file_not_found() -> None:
     assert "Failed to read" in result.error
 
 
-def test_sandbox_edit_transfer_replace_all() -> None:
+def test_sandbox_edit_upload_replace_all() -> None:
     """Test that upload-path edit with replace_all replaces all occurrences."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
@@ -435,6 +446,64 @@ def test_sandbox_edit_upload_does_not_embed_content_in_command() -> None:
     # only base64-encoded temp file paths (small, fixed-size).
     assert sandbox.last_command is not None
     assert large_old not in sandbox.last_command
+
+
+def test_sandbox_edit_upload_cleans_up_temp_files() -> None:
+    """Test that temp files are removed from the sandbox after a successful edit."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
+
+    result = sandbox.edit("/test/file.txt", large_old, "new")
+
+    assert result.error is None
+    assert not any(k.startswith("/tmp/.deepagents_edit_") for k in sandbox._file_store)  # noqa: S108
+
+
+def test_sandbox_edit_upload_string_not_found() -> None:
+    """Test that upload-path edit returns error when old_string is absent."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = b"completely different content"
+
+    result = sandbox.edit("/test/file.txt", large_old, "new")
+
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+
+
+def test_sandbox_edit_upload_multiple_occurrences_without_replace_all() -> None:
+    """Test that upload-path edit errors on multiple matches without replace_all."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"a{large_old}b{large_old}c".encode()
+
+    result = sandbox.edit("/test/file.txt", large_old, "y")
+
+    assert result.error is not None
+    assert "multiple times" in result.error.lower()
+
+
+def test_sandbox_edit_upload_partial_upload_failure() -> None:
+    """Test that upload-path edit surfaces error when one of two uploads fails."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
+
+    def partial_failure(
+        files: list[tuple[str, bytes]],
+    ) -> list[FileUploadResponse]:
+        return [
+            FileUploadResponse(path=files[0][0], error=None),
+            FileUploadResponse(path=files[1][0], error="disk_full"),
+        ]
+
+    sandbox.upload_files = partial_failure  # type: ignore[assignment]
+
+    result = sandbox.edit("/test/file.txt", large_old, "new")
+
+    assert result.error is not None
+    assert "disk_full" in result.error
 
 
 # -- remaining template tests --------------------------------------------------
@@ -551,7 +620,7 @@ def test_sandbox_write_returns_error_on_upload_failure() -> None:
     assert result.path is None
 
 
-def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
+def test_sandbox_edit_upload_returns_error_on_upload_failure() -> None:
     """Test that upload-path edit surfaces upload_files errors."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
@@ -570,7 +639,7 @@ def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
     assert "Error editing file" in result.error
 
 
-def test_sandbox_edit_transfer_binary_file_returns_error() -> None:
+def test_sandbox_edit_upload_binary_file_returns_error() -> None:
     """Test that upload-path edit returns a clear error for non-UTF-8 files."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
@@ -604,7 +673,7 @@ def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
     assert "no response" in result.error
 
 
-def test_sandbox_edit_transfer_returns_error_on_empty_upload_response() -> None:
+def test_sandbox_edit_upload_returns_error_on_empty_upload_response() -> None:
     """Test that upload-path edit handles upload_files returning empty list."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)

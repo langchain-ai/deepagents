@@ -115,8 +115,8 @@ Reads the file, performs string replacement, and writes back — all on the
 sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
 base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
 
-Output: single-line JSON with ``{{"count": N}}`` on success or
-``{{"error": ...}}`` on failure.
+Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
+on failure.
 
 Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
 to `_edit_via_upload()` which transfers old/new strings as temp files.
@@ -124,7 +124,7 @@ to `_edit_via_upload()` which transfers old/new strings as temp files.
 
 # Maximum combined byte size of old_string + new_string for inline server-side
 # edit.  Payloads above this use _edit_via_upload (temp file upload + server-side
-# replace) to avoid ARG_MAX / HTTP body limits on the command string.
+# replace) to avoid HTTP body limits on the execute() request.
 _EDIT_INLINE_MAX_BYTES = 50_000
 
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
@@ -138,6 +138,9 @@ replace_all = {replace_all}
 try:
     old = open(old_path, 'rb').read().decode('utf-8')
     new = open(new_path, 'rb').read().decode('utf-8')
+except Exception as e:
+    print(json.dumps({{'error': 'temp_read_failed', 'detail': str(e)}}))
+    sys.exit(0)
 finally:
     for p in (old_path, new_path):
         try: os.remove(p)
@@ -220,8 +223,8 @@ Runs on the sandbox via `execute()`. Only the requested page is returned,
 avoiding full-file transfer for paginated text reads. Uses base64-encoded
 path parameter to avoid shell escaping issues.
 
-Output: single-line JSON with either ``{{"encoding": ..., "content": ...}}``
-on success or ``{{"error": ...}}`` on failure.
+Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
+success or `{{"error": ...}}` on failure.
 """
 
 

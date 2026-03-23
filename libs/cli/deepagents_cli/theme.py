@@ -61,7 +61,7 @@ LC_PURPLE = "#BB9AF7"
 LC_GREEN = "#9ECE6A"
 """Success / positive indicator."""
 
-LC_AMBER = "#ED9939"
+LC_AMBER = "#EB8B46"
 """Warning / caution indicator."""
 
 LC_PINK = "#F7768E"

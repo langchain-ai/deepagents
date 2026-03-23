@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from deepagents_cli import theme
+from deepagents_cli._version import __version__
 from deepagents_cli.config import (
     _get_editable_install_path,
     _is_editable_install,
@@ -177,15 +178,30 @@ class WelcomeBanner(Static):
         colors = theme.get_theme_colors(self)
         ansi = self.app.theme == "textual-ansi"
 
-        if ansi:
-            banner_style: str | TStyle = "bold"
-        elif _is_editable_install():
-            banner_style = TStyle(
-                foreground=TColor.parse(colors.primary_dev), bold=True
-            )
+        banner = get_banner()
+        primary_style: str | TStyle = (
+            "bold"
+            if ansi
+            else TStyle(foreground=TColor.parse(colors.primary), bold=True)
+        )
+
+        if not ansi and _is_editable_install():
+            # Only color the version number in dev orange; art stays primary.
+            dev_style = TStyle(foreground=TColor.parse(colors.primary_dev), bold=True)
+            version_tag = f"v{__version__} (local)"
+            idx = banner.rfind(version_tag)
+            if idx >= 0:
+                parts.extend(
+                    [
+                        (banner[:idx], primary_style),
+                        (version_tag, dev_style),
+                        (banner[idx + len(version_tag) :] + "\n", primary_style),
+                    ]
+                )
+            else:
+                parts.append((banner + "\n", primary_style))
         else:
-            banner_style = TStyle(foreground=TColor.parse(colors.primary), bold=True)
-        parts.append((get_banner() + "\n", banner_style))
+            parts.append((banner + "\n", primary_style))
 
         # For ANSI theme, use "bold" (terminal foreground) instead of hex
         accent: str | TStyle = "bold" if ansi else colors.primary

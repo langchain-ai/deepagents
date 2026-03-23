@@ -1,11 +1,14 @@
 ---
 name: remember
 description: "Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings."
+argument-hint: "[context]"
 license: MIT
 compatibility: designed for deepagents-cli
 ---
 
 Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
+
+**Scoping:** If a **User request** is provided below, limit your review strictly to that context. Only extract and persist knowledge directly related to the stated scope — do not infer or capture unrelated information from the broader conversation.
 
 ## Step 1: Identify Best Practices and Key Learnings
 

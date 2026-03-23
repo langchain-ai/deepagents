@@ -602,16 +602,16 @@ class _RunloopProvider(SandboxProvider):
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
-    Manages AgentCore session lifecycle. Sessions cannot be reconnected
-    after the CLI exits — the ``sandbox_id`` parameter is not supported.
+    Manages AgentCore session lifecycle. Sessions cannot be reconnected after
+    the CLI exits — the `sandbox_id` parameter is not supported.
     """
 
     def __init__(self, region: str | None = None) -> None:
         """Initialize AgentCore provider.
 
         Args:
-            region: AWS region (defaults to ``AWS_REGION`` /
-                ``AWS_DEFAULT_REGION`` / ``us-west-2``).
+            region: AWS region (defaults to `AWS_REGION` /
+                `AWS_DEFAULT_REGION` / `us-west-2`).
 
         Raises:
             ValueError: If AWS credentials cannot be resolved.
@@ -651,15 +651,15 @@ class _AgentCoreProvider(SandboxProvider):
         """Create a new AgentCore Code Interpreter session.
 
         Args:
-            sandbox_id: Not supported — raises ``NotImplementedError``
+            sandbox_id: Not supported — raises `NotImplementedError`
                 if provided.
             **kwargs: Additional parameters (unused).
 
         Returns:
-            ``AgentCoreSandbox`` instance wrapping the started interpreter.
+            `AgentCoreSandbox` instance wrapping the started interpreter.
 
         Raises:
-            NotImplementedError: If ``sandbox_id`` is provided.
+            NotImplementedError: If `sandbox_id` is provided.
         """
         if sandbox_id:
             msg = (

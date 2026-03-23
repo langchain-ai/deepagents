@@ -506,6 +506,8 @@ class DeepAgentsApp(App):
         Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
+    """App-level keybindings for interrupt, quit, toggles, and approval menu
+    navigation."""
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""

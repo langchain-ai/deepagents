@@ -101,8 +101,13 @@ class WelcomeBanner(Static):
 
     def on_mount(self) -> None:
         """Kick off background fetch for LangSmith project URL."""
+        self.watch(self.app, "theme", self._on_theme_change, init=False)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
+
+    def _on_theme_change(self) -> None:
+        """Re-render the banner when the app theme changes."""
+        self.update(self._build_banner(self._project_url))
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""

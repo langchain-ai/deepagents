@@ -3556,9 +3556,15 @@ class DeepAgentsApp(App):
             self.screen.action_cancel()
             return
 
-        # If a modal screen is active, dismiss it
+        # If a modal screen is active, let it cancel itself (so it can
+        # restore state, e.g. the theme selector reverts the previewed theme).
+        # Fall back to a plain dismiss for modals without action_cancel.
         if isinstance(self.screen, ModalScreen):
-            self.screen.dismiss(None)
+            cancel = getattr(self.screen, "action_cancel", None)
+            if cancel is not None:
+                cancel()
+            else:
+                self.screen.dismiss(None)
             return
 
         # Close completion popup or exit slash/shell command mode

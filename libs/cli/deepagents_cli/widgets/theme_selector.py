@@ -35,6 +35,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     CSS = """
     ThemeSelectorScreen {
         align: center middle;
+        background: transparent;
     }
 
     ThemeSelectorScreen > Vertical {
@@ -128,6 +129,12 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         if name is not None and name in theme.ThemeEntry.REGISTRY:
             try:
                 self.app.theme = name
+                # refresh_css only repaints the active (modal) screen's layout;
+                # force the screen beneath us to repaint so the user sees the
+                # preview through the transparent scrim.
+                stack = self.app.screen_stack
+                if len(stack) > 1:
+                    stack[-2].refresh(layout=True)
             except Exception:
                 logger.warning("Failed to preview theme '%s'", name, exc_info=True)
                 if self._original_theme is not None:

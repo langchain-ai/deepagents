@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
-from deepagents_cli import theme
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     get_glyphs,
@@ -165,8 +164,6 @@ class ApprovalMenu(Container):
         command = strip_dangerous_unicode(command_raw)
         issues = detect_dangerous_unicode(command_raw)
 
-        hdr = theme.get_theme_colors(self).warning
-
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
             command_display = command
         else:
@@ -176,13 +173,11 @@ class ApprovalMenu(Container):
 
         if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
             display = Content.from_markup(
-                f"[bold {hdr}]$cmd[/bold {hdr}] [dim](press 'e' to expand)[/dim]",
+                "[bold]$cmd[/bold] [dim](press 'e' to expand)[/dim]",
                 cmd=command_display,
             )
         else:
-            display = Content.from_markup(
-                f"[bold {hdr}]$cmd[/bold {hdr}]", cmd=command_display
-            )
+            display = Content.from_markup("[bold]$cmd[/bold]", cmd=command_display)
 
         if not issues:
             return display

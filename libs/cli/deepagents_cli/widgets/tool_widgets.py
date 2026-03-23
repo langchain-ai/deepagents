@@ -8,8 +8,6 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
-from deepagents_cli import theme
-
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -211,58 +209,44 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             yield Static(Content.styled("Adding:", "bold green"))
             yield from self._render_string_lines(new_string, is_addition=True)
 
-    def _render_diff_line(self, line: str) -> Static | None:
+    @staticmethod
+    def _render_diff_line(line: str) -> Static | None:
         """Render a single diff line with appropriate styling.
 
         Returns:
             Static widget with styled diff line, or None for empty/skipped lines.
         """
-        colors = theme.get_theme_colors(self)
         raw = line[1:] if len(line) > 1 else ""
 
         if line.startswith("-"):
-            rm_bg, rm_fg = colors.diff_remove_bg, colors.diff_remove_fg
             return Static(
-                Content.from_markup(
-                    f"[on {rm_bg}][{rm_fg}]- $text[/{rm_fg}][/on {rm_bg}]",
-                    text=raw,
-                )
+                Content.from_markup("- $text", text=raw), classes="diff-removed"
             )
         if line.startswith("+"):
-            add_bg, add_fg = colors.diff_add_bg, colors.diff_add_fg
             return Static(
-                Content.from_markup(
-                    f"[on {add_bg}][{add_fg}]+ $text[/{add_fg}][/on {add_bg}]",
-                    text=raw,
-                )
+                Content.from_markup("+ $text", text=raw), classes="diff-added"
             )
         if line.startswith(" "):
             return Static(
-                Content.from_markup(
-                    f"[{colors.muted}]  $text[/{colors.muted}]", text=raw
-                )
+                Content.from_markup("  $text", text=raw), classes="diff-context"
             )
         if line.strip():
             return Static(line, markup=False)
         return None
 
-    def _render_string_lines(self, text: str, *, is_addition: bool) -> ComposeResult:
+    @staticmethod
+    def _render_string_lines(text: str, *, is_addition: bool) -> ComposeResult:
         """Render lines from a string with appropriate styling.
 
         Yields:
             Static widgets for each line with addition or deletion styling.
         """
-        colors = theme.get_theme_colors(self)
         lines = text.split("\n")
-        if is_addition:
-            bg, fg, sign = colors.diff_add_bg, colors.diff_add_fg, "+"
-        else:
-            bg, fg, sign = colors.diff_remove_bg, colors.diff_remove_fg, "-"
-        style = f"[on {bg}][{fg}]{sign}"
-        end_style = f"[/{fg}][/on {bg}]"
+        sign = "+" if is_addition else "-"
+        cls = "diff-added" if is_addition else "diff-removed"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            yield Static(Content.from_markup(f"{style} $text{end_style}", text=line))
+            yield Static(Content.from_markup(f"{sign} $text", text=line), classes=cls)
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES

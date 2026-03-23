@@ -9,35 +9,48 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Static
 
-from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from deepagents_cli.theme import ThemeColors
 
-
-def format_diff_textual(
+def compose_diff_lines(
     diff: str,
     max_lines: int | None = 100,
-    *,
-    colors: ThemeColors | None = None,
-) -> Content:
-    """Format a unified diff with line numbers and colors.
+) -> ComposeResult:
+    """Yield per-line Static widgets for a unified diff.
+
+    Each added/removed line gets a CSS class (`.diff-line-added`,
+    `.diff-line-removed`) so background colors are driven by CSS variables
+    and update automatically on theme change.
 
     Args:
         diff: Unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
-        colors: Theme color set for backgrounds. Falls back to `DARK_COLORS`.
 
-    Returns:
-        Styled `Content` with line numbers and color-coded diff lines.
+    Yields:
+        Static widgets — one per diff line — with appropriate CSS classes.
     """
     if not diff:
-        return Content.styled("No changes detected", "dim")
+        yield Static(Content.styled("No changes detected", "dim"))
+    else:
+        yield from _compose_diff_content(diff, max_lines)
 
-    c = colors if colors is not None else theme.DARK_COLORS
+
+def _compose_diff_content(
+    diff: str,
+    max_lines: int | None,
+) -> ComposeResult:
+    """Yield styled diff line widgets for non-empty diff content.
+
+    Args:
+        diff: Non-empty unified diff string.
+        max_lines: Maximum number of diff lines to show (None for unlimited).
+
+    Yields:
+        Static widgets for stats header and individual diff lines.
+    """
     glyphs = get_glyphs()
     lines = diff.splitlines()
 
@@ -49,16 +62,7 @@ def format_diff_textual(
         1 for ln in lines if ln.startswith("-") and not ln.startswith("---")
     )
 
-    # Find max line number for width calculation
-    max_line = 0
-    for line in lines:
-        if m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
-            max_line = max(max_line, int(m.group(1)), int(m.group(2)))
-    width = max(3, len(str(max_line + len(lines))))
-
-    formatted: list[str | Content] = []
-
-    # Add stats header
+    # Stats header
     stats_parts: list[str | tuple[str, str] | Content] = []
     if additions:
         stats_parts.append((f"+{additions}", "green"))
@@ -67,14 +71,21 @@ def format_diff_textual(
             stats_parts.append(" ")
         stats_parts.append((f"-{deletions}", "red"))
     if stats_parts:
-        formatted.extend([Content.assemble(*stats_parts), ""])  # Blank line after stats
+        yield Static(Content.assemble(*stats_parts))
+
+    # Find max line number for width calculation
+    max_line = 0
+    for line in lines:
+        if m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
+            max_line = max(max_line, int(m.group(1)), int(m.group(2)))
+    width = max(3, len(str(max_line + len(lines))))
 
     old_num = new_num = 0
     line_count = 0
 
     for line in lines:
         if max_lines and line_count >= max_lines:
-            formatted.append(
+            yield Static(
                 Content.styled(f"\n... ({len(lines) - line_count} more lines)", "dim")
             )
             break
@@ -92,50 +103,48 @@ def format_diff_textual(
         content = line[1:] if line else ""
 
         if line.startswith("-"):
-            # Deletion - red gutter bar, subtle red background
-            formatted.append(
+            # Deletion — red gutter bar, background via CSS
+            yield Static(
                 Content.assemble(
                     (f"{glyphs.gutter_bar}", "red bold"),
                     (f"{old_num:>{width}}", "dim"),
-                    " ",
-                    Content.styled(content, f"on {c.diff_remove_bg}"),
-                )
+                    f" {content}",
+                ),
+                classes="diff-line-removed",
             )
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
-            # Addition - green gutter bar, subtle green background
-            formatted.append(
+            # Addition — green gutter bar, background via CSS
+            yield Static(
                 Content.assemble(
                     (f"{glyphs.gutter_bar}", "green bold"),
                     (f"{new_num:>{width}}", "dim"),
-                    " ",
-                    Content.styled(content, f"on {c.diff_add_bg}"),
-                )
+                    f" {content}",
+                ),
+                classes="diff-line-added",
             )
             new_num += 1
             line_count += 1
         elif line.startswith(" "):
-            # Context line - dim gutter
-            formatted.append(
+            # Context line — dim gutter
+            yield Static(
                 Content.assemble(
                     (f"{glyphs.box_vertical}{old_num:>{width}}", "dim"),
                     f"  {content}",
-                )
+                ),
             )
             old_num += 1
             new_num += 1
             line_count += 1
         elif line.strip() == "...":
             # Truncation marker
-            formatted.append(Content.styled("...", "dim"))
+            yield Static(Content.styled("...", "dim"))
             line_count += 1
         else:
             # Unrecognized diff line (e.g., "\ No newline at end of file")
-            formatted.append(Content.styled(line, "dim"))
+            yield Static(Content.styled(line, "dim"))
             line_count += 1
-
-    return Content("\n").join(formatted)
 
 
 class EnhancedDiff(Vertical):
@@ -219,10 +228,7 @@ class EnhancedDiff(Vertical):
             classes="diff-title",
         )
 
-        formatted = format_diff_textual(
-            self._diff, self._max_lines, colors=theme.get_theme_colors(self)
-        )
-        yield Static(formatted, classes="diff-content")
+        yield from compose_diff_lines(self._diff, self._max_lines)
 
         additions, deletions = self._stats
         if additions or deletions:

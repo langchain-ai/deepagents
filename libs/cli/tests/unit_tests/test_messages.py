@@ -154,10 +154,10 @@ class TestToolCallMessageMarkupSafety:
         )
 
         # `task` has no inline args widget, so this validates the header markup.
+        # Header uses markup=False so bracket content is shown verbatim.
         header = next(iter(msg.compose()))
-        content = header._Static__content
-        assert isinstance(content, Content)
-        assert "[/dim]" in content.plain
+        rendered = header.render()
+        assert "[/dim]" in rendered.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
         """Inline args line should escape bracket content in argument values."""
@@ -328,11 +328,9 @@ class TestUserMessageHighlighting:
         assert len(matches) == 0
 
 
-def _compose_content(widget: UserMessage | QueuedUserMessage) -> Content:
-    """Extract the `Content` object from a message widget's first yielded Static."""
-    statics = list(widget.compose())
-    assert statics, "compose() yielded no widgets"
-    result = statics[0]._Static__content  # type: ignore[attr-defined]
+def _render_content(widget: UserMessage | QueuedUserMessage) -> Content:
+    """Extract the `Content` object from a message widget's render method."""
+    result = widget.render()
     assert isinstance(result, Content)
     return result
 
@@ -346,28 +344,28 @@ class TestUserMessageModeRendering:
 
     def test_shell_prefix_renders_dollar_indicator(self) -> None:
         """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
-        content = _compose_content(UserMessage("!ls"))
+        content = _render_content(UserMessage("!ls"))
         assert content.plain == "$ ls"
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
-        content = _compose_content(UserMessage("/help"))
+        content = _render_content(UserMessage("/help"))
         assert content.plain == "/ help"
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_command in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
-        content = _compose_content(UserMessage("hello"))
+        content = _render_content(UserMessage("hello"))
         assert content.plain == "> hello"
         first_span = content._spans[0]
         assert theme.DARK_COLORS.primary in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""
-        content = _compose_content(UserMessage(""))
+        content = _render_content(UserMessage(""))
         assert content.plain == "> "
 
 
@@ -391,22 +389,22 @@ class TestQueuedUserMessageModeRendering:
 
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
-        content = _compose_content(QueuedUserMessage("!ls"))
+        content = _render_content(QueuedUserMessage("!ls"))
         assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
         """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
-        content = _compose_content(QueuedUserMessage("/help"))
+        content = _render_content(QueuedUserMessage("/help"))
         assert content.plain == "/ help"
 
     def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
         """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
-        content = _compose_content(QueuedUserMessage("hello"))
+        content = _render_content(QueuedUserMessage("hello"))
         assert content.plain == "> hello"
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
-        content = _compose_content(QueuedUserMessage(""))
+        content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
 
 

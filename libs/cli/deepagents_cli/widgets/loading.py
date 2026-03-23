@@ -9,7 +9,6 @@ from textual.containers import Horizontal
 from textual.content import Content
 from textual.widgets import Static
 
-from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs
 
 if TYPE_CHECKING:
@@ -68,12 +67,12 @@ class LoadingWidget(Static):
 
     LoadingWidget .loading-spinner {
         width: auto;
-        color: $warning;
+        color: $primary;
     }
 
     LoadingWidget .loading-status {
         width: auto;
-        color: $warning;
+        color: $primary;
     }
 
     LoadingWidget .loading-hint {
@@ -131,8 +130,7 @@ class LoadingWidget(Static):
 
         if self._spinner_widget:
             frame = self._spinner.next_frame()
-            colors = theme.get_theme_colors(self)
-            self._spinner_widget.update(Content.styled(frame, colors.spinner))
+            self._spinner_widget.update(frame)
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)

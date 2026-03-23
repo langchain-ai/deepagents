@@ -25,7 +25,7 @@ from deepagents_cli.config import (
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets._links import open_style_link
-from deepagents_cli.widgets.diff import format_diff_textual
+from deepagents_cli.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -164,25 +164,26 @@ class UserMessage(_TimestampClickMixin, Static):
         self._content = content
 
     def on_mount(self) -> None:
-        """Set border style based on charset mode and content prefix."""
+        """Add CSS classes for mode-specific border and ASCII border type."""
         mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        color = _mode_color(mode)
-        border_type = "ascii" if is_ascii_mode() else "wide"
-        self.styles.border_left = (border_type, color)
+        if mode:
+            self.add_class(f"-mode-{mode}")
+        if is_ascii_mode():
+            self.add_class("-ascii")
 
-    def compose(self) -> ComposeResult:
-        """Compose the user message layout.
+    def render(self) -> Content:
+        """Render the styled user message.
 
-        Yields:
-            Static widget containing the formatted user message.
+        Returns:
+            Styled Content with mode prefix and highlighted mentions.
         """
+        colors = theme.get_theme_colors(self)
         parts: list[str | tuple[str, str]] = []
         content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        colors = theme.get_theme_colors(self)
         mode = PREFIX_TO_MODE.get(content[:1]) if content else None
         if mode:
             glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
@@ -220,7 +221,7 @@ class UserMessage(_TimestampClickMixin, Static):
         if last_end < len(content):
             parts.append(content[last_end:])
 
-        yield Static(Content.assemble(*parts))
+        return Content.assemble(*parts)
 
 
 class QueuedUserMessage(Static):
@@ -252,16 +253,15 @@ class QueuedUserMessage(Static):
         self._content = content
 
     def on_mount(self) -> None:
-        """Set border style based on charset mode."""
+        """Add ASCII border class when in ASCII mode."""
         if is_ascii_mode():
-            colors = theme.get_theme_colors(self)
-            self.styles.border_left = ("ascii", colors.muted)
+            self.add_class("-ascii")
 
-    def compose(self) -> ComposeResult:
-        """Compose the queued user message layout.
+    def render(self) -> Content:
+        """Render the queued user message (greyed out).
 
-        Yields:
-            Static widget containing the formatted queued message (greyed out).
+        Returns:
+            Styled Content with dimmed prefix and body.
         """
         colors = theme.get_theme_colors(self)
         content = self._content
@@ -272,7 +272,7 @@ class QueuedUserMessage(Static):
             content = content[1:]
         else:
             prefix = ("> ", f"bold {colors.muted}")
-        yield Static(Content.assemble(prefix, (content, colors.muted)))
+        return Content.assemble(prefix, (content, colors.muted))
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):
@@ -407,6 +407,8 @@ class ToolCallMessage(Vertical):
 
     ToolCallMessage .tool-header {
         height: auto;
+        color: $warning;
+        text-style: bold;
     }
 
     ToolCallMessage .tool-args {
@@ -500,15 +502,8 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
-        colors = theme.get_theme_colors(self)
         tool_label = format_tool_display(self._tool_name, self._args)
-        yield Static(
-            Content.from_markup(
-                f"[bold {colors.warning}]$label[/bold {colors.warning}]",
-                label=tool_label,
-            ),
-            classes="tool-header",
-        )
+        yield Static(tool_label, markup=False, classes="tool-header")
         # Only show args for tools where header doesn't capture the key info
         if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
@@ -532,8 +527,7 @@ class ToolCallMessage(Vertical):
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
         if is_ascii_mode():
-            colors = theme.get_theme_colors(self)
-            self.styles.border_left = ("ascii", colors.tool_border)
+            self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -904,7 +898,7 @@ class ToolCallMessage(Vertical):
             f"   {text}",
         )
 
-    def _format_ls_output(
+    def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format ls output as a clean directory listing.
@@ -918,16 +912,15 @@ class ToolCallMessage(Vertical):
             if isinstance(items, list):
                 lines: list[Content] = []
                 max_items = 5 if is_preview else len(items)
-                tc = theme.get_theme_colors(self)
                 for item in items[:max_items]:
                     path = Path(str(item))
                     name = path.name
                     if path.suffix in {".py", ".pyx"}:
-                        lines.append(Content.styled(f"    {name}", tc.primary))
+                        lines.append(Content.styled(f"    {name}", theme.FILE_PYTHON))
                     elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
-                        lines.append(Content.styled(f"    {name}", tc.warning))
+                        lines.append(Content.styled(f"    {name}", theme.FILE_CONFIG))
                     elif not path.suffix:
-                        lines.append(Content.styled(f"    {name}/", tc.success))
+                        lines.append(Content.styled(f"    {name}/", theme.FILE_DIR))
                     else:
                         lines.append(Content(f"    {name}"))
 
@@ -1324,10 +1317,8 @@ class DiffMessage(_TimestampClickMixin, Static):
                 classes="diff-header",
             )
 
-        # Render the diff with enhanced formatting
-        colors = theme.get_theme_colors(self)
-        rendered = format_diff_textual(self._diff_content, max_lines=100, colors=colors)
-        yield Static(rendered)
+        # Render the diff with per-line Statics (CSS-driven backgrounds)
+        yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

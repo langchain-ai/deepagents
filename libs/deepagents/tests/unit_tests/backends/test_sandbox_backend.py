@@ -146,7 +146,7 @@ def test_read_file_not_found() -> None:
     result = sandbox.read("/test/missing.txt")
 
     assert result.error is not None
-    assert "not found" in result.error
+    assert "file_not_found" in result.error
 
 
 # -- write tests --------------------------------------------------------------

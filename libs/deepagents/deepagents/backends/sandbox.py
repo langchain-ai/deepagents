@@ -1,7 +1,9 @@
-"""Base sandbox implementation with `execute()` as the only abstract method.
+"""Base sandbox implementation.
 
-Provides a base class that implements `SandboxBackendProtocol` methods.
-Most operations use shell commands via `execute()`.
+Provides `BaseSandbox`, a base class that implements
+`SandboxBackendProtocol`. File listing, grep, and glob use shell commands via
+`execute()`. Read, write, and edit delegate data transfer to
+`download_files()` / `upload_files()`.
 """
 
 from __future__ import annotations
@@ -74,10 +76,10 @@ transferred separately via `upload_files()`.
 class BaseSandbox(SandboxBackendProtocol, ABC):
     """Base sandbox implementation with `execute()` as abstract method.
 
-    This class provides default implementations for all protocol methods using
-    shell commands.
+    This class provides default implementations for all protocol methods.
 
-    Subclasses only need to implement `execute()`.
+    Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
+    and the `id` property.
     """
 
     @abstractmethod
@@ -156,13 +158,16 @@ except PermissionError:
                 Only applied to text files.
             limit: Maximum number of lines to return.
 
+                Only applied to text files.
+
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
         """
         responses = self.download_files([file_path])
         resp = responses[0] if responses else None
         if not resp or resp.error or resp.content is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            detail = resp.error if resp and resp.error else "not found"
+            return ReadResult(error=f"File '{file_path}': {detail}")
 
         raw = resp.content
 
@@ -294,7 +299,7 @@ except PermissionError:
                 (e.g. `'*.py'`).
 
         Returns:
-            `GrepResult` with a list of `GrepMatch` dicts.
+            `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
         search_path = shlex.quote(path or ".")
 

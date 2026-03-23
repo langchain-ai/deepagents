@@ -83,7 +83,7 @@ class HarborSandbox(SandboxBackendProtocol):
                 f"{'...' if len(command) > _COMMAND_PREVIEW_CHAR_LIMIT else ''}\n\n"
                 f"SUGGESTION: This command is taking too long. Consider:\n"
                 f"- Breaking it into smaller steps\n"
-                f"- Using a shorter timeout with the timeout_sec parameter\n"
+                f"- Using a shorter timeout with the timeout parameter\n"
                 f"- For package installs: use --no-install-recommends ...\n"
                 f"- For long builds: run in background with nohup ...",
                 exit_code=124,
@@ -230,8 +230,11 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
         try:
             await self.environment.upload_file(tmp_path, file_path)
-        except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
-            return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
+        except Exception as exc:
+            error = map_file_operation_error(exc)
+            if error is None:
+                raise
+            return WriteResult(error=f"Failed to write file '{file_path}': {error}")
         finally:
             try:
                 tmp_path.unlink()
@@ -269,9 +272,12 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             local = Path(tmpdir) / "file"
             try:
                 await self.environment.download_file(file_path, local)
-            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure type
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
                 logger.warning("Failed to download %s for editing: %s", file_path, exc)
-                return EditResult(error=f"Error: Failed to download '{file_path}': {exc}")
+                return EditResult(error=f"Error: Failed to download '{file_path}': {error}")
 
             try:
                 text = local.read_bytes().decode("utf-8")
@@ -297,8 +303,11 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
 
             try:
                 await self.environment.upload_file(local, file_path)
-            except Exception as exc:  # noqa: BLE001  # Harbor SDK; any failure → error
-                return EditResult(error=f"Error editing file '{file_path}': {exc}")
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                return EditResult(error=f"Error editing file '{file_path}': {error}")
 
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
@@ -365,11 +374,11 @@ done
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search for pattern in files using grep."""
+        """Search for a literal string in files using `grep -F`."""
         search_path = shlex.quote(path or ".")
 
         # Build grep command
-        grep_opts = "-rHn"  # recursive, with filename, with line number
+        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -419,7 +428,10 @@ done
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search for pattern in files using grep."""
+        """Search for a literal string in files using `grep -F` (sync).
+
+        Not supported; use `agrep`.
+        """
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
     async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
@@ -491,7 +503,8 @@ done
                     tmp_path = Path(tmp.name)
             except OSError as exc:
                 logger.warning("Failed to create temp file for upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error="invalid_path"))
+                error = map_file_operation_error(exc) or "permission_denied"
+                results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
                 await self.environment.upload_file(tmp_path, path)

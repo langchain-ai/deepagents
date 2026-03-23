@@ -67,7 +67,7 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
         return "permission_denied"
     if isinstance(exc, IsADirectoryError):
         return "is_directory"
-    if isinstance(exc, (ValueError, NotADirectoryError, FileExistsError)):
+    if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
 
     msg = str(exc).lower()

@@ -194,7 +194,8 @@ class TestMapFileOperationError:
             (FileNotFoundError("gone"), "file_not_found"),
             (PermissionError("denied"), "permission_denied"),
             (IsADirectoryError("dir"), "is_directory"),
-            (ValueError("bad path"), "invalid_path"),
+            (ValueError("path traversal detected"), "invalid_path"),
+            (ValueError("invalid path segment"), "invalid_path"),
             (NotADirectoryError("not a dir"), "invalid_path"),
             (FileExistsError("exists"), "invalid_path"),
         ],
@@ -220,3 +221,8 @@ class TestMapFileOperationError:
 
     def test_unrecognized_returns_none(self) -> None:
         assert map_file_operation_error(RuntimeError("something else")) is None
+
+    def test_unrelated_value_error_returns_none(self) -> None:
+        """ValueError without path-related keywords should not be mapped."""
+        assert map_file_operation_error(ValueError("unexpected encoding")) is None
+        assert map_file_operation_error(ValueError("invalid literal for int()")) is None

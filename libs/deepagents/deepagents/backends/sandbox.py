@@ -13,6 +13,7 @@ import json
 import os
 import shlex
 from abc import ABC, abstractmethod
+from typing import Final
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -51,7 +52,7 @@ for m in matches:
         'is_dir': os.path.isdir(m)
     }}
     print(json.dumps(result))
-" 2>/dev/null"""
+" 2>&1"""
 """Find files matching a pattern with metadata.
 
 Uses base64-encoded parameters to avoid shell escaping issues.
@@ -106,7 +107,7 @@ with open(path, 'wb') as f:
     f.write(result.encode('utf-8'))
 
 print(json.dumps({{'count': count}}))
-" 2>/dev/null <<'__DEEPAGENTS_EDIT_EOF__'
+" 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
 __DEEPAGENTS_EDIT_EOF__"""
 """Server-side file edit via `execute()`.
@@ -124,8 +125,9 @@ to `_edit_via_upload()` which transfers old/new strings as temp files.
 
 # Maximum combined byte size of old_string + new_string for inline server-side
 # edit.  Payloads above this use _edit_via_upload (temp file upload + server-side
-# replace) to avoid HTTP body limits on the execute() request.
-_EDIT_INLINE_MAX_BYTES = 50_000
+# replace) to avoid size limits on the execute() request body imposed by some
+# sandbox providers.
+_EDIT_INLINE_MAX_BYTES: Final = 50_000
 
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
 import os, sys, json, base64
@@ -172,7 +174,7 @@ with open(target, 'wb') as f:
     f.write(result.encode('utf-8'))
 
 print(json.dumps({{'count': count}}))
-" 2>/dev/null"""
+" 2>&1"""
 """Server-side file edit via temp-file upload for large payloads.
 
 Old/new strings are uploaded as temporary files via `upload_files()`, then this
@@ -180,7 +182,10 @@ script reads them, performs the replacement on the source file (which never
 leaves the sandbox), and cleans up the temp files.
 
 Output: single-line JSON with `{{"count": N}}` on success or
-`{{"error": ...}}` on failure.  Same contract as `_EDIT_COMMAND_TEMPLATE`.
+`{{"error": ...}}` on failure.  Same success contract as
+`_EDIT_COMMAND_TEMPLATE`; additionally produces
+`{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
+files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
@@ -216,12 +221,13 @@ if file_type == 'text':
     text = chr(10).join(lines[offset:offset + limit])
 
 print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
-" 2>/dev/null"""
+" 2>&1"""
 """Read file content with server-side pagination.
 
 Runs on the sandbox via `execute()`. Only the requested page is returned,
-avoiding full-file transfer for paginated text reads. Uses base64-encoded
-path parameter to avoid shell escaping issues.
+avoiding full-file transfer for paginated text reads. The path is
+base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
+(safe because they come from internal code, not user input).
 
 Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
 success or `{{"error": ...}}` on failure.
@@ -373,7 +379,10 @@ except PermissionError:
         Returns:
             `WriteResult` with `path` on success or `error` on failure.
         """
-        # Step 1: existence check + mkdir
+        # Existence check + mkdir. There is a TOCTOU window between this check
+        # and the upload below — a concurrent process could create the file in
+        # between. This is an inherent limitation of splitting the operation;
+        # the risk is minimal in single-agent sandbox environments.
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
         result = self.execute(check_cmd)
@@ -382,7 +391,7 @@ except PermissionError:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
-        # Step 2: transfer content via upload_files()
+        # Transfer content via upload_files()
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
             return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
@@ -450,10 +459,12 @@ except PermissionError:
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
         if not isinstance(data, dict):
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
         if "error" in data:
             return self._map_edit_error(data["error"], file_path, old_string)
@@ -505,10 +516,14 @@ except PermissionError:
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            # Script may not have completed — best-effort cleanup of temp files
+            self.execute(f"rm -f {shlex.quote(old_tmp)} {shlex.quote(new_tmp)}")
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
         if not isinstance(data, dict):
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
         if "error" in data:
             return self._map_edit_error(data["error"], file_path, old_string)

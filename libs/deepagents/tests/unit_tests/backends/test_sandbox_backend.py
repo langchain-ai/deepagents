@@ -371,7 +371,8 @@ def test_sandbox_edit_inline_malformed_output() -> None:
     result = sandbox.edit("/test/file.txt", "old", "new")
 
     assert result.error is not None
-    assert "not found" in result.error
+    assert "unexpected server response" in result.error
+    assert "not json at all" in result.error
 
 
 def test_sandbox_edit_inline_does_not_download() -> None:
@@ -705,3 +706,70 @@ def test_sandbox_edit_upload_surfaces_upload_error_code() -> None:
 
     assert result.error is not None
     assert "permission_denied" in result.error
+
+
+# -- boundary + catch-all tests ------------------------------------------------
+
+
+def test_sandbox_edit_at_exact_threshold_uses_inline() -> None:
+    """Test that payload of exactly _EDIT_INLINE_MAX_BYTES uses the inline path."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+    # Create old+new whose combined UTF-8 byte length == threshold
+    old = "x" * _EDIT_INLINE_MAX_BYTES
+    new = ""
+
+    result = sandbox.edit("/test/file.txt", old, new)
+
+    assert result.error is None
+    assert len(sandbox._uploaded) == 0  # inline path — no uploads
+
+
+def test_sandbox_edit_one_over_threshold_uses_upload() -> None:
+    """Test that payload of _EDIT_INLINE_MAX_BYTES + 1 uses the upload path."""
+    sandbox = MockSandbox()
+    old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {old} suffix".encode()
+
+    result = sandbox.edit("/test/file.txt", old, "new")
+
+    assert result.error is None
+    assert len(sandbox._uploaded) > 0  # upload path — temp files uploaded
+
+
+def test_map_edit_error_unknown_code_falls_through() -> None:
+    """Test that _map_edit_error returns a generic error for unrecognized codes."""
+    result = BaseSandbox._map_edit_error("temp_read_failed", "/test/file.txt", "old")
+
+    assert result.error is not None
+    assert "temp_read_failed" in result.error
+    assert "/test/file.txt" in result.error
+
+
+def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
+    """Test that upload-path edit cleans up temp files on malformed output."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
+    cleanup_commands: list[str] = []
+
+    original_execute = sandbox.execute
+
+    def tracking_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        if command.startswith("rm -f"):
+            cleanup_commands.append(command)
+            return ExecuteResponse(output="", exit_code=0)
+        # For the edit command, return malformed output
+        resp = original_execute(command, timeout=timeout)
+        if "old_path = base64.b64decode(" in command:
+            return ExecuteResponse(output="crash traceback", exit_code=1)
+        return resp
+
+    sandbox.execute = tracking_execute  # type: ignore[assignment]
+
+    result = sandbox.edit("/test/file.txt", large_old, "new")
+
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+    assert len(cleanup_commands) == 1
+    assert ".deepagents_edit_" in cleanup_commands[0]

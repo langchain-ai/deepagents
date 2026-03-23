@@ -918,10 +918,10 @@ class TestLocalSandboxOperations:
     def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that read does not execute injected code in the path.
 
-        With file-transfer-based reads, the path is passed directly to
-        download_files() — no shell involvement, so no injection risk.
-        We verify only that the operation returns an error (the file
-        doesn't exist) and that the malicious command didn't actually run.
+        The path is base64-encoded before interpolation into the
+        server-side script run via `execute()`, preventing shell
+        injection.  We verify that the operation returns an error and
+        that the malicious command did not run.
         """
         malicious_path = "'; import os; os.system('echo INJECTED'); #"
         result = sandbox.read(malicious_path)

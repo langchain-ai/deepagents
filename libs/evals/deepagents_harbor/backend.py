@@ -41,6 +41,18 @@ _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
 
 
+def _format_transfer_error(exc: Exception) -> str:
+    """Convert transfer exceptions into response error strings."""
+    error = map_file_operation_error(exc)
+    if error is not None:
+        return error
+
+    msg = str(exc).strip()
+    if msg:
+        return msg
+    return exc.__class__.__name__
+
+
 class HarborSandbox(SandboxBackendProtocol):
     """A sandbox implementation using Harbor environments.
 
@@ -503,16 +515,14 @@ done
                     tmp_path = Path(tmp.name)
             except OSError as exc:
                 logger.warning("Failed to create temp file for upload %s: %s", path, exc)
-                error = map_file_operation_error(exc) or "permission_denied"
+                error = _format_transfer_error(exc)
                 results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
-            except Exception as exc:
-                error = map_file_operation_error(exc)
-                if error is None:
-                    raise
+            except Exception as exc:  # noqa: BLE001
+                error = _format_transfer_error(exc)
                 logger.warning("Failed to upload %s: %s", path, exc)
                 results.append(FileUploadResponse(path=path, error=error))
             finally:
@@ -536,10 +546,8 @@ done
                     await self.environment.download_file(path, local)
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception as exc:
-                    error = map_file_operation_error(exc)
-                    if error is None:
-                        raise
+                except Exception as exc:  # noqa: BLE001
+                    error = _format_transfer_error(exc)
                     logger.warning("Failed to download %s: %s", path, exc)
                     results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results

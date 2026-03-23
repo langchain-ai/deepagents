@@ -274,7 +274,7 @@ def _build_start_tool(
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
-                    **parent_context,
+                    **callback_context,
                 },
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -318,7 +318,7 @@ def _build_start_tool(
                 assistant_id=spec["graph_id"],
                 input={
                     "messages": [{"role": "user", "content": description}],
-                    **parent_context,
+                    **callback_context,
                 },
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors

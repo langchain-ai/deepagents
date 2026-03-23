@@ -391,9 +391,9 @@ except PermissionError:
 
         For small payloads (combined old/new under `_EDIT_INLINE_MAX_BYTES`),
         runs a server-side Python script via `execute()` — single round-trip,
-        no file transfer.  For larger payloads, uploads old/new strings as
-        temp files and runs a server-side replace script — the source file
-        never leaves the sandbox.
+        no file transfer. For larger payloads, uploads old/new strings as temp
+        files and runs a server-side replace script — the source file never
+        leaves the sandbox.
 
         Args:
             file_path: Absolute path to the file to edit.

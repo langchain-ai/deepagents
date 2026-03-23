@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         Question,
     )
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     get_glyphs,
     is_ascii_mode,
@@ -110,7 +111,8 @@ class AskUserMenu(Container):
 
     async def on_mount(self) -> None:  # noqa: D102
         if is_ascii_mode():
-            self.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.success)
         self._set_active_question(0)
 
     def focus_active(self) -> None:

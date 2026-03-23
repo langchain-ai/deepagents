@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.output import OutputFormat
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     config,
     console,
     get_default_coding_instructions,
@@ -151,7 +151,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         console.print(
             "[dim]Agents will be created in ~/.deepagents/ "
             "when you first use them.[/dim]",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         return
 
@@ -175,7 +175,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
     from rich.markup import escape as escape_markup
 
-    console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
+    console.print("\n[bold]Available Agents:[/bold]\n", style=theme.PRIMARY)
 
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
@@ -188,21 +188,21 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
             if agent_md.exists():
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=COLORS["primary"],
+                    style=theme.PRIMARY,
                 )
                 console.print(
                     f"    {escape_markup(str(agent_path))}",
-                    style=COLORS["dim"],
+                    style=theme.MUTED,
                 )
             else:
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
                     " [dim](incomplete)[/dim]",
-                    style=COLORS["tool"],
+                    style=theme.WARNING,
                 )
                 console.print(
                     f"    {escape_markup(str(agent_path))}",
-                    style=COLORS["dim"],
+                    style=theme.MUTED,
                 )
 
     console.print()
@@ -245,7 +245,7 @@ def reset_agent(
         shutil.rmtree(agent_dir)
         if output_format != "json":
             console.print(
-                f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"]
+                f"Removed existing agent directory: {agent_dir}", style=theme.WARNING
             )
 
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -267,9 +267,9 @@ def reset_agent(
 
     console.print(
         f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
-    console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
+    console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
 
 
 MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
@@ -827,12 +827,21 @@ def create_cli_agent(
         # Lowest to highest precedence:
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
+        # -> user .claude (experimental) -> project .claude (experimental)
         sources = [str(settings.get_built_in_skills_dir())]
         sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
         if project_agent_skills_dir:
             sources.append(str(project_agent_skills_dir))
+
+        # Experimental: Claude Code skill directories
+        user_claude_skills_dir = settings.get_user_claude_skills_dir()
+        if user_claude_skills_dir.exists():
+            sources.append(str(user_claude_skills_dir))
+        project_claude_skills_dir = settings.get_project_claude_skills_dir()
+        if project_claude_skills_dir:
+            sources.append(str(project_claude_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(

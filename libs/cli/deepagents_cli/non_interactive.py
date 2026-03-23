@@ -24,8 +24,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -823,30 +821,11 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {
-        "assistant_id": assistant_id,
-        "agent_name": assistant_id,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    if cwd:
-        metadata["cwd"] = cwd
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
-    from deepagents_cli.textual_adapter import _get_git_branch
+    from deepagents_cli.config import build_stream_config
 
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
+    config: RunnableConfig = build_stream_config(
+        thread_id, assistant_id, sandbox_type=sandbox_type
+    )
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:

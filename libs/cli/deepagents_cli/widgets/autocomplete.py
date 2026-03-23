@@ -126,6 +126,18 @@ class SlashCommandController:
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
 
+    def update_commands(self, commands: list[tuple[str, str, str]]) -> None:
+        """Replace the commands list and reset suggestions.
+
+        Used to merge dynamically discovered skill commands with
+        the static command registry at runtime.
+
+        Args:
+            commands: New list of `(command, description, hidden_keywords)` tuples.
+        """
+        self._commands = commands
+        self.reset()
+
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
         """Handle input that starts with /.

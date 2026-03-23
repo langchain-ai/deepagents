@@ -1,10 +1,7 @@
-"""Base sandbox implementation with execute() as the only abstract method.
+"""Base sandbox implementation with `execute()` as the only abstract method.
 
-This module provides a base class that implements SandboxBackendProtocol
-methods. Most operations use shell commands via execute(); write and edit
-delegate to upload_files/download_files to avoid OS `ARG_MAX` limits.
-
-It also defines the BaseSandbox implementation used by the CLI sandboxes.
+Provides a base class that implements `SandboxBackendProtocol` methods.
+Most operations use shell commands via `execute()`.
 """
 
 from __future__ import annotations

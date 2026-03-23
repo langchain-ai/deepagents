@@ -11,6 +11,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -41,16 +42,13 @@ _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
 
 
-def _format_transfer_error(exc: Exception) -> str:
-    """Convert transfer exceptions into response error strings."""
-    error = map_file_operation_error(exc)
-    if error is not None:
-        return error
+def _format_transfer_error(exc: Exception) -> FileOperationError:
+    """Convert transfer exceptions into standardized error codes.
 
-    msg = str(exc).strip()
-    if msg:
-        return msg
-    return exc.__class__.__name__
+    Falls back to `invalid_path` for unmapped exceptions; the caller
+    is expected to log the full exception details separately.
+    """
+    return map_file_operation_error(exc) or "invalid_path"
 
 
 class HarborSandbox(SandboxBackendProtocol):

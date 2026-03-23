@@ -368,6 +368,10 @@ class ThemeEntry:
     """
 
     REGISTRY: ClassVar[Mapping[str, ThemeEntry]]
+    """All registered theme entries, keyed by Textual theme name.
+
+    Read-only after module load (`MappingProxyType`).
+    """
 
     def __post_init__(self) -> None:
         """Validate that the label is a non-empty string.
@@ -378,11 +382,6 @@ class ThemeEntry:
         if not self.label.strip():
             msg = "ThemeEntry.label must be a non-empty string"
             raise ValueError(msg)
-
-    """All registered theme entries, keyed by Textual theme name.
-
-    Read-only after module load (`MappingProxyType`).
-    """
 
 
 def _builtin_themes() -> dict[str, ThemeEntry]:
@@ -487,11 +486,11 @@ def _load_user_themes(
             logger.debug("Cannot determine home directory; skipping user theme loading")
             return
 
+    import tomllib
+
     try:
         if not config_path.exists():
             return
-
-        import tomllib
 
         with config_path.open("rb") as f:
             data = tomllib.load(f)
@@ -660,9 +659,10 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     """Construct `ThemeColors` from the app's active Textual theme.
 
     Reads standard properties (primary, secondary, etc.) from the resolved
-    theme so Python-side styling matches CSS.  App-specific fields (muted,
-    mode_bash, mode_command, primary_dev) fall back to the dark/light base since
-    they have no Textual equivalent.
+    theme so Python-side styling matches CSS.  `muted` and `primary_dev` fall
+    back to the dark/light base unconditionally (no Textual equivalent).
+    `mode_bash` is derived from the theme's `error` color, and `mode_command`
+    from `secondary`, falling back to the base palette when non-hex.
 
     Non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected and fall
     back to the base palette automatically.

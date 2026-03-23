@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deepagents_cli.skills.load import ExtendedSkillMetadata
 
 
 class BypassTier(StrEnum):
@@ -211,3 +215,44 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
 ]
 """`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
+
+
+def parse_skill_command(command: str) -> tuple[str, str]:
+    """Extract skill name and args from a `/skill:<name>` command.
+
+    Args:
+        command: The full command string (e.g., `/skill:web-research find X`).
+
+    Returns:
+        Tuple of `(skill_name, args)`.
+
+            The skill name is normalized to lowercase. Both are empty strings
+            when the command has no skill name after the prefix.
+    """
+    after_prefix = command[len("/skill:") :].strip()
+    parts = after_prefix.split(maxsplit=1)
+    if not parts or not parts[0]:
+        return "", ""
+    skill_name = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+    return skill_name, args
+
+
+def build_skill_commands(
+    skills: list[ExtendedSkillMetadata],
+) -> list[tuple[str, str, str]]:
+    """Build autocomplete tuples for discovered skills.
+
+    Each skill becomes a `/skill:<name>` entry with its description
+    and the skill name as a hidden keyword for fuzzy matching.
+
+    Args:
+        skills: List of discovered skill metadata.
+
+    Returns:
+        List of `(name, description, hidden_keywords)` tuples.
+    """
+    return [
+        (f"/skill:{skill['name']}", skill["description"], skill["name"])
+        for skill in skills
+    ]

@@ -275,6 +275,233 @@ class QueuedUserMessage(Static):
         return Content.assemble(prefix, (content, colors.muted))
 
 
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter delimited by `---` markers.
+
+    Args:
+        text: Raw `SKILL.md` content.
+
+    Returns:
+        Body text with frontmatter removed and leading whitespace stripped.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return text
+    # Find closing --- (skip the opening line)
+    end = stripped.find("\n---", 3)
+    if end == -1:
+        return text
+    # Skip past the closing --- and its trailing newline
+    after = end + 4  # len("\n---")
+    return stripped[after:].lstrip("\n")
+
+
+class SkillMessage(Vertical):
+    """Widget displaying a skill invocation with collapsible body.
+
+    Shows skill name, source badge, description, and user args as a compact
+    header. The full SKILL.md body (frontmatter stripped) is hidden behind a
+    preview/expand toggle (click or Ctrl+O).  The expanded view renders
+    markdown via Textual's `Markdown` widget.
+    """
+
+    DEFAULT_CSS = """
+    SkillMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0 0 0;
+        background: transparent;
+        border-left: wide #a78bfa;
+    }
+
+    SkillMessage .skill-header {
+        height: auto;
+    }
+
+    SkillMessage .skill-description {
+        color: #6b7280;
+        margin-left: 3;
+    }
+
+    SkillMessage .skill-args {
+        margin-left: 3;
+        margin-top: 0;
+    }
+
+    SkillMessage .skill-body-preview {
+        margin-left: 3;
+        margin-top: 0;
+        color: #6b7280;
+    }
+
+    SkillMessage #skill-md {
+        margin-left: 3;
+        margin-top: 0;
+        padding: 0;
+    }
+
+    SkillMessage .skill-hint {
+        margin-left: 3;
+        color: #6b7280;
+    }
+
+    SkillMessage:hover {
+        border-left: wide #c4b5fd;
+    }
+    """
+
+    _PREVIEW_LINES = 4
+    _PREVIEW_CHARS = 300
+
+    def __init__(
+        self,
+        skill_name: str,
+        description: str = "",
+        source: str = "",
+        body: str = "",
+        args: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a skill message.
+
+        Args:
+            skill_name: Skill identifier.
+            description: Short description of the skill.
+            source: Origin label (e.g., `'built-in'`, `'user'`).
+            body: Full SKILL.md content (frontmatter included).
+            args: User-provided arguments.
+            **kwargs: Additional arguments passed to parent.
+        """
+        super().__init__(**kwargs)
+        self._skill_name = skill_name
+        self._description = description
+        self._source = source
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        self._args = args
+        self._expanded: bool = False
+        self._preview_widget: Static | None = None
+        self._md_widget: Markdown | None = None
+        self._hint_widget: Static | None = None
+        self._deferred_expanded: bool = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the skill message layout.
+
+        Yields:
+            Widgets for header, description, args, and collapsible body.
+        """
+        from textual.widgets import Markdown as MdWidget
+
+        source_tag = f" [{self._source}]" if self._source else ""
+        yield Static(
+            Content.from_markup(
+                "[bold #a78bfa]$label[/bold #a78bfa]",
+                label=f"/skill:{self._skill_name}{source_tag}",
+            ),
+            classes="skill-header",
+        )
+        if self._description:
+            yield Static(
+                Content.styled(self._description, "dim"),
+                classes="skill-description",
+            )
+        if self._args:
+            yield Static(
+                Content.assemble(
+                    ("User request: ", "bold"),
+                    self._args,
+                ),
+                classes="skill-args",
+            )
+        yield Static("", classes="skill-body-preview", id="skill-preview")
+        yield MdWidget("", id="skill-md")
+        yield Static("", classes="skill-hint", id="skill-hint")
+
+    def on_mount(self) -> None:
+        """Cache widget references and set initial display state."""
+        from textual.widgets import Markdown as MdWidget
+
+        if is_ascii_mode():
+            self.styles.border_left = ("ascii", "#a78bfa")
+
+        self._preview_widget = self.query_one("#skill-preview", Static)
+        self._md_widget = self.query_one("#skill-md", MdWidget)
+        self._hint_widget = self.query_one("#skill-hint", Static)
+
+        self._preview_widget.display = False
+        self._md_widget.display = False
+        self._hint_widget.display = False
+
+        if self._deferred_expanded:
+            self._expanded = self._deferred_expanded
+            self._deferred_expanded = False
+
+        if self._stripped_body.strip():
+            self._update_body_display()
+
+    def toggle_body(self) -> None:
+        """Toggle between preview and full body display."""
+        if not self._stripped_body.strip():
+            return
+        self._expanded = not self._expanded
+        self._update_body_display()
+
+    def on_click(self, event: Click) -> None:
+        """Toggle body expansion, or show timestamp if no body."""
+        event.stop()
+        if self._stripped_body.strip():
+            self.toggle_body()
+        else:
+            _show_timestamp_toast(self)
+
+    def _update_body_display(self) -> None:
+        """Update the body display based on expanded state."""
+        if not self._preview_widget or not self._md_widget or not self._hint_widget:
+            return
+
+        body = self._stripped_body.strip()
+        if not body:
+            return
+
+        lines = body.split("\n")
+        total_lines = len(lines)
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
+        )
+
+        if self._expanded:
+            self._preview_widget.display = False
+            self._md_widget.update(body)
+            self._md_widget.display = True
+            self._hint_widget.update(
+                Content.styled("click or Ctrl+O to collapse", "dim italic")
+            )
+            self._hint_widget.display = True
+        elif needs_truncation:
+            self._md_widget.display = False
+            preview_lines = lines[: self._PREVIEW_LINES]
+            preview = "\n".join(preview_lines)
+            if len(preview) > self._PREVIEW_CHARS:
+                preview = preview[: self._PREVIEW_CHARS]
+            self._preview_widget.update(Content.styled(preview, "dim"))
+            self._preview_widget.display = True
+            remaining = total_lines - self._PREVIEW_LINES
+            ellipsis = get_glyphs().ellipsis
+            self._hint_widget.update(
+                Content.styled(
+                    f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
+                    "dim",
+                )
+            )
+            self._hint_widget.display = True
+        else:
+            self._preview_widget.display = False
+            self._md_widget.update(body)
+            self._md_widget.display = True
+            self._hint_widget.display = False
+
+
 class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 

@@ -662,6 +662,83 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     return unique
 
 
+def _read_config_toml_skills_dirs() -> list[str] | None:
+    """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
+
+    Returns:
+        List of path strings, or `None` if the key is absent or the file
+            cannot be read.
+    """
+    import tomllib
+
+    from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read skills config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    skills_section = data.get("skills", {})
+    dirs = skills_section.get("extra_allowed_dirs")
+    if isinstance(dirs, list):
+        return dirs
+    return None
+
+
+def _parse_extra_skills_dirs(
+    env_raw: str | None,
+    config_toml_dirs: list[str] | None = None,
+) -> list[Path] | None:
+    """Merge extra skill directories from env var and config.toml.
+
+    Extra skills directories extend the containment allowlist used by
+    `load_skill_content` to validate that a resolved skill path lives inside a
+    trusted root. They do **not** add new skill discovery locations — skills are
+    still discovered only from the standard directories. This exists so that
+    symlinks inside standard skill directories can legitimately point to targets
+    in user-specified locations without being rejected by the path
+    containment check.
+
+    The env var (`DEEPAGENTS_EXTRA_SKILLS_DIRS`, colon-separated) takes
+    precedence: when set, `config.toml` values are ignored.
+
+    Args:
+        env_raw: Value of `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated), or
+            `None` if unset.
+        config_toml_dirs: List of path strings from
+            `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+    Returns:
+        List of resolved `Path` objects, or `None` if not configured.
+    """
+    # Env var takes precedence when set
+    if env_raw:
+        dirs = [
+            Path(p.strip()).expanduser().resolve()
+            for p in env_raw.split(":")
+            if p.strip()
+        ]
+        return dirs or None
+
+    if config_toml_dirs:
+        dirs = [
+            Path(p).expanduser().resolve()
+            for p in config_toml_dirs
+            if isinstance(p, str) and p.strip()
+        ]
+        return dirs or None
+
+    return None
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -712,6 +789,19 @@ class Settings:
     shell_allow_list: list[str] | None = None
     """Shell commands that don't require user approval."""
 
+    extra_skills_dirs: list[Path] | None = None
+    """Extra directories added to the skill path containment allowlist.
+
+    These do NOT add new skill discovery locations — skills are still only
+    discovered from the standard directories. They exist so that symlinks inside
+    standard skill directories can point to targets in these additional
+    locations without being rejected by the containment check
+    in `load_skill_content`.
+
+    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+    """
+
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.
@@ -752,6 +842,14 @@ class Settings:
         shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
         shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
 
+        # Parse extra skill containment roots from env var or config.toml.
+        # These extend the path allowlist for load_skill_content but do not
+        # add new skill discovery locations.
+        extra_skills_dirs = _parse_extra_skills_dirs(
+            os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+            _read_config_toml_skills_dirs(),
+        )
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -763,6 +861,7 @@ class Settings:
             user_langchain_project=user_langchain_project,
             project_root=project_root,
             shell_allow_list=shell_allow_list,
+            extra_skills_dirs=extra_skills_dirs,
         )
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
@@ -792,6 +891,9 @@ class Settings:
             "nvidia_api_key",
             "tavily_api_key",
         }
+        """Fields that hold API keys — used to mask values in change reports
+        so secrets are not logged as plaintext."""
+
         reloadable_fields = (
             "openai_api_key",
             "anthropic_api_key",
@@ -802,7 +904,14 @@ class Settings:
             "deepagents_langchain_project",
             "project_root",
             "shell_allow_list",
+            "extra_skills_dirs",
         )
+        """Fields refreshed on `/reload`.
+
+        Runtime model state (`model_name`, `model_provider`, `model_context_limit`)
+        and the original user LangSmith project are intentionally excluded —
+        they are set once and should not change across reloads.
+        """
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
@@ -839,6 +948,10 @@ class Settings:
             ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
+            "extra_skills_dirs": _parse_extra_skills_dirs(
+                os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+                _read_config_toml_skills_dirs(),
+            ),
         }
 
         for field, value in refreshed.items():
@@ -1106,6 +1219,31 @@ class Settings:
         return self.project_root / ".agents" / "skills"
 
     @staticmethod
+    def get_user_claude_skills_dir() -> Path:
+        """Get user-level `~/.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `~/.claude/skills/`
+        """
+        return Path.home() / ".claude" / "skills"
+
+    def get_project_claude_skills_dir(self) -> Path | None:
+        """Get project-level `.claude/skills/` directory (experimental).
+
+        Convenience bridge for cross-tool skill sharing with Claude Code.
+        This is experimental and may be removed.
+
+        Returns:
+            Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".claude" / "skills"
+
+    @staticmethod
     def get_built_in_skills_dir() -> Path:
         """Get the directory containing built-in skills that ship with the CLI.
 
@@ -1113,6 +1251,17 @@ class Settings:
             Path to the `built_in_skills/` directory within the package.
         """
         return Path(__file__).parent / "built_in_skills"
+
+    def get_extra_skills_dirs(self) -> list[Path]:
+        """Get user-configured extra skill directories.
+
+        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+
+        Returns:
+            List of extra skill directory paths, or empty list if not configured.
+        """
+        return self.extra_skills_dirs or []
 
 
 class SessionState:

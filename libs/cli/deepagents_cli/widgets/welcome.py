@@ -35,6 +35,7 @@ _TIPS: list[str] = [
     "Use /model to switch models mid-conversation",
     "Press ctrl+x to compose prompts in your external editor",
     "Press ctrl+u to delete to the start of the line in the chat input",
+    "Use /skill:<name> to invoke a skill directly",
     "Type /update to check for and install updates",
     "Use /theme to customize the CLI colors and style",
 ]

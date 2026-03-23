@@ -2741,6 +2741,49 @@ class TestConvertMessagesToData:
         result = DeepAgentsApp._convert_messages_to_data([])
         assert result == []
 
+    def test_skill_message_from_additional_kwargs(self) -> None:
+        """HumanMessage with __skill in additional_kwargs → SKILL MessageData."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msg = HumanMessage(
+            content="I'm invoking the skill `web-research`.\n---\n# Body\n---",
+            additional_kwargs={
+                "__skill": {
+                    "name": "web-research",
+                    "description": "Research topics",
+                    "source": "user",
+                    "args": "find quantum",
+                },
+            },
+        )
+        result = DeepAgentsApp._convert_messages_to_data([msg])
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.SKILL
+        assert result[0].skill_name == "web-research"
+        assert result[0].skill_description == "Research topics"
+        assert result[0].skill_source == "user"
+        assert result[0].skill_args == "find quantum"
+        # Full prompt envelope stored as body for expand view
+        assert "web-research" in (result[0].skill_body or "")
+
+    def test_skill_without_name_falls_back_to_user(self) -> None:
+        """__skill dict missing name should fall back to USER."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msg = HumanMessage(
+            content="some text",
+            additional_kwargs={"__skill": {"description": "no name"}},
+        )
+        result = DeepAgentsApp._convert_messages_to_data([msg])
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.USER
+
 
 class TestColumnKeyConsistency:
     """Verify all column dicts stay in sync."""

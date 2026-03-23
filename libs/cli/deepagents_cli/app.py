@@ -157,21 +157,23 @@ def _load_theme_preference() -> str:
     try:
         from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
 
-        if DEFAULT_CONFIG_PATH.exists():
-            import tomllib
+        if not DEFAULT_CONFIG_PATH.exists():
+            return theme.DEFAULT_THEME
 
-            with DEFAULT_CONFIG_PATH.open("rb") as f:
-                data = tomllib.load(f)
-            name = data.get("ui", {}).get("theme")
-            if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
-                return name
-            if isinstance(name, str):
-                logger.warning(
-                    "Unknown theme '%s' in config; falling back to default",
-                    name,
-                )
+        import tomllib
+
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+        name = data.get("ui", {}).get("theme")
+        if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+            return name
+        if isinstance(name, str):
+            logger.warning(
+                "Unknown theme '%s' in config; falling back to default",
+                name,
+            )
     except Exception:
-        logger.debug("Could not load theme preference", exc_info=True)
+        logger.warning("Could not load theme preference", exc_info=True)
     return theme.DEFAULT_THEME
 
 
@@ -184,6 +186,10 @@ def save_theme_preference(name: str) -> bool:
     Returns:
         `True` if the preference was saved, `False` if any error occurred.
     """
+    if name not in theme.ThemeEntry.REGISTRY:
+        logger.warning("Refusing to save unknown theme '%s'", name)
+        return False
+
     import contextlib
     import tempfile
 
@@ -687,7 +693,7 @@ class DeepAgentsApp(App):
         return self._agent if isinstance(self._agent, RemoteAgent) else None
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
-        """Register custom CSS variables so `.tcss` files can use them.
+        """Return custom CSS variable defaults for the current theme.
 
         Textual only ships built-in variables (`$background`, `$primary`, …).
         This override injects app-specific variables (`$muted`,
@@ -697,7 +703,7 @@ class DeepAgentsApp(App):
         would be unresolved at parse time.
 
         Returns:
-            Mapping of CSS variable names to hex color values.
+            Dict of CSS variable names to hex color values.
         """
         entry = theme.ThemeEntry.REGISTRY.get(self.theme)
         colors = entry.colors if entry else None
@@ -3882,13 +3888,19 @@ class DeepAgentsApp(App):
                 self.refresh_css(animate=False)
 
                 async def _persist() -> None:
-                    ok = await asyncio.to_thread(save_theme_preference, result)
-                    if not ok:
-                        self.notify(
-                            "Theme applied for this session but could not be"
-                            " saved. Check ~/.deepagents/ permissions.",
-                            severity="warning",
-                            timeout=6,
+                    try:
+                        ok = await asyncio.to_thread(save_theme_preference, result)
+                        if not ok:
+                            self.notify(
+                                "Theme applied for this session but could not"
+                                " be saved. Check logs for details.",
+                                severity="warning",
+                                timeout=6,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist theme preference",
+                            exc_info=True,
                         )
 
                 self.call_later(_persist)

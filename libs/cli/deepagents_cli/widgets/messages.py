@@ -1296,7 +1296,7 @@ class DiffMessage(_TimestampClickMixin, Static):
         text-style: bold;
     }
     """
-    """Diff syntax coloring: green additions, red removals, muted context."""
+    """Diff syntax coloring per theme: additions, removals, muted context."""
 
     def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
         """Initialize a diff message.
@@ -1345,7 +1345,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         border-left: wide $error;
     }
     """
-    """Tinted background + red left border to visually separate errors from output."""
+    """Tinted background + left border to visually separate errors from output."""
 
     def __init__(self, error: str, **kwargs: Any) -> None:
         """Initialize an error message.

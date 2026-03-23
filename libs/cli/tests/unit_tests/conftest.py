@@ -65,10 +65,10 @@ def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from textual.app import App
 
-    from deepagents_cli.theme import CSS_VARIABLE_DEFAULTS
+    from deepagents_cli.theme import get_css_variable_defaults
 
     original = App.get_theme_variable_defaults
-    custom = CSS_VARIABLE_DEFAULTS
+    custom = get_css_variable_defaults(dark=True)
 
     def _with_custom_vars(self: App) -> dict[str, str]:
         base = original(self)

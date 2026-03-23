@@ -2,8 +2,10 @@
 
 Single source of truth for color values used in Python code (Rich markup,
 `Content.styled`, `Content.from_markup`). CSS-side styling should reference
-Textual CSS variables (`$primary`, `$muted`, `$tool-border`, etc.) that are
-backed by these constants via `App.get_theme_variable_defaults()`.
+Textual CSS variables: built-in variables (`$primary`, `$background`, etc.) are
+set via `register_theme()` in `DeepAgentsApp.__init__`, while app-specific
+variables (`$muted`, `$tool-border`, etc.) are backed by these constants via
+`App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette,
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 # ---------------------------------------------------------------------------
-# Brand palette — dark  (tokyonight-inspired, LangChain blue primary)
+# Brand palette — dark  (originally tokyonight-inspired, LangChain blue primary)
 # ---------------------------------------------------------------------------
 LC_DARK = "#11121D"
 """Background — visible blue tint, distinguishable from pure black."""
@@ -229,7 +231,10 @@ class ThemeColors:
         for f in fields(self):
             val = getattr(self, f.name)
             if not _HEX_RE.match(val):
-                msg = f"ThemeColors.{f.name} must be a hex color, got {val!r}"
+                msg = (
+                    f"ThemeColors.{f.name} must be a 7-char hex color"
+                    f" (#RRGGBB), got {val!r}"
+                )
                 raise ValueError(msg)
 
 
@@ -314,42 +319,54 @@ class ThemeEntry:
     """
 
 
-# Build registry, then freeze to prevent accidental mutation.
-_registry: dict[str, ThemeEntry] = {}
-"""Mutable staging dict — populated below, then frozen into `ThemeEntry.REGISTRY`."""
+def _build_registry() -> MappingProxyType[str, ThemeEntry]:
+    """Build and freeze the theme registry.
 
-_registry["langchain"] = ThemeEntry(
-    label="LangChain Dark",
-    dark=True,
-    colors=DARK_COLORS,
-)
-_registry["langchain-light"] = ThemeEntry(
-    label="LangChain Light",
-    dark=False,
-    colors=LIGHT_COLORS,
-)
-# Textual built-in themes — not registered via register_theme() (Textual's own
-# $primary, $background, etc. apply), but carry color sets for custom CSS vars.
-_registry["textual-dark"] = ThemeEntry(
-    label="Textual Dark",
-    dark=True,
-    colors=DARK_COLORS,
-    custom=False,
-)
-_registry["textual-light"] = ThemeEntry(
-    label="Textual Light",
-    dark=False,
-    colors=LIGHT_COLORS,
-    custom=False,
-)
-_registry["textual-ansi"] = ThemeEntry(
-    label="Terminal (ANSI)",
-    dark=True,
-    colors=DARK_COLORS,
-    custom=False,
-)
+    Returns:
+        Read-only mapping of theme names to `ThemeEntry` instances.
+    """
+    r: dict[str, ThemeEntry] = {}
+    r["langchain"] = ThemeEntry(
+        label="LangChain Dark",
+        dark=True,
+        colors=DARK_COLORS,
+    )
+    r["langchain-light"] = ThemeEntry(
+        label="LangChain Light",
+        dark=False,
+        colors=LIGHT_COLORS,
+    )
+    # Textual built-in themes — not registered via register_theme() (Textual's
+    # own $primary, $background, etc. apply), but carry color sets for custom
+    # CSS vars.
+    r["textual-dark"] = ThemeEntry(
+        label="Textual Dark",
+        dark=True,
+        colors=DARK_COLORS,
+        custom=False,
+    )
+    r["textual-light"] = ThemeEntry(
+        label="Textual Light",
+        dark=False,
+        colors=LIGHT_COLORS,
+        custom=False,
+    )
+    r["textual-ansi"] = ThemeEntry(
+        label="Terminal (ANSI)",
+        dark=True,
+        colors=DARK_COLORS,
+        custom=False,
+    )
+    return MappingProxyType(r)
 
-ThemeEntry.REGISTRY = MappingProxyType(_registry)
+
+ThemeEntry.REGISTRY = _build_registry()
+"""Read-only mapping of Textual theme names to `ThemeEntry` instances.
+
+Built via `_build_registry()` so the mutable staging dict is scoped to a
+function call and cannot be mutated after freeze. The `ClassVar` declaration on
+`ThemeEntry` provides the type; this assignment supplies the value.
+"""
 
 DEFAULT_THEME = "langchain"
 """Theme name used when no preference is saved."""
@@ -365,7 +382,7 @@ def get_css_variable_defaults(
         colors: Explicit color set to use. Takes precedence over `dark`.
 
     Returns:
-        Mapping of CSS variable names to hex color values.
+        Dict of CSS variable names to hex color values.
     """
     c = colors if colors is not None else (DARK_COLORS if dark else LIGHT_COLORS)
     return {
@@ -380,16 +397,3 @@ def get_css_variable_defaults(
         "diff-remove-bg": c.diff_remove_bg,
         "error-bg": c.error_bg,
     }
-
-
-# Keep backwards-compatible alias used by test conftest
-CSS_VARIABLE_DEFAULTS: dict[str, str] = get_css_variable_defaults(dark=True)
-"""Dark-mode CSS variable defaults (backwards-compatible alias).
-
-Previously used by `DeepAgentsApp.get_theme_variable_defaults()`; now retained
-for the test conftest, which patches this mapping onto plain `App[None]`
-subclasses so unit tests resolve custom variables without instantiating the
-full `DeepAgentsApp`.
-
-Production code calls `get_css_variable_defaults(dark=...)` instead.
-"""

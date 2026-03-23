@@ -109,7 +109,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             yield Static(help_text, classes="theme-selector-help")
 
     def on_mount(self) -> None:
-        """Capture the live app theme and apply ASCII border if needed."""
+        """Ensure original theme is captured and apply ASCII border if needed."""
         if self._original_theme is None:
             self._original_theme = self.app.theme
         if is_ascii_mode():
@@ -126,7 +126,12 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         """
         name = event.option.id
         if name is not None and name in theme.ThemeEntry.REGISTRY:
-            self.app.theme = name
+            try:
+                self.app.theme = name
+            except Exception:
+                logger.warning("Failed to preview theme '%s'", name, exc_info=True)
+                if self._original_theme is not None:
+                    self.app.theme = self._original_theme
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Commit the selected theme.
@@ -134,8 +139,9 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         Args:
             event: The option selected event.
         """
-        if event.option.id is not None:
-            self.dismiss(event.option.id)
+        name = event.option.id
+        if name is not None and name in theme.ThemeEntry.REGISTRY:
+            self.dismiss(name)
 
     def action_cancel(self) -> None:
         """Restore the original theme and dismiss."""

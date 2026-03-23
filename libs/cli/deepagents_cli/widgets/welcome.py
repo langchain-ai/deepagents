@@ -190,7 +190,7 @@ class WelcomeBanner(Static):
         if self._project_name:
             parts.extend(
                 [
-                    (f"{get_glyphs().checkmark} ", "green"),
+                    (f"{get_glyphs().checkmark} ", colors.success),
                     "LangSmith tracing: ",
                 ]
             )
@@ -199,13 +199,13 @@ class WelcomeBanner(Static):
                     (
                         f"'{self._project_name}'",
                         TStyle(
-                            foreground=TColor.parse("cyan"),
+                            foreground=TColor.parse(colors.primary),
                             link=f"{project_url}?utm_source=deepagents-cli",
                         ),
                     )
                 )
             else:
-                parts.append((f"'{self._project_name}'", "cyan"))
+                parts.append((f"'{self._project_name}'", colors.primary))
             parts.append("\n")
 
         if self._cli_thread_id:
@@ -225,7 +225,7 @@ class WelcomeBanner(Static):
                 parts.append((f"Thread: {self._cli_thread_id}\n", "dim"))
 
         if self._mcp_tool_count > 0:
-            parts.append((f"{get_glyphs().checkmark} ", "green"))
+            parts.append((f"{get_glyphs().checkmark} ", colors.success))
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
@@ -254,10 +254,11 @@ def build_failure_footer(error: str) -> Content:
     Returns:
         Content with a persistent failure message.
     """
+    colors = theme.get_theme_colors()
     return Content.assemble(
-        ("\nServer failed to start: ", "bold red"),
-        (error, "red"),
-        ("\n", "red"),
+        ("\nServer failed to start: ", f"bold {colors.error}"),
+        (error, colors.error),
+        ("\n", colors.error),
     )
 
 

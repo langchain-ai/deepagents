@@ -115,7 +115,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             self._original_theme = self.app.theme
         if is_ascii_mode():
             container = self.query_one(Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted

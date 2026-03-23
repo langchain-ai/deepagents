@@ -557,6 +557,7 @@ class ToolCallMessage(Vertical):
         self._deferred_expanded = False
 
         # Restore based on status (don't restart animations for running tools)
+        colors = theme.get_theme_colors(self)
         match status:
             case "success":
                 self._status = "success"
@@ -569,7 +570,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("error")
                     error_icon = get_glyphs().error
                     self._status_widget.update(
-                        Content.styled(f"{error_icon} Error", "red")
+                        Content.styled(f"{error_icon} Error", colors.error)
                     )
                     self._status_widget.display = True
                 self._update_output_display()
@@ -579,7 +580,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("rejected")
                     error_icon = get_glyphs().error
                     self._status_widget.update(
-                        Content.styled(f"{error_icon} Rejected", "yellow")
+                        Content.styled(f"{error_icon} Rejected", colors.warning)
                     )
                     self._status_widget.display = True
             case "skipped":
@@ -596,7 +597,7 @@ class ToolCallMessage(Vertical):
                     self._status_widget.add_class("pending")
                     frame = get_glyphs().spinner_frames[0]
                     self._status_widget.update(
-                        Content.styled(f"{frame} Running...", "yellow")
+                        Content.styled(f"{frame} Running...", colors.warning)
                     )
                     self._status_widget.display = True
             case _:
@@ -634,7 +635,9 @@ class ToolCallMessage(Vertical):
             elapsed = f" ({elapsed_secs}s)"
 
         text = f"{frame} Running...{elapsed}"
-        self._status_widget.update(Content.styled(text, "yellow"))
+        self._status_widget.update(
+            Content.styled(text, theme.get_theme_colors(self).warning)
+        )
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""
@@ -679,7 +682,10 @@ class ToolCallMessage(Vertical):
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("error")
             error_icon = get_glyphs().error
-            self._status_widget.update(Content.styled(f"{error_icon} Error", "red"))
+            colors = theme.get_theme_colors(self)
+            self._status_widget.update(
+                Content.styled(f"{error_icon} Error", colors.error)
+            )
             self._status_widget.display = True
         # Always show full error - errors should be visible
         self._expanded = True
@@ -694,7 +700,8 @@ class ToolCallMessage(Vertical):
             self._status_widget.add_class("rejected")
             error_icon = get_glyphs().error
             text = f"{error_icon} Rejected"
-            self._status_widget.update(Content.styled(text, "yellow"))
+            colors = theme.get_theme_colors(self)
+            self._status_widget.update(Content.styled(text, colors.warning))
             self._status_widget.display = True
 
     def set_skipped(self) -> None:
@@ -843,12 +850,13 @@ class ToolCallMessage(Vertical):
         except (ValueError, SyntaxError):
             return None
 
-    def _build_todo_stats(self, items: list) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _build_todo_stats(self, items: list) -> Content:
         """Build stats content for todo list.
 
         Returns:
             Styled `Content` showing active, pending, and completed counts.
         """
+        colors = theme.get_theme_colors(self)
         completed = sum(
             1 for i in items if isinstance(i, dict) and i.get("status") == "completed"
         )
@@ -859,19 +867,20 @@ class ToolCallMessage(Vertical):
 
         parts: list[Content] = []
         if active:
-            parts.append(Content.styled(f"{active} active", "yellow"))
+            parts.append(Content.styled(f"{active} active", colors.warning))
         if pending:
             parts.append(Content.styled(f"{pending} pending", "dim"))
         if completed:
-            parts.append(Content.styled(f"{completed} done", "green"))
+            parts.append(Content.styled(f"{completed} done", colors.success))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_single_todo(self, item: dict | str) -> Content:
         """Format a single todo item.
 
         Returns:
             Styled `Content` with checkbox and status styling.
         """
+        colors = theme.get_theme_colors(self)
         if isinstance(item, dict):
             text = item.get("content", str(item))
             status = item.get("status", "pending")
@@ -885,12 +894,12 @@ class ToolCallMessage(Vertical):
         glyphs = get_glyphs()
         if status == "completed":
             return Content.assemble(
-                Content.styled(f"    {glyphs.checkmark} done", "green"),
+                Content.styled(f"    {glyphs.checkmark} done", colors.success),
                 Content.styled(f"   {text}", "dim"),
             )
         if status == "in_progress":
             return Content.assemble(
-                Content.styled(f"    {glyphs.circle_filled} active", "yellow"),
+                Content.styled(f"    {glyphs.circle_filled} active", colors.warning),
                 f" {text}",
             )
         return Content.assemble(
@@ -1323,7 +1332,8 @@ class DiffMessage(_TimestampClickMixin, Static):
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "cyan")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
 
 class ErrorMessage(_TimestampClickMixin, Static):
@@ -1350,15 +1360,20 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """
         # Store raw content for serialization
         self._content = error
+        colors = theme.get_theme_colors()
         super().__init__(
-            Content.from_markup("[bold red]Error: [/bold red]$err", err=error),
+            Content.assemble(
+                Content.styled("Error: ", f"bold {colors.error}"),
+                error,
+            ),
             **kwargs,
         )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
-            self.styles.border_left = ("ascii", "red")
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.error)
 
 
 class AppMessage(Static):
@@ -1428,10 +1443,13 @@ class SummarizationMessage(AppMessage):
             **kwargs: Additional arguments passed to parent.
         """
         rendered: Content
+        colors = theme.get_theme_colors()
         if message is None:
-            rendered = Content.styled("✓ Conversation offloaded", "bold cyan")
+            rendered = Content.styled(
+                "✓ Conversation offloaded", f"bold {colors.primary}"
+            )
         elif isinstance(message, Content):
             rendered = message
         else:
-            rendered = Content.styled(message, "bold cyan")
+            rendered = Content.styled(message, f"bold {colors.primary}")
         super().__init__(rendered, **kwargs)

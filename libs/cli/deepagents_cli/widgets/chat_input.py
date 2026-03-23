@@ -17,6 +17,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
+from deepagents_cli import theme
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
@@ -959,7 +960,8 @@ class ChatInput(Vertical):
     def on_mount(self) -> None:
         """Initialize components after mount."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "cyan")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)

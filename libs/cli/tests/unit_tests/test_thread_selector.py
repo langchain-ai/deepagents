@@ -818,7 +818,9 @@ class TestThreadSelectorBuildTitle:
         assert len(spans) > 0
         style = spans[0].style
         assert isinstance(style, TStyle)
-        assert style.foreground == TColor.parse("cyan")
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert style.foreground == TColor.parse(DARK_COLORS.primary)
 
     async def test_title_widget_has_id(self) -> None:
         """Title widget should be queryable by ID for URL updates."""

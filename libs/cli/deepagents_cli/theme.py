@@ -301,6 +301,10 @@ class ThemeColors:
         return cls(**kwargs)
 
 
+# ---------------------------------------------------------------------------
+# Built-in theme color sets
+# ---------------------------------------------------------------------------
+
 DARK_COLORS = ThemeColors(
     primary=LC_BLUE,
     primary_dev=LC_ORANGE,

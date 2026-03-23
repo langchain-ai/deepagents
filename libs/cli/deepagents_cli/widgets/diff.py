@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Static
 
+from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ def _compose_diff_content(
     Yields:
         Static widgets for stats header and individual diff lines.
     """
+    colors = theme.get_theme_colors()
     glyphs = get_glyphs()
     lines = diff.splitlines()
 
@@ -65,11 +67,11 @@ def _compose_diff_content(
     # Stats header
     stats_parts: list[str | tuple[str, str] | Content] = []
     if additions:
-        stats_parts.append((f"+{additions}", "green"))
+        stats_parts.append((f"+{additions}", colors.success))
     if deletions:
         if stats_parts:
             stats_parts.append(" ")
-        stats_parts.append((f"-{deletions}", "red"))
+        stats_parts.append((f"-{deletions}", colors.error))
     if stats_parts:
         yield Static(Content.assemble(*stats_parts))
 
@@ -106,7 +108,7 @@ def _compose_diff_content(
             # Deletion — red gutter bar, background via CSS
             yield Static(
                 Content.assemble(
-                    (f"{glyphs.gutter_bar}", "red bold"),
+                    (f"{glyphs.gutter_bar}", f"{colors.error} bold"),
                     (f"{old_num:>{width}}", "dim"),
                     f" {content}",
                 ),
@@ -118,7 +120,7 @@ def _compose_diff_content(
             # Addition — green gutter bar, background via CSS
             yield Static(
                 Content.assemble(
-                    (f"{glyphs.gutter_bar}", "green bold"),
+                    (f"{glyphs.gutter_bar}", f"{colors.success} bold"),
                     (f"{new_num:>{width}}", "dim"),
                     f" {content}",
                 ),
@@ -213,7 +215,8 @@ class EnhancedDiff(Vertical):
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "cyan")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
     def compose(self) -> ComposeResult:
         """Compose the diff widget layout.
@@ -221,10 +224,13 @@ class EnhancedDiff(Vertical):
         Yields:
             Widgets for title, formatted diff content, and stats.
         """
+        colors = theme.get_theme_colors(self)
         glyphs = get_glyphs()
         h = glyphs.box_double_horizontal
         yield Static(
-            Content.styled(f"{h}{h}{h} {self._title} {h}{h}{h}", "bold cyan"),
+            Content.styled(
+                f"{h}{h}{h} {self._title} {h}{h}{h}", f"bold {colors.primary}"
+            ),
             classes="diff-title",
         )
 
@@ -234,9 +240,9 @@ class EnhancedDiff(Vertical):
         if additions or deletions:
             content_parts: list[str | tuple[str, str]] = []
             if additions:
-                content_parts.append((f"+{additions}", "green"))
+                content_parts.append((f"+{additions}", colors.success))
             if deletions:
                 if content_parts:
                     content_parts.append(" ")
-                content_parts.append((f"-{deletions}", "red"))
+                content_parts.append((f"-{deletions}", colors.error))
             yield Static(Content.assemble(*content_parts), classes="diff-stats")

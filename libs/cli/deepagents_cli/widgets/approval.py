@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     get_glyphs,
@@ -274,7 +275,8 @@ class ApprovalMenu(Container):
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "yellow")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.warning)
 
         if not self._is_minimal:
             await self._update_tool_info()

@@ -593,29 +593,7 @@ class DeepAgentsApp(App):
         """
         super().__init__(**kwargs)
 
-        # Register custom themes (built-in LC themes + user-defined)
-        for name, entry in theme.ThemeEntry.REGISTRY.items():
-            if entry.custom:
-                c = entry.colors
-                self.register_theme(
-                    Theme(
-                        name=name,
-                        primary=c.primary,
-                        secondary=c.secondary,
-                        accent=c.accent,
-                        foreground=c.foreground,
-                        background=c.background,
-                        surface=c.surface,
-                        panel=c.panel,
-                        warning=c.warning,
-                        error=c.error,
-                        success=c.success,
-                        dark=entry.dark,
-                        variables={
-                            "footer-key-foreground": c.primary,
-                        },
-                    )
-                )
+        self._register_custom_themes()
 
         # Apply saved theme preference (or default)
         self.theme = _load_theme_preference()
@@ -1036,7 +1014,7 @@ class DeepAgentsApp(App):
                 hint = f"Thread '{resume}' not found."
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
-                self.notify(hint, severity="warning", markup=False)
+                self.notify(hint, severity="warning", timeout=6, markup=False)
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -2539,6 +2517,11 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+
+            # Reload user themes from config.toml and re-register with Textual
+            theme.reload_registry()
+            self._register_custom_themes()
+
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
                     f"  - {change}" for change in changes
@@ -2546,6 +2529,7 @@ class DeepAgentsApp(App):
             else:
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
+            report += "\nTheme registry reloaded."
             await self._mount_message(AppMessage(report))
         else:
             await self._mount_message(UserMessage(command))
@@ -3891,9 +3875,43 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
+    def _register_custom_themes(self) -> None:
+        """Register all custom themes (built-in LC + user-defined) with Textual."""
+        for name, entry in theme.ThemeEntry.REGISTRY.items():
+            if entry.custom:
+                c = entry.colors
+                self.register_theme(
+                    Theme(
+                        name=name,
+                        primary=c.primary,
+                        secondary=c.secondary,
+                        accent=c.accent,
+                        foreground=c.foreground,
+                        background=c.background,
+                        surface=c.surface,
+                        panel=c.panel,
+                        warning=c.warning,
+                        error=c.error,
+                        success=c.success,
+                        dark=entry.dark,
+                        variables={
+                            "footer-key-foreground": c.primary,
+                        },
+                    )
+                )
+
     async def _show_theme_selector(self) -> None:
         """Show interactive theme selector as a modal screen."""
         from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        # Capture scroll state.  The submit handler may have already caused
+        # a reflow that re-anchored to the bottom, so we save the *current*
+        # offset and release the anchor to prevent further drift while the
+        # modal is open.
+        chat = self.query_one("#chat", VerticalScroll)
+        saved_y = chat.scroll_y
+        was_anchored = chat.is_anchored
+        chat.release_anchor()
 
         def handle_result(result: str | None) -> None:
             """Handle the theme selector result."""
@@ -3918,6 +3936,10 @@ class DeepAgentsApp(App):
                         )
 
                 self.call_later(_persist)
+            # Restore scroll position, then re-anchor if it was anchored.
+            chat.scroll_to(y=saved_y, animate=False)
+            if was_anchored:
+                chat.anchor()
             if self._chat_input:
                 self._chat_input.focus_input()
 

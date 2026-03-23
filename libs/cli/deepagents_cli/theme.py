@@ -61,7 +61,7 @@ LC_PURPLE = "#BB9AF7"
 LC_GREEN = "#9ECE6A"
 """Success / positive indicator."""
 
-LC_AMBER = "#E0AF68"
+LC_AMBER = "#ED9939"
 """Warning / caution indicator."""
 
 LC_PINK = "#F7768E"
@@ -590,6 +590,19 @@ function call and cannot be mutated after freeze. The `ClassVar` declaration on
 
 DEFAULT_THEME = "langchain"
 """Theme name used when no preference is saved."""
+
+
+def reload_registry() -> MappingProxyType[str, ThemeEntry]:
+    """Rebuild the theme registry from disk and update `ThemeEntry.REGISTRY`.
+
+    Re-reads `~/.deepagents/config.toml` for user-defined themes so that
+    `/reload` can pick up config changes without restarting the app.
+
+    Returns:
+        The new frozen registry.
+    """
+    ThemeEntry.REGISTRY = _build_registry()
+    return ThemeEntry.REGISTRY
 
 
 def get_css_variable_defaults(

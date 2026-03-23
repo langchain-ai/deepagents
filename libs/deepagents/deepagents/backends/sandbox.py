@@ -2,14 +2,15 @@
 
 File listing, grep, glob, and read use shell commands via `execute()`. Write
 delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
-for small payloads and falls back to `download_files()` / `upload_files()`
-for large ones.
+for small payloads and falls back to uploading old/new strings as temp files
+with a server-side replace script for large ones.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import shlex
 from abc import ABC, abstractmethod
 
@@ -118,12 +119,66 @@ Output: single-line JSON with ``{{"count": N}}`` on success or
 ``{{"error": ...}}`` on failure.
 
 Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
-to `download_files()` + local replace + `upload_files()`.
+to `_edit_via_upload()` which transfers old/new strings as temp files.
 """
 
 # Maximum combined byte size of old_string + new_string for inline server-side
-# edit.  Payloads above this fall back to download + local replace + upload.
+# edit.  Payloads above this use _edit_via_upload (temp file upload + server-side
+# replace) to avoid ARG_MAX / HTTP body limits on the command string.
 _EDIT_INLINE_MAX_BYTES = 50_000
+
+_EDIT_TMPFILE_TEMPLATE = """python3 -c "
+import os, sys, json, base64
+
+old_path = base64.b64decode('{old_path_b64}').decode('utf-8')
+new_path = base64.b64decode('{new_path_b64}').decode('utf-8')
+target = base64.b64decode('{target_b64}').decode('utf-8')
+replace_all = {replace_all}
+
+try:
+    old = open(old_path, 'rb').read().decode('utf-8')
+    new = open(new_path, 'rb').read().decode('utf-8')
+finally:
+    for p in (old_path, new_path):
+        try: os.remove(p)
+        except OSError: pass
+
+if not os.path.isfile(target):
+    print(json.dumps({{'error': 'file_not_found'}}))
+    sys.exit(0)
+
+with open(target, 'rb') as f:
+    raw = f.read()
+
+try:
+    text = raw.decode('utf-8')
+except UnicodeDecodeError:
+    print(json.dumps({{'error': 'not_a_text_file'}}))
+    sys.exit(0)
+
+count = text.count(old)
+if count == 0:
+    print(json.dumps({{'error': 'string_not_found'}}))
+    sys.exit(0)
+if count > 1 and not replace_all:
+    print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+    sys.exit(0)
+
+result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+with open(target, 'wb') as f:
+    f.write(result.encode('utf-8'))
+
+print(json.dumps({{'count': count}}))
+" 2>/dev/null"""
+"""Server-side file edit via temp-file upload for large payloads.
+
+Old/new strings are uploaded as temporary files via `upload_files()`, then this
+script reads them, performs the replacement on the source file (which never
+leaves the sandbox), and cleans up the temp files.
+
+Output: single-line JSON with `{{"count": N}}` on success or
+`{{"error": ...}}` on failure.  Same contract as `_EDIT_COMMAND_TEMPLATE`.
+"""
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os, sys, base64, json
@@ -177,7 +232,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     File listing, grep, and glob use shell commands via `execute()`. Read uses
     a server-side Python script via `execute()` for paginated access. Write
     delegates content transfer to `upload_files()`. Edit uses a server-side
-    script for small payloads and falls back to file transfer for large ones.
+    script for small payloads and uploads old/new strings as temp files with
+    a server-side replace for large ones.
 
     Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
     and the `id` property.
@@ -343,8 +399,9 @@ except PermissionError:
 
         For small payloads (combined old/new under `_EDIT_INLINE_MAX_BYTES`),
         runs a server-side Python script via `execute()` — single round-trip,
-        no file transfer.  For larger payloads, falls back to
-        `download_files()` + local replace + `upload_files()`.
+        no file transfer.  For larger payloads, uploads old/new strings as
+        temp files and runs a server-side replace script — the source file
+        never leaves the sandbox.
 
         Args:
             file_path: Absolute path to the file to edit.
@@ -364,7 +421,7 @@ except PermissionError:
         if payload_size <= _EDIT_INLINE_MAX_BYTES:
             return self._edit_inline(file_path, old_string, new_string, replace_all)
 
-        return self._edit_via_transfer(file_path, old_string, new_string, replace_all)
+        return self._edit_via_upload(file_path, old_string, new_string, replace_all)
 
     def _edit_inline(
         self,
@@ -404,41 +461,60 @@ except PermissionError:
             occurrences=data.get("count", 1),
         )
 
-    def _edit_via_transfer(
+    def _edit_via_upload(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
-        """Download + local replace + upload for large payloads."""
-        responses = self.download_files([file_path])
-        resp = responses[0] if responses else None
-        if not resp or resp.error or resp.content is None:
-            detail = resp.error if resp and resp.error else "not found"
-            return EditResult(error=f"Error: Failed to read '{file_path}': {detail}")
+        """Upload old/new as temp files, replace server-side.
+
+        The source file never leaves the sandbox. Only the old/new strings are
+        transferred via `upload_files()`, and a server-side script reads them,
+        performs the replacement, and cleans up the temp files.
+        """
+        uid = base64.b32encode(os.urandom(10)).decode("ascii").lower()
+        old_tmp = f"/tmp/.deepagents_edit_{uid}_old"  # noqa: S108  # sandbox-internal temp file with 80-bit random uid
+        new_tmp = f"/tmp/.deepagents_edit_{uid}_new"  # noqa: S108
+
+        resps = self.upload_files(
+            [
+                (old_tmp, old_string.encode("utf-8")),
+                (new_tmp, new_string.encode("utf-8")),
+            ]
+        )
+        if len(resps) < 2:  # noqa: PLR2004  # expecting exactly 2 responses
+            return EditResult(error=f"Error editing file '{file_path}': upload returned no response")
+        for r in resps:
+            if r.error:
+                return EditResult(error=f"Error editing file '{file_path}': {r.error}")
+
+        cmd = _EDIT_TMPFILE_TEMPLATE.format(
+            old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
+            new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
+            target_b64=base64.b64encode(file_path.encode("utf-8")).decode("ascii"),
+            replace_all=replace_all,
+        )
+        result = self.execute(cmd)
+        output = result.output.rstrip()
 
         try:
-            text = resp.content.decode("utf-8")
-        except UnicodeDecodeError:
-            return EditResult(error=f"Error: File '{file_path}' is not a text file")
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return EditResult(error=f"Error: File '{file_path}' not found")
 
-        count = text.count(old_string)
-        if count == 0:
-            return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if count > 1 and not replace_all:
-            return EditResult(
-                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
-            )
+        if not isinstance(data, dict):
+            return EditResult(error=f"Error: File '{file_path}' not found")
 
-        result_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+        if "error" in data:
+            return self._map_edit_error(data["error"], file_path, old_string)
 
-        upload_resp = self.upload_files([(file_path, result_text.encode("utf-8"))])
-        upload_err = upload_resp[0].error if upload_resp else "upload returned no response"
-        if upload_err:
-            return EditResult(error=f"Error editing file '{file_path}': {upload_err}")
-
-        return EditResult(path=file_path, files_update=None, occurrences=count)
+        return EditResult(
+            path=file_path,
+            files_update=None,
+            occurrences=data.get("count", 1),
+        )
 
     @staticmethod
     def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:

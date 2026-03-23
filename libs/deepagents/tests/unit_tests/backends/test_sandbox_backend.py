@@ -1,12 +1,14 @@
 """Tests for BaseSandbox backend operations.
 
 Verifies that read and edit (small payload) use execute() for server-side
-operations, write uses upload_files, edit (large payload) falls back to
-download_files/upload_files, and command templates format correctly.
+operations, write uses upload_files, edit (large payload) uploads old/new as
+temp files with a server-side replace script, and command templates format
+correctly.
 """
 
 import base64
 import json
+import re
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -16,6 +18,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
     _EDIT_INLINE_MAX_BYTES,
+    _EDIT_TMPFILE_TEMPLATE,
     _GLOB_COMMAND_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
@@ -38,9 +41,51 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
+        # Simulate the _EDIT_TMPFILE_TEMPLATE server-side script
+        if "old_path = base64.b64decode(" in command and ".deepagents_edit_" in str(self._file_store):
+            return self._simulate_edit_tmpfile(command)
         output = self._next_output
         self._next_output = "1"
         return ExecuteResponse(output=output, exit_code=0, truncated=False)
+
+    def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
+        """Simulate the _EDIT_TMPFILE_TEMPLATE server-side script."""
+        old_m = re.search(r"old_path = base64\.b64decode\('([^']+)'\)", command)
+        new_m = re.search(r"new_path = base64\.b64decode\('([^']+)'\)", command)
+        tgt_m = re.search(r"target = base64\.b64decode\('([^']+)'\)", command)
+        ra_m = re.search(r"replace_all = (True|False)", command)
+
+        old_path = base64.b64decode(old_m.group(1)).decode("utf-8")
+        new_path = base64.b64decode(new_m.group(1)).decode("utf-8")
+        target = base64.b64decode(tgt_m.group(1)).decode("utf-8")
+        replace_all = ra_m.group(1) == "True"
+
+        old_data = self._file_store.pop(old_path, None)
+        new_data = self._file_store.pop(new_path, None)
+        if old_data is None or new_data is None:
+            return ExecuteResponse(output=json.dumps({"error": "temp_file_not_found"}), exit_code=0)
+
+        old_str = old_data.decode("utf-8")
+        new_str = new_data.decode("utf-8")
+
+        if target not in self._file_store:
+            return ExecuteResponse(output=json.dumps({"error": "file_not_found"}), exit_code=0)
+
+        raw = self._file_store[target]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return ExecuteResponse(output=json.dumps({"error": "not_a_text_file"}), exit_code=0)
+
+        count = text.count(old_str)
+        if count == 0:
+            return ExecuteResponse(output=json.dumps({"error": "string_not_found"}), exit_code=0)
+        if count > 1 and not replace_all:
+            return ExecuteResponse(output=json.dumps({"error": "multiple_occurrences", "count": count}), exit_code=0)
+
+        result = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
+        self._file_store[target] = result.encode("utf-8")
+        return ExecuteResponse(output=json.dumps({"count": count}), exit_code=0)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         self._uploaded.extend(files)
@@ -338,11 +383,11 @@ def test_sandbox_edit_inline_does_not_download() -> None:
     assert len(sandbox._uploaded) == 0
 
 
-# -- edit tests (transfer path: large strings → download + upload) ------------
+# -- edit tests (upload path: large strings → temp file upload + server-side replace)
 
 
 def test_sandbox_edit_transfer_basic() -> None:
-    """Test that edit() with large strings uses download + upload."""
+    """Test that edit() with large strings uses temp-file upload + server-side replace."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
@@ -355,7 +400,7 @@ def test_sandbox_edit_transfer_basic() -> None:
 
 
 def test_sandbox_edit_transfer_file_not_found() -> None:
-    """Test that transfer-path edit returns error when file doesn't exist."""
+    """Test that upload-path edit returns error when file doesn't exist."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
 
@@ -366,7 +411,7 @@ def test_sandbox_edit_transfer_file_not_found() -> None:
 
 
 def test_sandbox_edit_transfer_replace_all() -> None:
-    """Test that transfer-path edit with replace_all replaces all occurrences."""
+    """Test that upload-path edit with replace_all replaces all occurrences."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/file.txt"] = f"a{large_old}b{large_old}c".encode()
@@ -378,17 +423,18 @@ def test_sandbox_edit_transfer_replace_all() -> None:
     assert sandbox._file_store["/test/file.txt"] == b"aybyc"
 
 
-def test_sandbox_edit_transfer_does_not_call_execute() -> None:
-    """Test that transfer-path edit never passes content through execute()."""
+def test_sandbox_edit_upload_does_not_embed_content_in_command() -> None:
+    """Test that upload-path edit does not embed large strings in the command."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
-    sandbox.last_command = None
 
     sandbox.edit("/test/file.txt", large_old, "new")
 
-    # Transfer path should only use download_files + upload_files
-    assert sandbox.last_command is None
+    # The execute command should NOT contain the large old/new strings —
+    # only base64-encoded temp file paths (small, fixed-size).
+    assert sandbox.last_command is not None
+    assert large_old not in sandbox.last_command
 
 
 # -- remaining template tests --------------------------------------------------
@@ -416,6 +462,25 @@ def test_edit_command_template_format() -> None:
     assert "python3 -c" in cmd
     assert payload_b64 in cmd
     assert "__DEEPAGENTS_EDIT_EOF__" in cmd
+
+
+def test_edit_tmpfile_template_format() -> None:
+    """Test that _EDIT_TMPFILE_TEMPLATE can be formatted without KeyError."""
+    old_b64 = base64.b64encode(b"/tmp/old").decode("ascii")
+    new_b64 = base64.b64encode(b"/tmp/new").decode("ascii")
+    tgt_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+
+    cmd = _EDIT_TMPFILE_TEMPLATE.format(
+        old_path_b64=old_b64,
+        new_path_b64=new_b64,
+        target_b64=tgt_b64,
+        replace_all=False,
+    )
+
+    assert "python3 -c" in cmd
+    assert old_b64 in cmd
+    assert new_b64 in cmd
+    assert tgt_b64 in cmd
 
 
 def test_sandbox_read_embeds_b64_path_not_raw() -> None:
@@ -487,7 +552,7 @@ def test_sandbox_write_returns_error_on_upload_failure() -> None:
 
 
 def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
-    """Test that transfer-path edit surfaces upload_files errors."""
+    """Test that upload-path edit surfaces upload_files errors."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
@@ -495,7 +560,7 @@ def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
     def failing_upload(
         files: list[tuple[str, bytes]],
     ) -> list[FileUploadResponse]:
-        return [FileUploadResponse(path=files[0][0], error="permission_denied")]
+        return [FileUploadResponse(path=f[0], error="permission_denied") for f in files]
 
     sandbox.upload_files = failing_upload  # type: ignore[assignment]
 
@@ -506,7 +571,7 @@ def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
 
 
 def test_sandbox_edit_transfer_binary_file_returns_error() -> None:
-    """Test that transfer-path edit returns a clear error for non-UTF-8 files."""
+    """Test that upload-path edit returns a clear error for non-UTF-8 files."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/binary.bin"] = b"\x80\x81\x82\xff"
@@ -540,7 +605,7 @@ def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
 
 
 def test_sandbox_edit_transfer_returns_error_on_empty_upload_response() -> None:
-    """Test that transfer-path edit handles upload_files returning empty list."""
+    """Test that upload-path edit handles upload_files returning empty list."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
@@ -552,15 +617,20 @@ def test_sandbox_edit_transfer_returns_error_on_empty_upload_response() -> None:
     assert "no response" in result.error
 
 
-def test_sandbox_edit_transfer_surfaces_download_error_code() -> None:
-    """Test that transfer-path edit includes error code from download_files."""
+def test_sandbox_edit_upload_surfaces_upload_error_code() -> None:
+    """Test that upload-path edit includes error code from upload_files."""
     sandbox = MockSandbox()
     large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
 
-    def download_with_error(paths: list[str]) -> list[FileDownloadResponse]:
-        return [FileDownloadResponse(path=paths[0], content=None, error="permission_denied")]
+    def upload_with_error(
+        files: list[tuple[str, bytes]],
+    ) -> list[FileUploadResponse]:
+        return [
+            FileUploadResponse(path=files[0][0], error="permission_denied"),
+            FileUploadResponse(path=files[1][0], error="permission_denied"),
+        ]
 
-    sandbox.download_files = download_with_error  # type: ignore[assignment]
+    sandbox.upload_files = upload_with_error  # type: ignore[assignment]
 
     result = sandbox.edit("/test/file.txt", large_old, "new")
 

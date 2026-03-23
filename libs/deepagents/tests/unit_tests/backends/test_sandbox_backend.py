@@ -1,10 +1,12 @@
 """Tests for BaseSandbox backend operations.
 
-Verifies that write/edit use upload_files/download_files correctly and that
-remaining command templates format correctly.
+Verifies that read and edit (small payload) use execute() for server-side
+operations, write uses upload_files, edit (large payload) falls back to
+download_files/upload_files, and command templates format correctly.
 """
 
 import base64
+import json
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -12,7 +14,10 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import (
+    _EDIT_COMMAND_TEMPLATE,
+    _EDIT_INLINE_MAX_BYTES,
     _GLOB_COMMAND_TEMPLATE,
+    _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
 )
@@ -77,25 +82,24 @@ def test_glob_command_template_format() -> None:
     assert pattern_b64 in cmd
 
 
-def test_read_uses_download_files() -> None:
-    """Test that read() delegates to download_files(), not execute()."""
+def test_read_uses_execute() -> None:
+    """Test that read() delegates to execute() for server-side pagination."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"line one\nline two\nline three"
-    sandbox.last_command = None
+    sandbox._next_output = json.dumps({"encoding": "utf-8", "content": "line one\nline two\nline three"})
 
     result = sandbox.read("/test/file.txt")
 
     assert result.error is None
     assert result.file_data is not None
     assert "line one" in result.file_data["content"]
-    # read() should not call execute() at all
-    assert sandbox.last_command is None
+    # read() should call execute()
+    assert sandbox.last_command is not None
 
 
-def test_read_offset_and_limit() -> None:
-    """Test that read() applies line-based offset and limit."""
+def test_read_parses_offset_and_limit() -> None:
+    """Test that read() parses paginated content from the server-side script."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"a\nb\nc\nd\ne"
+    sandbox._next_output = json.dumps({"encoding": "utf-8", "content": "b\nc"})
 
     result = sandbox.read("/test/file.txt", offset=1, limit=2)
 
@@ -107,7 +111,7 @@ def test_read_offset_and_limit() -> None:
 def test_read_offset_exceeds_length() -> None:
     """Test that read() returns error when offset exceeds file length."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"only one line"
+    sandbox._next_output = json.dumps({"error": "Line offset 5 exceeds file length (1 lines)"})
 
     result = sandbox.read("/test/file.txt", offset=5)
 
@@ -118,7 +122,12 @@ def test_read_offset_exceeds_length() -> None:
 def test_read_empty_file() -> None:
     """Test that read() returns a sentinel message for empty files."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/empty.txt"] = b""
+    sandbox._next_output = json.dumps(
+        {
+            "encoding": "utf-8",
+            "content": "System reminder: File exists but has empty contents",
+        }
+    )
 
     result = sandbox.read("/test/empty.txt")
 
@@ -128,9 +137,9 @@ def test_read_empty_file() -> None:
 
 
 def test_read_binary_file() -> None:
-    """Test that read() base64-encodes non-UTF-8 content."""
+    """Test that read() returns base64-encoded content for non-UTF-8 files."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/binary.bin"] = b"\x80\x81\x82\xff"
+    sandbox._next_output = json.dumps({"encoding": "base64", "content": "gIGC/w=="})
 
     result = sandbox.read("/test/binary.bin")
 
@@ -142,11 +151,23 @@ def test_read_binary_file() -> None:
 def test_read_file_not_found() -> None:
     """Test that read() returns error for missing files."""
     sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "file_not_found"})
 
     result = sandbox.read("/test/missing.txt")
 
     assert result.error is not None
     assert "file_not_found" in result.error
+
+
+def test_read_handles_malformed_output() -> None:
+    """Test that read() gracefully handles non-JSON output from execute()."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "not json at all"
+
+    result = sandbox.read("/test/file.txt")
+
+    assert result.error is not None
+    assert "not found" in result.error
 
 
 # -- write tests --------------------------------------------------------------
@@ -203,24 +224,27 @@ def test_sandbox_write_returns_error_on_existing_file() -> None:
     assert len(sandbox._uploaded) == 0  # upload should not have been called
 
 
-# -- edit tests ----------------------------------------------------------------
+# -- edit tests (inline path: small strings → execute()) ----------------------
 
 
-def test_sandbox_edit_uses_download_upload() -> None:
-    """Test that edit() uses download_files + upload_files, not execute()."""
+def test_sandbox_edit_inline_basic() -> None:
+    """Test that edit() with small strings uses execute() for server-side replace."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"hello old world"
+    sandbox._next_output = json.dumps({"count": 1})
 
     result = sandbox.edit("/test/file.txt", "old", "new")
 
     assert result.error is None
     assert result.occurrences == 1
-    assert sandbox._file_store["/test/file.txt"] == b"hello new world"
+    # Should have called execute(), not download_files
+    assert sandbox.last_command is not None
+    assert len(sandbox._uploaded) == 0
 
 
-def test_sandbox_edit_file_not_found() -> None:
-    """Test that edit() returns error when file doesn't exist."""
+def test_sandbox_edit_inline_file_not_found() -> None:
+    """Test that inline edit returns error when file doesn't exist."""
     sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "file_not_found"})
 
     result = sandbox.edit("/test/missing.txt", "old", "new")
 
@@ -228,10 +252,10 @@ def test_sandbox_edit_file_not_found() -> None:
     assert "Failed to read" in result.error
 
 
-def test_sandbox_edit_string_not_found() -> None:
-    """Test that edit() returns error when old_string is not in the file."""
+def test_sandbox_edit_inline_string_not_found() -> None:
+    """Test that inline edit returns error when old_string is not in the file."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"hello world"
+    sandbox._next_output = json.dumps({"error": "string_not_found"})
 
     result = sandbox.edit("/test/file.txt", "missing", "new")
 
@@ -239,10 +263,10 @@ def test_sandbox_edit_string_not_found() -> None:
     assert "not found" in result.error
 
 
-def test_sandbox_edit_multiple_occurrences_without_replace_all() -> None:
-    """Test that edit() errors on multiple occurrences without replace_all."""
+def test_sandbox_edit_inline_multiple_occurrences() -> None:
+    """Test that inline edit errors on multiple occurrences without replace_all."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"foo bar foo"
+    sandbox._next_output = json.dumps({"error": "multiple_occurrences", "count": 2})
 
     result = sandbox.edit("/test/file.txt", "foo", "baz")
 
@@ -250,42 +274,160 @@ def test_sandbox_edit_multiple_occurrences_without_replace_all() -> None:
     assert "multiple times" in result.error.lower()
 
 
-def test_sandbox_edit_replace_all() -> None:
-    """Test that edit() with replace_all replaces all occurrences."""
+def test_sandbox_edit_inline_replace_all() -> None:
+    """Test that inline edit with replace_all returns correct count."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"foo bar foo"
+    sandbox._next_output = json.dumps({"count": 2})
 
     result = sandbox.edit("/test/file.txt", "foo", "baz", replace_all=True)
 
     assert result.error is None
     assert result.occurrences == 2
-    assert sandbox._file_store["/test/file.txt"] == b"baz bar baz"
 
 
-def test_sandbox_edit_with_special_strings() -> None:
-    """Test edit with strings containing curly braces."""
+def test_sandbox_edit_inline_special_strings() -> None:
+    """Test inline edit with strings containing curly braces."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"value = {old_key}"
+    sandbox._next_output = json.dumps({"count": 1})
 
     result = sandbox.edit("/test/file.txt", "{old_key}", "{new_key}")
 
     assert result.error is None
-    assert sandbox._file_store["/test/file.txt"] == b"value = {new_key}"
+    assert result.occurrences == 1
+
+
+def test_sandbox_edit_inline_binary_file() -> None:
+    """Test that inline edit returns error for non-UTF-8 files."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "not_a_text_file"})
+
+    result = sandbox.edit("/test/binary.bin", "old", "new")
+
+    assert result.error is not None
+    assert "not a text file" in result.error
+
+
+def test_sandbox_edit_inline_malformed_output() -> None:
+    """Test that inline edit handles non-JSON output from execute()."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "not json at all"
+
+    result = sandbox.edit("/test/file.txt", "old", "new")
+
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+def test_sandbox_edit_inline_does_not_download() -> None:
+    """Test that inline edit never calls download_files or upload_files."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+    download_called = False
+    original_download = sandbox.download_files
+
+    def tracking_download(paths: list[str]) -> list[FileDownloadResponse]:
+        nonlocal download_called
+        download_called = True
+        return original_download(paths)
+
+    sandbox.download_files = tracking_download  # type: ignore[assignment]
+
+    sandbox.edit("/test/file.txt", "old", "new")
+
+    assert not download_called
+    assert len(sandbox._uploaded) == 0
+
+
+# -- edit tests (transfer path: large strings → download + upload) ------------
+
+
+def test_sandbox_edit_transfer_basic() -> None:
+    """Test that edit() with large strings uses download + upload."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
+
+    result = sandbox.edit("/test/file.txt", large_old, "new")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    assert sandbox._file_store["/test/file.txt"] == b"prefix new suffix"
+
+
+def test_sandbox_edit_transfer_file_not_found() -> None:
+    """Test that transfer-path edit returns error when file doesn't exist."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+
+    result = sandbox.edit("/test/missing.txt", large_old, "new")
+
+    assert result.error is not None
+    assert "Failed to read" in result.error
+
+
+def test_sandbox_edit_transfer_replace_all() -> None:
+    """Test that transfer-path edit with replace_all replaces all occurrences."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"a{large_old}b{large_old}c".encode()
+
+    result = sandbox.edit("/test/file.txt", large_old, "y", replace_all=True)
+
+    assert result.error is None
+    assert result.occurrences == 2
+    assert sandbox._file_store["/test/file.txt"] == b"aybyc"
+
+
+def test_sandbox_edit_transfer_does_not_call_execute() -> None:
+    """Test that transfer-path edit never passes content through execute()."""
+    sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
+    sandbox.last_command = None
+
+    sandbox.edit("/test/file.txt", large_old, "new")
+
+    # Transfer path should only use download_files + upload_files
+    assert sandbox.last_command is None
 
 
 # -- remaining template tests --------------------------------------------------
 
 
-def test_sandbox_read_does_not_embed_path_in_command() -> None:
-    """Test that read() uses download_files, never leaking paths into execute()."""
+def test_read_command_template_format() -> None:
+    """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
+    path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+    cmd = _READ_COMMAND_TEMPLATE.format(
+        path_b64=path_b64,
+        file_type="text",
+        offset=0,
+        limit=2000,
+    )
+
+    assert "python3 -c" in cmd
+    assert path_b64 in cmd
+
+
+def test_edit_command_template_format() -> None:
+    """Test that _EDIT_COMMAND_TEMPLATE can be formatted without KeyError."""
+    payload_b64 = base64.b64encode(b'{"path":"/f","old":"a","new":"b"}').decode("ascii")
+    cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+
+    assert "python3 -c" in cmd
+    assert payload_b64 in cmd
+    assert "__DEEPAGENTS_EDIT_EOF__" in cmd
+
+
+def test_sandbox_read_embeds_b64_path_not_raw() -> None:
+    """Test that read() uses base64-encoded path, not raw path in execute()."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"content"
-    sandbox.last_command = None
+    sandbox._next_output = json.dumps({"encoding": "utf-8", "content": "content"})
 
     sandbox.read("/test/file.txt", offset=0, limit=50)
 
-    # read() should only use download_files, not execute()
-    assert sandbox.last_command is None
+    # read() should call execute() with base64-encoded path
+    assert sandbox.last_command is not None
+    assert "/test/file.txt" not in sandbox.last_command
 
 
 def test_sandbox_grep_literal_search() -> None:
@@ -344,10 +486,11 @@ def test_sandbox_write_returns_error_on_upload_failure() -> None:
     assert result.path is None
 
 
-def test_sandbox_edit_returns_error_on_upload_failure() -> None:
-    """Test that edit() surfaces upload_files errors during re-upload."""
+def test_sandbox_edit_transfer_returns_error_on_upload_failure() -> None:
+    """Test that transfer-path edit surfaces upload_files errors."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"hello old world"
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
 
     def failing_upload(
         files: list[tuple[str, bytes]],
@@ -356,34 +499,22 @@ def test_sandbox_edit_returns_error_on_upload_failure() -> None:
 
     sandbox.upload_files = failing_upload  # type: ignore[assignment]
 
-    result = sandbox.edit("/test/file.txt", "old", "new")
+    result = sandbox.edit("/test/file.txt", large_old, "new")
 
     assert result.error is not None
     assert "Error editing file" in result.error
 
 
-def test_sandbox_edit_binary_file_returns_error() -> None:
-    """Test that edit() returns a clear error for non-UTF-8 files."""
+def test_sandbox_edit_transfer_binary_file_returns_error() -> None:
+    """Test that transfer-path edit returns a clear error for non-UTF-8 files."""
     sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
     sandbox._file_store["/test/binary.bin"] = b"\x80\x81\x82\xff"
 
-    result = sandbox.edit("/test/binary.bin", "old", "new")
+    result = sandbox.edit("/test/binary.bin", large_old, "new")
 
     assert result.error is not None
     assert "not a text file" in result.error
-
-
-def test_sandbox_edit_does_not_embed_content_in_command() -> None:
-    """Test that edit() uses download/upload, not execute(), for data transfer."""
-    sandbox = MockSandbox()
-    large = "x" * 500_000
-    sandbox._file_store["/test/big.txt"] = large.encode("utf-8")
-    sandbox.last_command = None  # reset
-
-    sandbox.edit("/test/big.txt", "x", "y", replace_all=True)
-
-    # edit() should never call execute() — only download_files + upload_files
-    assert sandbox.last_command is None
 
 
 def test_sandbox_write_returns_correct_result_on_success() -> None:
@@ -408,28 +539,30 @@ def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
     assert "no response" in result.error
 
 
-def test_sandbox_edit_returns_error_on_empty_upload_response() -> None:
-    """Test that edit() handles upload_files returning an empty list."""
+def test_sandbox_edit_transfer_returns_error_on_empty_upload_response() -> None:
+    """Test that transfer-path edit handles upload_files returning empty list."""
     sandbox = MockSandbox()
-    sandbox._file_store["/test/file.txt"] = b"hello old world"
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+    sandbox._file_store["/test/file.txt"] = f"prefix {large_old} suffix".encode()
     sandbox.upload_files = lambda _files: []  # type: ignore[assignment]
 
-    result = sandbox.edit("/test/file.txt", "old", "new")
+    result = sandbox.edit("/test/file.txt", large_old, "new")
 
     assert result.error is not None
     assert "no response" in result.error
 
 
-def test_sandbox_edit_surfaces_download_error_code() -> None:
-    """Test that edit() includes the actual error code from download_files."""
+def test_sandbox_edit_transfer_surfaces_download_error_code() -> None:
+    """Test that transfer-path edit includes error code from download_files."""
     sandbox = MockSandbox()
+    large_old = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
 
     def download_with_error(paths: list[str]) -> list[FileDownloadResponse]:
         return [FileDownloadResponse(path=paths[0], content=None, error="permission_denied")]
 
     sandbox.download_files = download_with_error  # type: ignore[assignment]
 
-    result = sandbox.edit("/test/file.txt", "old", "new")
+    result = sandbox.edit("/test/file.txt", large_old, "new")
 
     assert result.error is not None
     assert "permission_denied" in result.error

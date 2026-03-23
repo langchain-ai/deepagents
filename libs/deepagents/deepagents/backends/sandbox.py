@@ -1,9 +1,10 @@
 """Base sandbox implementation.
 
 Provides `BaseSandbox`, a base class that implements
-`SandboxBackendProtocol`. File listing, grep, and glob use shell commands via
-`execute()`. Read, write, and edit delegate data transfer to
-`download_files()` / `upload_files()`.
+`SandboxBackendProtocol`. File listing, grep, glob, and read use shell
+commands via `execute()`. Write delegates content transfer to
+`upload_files()`. Edit uses server-side `execute()` for small payloads
+and falls back to `download_files()` / `upload_files()` for large ones.
 """
 
 from __future__ import annotations
@@ -72,14 +73,117 @@ Only the (small) base64-encoded *path* is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
+_EDIT_COMMAND_TEMPLATE = """python3 -c "
+import sys, os, base64, json
+
+payload = json.loads(base64.b64decode(sys.stdin.read().strip()).decode('utf-8'))
+path, old, new = payload['path'], payload['old'], payload['new']
+replace_all = payload.get('replace_all', False)
+
+if not os.path.isfile(path):
+    print(json.dumps({{'error': 'file_not_found'}}))
+    sys.exit(0)
+
+with open(path, 'rb') as f:
+    raw = f.read()
+
+try:
+    text = raw.decode('utf-8')
+except UnicodeDecodeError:
+    print(json.dumps({{'error': 'not_a_text_file'}}))
+    sys.exit(0)
+
+count = text.count(old)
+if count == 0:
+    print(json.dumps({{'error': 'string_not_found'}}))
+    sys.exit(0)
+if count > 1 and not replace_all:
+    print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+    sys.exit(0)
+
+result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+with open(path, 'wb') as f:
+    f.write(result.encode('utf-8'))
+
+print(json.dumps({{'count': count}}))
+" 2>/dev/null <<'__DEEPAGENTS_EDIT_EOF__'
+{payload_b64}
+__DEEPAGENTS_EDIT_EOF__"""
+"""Server-side file edit via `execute()`.
+
+Reads the file, performs string replacement, and writes back — all on the
+sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
+base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
+
+Output: single-line JSON with ``{{"count": N}}`` on success or
+``{{"error": ...}}`` on failure.
+
+Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
+to `download_files()` + local replace + `upload_files()`.
+"""
+
+# Maximum combined byte size of old_string + new_string for inline server-side
+# edit.  Payloads above this fall back to download + local replace + upload.
+_EDIT_INLINE_MAX_BYTES = 50_000
+
+_READ_COMMAND_TEMPLATE = """python3 -c "
+import os, sys, base64, json
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+
+if not os.path.isfile(path):
+    print(json.dumps({{'error': 'file_not_found'}}))
+    sys.exit(0)
+
+if os.path.getsize(path) == 0:
+    print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
+    sys.exit(0)
+
+with open(path, 'rb') as f:
+    raw = f.read()
+
+try:
+    text = raw.decode('utf-8')
+except UnicodeDecodeError:
+    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+    sys.exit(0)
+
+file_type = '{file_type}'
+if file_type == 'text':
+    lines = text.splitlines()
+    offset = {offset}
+    limit = {limit}
+    if offset >= len(lines):
+        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(len(lines)) + ' lines)'}}))
+        sys.exit(0)
+    text = chr(10).join(lines[offset:offset + limit])
+
+print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+" 2>/dev/null"""
+"""Read file content with server-side pagination.
+
+Runs on the sandbox via `execute()`. Only the requested page is returned,
+avoiding full-file transfer for paginated text reads. Uses base64-encoded
+path parameter to avoid shell escaping issues.
+
+Output: single-line JSON with either ``{{"encoding": ..., "content": ...}}``
+on success or ``{{"error": ...}}`` on failure.
+"""
+
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
-    """Base sandbox implementation with `execute()` as abstract method.
+    """Base sandbox implementation with `execute()` as the core abstract method.
 
     This class provides default implementations for all protocol methods.
+    File listing, grep, and glob use shell commands via `execute()`. Read uses
+    a server-side Python script via `execute()` for paginated access. Write
+    delegates content transfer to `upload_files()`. Edit uses a server-side
+    script for small payloads and falls back to file transfer for large ones.
 
-    Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
-    and the `id` property.
+    Subclasses must implement `execute()` and the `id` property. Default
+    `upload_files()` / `download_files()` implementations use `execute()` with
+    base64 encoding; subclasses with native transfer APIs should override them
+    for efficiency.
     """
 
     @abstractmethod
@@ -145,11 +249,14 @@ except PermissionError:
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content via `download_files()` with line-based pagination.
+        """Read file content with server-side line-based pagination.
 
-        Downloads file, then applies offset/limit slicing locally.
+        Runs a Python script on the sandbox via `execute()` that reads the
+        file, detects encoding, and applies offset/limit pagination for text
+        files.  Only the requested page is returned over the wire.
 
-        Binary files (non-UTF-8) are returned base64-encoded without slicing.
+        Binary files (non-UTF-8) are returned base64-encoded without
+        pagination.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -163,37 +270,35 @@ except PermissionError:
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
         """
-        responses = self.download_files([file_path])
-        resp = responses[0] if responses else None
-        if not resp or resp.error or resp.content is None:
-            detail = resp.error if resp and resp.error else "not found"
-            return ReadResult(error=f"File '{file_path}': {detail}")
+        file_type = _get_file_type(file_path)
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
 
-        raw = resp.content
-
-        if len(raw) == 0:
-            return ReadResult(
-                file_data=create_file_data(
-                    "System reminder: File exists but has empty contents",
-                    encoding="utf-8",
-                )
-            )
+        cmd = _READ_COMMAND_TEMPLATE.format(
+            path_b64=path_b64,
+            file_type=file_type,
+            offset=offset,
+            limit=limit,
+        )
+        result = self.execute(cmd)
+        output = result.output.rstrip()
 
         try:
-            content = raw.decode("utf-8")
-            encoding = "utf-8"
-        except UnicodeDecodeError:
-            content = base64.b64encode(raw).decode("ascii")
-            encoding = "base64"
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return ReadResult(error=f"File '{file_path}': not found")
 
-        file_type = _get_file_type(file_path)
-        if encoding == "utf-8" and file_type == "text":
-            lines = content.splitlines()
-            if offset >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-            content = "\n".join(lines[offset : offset + limit])
+        if not isinstance(data, dict):
+            return ReadResult(error=f"File '{file_path}': not found")
 
-        return ReadResult(file_data=create_file_data(content, encoding=encoding))
+        if "error" in data:
+            return ReadResult(error=f"File '{file_path}': {data['error']}")
+
+        return ReadResult(
+            file_data=create_file_data(
+                data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            )
+        )
 
     def write(
         self,
@@ -239,8 +344,10 @@ except PermissionError:
     ) -> EditResult:
         """Edit a file by replacing exact string occurrences.
 
-        Downloads the file via `download_files()`, performs the replacement
-        locally, and re-uploads via `upload_files()`.
+        For small payloads (combined old/new under `_EDIT_INLINE_MAX_BYTES`),
+        runs a server-side Python script via `execute()` — single round-trip,
+        no file transfer.  For larger payloads, falls back to
+        `download_files()` + local replace + `upload_files()`.
 
         Args:
             file_path: Absolute path to the file to edit.
@@ -255,7 +362,59 @@ except PermissionError:
             `EditResult` with `path` and `occurrences` on success, or `error`
                 on failure.
         """
-        # Download → local edit → upload to bypass ARG_MAX on large payloads.
+        payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
+
+        if payload_size <= _EDIT_INLINE_MAX_BYTES:
+            return self._edit_inline(file_path, old_string, new_string, replace_all)
+
+        return self._edit_via_transfer(file_path, old_string, new_string, replace_all)
+
+    def _edit_inline(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+    ) -> EditResult:
+        """Server-side replace via `execute()` — single round-trip."""
+        payload = json.dumps(
+            {
+                "path": file_path,
+                "old": old_string,
+                "new": new_string,
+                "replace_all": replace_all,
+            }
+        )
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+        result = self.execute(cmd)
+        output = result.output.rstrip()
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
+        if not isinstance(data, dict):
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
+        if "error" in data:
+            return self._map_edit_error(data["error"], file_path, old_string)
+
+        return EditResult(
+            path=file_path,
+            files_update=None,
+            occurrences=data.get("count", 1),
+        )
+
+    def _edit_via_transfer(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+    ) -> EditResult:
+        """Download + local replace + upload for large payloads."""
         responses = self.download_files([file_path])
         resp = responses[0] if responses else None
         if not resp or resp.error or resp.content is None:
@@ -271,7 +430,9 @@ except PermissionError:
         if count == 0:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
         if count > 1 and not replace_all:
-            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
+            return EditResult(
+                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
+            )
 
         result_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
 
@@ -281,6 +442,27 @@ except PermissionError:
             return EditResult(error=f"Error editing file '{file_path}': {upload_err}")
 
         return EditResult(path=file_path, files_update=None, occurrences=count)
+
+    @staticmethod
+    def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
+        """Map server-side error codes to `EditResult` objects."""
+        if error == "file_not_found":
+            return EditResult(
+                error=f"Error: Failed to read '{file_path}': file_not_found",
+            )
+        if error == "not_a_text_file":
+            return EditResult(
+                error=f"Error: File '{file_path}' is not a text file",
+            )
+        if error == "string_not_found":
+            return EditResult(
+                error=f"Error: String not found in file: '{old_string}'",
+            )
+        if error == "multiple_occurrences":
+            return EditResult(
+                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
+            )
+        return EditResult(error=f"Error editing file '{file_path}': {error}")
 
     def grep(
         self,
@@ -371,18 +553,91 @@ except PermissionError:
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
 
-    @abstractmethod
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload multiple files to the sandbox.
+        """Upload files via `execute()` with base64 stdin.
 
-        Implementations must support partial success - catch exceptions per-file
-        and return errors in `FileUploadResponse` objects rather than raising.
+        Default implementation transfers each file by running a Python script
+        on the sandbox that reads base64-encoded content from a heredoc and
+        writes it to disk.
+
+        Subclasses with native file transfer APIs (e.g. Modal, Daytona) should
+        override this for efficiency.  The heredoc approach embeds the full
+        base64 payload in the command string, which works well for local and
+        moderate-size transfers but may hit limits on sandboxes that relay the
+        command over HTTP.
+
+        Args:
+            files: List of `(path, content)` tuples to upload.
+
+        Returns:
+            List of `FileUploadResponse` objects, one per input file.
         """
+        responses: list[FileUploadResponse] = []
+        for path, data in files:
+            path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+            content_b64 = base64.b64encode(data).decode("ascii")
+            cmd = (
+                f'python3 -c "\n'
+                f"import os, sys, base64\n"
+                f"path = base64.b64decode('{path_b64}').decode('utf-8')\n"
+                f"data = base64.b64decode(sys.stdin.read().strip())\n"
+                f"os.makedirs(os.path.dirname(path) or '.', exist_ok=True)\n"
+                f"with open(path, 'wb') as f:\n"
+                f"    f.write(data)\n"
+                f"\" <<'__DEEPAGENTS_UPLOAD_EOF__'\n"
+                f"{content_b64}\n"
+                f"__DEEPAGENTS_UPLOAD_EOF__"
+            )
+            result = self.execute(cmd)
+            if result.exit_code != 0:
+                responses.append(
+                    FileUploadResponse(
+                        path=path,
+                        error=result.output.strip() or "upload failed",
+                    )
+                )
+            else:
+                responses.append(FileUploadResponse(path=path))
+        return responses
 
-    @abstractmethod
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download multiple files from the sandbox.
+        """Download files via `execute()` with base64 stdout.
 
-        Implementations must support partial success - catch exceptions per-file
-        and return errors in `FileDownloadResponse` objects rather than raising.
+        Default implementation reads each file by running a Python script on
+        the sandbox that base64-encodes the content and writes it to stdout.
+
+        Subclasses with native file transfer APIs should override this for
+        efficiency.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of `FileDownloadResponse` objects, one per input path.
         """
+        responses: list[FileDownloadResponse] = []
+        for path in paths:
+            path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+            cmd = (
+                f'python3 -c "\n'
+                f"import sys, base64\n"
+                f"path = base64.b64decode('{path_b64}').decode('utf-8')\n"
+                f"with open(path, 'rb') as f:\n"
+                f"    sys.stdout.write(base64.b64encode(f.read()).decode('ascii'))\n"
+                f'" 2>/dev/null'
+            )
+            result = self.execute(cmd)
+            if result.exit_code != 0:
+                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
+            else:
+                try:
+                    content = base64.b64decode(result.output)
+                    responses.append(FileDownloadResponse(path=path, content=content))
+                except Exception:  # noqa: BLE001
+                    responses.append(
+                        FileDownloadResponse(
+                            path=path,
+                            error="failed to decode file content",
+                        )
+                    )
+        return responses

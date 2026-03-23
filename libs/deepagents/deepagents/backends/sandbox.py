@@ -179,10 +179,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     delegates content transfer to `upload_files()`. Edit uses a server-side
     script for small payloads and falls back to file transfer for large ones.
 
-    Subclasses must implement `execute()` and the `id` property. Default
-    `upload_files()` / `download_files()` implementations use `execute()` with
-    base64 encoding; subclasses with native transfer APIs should override them
-    for efficiency.
+    Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
+    and the `id` property.
     """
 
     @abstractmethod
@@ -552,91 +550,18 @@ except PermissionError:
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
 
+    @abstractmethod
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload files via `execute()` with base64 stdin.
+        """Upload multiple files to the sandbox.
 
-        Default implementation transfers each file by running a Python script
-        on the sandbox that reads base64-encoded content from a heredoc and
-        writes it to disk.
-
-        Subclasses with native file transfer APIs (e.g. Modal, Daytona) should
-        override this for efficiency.  The heredoc approach embeds the full
-        base64 payload in the command string, which works well for local and
-        moderate-size transfers but may hit limits on sandboxes that relay the
-        command over HTTP.
-
-        Args:
-            files: List of `(path, content)` tuples to upload.
-
-        Returns:
-            List of `FileUploadResponse` objects, one per input file.
+        Implementations must support partial success - catch exceptions per-file
+        and return errors in `FileUploadResponse` objects rather than raising.
         """
-        responses: list[FileUploadResponse] = []
-        for path, data in files:
-            path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
-            content_b64 = base64.b64encode(data).decode("ascii")
-            cmd = (
-                f'python3 -c "\n'
-                f"import os, sys, base64\n"
-                f"path = base64.b64decode('{path_b64}').decode('utf-8')\n"
-                f"data = base64.b64decode(sys.stdin.read().strip())\n"
-                f"os.makedirs(os.path.dirname(path) or '.', exist_ok=True)\n"
-                f"with open(path, 'wb') as f:\n"
-                f"    f.write(data)\n"
-                f"\" <<'__DEEPAGENTS_UPLOAD_EOF__'\n"
-                f"{content_b64}\n"
-                f"__DEEPAGENTS_UPLOAD_EOF__"
-            )
-            result = self.execute(cmd)
-            if result.exit_code != 0:
-                responses.append(
-                    FileUploadResponse(
-                        path=path,
-                        error=result.output.strip() or "upload failed",
-                    )
-                )
-            else:
-                responses.append(FileUploadResponse(path=path))
-        return responses
 
+    @abstractmethod
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files via `execute()` with base64 stdout.
+        """Download multiple files from the sandbox.
 
-        Default implementation reads each file by running a Python script on
-        the sandbox that base64-encodes the content and writes it to stdout.
-
-        Subclasses with native file transfer APIs should override this for
-        efficiency.
-
-        Args:
-            paths: List of file paths to download.
-
-        Returns:
-            List of `FileDownloadResponse` objects, one per input path.
+        Implementations must support partial success - catch exceptions per-file
+        and return errors in `FileDownloadResponse` objects rather than raising.
         """
-        responses: list[FileDownloadResponse] = []
-        for path in paths:
-            path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
-            cmd = (
-                f'python3 -c "\n'
-                f"import sys, base64\n"
-                f"path = base64.b64decode('{path_b64}').decode('utf-8')\n"
-                f"with open(path, 'rb') as f:\n"
-                f"    sys.stdout.write(base64.b64encode(f.read()).decode('ascii'))\n"
-                f'" 2>/dev/null'
-            )
-            result = self.execute(cmd)
-            if result.exit_code != 0:
-                responses.append(FileDownloadResponse(path=path, error="file_not_found"))
-            else:
-                try:
-                    content = base64.b64decode(result.output)
-                    responses.append(FileDownloadResponse(path=path, content=content))
-                except Exception:  # noqa: BLE001
-                    responses.append(
-                        FileDownloadResponse(
-                            path=path,
-                            error="failed to decode file content",
-                        )
-                    )
-        return responses

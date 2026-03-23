@@ -6,6 +6,11 @@ Screen {
     layers: base autocomplete;
 }
 
+/* Thin scrollbars app-wide */
+* {
+    scrollbar-size-vertical: 1;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */

@@ -73,22 +73,40 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
 def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
     """Load environment variables, optionally anchored to an explicit path.
 
+    Loads from two locations in order (later files override earlier):
+    1. `~/.deepagents/.env` - global user config (for API keys)
+    2. Project `.env` - discovered from start_path upward
+
     Args:
         start_path: Directory to use for `.env` discovery.
         override: Whether loaded values should override existing env vars.
 
     Returns:
-        `True` when a dotenv file was loaded, `False` otherwise.
+        `True` when any dotenv file was loaded, `False` otherwise.
     """
     import dotenv
 
-    if start_path is None:
-        return dotenv.load_dotenv(override=override)
+    loaded = False
 
-    dotenv_path = _find_dotenv_from_start_path(start_path)
-    if dotenv_path is None:
-        return False
-    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+    # 1. Load global ~/.deepagents/.env first (for API keys)
+    global_dotenv = Path.home() / ".deepagents" / ".env"
+    try:
+        if global_dotenv.is_file():
+            dotenv.load_dotenv(dotenv_path=global_dotenv, override=override)
+            loaded = True
+    except OSError:
+        pass  # Silently ignore if global .env is not readable
+
+    # 2. Load project .env (can override global settings)
+    if start_path is None:
+        loaded = dotenv.load_dotenv(override=override) or loaded
+    else:
+        dotenv_path = _find_dotenv_from_start_path(start_path)
+        if dotenv_path is not None:
+            dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+            loaded = True
+
+    return loaded
 
 
 def _ensure_bootstrap() -> None:

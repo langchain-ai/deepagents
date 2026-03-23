@@ -549,6 +549,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 

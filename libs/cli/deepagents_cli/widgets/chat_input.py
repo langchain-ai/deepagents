@@ -90,6 +90,7 @@ class CompletionOption(Static):
 
     CompletionOption.completion-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 

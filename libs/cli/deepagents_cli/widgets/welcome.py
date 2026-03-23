@@ -175,13 +175,21 @@ class WelcomeBanner(Static):
         """
         parts: list[str | tuple[str, str | TStyle] | Content] = []
         colors = theme.get_theme_colors(self)
-        banner_color = colors.primary_dev if _is_editable_install() else colors.primary
-        parts.append(
-            (
-                get_banner() + "\n",
-                TStyle(foreground=TColor.parse(banner_color), bold=True),
+        ansi = self.app.theme == "textual-ansi"
+
+        if ansi:
+            banner_style: str | TStyle = "bold"
+        elif _is_editable_install():
+            banner_style = TStyle(
+                foreground=TColor.parse(colors.primary_dev), bold=True
             )
-        )
+        else:
+            banner_style = TStyle(foreground=TColor.parse(colors.primary), bold=True)
+        parts.append((get_banner() + "\n", banner_style))
+
+        # For ANSI theme, use "bold" (terminal foreground) instead of hex
+        accent: str | TStyle = "bold" if ansi else colors.primary
+        success_color: str = "bold green" if ansi else colors.success
 
         editable_path = _get_editable_install_path()
         if editable_path:
@@ -190,22 +198,23 @@ class WelcomeBanner(Static):
         if self._project_name:
             parts.extend(
                 [
-                    (f"{get_glyphs().checkmark} ", colors.success),
+                    (f"{get_glyphs().checkmark} ", success_color),
                     "LangSmith tracing: ",
                 ]
             )
             if project_url:
-                parts.append(
-                    (
-                        f"'{self._project_name}'",
-                        TStyle(
-                            foreground=TColor.parse(colors.primary),
-                            link=f"{project_url}?utm_source=deepagents-cli",
-                        ),
+                link_style: str | TStyle
+                if ansi:
+                    url = f"{project_url}?utm_source=deepagents-cli"
+                    link_style = TStyle(bold=True, link=url)
+                else:
+                    link_style = TStyle(
+                        foreground=TColor.parse(colors.primary),
+                        link=f"{project_url}?utm_source=deepagents-cli",
                     )
-                )
+                parts.append((f"'{self._project_name}'", link_style))
             else:
-                parts.append((f"'{self._project_name}'", colors.primary))
+                parts.append((f"'{self._project_name}'", accent))
             parts.append("\n")
 
         if self._cli_thread_id:
@@ -225,7 +234,7 @@ class WelcomeBanner(Static):
                 parts.append((f"Thread: {self._cli_thread_id}\n", "dim"))
 
         if self._mcp_tool_count > 0:
-            parts.append((f"{get_glyphs().checkmark} ", colors.success))
+            parts.append((f"{get_glyphs().checkmark} ", success_color))
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
@@ -239,9 +248,8 @@ class WelcomeBanner(Static):
                 )
             )
         else:
-            parts.append(
-                build_welcome_footer(primary_color=colors.primary, tip=self._tip)
-            )
+            ready_color = "bold" if ansi else colors.primary
+            parts.append(build_welcome_footer(primary_color=ready_color, tip=self._tip))
         return Content.assemble(*parts)
 
 

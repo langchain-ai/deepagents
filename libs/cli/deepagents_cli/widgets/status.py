@@ -107,12 +107,12 @@ class StatusBar(Horizontal):
 
     StatusBar .status-auto-approve.on {
         background: $success;
-        color: black;
+        color: $background;
     }
 
     StatusBar .status-auto-approve.off {
         background: $warning;
-        color: black;
+        color: $background;
     }
 
     StatusBar .status-message {

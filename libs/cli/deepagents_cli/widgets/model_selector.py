@@ -174,6 +174,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     ModelSelectorScreen .model-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 

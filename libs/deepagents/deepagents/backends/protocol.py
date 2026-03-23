@@ -77,7 +77,7 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
         return "permission_denied"
     if "not found" in msg or "no such file" in msg or "does not exist" in msg:
         return "file_not_found"
-    if "invalid path" in msg or "invalid argument" in msg:
+    if "invalid path" in msg or "invalid argument" in msg or "path traversal" in msg:
         return "invalid_path"
     return None
 

@@ -928,6 +928,7 @@ class DeepAgentsApp(App):
                 format_tool_warning_tui(tool),
                 severity="warning",
                 timeout=15,
+                markup=False,
             )
 
     def _init_agent_adapter(self) -> None:
@@ -1005,7 +1006,7 @@ class DeepAgentsApp(App):
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
                         msg = "No previous threads, starting new."
-                    self.notify(msg, severity="warning")
+                    self.notify(msg, severity="warning", markup=False)
             elif await thread_exists(resume):
                 self._lc_thread_id = resume
                 if self._assistant_id == default_agent:
@@ -1021,7 +1022,7 @@ class DeepAgentsApp(App):
                 hint = f"Thread '{resume}' not found."
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
-                self.notify(hint, severity="warning")
+                self.notify(hint, severity="warning", markup=False)
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -1175,11 +1176,6 @@ class DeepAgentsApp(App):
         """Handle background server startup failure."""
         self._connecting = False
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
-        self.notify(
-            f"Failed to start server: {event.error}",
-            severity="error",
-            timeout=30,
-        )
         # Update banner to show persistent failure state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
@@ -1309,6 +1305,7 @@ class DeepAgentsApp(App):
                         f"Auto-update failed. Run manually: {cmd}",
                         severity="warning",
                         timeout=15,
+                        markup=False,
                     )
             else:
                 cmd = upgrade_command()
@@ -1317,6 +1314,7 @@ class DeepAgentsApp(App):
                     f"Run: {cmd}",
                     severity="information",
                     timeout=15,
+                    markup=False,
                 )
         except Exception:
             logger.warning("Auto-update failed unexpectedly", exc_info=True)
@@ -3517,7 +3515,9 @@ class DeepAgentsApp(App):
         """
         self._quit_pending = True
         quit_timeout = 3
-        self.notify(f"Press {shortcut} again to quit", timeout=quit_timeout)
+        self.notify(
+            f"Press {shortcut} again to quit", timeout=quit_timeout, markup=False
+        )
         self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
     def action_interrupt(self) -> None:

@@ -1,10 +1,9 @@
-"""Base sandbox implementation.
+"""Base sandbox implementation (`BaseSandbox`) implementing `SandboxBackendProtocol`.
 
-Provides `BaseSandbox`, a base class that implements
-`SandboxBackendProtocol`. File listing, grep, glob, and read use shell
-commands via `execute()`. Write delegates content transfer to
-`upload_files()`. Edit uses server-side `execute()` for small payloads
-and falls back to `download_files()` / `upload_files()` for large ones.
+File listing, grep, glob, and read use shell commands via `execute()`. Write
+delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
+for small payloads and falls back to `download_files()` / `upload_files()`
+for large ones.
 """
 
 from __future__ import annotations

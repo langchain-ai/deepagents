@@ -1679,3 +1679,146 @@ class TestSubAgentMiddlewareValidation:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert "deprecated" in str(w[0].message).lower()
+
+
+class TestSubAgentRecursionLimit:
+    """Tests for recursion_limit propagation to subagents (issue #1698)."""
+
+    def test_subagent_inherits_parent_recursion_limit(self) -> None:
+        """Test that subagents inherit the parent's recursion_limit from runtime config.
+
+        Prior to this fix, subagents always ran with LangGraph's default
+        recursion_limit=25, regardless of the parent's configuration. This
+        caused GraphRecursionError for subagents performing 13+ tool calls.
+        """
+        # Track the config received by the subagent
+        captured_configs: list[RunnableConfig] = []
+
+        def capture_config_node(state: dict, config: RunnableConfig) -> dict:
+            captured_configs.append(config)
+            return {"messages": [AIMessage(content="done from subagent")]}
+
+        # Build a minimal subagent graph that captures its config
+        builder = StateGraph(dict)
+        builder.add_node("capture", capture_config_node)
+        builder.add_edge(START, "capture")
+        builder.add_edge("capture", END)
+        capture_graph = builder.compile()
+
+        # Parent model: call subagent, then finish
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do something",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_test_rl",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="General-purpose agent.",
+                    runnable=capture_graph,
+                )
+            ],
+        )
+
+        # Invoke with a custom recursion_limit
+        agent.invoke(
+            {"messages": [HumanMessage(content="test")]},
+            config={"configurable": {"thread_id": "test_rl"}, "recursion_limit": 500},
+        )
+
+        # Verify the subagent received the parent's recursion_limit
+        assert len(captured_configs) == 1, "Subagent should have been invoked exactly once"
+        subagent_limit = captured_configs[0].get("recursion_limit")
+        assert subagent_limit == 500, (
+            f"Subagent should inherit parent's recursion_limit=500, got {subagent_limit}"
+        )
+
+    def test_subagent_uses_default_1000_when_parent_has_no_explicit_limit(self) -> None:
+        """Test that subagents fall back to 1000 (create_deep_agent's default)."""
+        captured_configs: list[RunnableConfig] = []
+
+        def capture_config_node(state: dict, config: RunnableConfig) -> dict:
+            captured_configs.append(config)
+            return {"messages": [AIMessage(content="done from subagent")]}
+
+        builder = StateGraph(dict)
+        builder.add_node("capture", capture_config_node)
+        builder.add_edge(START, "capture")
+        builder.add_edge("capture", END)
+        capture_graph = builder.compile()
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do something",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_test_default_rl",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="General-purpose agent.",
+                    runnable=capture_graph,
+                )
+            ],
+        )
+
+        # Invoke without explicitly setting recursion_limit (create_deep_agent sets 1000)
+        agent.invoke(
+            {"messages": [HumanMessage(content="test")]},
+            config={"configurable": {"thread_id": "test_default_rl"}},
+        )
+
+        assert len(captured_configs) == 1
+        subagent_limit = captured_configs[0].get("recursion_limit")
+        assert subagent_limit == 1000, (
+            f"Subagent should use create_deep_agent's default recursion_limit=1000, got {subagent_limit}"
+        )
+
+    def test_subagent_recursion_limit_field_in_typedef(self) -> None:
+        """Test that SubAgent TypedDict accepts the recursion_limit field."""
+        spec: SubAgent = {
+            "name": "test-agent",
+            "description": "Test agent.",
+            "system_prompt": "You are a test agent.",
+            "recursion_limit": 200,
+        }
+        assert spec["recursion_limit"] == 200

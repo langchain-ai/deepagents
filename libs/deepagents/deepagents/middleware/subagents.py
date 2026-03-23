@@ -77,6 +77,14 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
 
+    recursion_limit: NotRequired[int]
+    """Override the recursion limit for this subagent.
+
+    If not specified, inherits the parent agent's recursion_limit from its
+    runtime config. LangGraph's default of 25 is too low for most multi-step
+    subagent tasks.
+    """
+
 
 class CompiledSubAgent(TypedDict):
     """A pre-compiled agent spec.
@@ -374,6 +382,7 @@ def _get_subagents_legacy(
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
+    recursion_limits: dict[str, int] | None = None,
 ) -> BaseTool:
     """Create a task tool from pre-built subagent graphs.
 
@@ -383,10 +392,15 @@ def _build_task_tool(  # noqa: C901
         subagents: List of subagent specs containing name, description, and runnable.
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
+        recursion_limits: Per-subagent recursion limit overrides.
+            If a subagent is not in this mapping, the parent agent's
+            recursion_limit is inherited from the runtime config.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
+    _recursion_limits = recursion_limits or {}
+
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
     subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
@@ -427,6 +441,25 @@ def _build_task_tool(  # noqa: C901
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
+    def _get_subagent_config(subagent_type: str, runtime: ToolRuntime) -> dict[str, Any]:
+        """Build the config dict for a subagent invocation.
+
+        Propagates the parent's recursion_limit to the subagent, with support
+        for per-subagent overrides via the ``recursion_limits`` mapping.
+        """
+        # Per-subagent override takes highest priority
+        if subagent_type in _recursion_limits:
+            return {"recursion_limit": _recursion_limits[subagent_type]}
+
+        # Inherit from parent's runtime config
+        parent_config = getattr(runtime, "config", None) or {}
+        parent_limit = parent_config.get("recursion_limit")
+        if parent_limit is not None:
+            return {"recursion_limit": parent_limit}
+
+        # Fallback: match create_deep_agent's default
+        return {"recursion_limit": 1000}
+
     def task(
         description: Annotated[
             str,
@@ -442,7 +475,8 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
+        config = _get_subagent_config(subagent_type, runtime)
+        result = subagent.invoke(subagent_state, config=config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -460,7 +494,8 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
+        config = _get_subagent_config(subagent_type, runtime)
+        result = await subagent.ainvoke(subagent_state, config=config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
@@ -607,7 +642,15 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
             raise ValueError(msg)
 
-        task_tool = _build_task_tool(subagent_specs, task_description)
+        # Collect per-subagent recursion_limit overrides
+        recursion_limits: dict[str, int] = {}
+        for spec in subagents or []:
+            if "runnable" not in spec and "graph_id" not in spec:
+                rl = spec.get("recursion_limit")
+                if rl is not None:
+                    recursion_limits[spec["name"]] = rl
+
+        task_tool = _build_task_tool(subagent_specs, task_description, recursion_limits=recursion_limits)
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:

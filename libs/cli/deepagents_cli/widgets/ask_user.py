@@ -271,12 +271,18 @@ class _QuestionWidget(Vertical):
         self._is_other_selected: bool = False
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Markdown
+
         q_text = self._question.get("question", "")
         if self._required:
-            markup = "[bold]$num. $text[/bold] [dim](required)[/dim]"
+            header_markup = "[bold]$num.[/bold] [dim](required)[/dim]"
         else:
-            markup = "[bold]$num. $text[/bold]"
-        yield Static(Content.from_markup(markup, num=self._index + 1, text=q_text))
+            header_markup = "[bold]$num.[/bold]"
+        yield Static(
+            Content.from_markup(header_markup, num=self._index + 1),
+            classes="ask-user-question-header",
+        )
+        yield Markdown(q_text, classes="ask-user-question-body")
 
         if self._q_type == "multiple_choice" and self._choices:
             for i, choice in enumerate(self._choices):

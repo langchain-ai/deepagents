@@ -420,7 +420,8 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
-            rendered = str(qw.query_one(Static).render())
+            header = qw.query_one(".ask-user-question-header", Static)
+            rendered = str(header.render())
             assert "required" in rendered
 
     async def test_required_label_hidden_for_optional_question(self) -> None:
@@ -433,7 +434,8 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
-            rendered = str(qw.query_one(Static).render())
+            header = qw.query_one(".ask-user-question-header", Static)
+            rendered = str(header.render())
             assert "required" not in rendered
 
     async def test_required_is_true_by_default(self) -> None:
@@ -445,7 +447,8 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
             assert qw._required is True
-            rendered = str(qw.query_one(Static).render())
+            header = qw.query_one(".ask-user-question-header", Static)
+            rendered = str(header.render())
             assert "required" in rendered
 
     async def test_optional_question_submits_with_empty_answer(self) -> None:

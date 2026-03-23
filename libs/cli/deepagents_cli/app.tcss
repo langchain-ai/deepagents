@@ -257,6 +257,15 @@ ToolCallMessage.-ascii:hover {
     padding-left: 2;
 }
 
+.ask-user-menu .ask-user-question-header {
+    height: 1;
+}
+
+.ask-user-menu .ask-user-question-body {
+    margin: 0;
+    padding: 0;
+}
+
 .ask-user-menu .ask-user-choice {
     height: 1;
     padding: 0 1;

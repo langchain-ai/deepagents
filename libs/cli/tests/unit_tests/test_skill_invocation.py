@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from deepagents_cli.command_registry import build_skill_commands, parse_skill_command
 from deepagents_cli.skills.load import load_skill_content
 
@@ -57,8 +59,8 @@ class TestLoadSkillContent:
         allowed = tmp_path / "skills"
         allowed.mkdir()
 
-        result = load_skill_content(str(outside), allowed_roots=[allowed])
-        assert result is None
+        with pytest.raises(PermissionError, match="resolves outside all allowed"):
+            load_skill_content(str(outside), allowed_roots=[allowed])
 
     def test_allowed_roots_blocks_symlink_escape(self, tmp_path: Path) -> None:
         secret = tmp_path / "secret.txt"
@@ -69,9 +71,9 @@ class TestLoadSkillContent:
         symlink = skills_dir / "SKILL.md"
         symlink.symlink_to(secret)
 
-        result = load_skill_content(str(symlink), allowed_roots=[tmp_path / "skills"])
         # Symlink resolves to secret.txt which is outside skills/
-        assert result is None
+        with pytest.raises(PermissionError, match="resolves outside all allowed"):
+            load_skill_content(str(symlink), allowed_roots=[tmp_path / "skills"])
 
     def test_empty_allowed_roots_skips_check(self, tmp_path: Path) -> None:
         skill_md = tmp_path / "anywhere" / "SKILL.md"
@@ -278,6 +280,26 @@ class TestHandleSkillCommand:
 
         texts = _app_message_texts(app)
         assert any("could not read" in t.lower() for t in texts)
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_containment_violation_shows_specific_message(self) -> None:
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                side_effect=PermissionError(
+                    "Skill path /tmp/evil resolves outside "
+                    "all allowed skill directories."
+                ),
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        texts = _app_message_texts(app)
+        assert any("resolves outside" in t for t in texts)
         app._send_to_agent.assert_not_awaited()
 
     async def test_empty_content_shows_error(self) -> None:

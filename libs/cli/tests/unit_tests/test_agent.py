@@ -839,6 +839,10 @@ class TestCreateCliAgentSkillsSources:
         project_agent_skills_dir = tmp_path / "project-agent-skills"
         project_agent_skills_dir.mkdir()
         built_in_dir = Settings.get_built_in_skills_dir()
+        user_claude_skills_dir = tmp_path / "user-claude-skills"
+        user_claude_skills_dir.mkdir()
+        project_claude_skills_dir = tmp_path / "project-claude-skills"
+        project_claude_skills_dir.mkdir()
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
@@ -849,11 +853,9 @@ class TestCreateCliAgentSkillsSources:
             project_agent_skills_dir
         )
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
-        mock_settings.get_user_claude_skills_dir.return_value = (
-            tmp_path / "user-claude-skills"
-        )
+        mock_settings.get_user_claude_skills_dir.return_value = user_claude_skills_dir
         mock_settings.get_project_claude_skills_dir.return_value = (
-            tmp_path / "project-claude-skills"
+            project_claude_skills_dir
         )
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []

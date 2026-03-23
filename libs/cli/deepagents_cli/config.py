@@ -676,7 +676,14 @@ def _read_config_toml_skills_dirs() -> list[str] | None:
     try:
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
-    except (FileNotFoundError, PermissionError, OSError, tomllib.TOMLDecodeError):
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read skills config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
         return None
 
     skills_section = data.get("skills", {})
@@ -782,15 +789,18 @@ class Settings:
     shell_allow_list: list[str] | None = None
     """Shell commands that don't require user approval."""
 
-    # Extra directories added to the skill path containment allowlist.
-    # These do NOT add new skill discovery locations — skills are still only
-    # discovered from the standard directories. They exist so that symlinks
-    # inside standard skill directories can point to targets in these
-    # additional locations without being rejected by the containment check
-    # in load_skill_content().
-    # Set via DEEPAGENTS_EXTRA_SKILLS_DIRS env var (colon-separated) or
-    # [skills].extra_allowed_dirs in ~/.deepagents/config.toml.
     extra_skills_dirs: list[Path] | None = None
+    """Extra directories added to the skill path containment allowlist.
+
+    These do NOT add new skill discovery locations — skills are still only
+    discovered from the standard directories. They exist so that symlinks inside
+    standard skill directories can point to targets in these additional
+    locations without being rejected by the containment check
+    in `load_skill_content`.
+
+    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+    """
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
@@ -1245,7 +1255,8 @@ class Settings:
     def get_extra_skills_dirs(self) -> list[Path]:
         """Get user-configured extra skill directories.
 
-        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths).
+        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
         Returns:
             List of extra skill directory paths, or empty list if not configured.

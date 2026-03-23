@@ -12,7 +12,7 @@ deepagents.middleware.skills.SkillsMiddleware directly.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from deepagents.backends.filesystem import FilesystemBackend
 
@@ -37,7 +37,7 @@ class ExtendedSkillMetadata(SkillMetadata):
             or `'claude (experimental)'`.
     """
 
-    source: str
+    source: Literal["built-in", "user", "project", "claude (experimental)"]
 
 
 # Re-export for CLI commands
@@ -159,8 +159,10 @@ def load_skill_content(
             If empty, containment is not checked.
 
     Returns:
-        Full text content of the SKILL.md file, or `None` on read failure
-            or containment violation.
+        Full text content of the SKILL.md file, or `None` on read failure.
+
+    Raises:
+        PermissionError: If the resolved path is outside all `allowed_roots`.
     """
     from pathlib import Path
 
@@ -171,7 +173,13 @@ def load_skill_content(
             "Skill path %s is outside all allowed roots, refusing to read",
             skill_path,
         )
-        return None
+        msg = (
+            f"Skill path {skill_path} resolves outside all allowed skill "
+            "directories. If this is a symlink, add the target directory to "
+            "DEEPAGENTS_EXTRA_SKILLS_DIRS or [skills].extra_allowed_dirs "
+            "in ~/.deepagents/config.toml."
+        )
+        raise PermissionError(msg)
 
     try:
         return path.read_text(encoding="utf-8")

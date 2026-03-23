@@ -837,7 +837,8 @@ def create_cli_agent(
 
         # Experimental: Claude Code skill directories
         user_claude_skills_dir = settings.get_user_claude_skills_dir()
-        sources.append(str(user_claude_skills_dir))
+        if user_claude_skills_dir.exists():
+            sources.append(str(user_claude_skills_dir))
         project_claude_skills_dir = settings.get_project_claude_skills_dir()
         if project_claude_skills_dir:
             sources.append(str(project_claude_skills_dir))

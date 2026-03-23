@@ -613,7 +613,10 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
 
         self._lc_thread_id = thread_id
-        """Avoid collision with App._thread_id."""
+        """LangChain thread identifier.
+
+        Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
+        """
 
         self._resume_thread_intent = resume_thread
 
@@ -1041,12 +1044,23 @@ class DeepAgentsApp(App):
                 "Filesystem error during skill discovery",
                 exc_info=True,
             )
+            self.notify(
+                "Could not scan skill directories. "
+                "Some /skill: commands may be unavailable.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
         except Exception:
             self._discovered_skills = []
             self._skill_allowed_roots = []
-            logger.warning(
-                "Unexpected error during skill discovery",
-                exc_info=True,
+            logger.exception("Unexpected error during skill discovery")
+            self.notify(
+                "Skill discovery failed unexpectedly. "
+                "/skill: commands may not work. Check logs for details.",
+                severity="warning",
+                timeout=8,
+                markup=False,
             )
 
     def _discover_skills_and_roots(
@@ -2803,6 +2817,13 @@ class DeepAgentsApp(App):
 
         try:
             content = await asyncio.to_thread(_load)
+        except PermissionError as exc:
+            logger.warning(
+                "Containment check failed for skill %r", skill_name, exc_info=True
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(str(exc)))
+            return
         except OSError as exc:
             logger.warning(
                 "Filesystem error loading skill %r", skill_name, exc_info=True
@@ -4062,12 +4083,17 @@ class DeepAgentsApp(App):
             self._session_state.auto_approve = self._auto_approve
 
     def action_toggle_tool_output(self) -> None:
-        """Toggle expand/collapse of the most recent tool output."""
-        # Find all tool messages with output, get the most recent one
-        # NoMatches is raised if no ToolCallMessage widgets exist
+        """Toggle expand/collapse of the most recent tool output or skill body."""
+        # Try skill messages first (most recent collapsible content)
+        with suppress(NoMatches):
+            skill_messages = list(self.query(SkillMessage))
+            for skill_msg in reversed(skill_messages):
+                if skill_msg._stripped_body.strip():
+                    skill_msg.toggle_body()
+                    return
+        # Fall back to tool messages with output
         with suppress(NoMatches):
             tool_messages = list(self.query(ToolCallMessage))
-            # Find ones with output, toggle the most recent
             for tool_msg in reversed(tool_messages):
                 if tool_msg.has_output:
                     tool_msg.toggle_output()

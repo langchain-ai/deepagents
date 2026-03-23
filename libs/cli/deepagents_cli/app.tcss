@@ -114,15 +114,15 @@ Screen {
 /* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
 .diff-removed {
     height: auto;
-    color: $diff-remove-fg;
-    background: $diff-remove-bg;
+    color: $text-error;
+    background: $error-muted;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
-    color: $diff-add-fg;
-    background: $diff-add-bg;
+    color: $text-success;
+    background: $success-muted;
     padding: 0 1;
 }
 
@@ -134,11 +134,11 @@ Screen {
 
 /* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
 .diff-line-removed {
-    background: $diff-remove-bg;
+    background: $error-muted;
 }
 
 .diff-line-added {
-    background: $diff-add-bg;
+    background: $success-muted;
 }
 
 /* Mode-specific borders for UserMessage */
@@ -164,15 +164,15 @@ UserMessage.-ascii.-mode-command {
 }
 
 QueuedUserMessage.-ascii {
-    border-left: ascii $muted;
+    border-left: ascii $panel;
 }
 
 ToolCallMessage.-ascii {
-    border-left: ascii $tool-border;
+    border-left: ascii $panel;
 }
 
 ToolCallMessage.-ascii:hover {
-    border-left: ascii $tool-border-hover;
+    border-left: ascii $secondary;
 }
 
 /* Approval command — warning color for shell commands */

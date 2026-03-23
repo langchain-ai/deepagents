@@ -236,7 +236,7 @@ class QueuedUserMessage(Static):
         padding: 0 1;
         margin: 1 0 0 0;
         background: transparent;
-        border-left: wide $muted;
+        border-left: wide $panel;
         opacity: 0.6;
     }
     """
@@ -402,7 +402,7 @@ class ToolCallMessage(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide $tool-border;
+        border-left: wide $panel;
     }
 
     ToolCallMessage .tool-header {
@@ -412,7 +412,7 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage .tool-args {
-        color: $muted;
+        color: $text-muted;
         margin-left: 3;
     }
 
@@ -450,11 +450,11 @@ class ToolCallMessage(Vertical):
 
     ToolCallMessage .tool-output-hint {
         margin-left: 0;
-        color: $muted;
+        color: $text-muted;
     }
 
     ToolCallMessage:hover {
-        border-left: wide $tool-border-hover;
+        border-left: wide $secondary;
     }
     """
     """Left border tracks tool lifecycle; hover brightens for interactivity."""
@@ -1273,13 +1273,13 @@ class DiffMessage(_TimestampClickMixin, Static):
     }
 
     DiffMessage .diff-add {
-        color: $diff-add-fg;
-        background: $diff-add-bg;
+        color: $text-success;
+        background: $success-muted;
     }
 
     DiffMessage .diff-remove {
-        color: $diff-remove-fg;
-        background: $diff-remove-bg;
+        color: $text-error;
+        background: $error-muted;
     }
 
     DiffMessage .diff-context {
@@ -1334,7 +1334,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         height: auto;
         padding: 1;
         margin: 1 0;
-        background: $error-bg;
+        background: $error-muted;
         color: white;
         border-left: wide $error;
     }

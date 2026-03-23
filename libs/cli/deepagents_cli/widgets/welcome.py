@@ -96,6 +96,7 @@ class WelcomeBanner(Static):
         self._failure_error: str = ""
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
+        self._tip: str = random.choice(_TIPS)  # noqa: S311
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -238,7 +239,9 @@ class WelcomeBanner(Static):
                 )
             )
         else:
-            parts.append(build_welcome_footer(primary_color=colors.primary))
+            parts.append(
+                build_welcome_footer(primary_color=colors.primary, tip=self._tip)
+            )
         return Content.assemble(*parts)
 
 
@@ -281,21 +284,27 @@ def build_connecting_footer(
     return Content.styled(text, "dim")
 
 
-def build_welcome_footer(*, primary_color: str = theme.PRIMARY) -> Content:
+def build_welcome_footer(
+    *, primary_color: str = theme.PRIMARY, tip: str | None = None
+) -> Content:
     """Build the footer shown at the bottom of the welcome banner.
 
-    Includes a randomly selected tip to help users discover features.
+    Includes a tip to help users discover features.
 
     Args:
         primary_color: Color string for the ready prompt.
 
             Defaults to the module-level ANSI `PRIMARY` constant; widget callers
             should pass the active theme's hex value.
+        tip: Tip text to display. When `None`, a random tip is selected.
+
+            Pass an explicit value to keep the tip stable across re-renders.
 
     Returns:
         Content with the ready prompt and a tip.
     """
-    tip = random.choice(_TIPS)  # noqa: S311
+    if tip is None:
+        tip = random.choice(_TIPS)  # noqa: S311
     return Content.assemble(
         ("\nReady to code! What would you like to build?\n", primary_color),
         (f"Tip: {tip}", "dim italic"),

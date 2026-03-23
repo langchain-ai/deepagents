@@ -126,7 +126,19 @@ class TestThemeEntryRegistry:
             ("langchain-light", False, True),
             ("textual-dark", True, False),
             ("textual-light", False, False),
-            ("textual-ansi", True, False),
+            ("textual-ansi", False, False),
+            # Community themes
+            ("dracula", True, False),
+            ("monokai", True, False),
+            ("nord", True, False),
+            ("tokyo-night", True, False),
+            ("gruvbox", True, False),
+            ("catppuccin-mocha", True, False),
+            ("solarized-dark", True, False),
+            ("solarized-light", False, False),
+            ("catppuccin-latte", False, False),
+            ("atom-one-dark", True, False),
+            ("atom-one-light", False, False),
         ],
     )
     def test_entry_flags(self, name: str, dark: bool, custom: bool) -> None:
@@ -152,16 +164,8 @@ class TestThemeEntryRegistry:
 
 EXPECTED_CSS_KEYS = frozenset(
     {
-        "muted",
-        "tool-border",
-        "tool-border-hover",
         "mode-bash",
         "mode-command",
-        "diff-add-fg",
-        "diff-add-bg",
-        "diff-remove-fg",
-        "diff-remove-bg",
-        "error-bg",
     }
 )
 
@@ -175,15 +179,15 @@ class TestGetCssVariableDefaults:
 
     def test_dark_mode_uses_dark_colors(self) -> None:
         result = get_css_variable_defaults(dark=True)
-        assert result["muted"] == DARK_COLORS.muted
+        assert result["mode-bash"] == DARK_COLORS.mode_bash
 
     def test_light_mode_uses_light_colors(self) -> None:
         result = get_css_variable_defaults(dark=False)
-        assert result["muted"] == LIGHT_COLORS.muted
+        assert result["mode-bash"] == LIGHT_COLORS.mode_bash
 
     def test_explicit_colors_take_precedence(self) -> None:
         result = get_css_variable_defaults(dark=True, colors=LIGHT_COLORS)
-        assert result["muted"] == LIGHT_COLORS.muted
+        assert result["mode-bash"] == LIGHT_COLORS.mode_bash
 
     def test_all_values_are_hex_colors(self) -> None:
         import re
@@ -269,37 +273,90 @@ class TestGetThemeColors:
     def test_no_args_returns_dark_colors(self) -> None:
         assert get_theme_colors() is DARK_COLORS
 
-    def test_known_dark_theme(self) -> None:
+    def test_custom_dark_theme_returns_stored_colors(self) -> None:
         class FakeApp:
             theme = "langchain"
 
         assert get_theme_colors(FakeApp()) is DARK_COLORS
 
-    def test_known_light_theme(self) -> None:
+    def test_custom_light_theme_returns_stored_colors(self) -> None:
         class FakeApp:
             theme = "langchain-light"
 
         assert get_theme_colors(FakeApp()) is LIGHT_COLORS
 
+    def test_builtin_theme_resolves_dynamically(self) -> None:
+        """Built-in Textual themes derive colors from current_theme."""
+
+        class CurrentTheme:
+            dark = True
+            primary = "#BD93F9"
+            secondary = "#6272A4"
+            accent = "#FF79C6"
+            panel = "#313442"
+            success = "#50FA7B"
+            warning = "#FFB86C"
+            error = "#FF5555"
+            foreground = "#F8F8F2"
+            background = "#282A36"
+            surface = "#2B2E3B"
+
+        class FakeApp:
+            theme = "dracula"
+            current_theme = CurrentTheme()
+
+        colors = get_theme_colors(FakeApp())
+        assert colors.primary == "#BD93F9"
+        assert colors.background == "#282A36"
+        # App-specific fields fall back to base
+        assert colors.primary_dev == DARK_COLORS.primary_dev
+        assert colors.muted == DARK_COLORS.muted
+
+    def test_builtin_theme_ansi_falls_back(self) -> None:
+        """ANSI theme has non-hex values; falls back to base palette."""
+
+        class CurrentTheme:
+            dark = False
+            primary = "ansi_blue"
+            secondary = "ansi_cyan"
+            accent = "ansi_bright_blue"
+            panel = "ansi_default"
+            success = "ansi_green"
+            warning = "ansi_yellow"
+            error = "ansi_red"
+            foreground = "ansi_default"
+            background = "ansi_default"
+            surface = "ansi_default"
+
+        class FakeApp:
+            theme = "textual-ansi"
+            current_theme = CurrentTheme()
+
+        colors = get_theme_colors(FakeApp())
+        # Non-hex values fall back to light base (ansi theme is dark=False)
+        assert colors.primary == LIGHT_COLORS.primary
+        assert colors.background == LIGHT_COLORS.background
+
     def test_unknown_theme_dark_fallback(self) -> None:
         class CurrentTheme:
             dark = True
+            primary = "#112233"
+            secondary = "#445566"
+            accent = "#778899"
+            panel = "#AABBCC"
+            success = "#AABBCC"
+            warning = "#AABBCC"
+            error = "#AABBCC"
+            foreground = "#AABBCC"
+            background = "#AABBCC"
+            surface = "#AABBCC"
 
         class FakeApp:
             theme = "nonexistent"
             current_theme = CurrentTheme()
 
-        assert get_theme_colors(FakeApp()) is DARK_COLORS
-
-    def test_unknown_theme_light_fallback(self) -> None:
-        class CurrentTheme:
-            dark = False
-
-        class FakeApp:
-            theme = "nonexistent"
-            current_theme = CurrentTheme()
-
-        assert get_theme_colors(FakeApp()) is LIGHT_COLORS
+        colors = get_theme_colors(FakeApp())
+        assert colors.primary == "#112233"
 
     def test_widget_with_app_property(self) -> None:
         """Simulates a mounted widget whose .app resolves to an App."""
@@ -443,7 +500,7 @@ class TestThemeColorsMerged:
         result = ThemeColors.merged(DARK_COLORS, {"primary": "#112233"})
         assert result.primary == "#112233"
         # Other fields unchanged
-        assert result.muted == DARK_COLORS.muted
+        assert result.accent == DARK_COLORS.accent
 
     def test_multiple_overrides(self) -> None:
         result = ThemeColors.merged(

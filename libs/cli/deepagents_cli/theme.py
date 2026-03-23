@@ -1,15 +1,16 @@
 """LangChain brand colors and semantic constants for the CLI.
 
 Single source of truth for color values used in Python code (Rich markup,
-`Content.styled`, `Content.from_markup`). CSS-side styling should reference
-Textual CSS variables: built-in variables (`$primary`, `$background`, etc.) are
-set via `register_theme()` in `DeepAgentsApp.__init__`, while app-specific
-variables (`$muted`, `$tool-border`, etc.) are backed by these constants via
+`Content.styled`, `Content.from_markup`).  CSS-side styling should reference
+Textual CSS variables: built-in variables
+(`$primary`, `$background`, `$text-muted`, `$error-muted`, etc.) are set via
+`register_theme()` in `DeepAgentsApp.__init__`, while the few app-specific
+variables (`$mode-bash`, `$mode-command`) are backed by these constants via
 `App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
-`get_css_variable_defaults(dark=...)`. For the full semantic color palette,
-look up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
+`get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
+up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
 
 Users can define custom themes in `~/.deepagents/config.toml` under
 `[themes.<name>]` sections. Each section must include `label` (str) and `dark`
@@ -78,6 +79,9 @@ LC_GREEN_BG = "#1C2A38"
 LC_PINK_BG = "#2A1F32"
 """Subtle pink-tinted background for diff removals / errors."""
 
+LC_PANEL = "#25283B"
+"""Panel — differentiated section background (above surface)."""
+
 
 # ---------------------------------------------------------------------------
 # Brand palette — light
@@ -123,6 +127,9 @@ LC_LIGHT_GREEN_BG = "#DCFCE7"
 
 LC_LIGHT_PINK_BG = "#FEE2E2"
 """Subtle pink-tinted background for diff removals / errors."""
+
+LC_LIGHT_PANEL = "#E0E1E6"
+"""Panel for light theme — differentiated section background."""
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +231,12 @@ class ThemeColors:
     secondary: str
     """Secondary accent for badges, labels, and decorative highlights."""
 
+    accent: str
+    """Attention-drawing contrast accent, distinct from primary/secondary."""
+
+    panel: str
+    """Differentiated section background (above surface)."""
+
     success: str
     """Positive outcomes — tool success, approved actions."""
 
@@ -250,30 +263,6 @@ class ThemeColors:
 
     surface: str
     """Elevated card / panel background."""
-
-    diff_add_fg: str
-    """Added-line foreground in inline diffs."""
-
-    diff_add_bg: str
-    """Added-line background in inline diffs."""
-
-    diff_remove_fg: str
-    """Removed-line foreground in inline diffs."""
-
-    diff_remove_bg: str
-    """Removed-line background in inline diffs."""
-
-    tool_border: str
-    """Tool-call card border."""
-
-    tool_border_hover: str
-    """Tool-call card border on hover / focus."""
-
-    error_bg: str
-    """Subtle tinted background for error states."""
-
-    spinner: str
-    """Loading spinner color."""
 
     def __post_init__(self) -> None:
         """Validate that every field is a valid hex color.
@@ -316,6 +305,8 @@ DARK_COLORS = ThemeColors(
     primary=LC_BLUE,
     primary_dev=LC_ORANGE,
     secondary=LC_PURPLE,
+    accent=LC_GREEN,
+    panel=LC_PANEL,
     success=LC_GREEN,
     warning=LC_AMBER,
     error=LC_PINK,
@@ -325,14 +316,6 @@ DARK_COLORS = ThemeColors(
     foreground=LC_BODY,
     background=LC_DARK,
     surface=LC_CARD,
-    diff_add_fg=LC_GREEN,
-    diff_add_bg=LC_GREEN_BG,
-    diff_remove_fg=LC_PINK,
-    diff_remove_bg=LC_PINK_BG,
-    tool_border=LC_BORDER_DK,
-    tool_border_hover=LC_BORDER_LT,
-    error_bg=LC_PINK_BG,
-    spinner=LC_BLUE,
 )
 """Color set for the dark LangChain theme."""
 
@@ -340,6 +323,8 @@ LIGHT_COLORS = ThemeColors(
     primary=LC_LIGHT_BLUE,
     primary_dev=LC_LIGHT_ORANGE,
     secondary=LC_LIGHT_PURPLE,
+    accent=LC_LIGHT_GREEN,
+    panel=LC_LIGHT_PANEL,
     success=LC_LIGHT_GREEN,
     warning=LC_LIGHT_AMBER,
     error=LC_LIGHT_PINK,
@@ -349,14 +334,6 @@ LIGHT_COLORS = ThemeColors(
     foreground=LC_LIGHT_BODY,
     background=LC_LIGHT_BG,
     surface=LC_LIGHT_SURFACE,
-    diff_add_fg=LC_LIGHT_GREEN,
-    diff_add_bg=LC_LIGHT_GREEN_BG,
-    diff_remove_fg=LC_LIGHT_PINK,
-    diff_remove_bg=LC_LIGHT_PINK_BG,
-    tool_border=LC_LIGHT_BORDER,
-    tool_border_hover=LC_LIGHT_BORDER_HVR,
-    error_bg=LC_LIGHT_PINK_BG,
-    spinner=LC_LIGHT_BLUE,
 )
 """Color set for the light LangChain theme."""
 
@@ -411,26 +388,41 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
         colors=LIGHT_COLORS,
     )
     # Textual built-in themes — not registered via register_theme() (Textual's
-    # own $primary, $background, etc. apply), but carry color sets for custom
-    # CSS vars.
-    r["textual-dark"] = ThemeEntry(
-        label="Textual Dark",
-        dark=True,
-        colors=DARK_COLORS,
-        custom=False,
-    )
-    r["textual-light"] = ThemeEntry(
-        label="Textual Light",
-        dark=False,
-        colors=LIGHT_COLORS,
-        custom=False,
-    )
-    r["textual-ansi"] = ThemeEntry(
-        label="Terminal (ANSI)",
-        dark=True,
-        colors=DARK_COLORS,
-        custom=False,
-    )
+    # own $primary, $background, etc. apply). The `colors` field provides
+    # fallback values for app-specific CSS vars ($mode-bash, $mode-command) and
+    # Python-side styling.  For standard properties (primary, secondary, etc.),
+    # get_theme_colors() dynamically resolves from the actual Textual theme at
+    # runtime so the Python and CSS color systems stay in sync.
+
+    def _bi(label: str, *, is_dark: bool) -> ThemeEntry:
+        return ThemeEntry(
+            label=label,
+            dark=is_dark,
+            colors=DARK_COLORS if is_dark else LIGHT_COLORS,
+            custom=False,
+        )
+
+    r["textual-dark"] = _bi("Textual Dark", is_dark=True)
+    r["textual-light"] = _bi("Textual Light", is_dark=False)
+    r["textual-ansi"] = _bi("Terminal (ANSI)", is_dark=False)
+    # Popular community themes (all ship with Textual >= 8.0)
+    r["atom-one-dark"] = _bi("Atom One Dark", is_dark=True)
+    r["atom-one-light"] = _bi("Atom One Light", is_dark=False)
+    r["catppuccin-frappe"] = _bi("Catppuccin Frappé", is_dark=True)
+    r["catppuccin-latte"] = _bi("Catppuccin Latte", is_dark=False)
+    r["catppuccin-macchiato"] = _bi("Catppuccin Macchiato", is_dark=True)
+    r["catppuccin-mocha"] = _bi("Catppuccin Mocha", is_dark=True)
+    r["dracula"] = _bi("Dracula", is_dark=True)
+    r["flexoki"] = _bi("Flexoki", is_dark=True)
+    r["gruvbox"] = _bi("Gruvbox", is_dark=True)
+    r["monokai"] = _bi("Monokai", is_dark=True)
+    r["nord"] = _bi("Nord", is_dark=True)
+    r["rose-pine"] = _bi("Rosé Pine", is_dark=True)
+    r["rose-pine-dawn"] = _bi("Rosé Pine Dawn", is_dark=False)
+    r["rose-pine-moon"] = _bi("Rosé Pine Moon", is_dark=True)
+    r["solarized-dark"] = _bi("Solarized Dark", is_dark=True)
+    r["solarized-light"] = _bi("Solarized Light", is_dark=False)
+    r["tokyo-night"] = _bi("Tokyo Night", is_dark=True)
     return r
 
 
@@ -601,6 +593,10 @@ def get_css_variable_defaults(
 ) -> dict[str, str]:
     """Return custom CSS variable defaults for the given mode.
 
+    Most styling is handled by Textual's built-in CSS variables (`$primary`,
+    `$text-muted`, `$error-muted`, etc.).  This function only returns
+    app-specific semantic variables that have no Textual equivalent.
+
     Args:
         dark: Selects `DARK_COLORS` or `LIGHT_COLORS` when `colors` is None.
         colors: Explicit color set to use. Takes precedence over `dark`.
@@ -610,21 +606,79 @@ def get_css_variable_defaults(
     """
     c = colors if colors is not None else (DARK_COLORS if dark else LIGHT_COLORS)
     return {
-        "muted": c.muted,
-        "tool-border": c.tool_border,
-        "tool-border-hover": c.tool_border_hover,
         "mode-bash": c.mode_bash,
         "mode-command": c.mode_command,
-        "diff-add-fg": c.diff_add_fg,
-        "diff-add-bg": c.diff_add_bg,
-        "diff-remove-fg": c.diff_remove_fg,
-        "diff-remove-bg": c.diff_remove_bg,
-        "error-bg": c.error_bg,
     }
+
+
+def _resolve_app(widget_or_app: object) -> object:
+    """Resolve a widget or App to the App instance.
+
+    Args:
+        widget_or_app: Textual `App` or a mounted widget.
+
+    Returns:
+        The resolved App instance.
+    """
+    return (
+        widget_or_app.app  # type: ignore[attr-defined]
+        if hasattr(type(widget_or_app), "app")
+        else widget_or_app
+    )
+
+
+def _colors_from_textual_theme(app: object) -> ThemeColors:
+    """Construct `ThemeColors` from the app's active Textual theme.
+
+    Reads standard properties (primary, secondary, etc.) from the resolved
+    theme so Python-side styling matches CSS.  App-specific fields (muted,
+    mode_bash, mode_command, primary_dev) fall back to the dark/light base
+    since they have no Textual equivalent.
+
+    Non-hex values (e.g. ``ansi_blue`` in the ANSI theme) are detected and
+    fall back to the base palette automatically.
+
+    Args:
+        app: The Textual App instance.
+
+    Returns:
+        `ThemeColors` derived from the active theme.
+    """
+    ct = app.current_theme  # type: ignore[attr-defined]
+    dark: bool = ct.dark
+    base = DARK_COLORS if dark else LIGHT_COLORS
+
+    def _hex_or(val: str | None, fallback: str) -> str:
+        """Return *val* if it is a valid 7-char hex color, else *fallback*."""
+        if val is not None and _HEX_RE.match(val):
+            return val
+        return fallback
+
+    return ThemeColors(
+        primary=_hex_or(ct.primary, base.primary),
+        primary_dev=base.primary_dev,
+        secondary=_hex_or(ct.secondary, base.secondary),
+        accent=_hex_or(ct.accent, base.accent),
+        panel=_hex_or(ct.panel, base.panel),
+        success=_hex_or(ct.success, base.success),
+        warning=_hex_or(ct.warning, base.warning),
+        error=_hex_or(ct.error, base.error),
+        muted=base.muted,
+        mode_bash=_hex_or(ct.error, base.mode_bash),
+        mode_command=_hex_or(ct.secondary, base.mode_command),
+        foreground=_hex_or(ct.foreground, base.foreground),
+        background=_hex_or(ct.background, base.background),
+        surface=_hex_or(ct.surface, base.surface),
+    )
 
 
 def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
     """Return the `ThemeColors` for the active Textual theme.
+
+    For custom themes (LangChain-branded and user-defined), the pre-built
+    `ThemeColors` from the registry is returned directly.  For Textual built-in
+    themes, colors are resolved dynamically from the actual theme properties so
+    Python-side styling stays in sync with CSS variables.
 
     Textual widget code should call this instead of reading the module-level
     ANSI constants, which are intended for Rich console output only.
@@ -637,14 +691,17 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
     """
     if widget_or_app is None:
         return DARK_COLORS
-    # Resolve the App — widget_or_app may be a widget (has .app property)
-    # or an App directly.
-    app = (
-        widget_or_app.app  # type: ignore[attr-defined]
-        if hasattr(type(widget_or_app), "app")
-        else widget_or_app
-    )
+    app = _resolve_app(widget_or_app)
     entry = ThemeEntry.REGISTRY.get(app.theme)  # type: ignore[attr-defined]
-    if entry is not None:
+    # Custom themes (LC-branded / user-defined) use pre-built colors.
+    if entry is not None and entry.custom:
         return entry.colors
-    return DARK_COLORS if app.current_theme.dark else LIGHT_COLORS  # type: ignore[attr-defined]
+    # Built-in or unrecognized themes — derive from the resolved Textual
+    # theme so Python styling matches CSS.
+    try:
+        return _colors_from_textual_theme(app)
+    except Exception:
+        logger.debug("Could not resolve theme colors dynamically", exc_info=True)
+        if entry is not None:
+            return entry.colors
+        return DARK_COLORS

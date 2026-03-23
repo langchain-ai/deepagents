@@ -61,7 +61,7 @@ def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Production code defines these in `DeepAgentsApp.get_theme_variable_defaults`
     but many tests use lightweight `App[None]` subclasses that lack the override.
-    Patching the base class ensures `$muted`, `$tool-border`, etc. resolve
+    Patching the base class ensures `$mode-bash`, `$mode-command` resolve
     everywhere without requiring each test app to opt in.
     """
     from textual.app import App
@@ -86,13 +86,35 @@ def _provide_app_context() -> Generator[None]:
     Many unit tests construct widgets and call `compose()` directly without a
     running Textual app. Widget code that calls `self.app` (e.g., for
     theme-aware color lookups) needs a valid app in the context. This fixture
-    provides a minimal `App` instance so that `self.app` resolves without
-    requiring the full async `run_test()` machinery.
+    provides a minimal `App` instance with the default LangChain theme
+    registered so that `get_theme_colors()` returns the LC brand palette
+    (matching `DARK_COLORS`).
     """
     from textual._context import active_app
     from textual.app import App
+    from textual.theme import Theme
+
+    from deepagents_cli import theme
 
     app = App()
+    c = theme.DARK_COLORS
+    app.register_theme(
+        Theme(
+            name="langchain",
+            primary=c.primary,
+            secondary=c.secondary,
+            accent=c.accent,
+            foreground=c.foreground,
+            background=c.background,
+            surface=c.surface,
+            panel=c.panel,
+            warning=c.warning,
+            error=c.error,
+            success=c.success,
+            dark=True,
+        )
+    )
+    app.theme = "langchain"
     token = active_app.set(app)
     try:
         yield

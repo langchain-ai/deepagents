@@ -602,13 +602,18 @@ class DeepAgentsApp(App):
                         name=name,
                         primary=c.primary,
                         secondary=c.secondary,
+                        accent=c.accent,
                         foreground=c.foreground,
                         background=c.background,
                         surface=c.surface,
+                        panel=c.panel,
                         warning=c.warning,
                         error=c.error,
                         success=c.success,
                         dark=entry.dark,
+                        variables={
+                            "footer-key-foreground": c.primary,
+                        },
                     )
                 )
 
@@ -703,21 +708,16 @@ class DeepAgentsApp(App):
     def get_theme_variable_defaults(self) -> dict[str, str]:
         """Return custom CSS variable defaults for the current theme.
 
-        Textual only ships built-in variables (`$background`, `$primary`, …).
-        This override injects app-specific variables (`$muted`,
-        `$tool-border`, `$diff-add-fg`, etc.) whose values are defined once
-        in `theme.py` and shared with Python-side styling (`Content.styled`,
-        Rich markup). Without this, every `$custom-var` in the stylesheet
-        would be unresolved at parse time.
+        Most styling uses Textual's built-in variables (`$primary`,
+        `$text-muted`, `$error-muted`, etc.).  This override injects the
+        few app-specific variables (`$mode-bash`, `$mode-command`) that
+        have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.
         """
-        entry = theme.ThemeEntry.REGISTRY.get(self.theme)
-        colors = entry.colors if entry else None
-        return theme.get_css_variable_defaults(
-            dark=self.current_theme.dark, colors=colors
-        )
+        colors = theme.get_theme_colors(self)
+        return theme.get_css_variable_defaults(colors=colors)
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.

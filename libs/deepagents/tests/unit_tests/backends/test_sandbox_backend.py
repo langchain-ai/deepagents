@@ -89,13 +89,16 @@ def test_glob_command_template_format() -> None:
 
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
-    payload = json.dumps({"path": "/test/file.txt", "offset": 0, "limit": 100})
-    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+    path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+    cmd = _READ_COMMAND_TEMPLATE.format(
+        path_b64=path_b64,
+        file_type="text",
+        offset=0,
+        limit=2000,
+    )
 
     assert "python3 -c" in cmd
-    assert payload_b64 in cmd
-    assert "__DEEPAGENTS_EOF__" in cmd
+    assert path_b64 in cmd
 
 
 def test_heredoc_command_templates_end_with_newline() -> None:
@@ -105,23 +108,24 @@ def test_heredoc_command_templates_end_with_newline() -> None:
 
     write_cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
     edit_cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=False)
-    read_cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
 
     assert write_cmd.endswith("\n")
     assert edit_cmd.endswith("\n")
-    assert read_cmd.endswith("\n")
 
 
-def test_sandbox_read_uses_payload() -> None:
-    """Test that read() bundles all params into a single base64 payload."""
+def test_sandbox_read_uses_format_interpolation() -> None:
+    """Test that read() uses format string interpolation for the template."""
     sandbox = MockSandbox()
     sandbox._next_output = json.dumps({"content": "mock content", "encoding": "utf-8"})
 
     sandbox.read("/test/file.txt", offset=5, limit=50)
 
     assert sandbox.last_command is not None
-    assert "__DEEPAGENTS_EOF__" in sandbox.last_command
-    assert "/test/file.txt" not in sandbox.last_command
+    # The new template uses format interpolation, not heredoc
+    assert "__DEEPAGENTS_EOF__" not in sandbox.last_command
+    # Path is base64-encoded in the command
+    path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
+    assert path_b64 in sandbox.last_command
 
 
 def test_sandbox_write_method() -> None:

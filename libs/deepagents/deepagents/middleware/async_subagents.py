@@ -229,21 +229,21 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
 
 
 def _extract_callback_context(runtime: ToolRuntime) -> dict[str, str]:
-    """Extract the parent thread ID from the tool runtime.
+    """Extract the callback thread ID from the tool runtime.
 
     The thread ID is included in the subagent's input state so the subagent
     can notify the parent when it completes (via
     `CompletionCallbackMiddleware`).
 
     Returns:
-        Dict with `parent_thread_id` if available. Empty dict otherwise.
+        Dict with `callback_thread_id` if available. Empty dict otherwise.
     """
     config = runtime.config or {}
     configurable = config.get("configurable") or {}
 
     thread_id = configurable.get("thread_id")
     if thread_id:
-        return {"parent_thread_id": str(thread_id)}
+        return {"callback_thread_id": str(thread_id)}
 
     return {}
 

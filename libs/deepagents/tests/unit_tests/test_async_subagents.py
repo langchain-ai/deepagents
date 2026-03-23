@@ -885,7 +885,7 @@ class TestExtractCallbackContext:
             config={"configurable": {"thread_id": "thread-supervisor-123"}},
         )
         ctx = _extract_callback_context(runtime)
-        assert ctx["parent_thread_id"] == "thread-supervisor-123"
+        assert ctx["callback_thread_id"] == "thread-supervisor-123"
 
     def test_skips_none_thread_id(self) -> None:
         runtime = ToolRuntime(
@@ -913,13 +913,13 @@ class TestExtractCallbackContext:
             },
         )
         ctx = _extract_callback_context(runtime)
-        assert ctx == {"parent_thread_id": "thread-123"}
+        assert ctx == {"callback_thread_id": "thread-123"}
         assert "parent_assistant_id" not in ctx
 
 
 class TestLaunchToolPassesParentContext:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_includes_parent_thread_id_in_input(self, mock_get_client: MagicMock) -> None:
+    def test_launch_includes_callback_thread_id_in_input(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
         mock_client.runs.create.return_value = {"run_id": "run_xyz"}
@@ -951,7 +951,7 @@ class TestLaunchToolPassesParentContext:
             assistant_id="my_graph",
             input={
                 "messages": [{"role": "user", "content": "analyze data"}],
-                "parent_thread_id": "supervisor-thread",
+                "callback_thread_id": "supervisor-thread",
             },
         )
 

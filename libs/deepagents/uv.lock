@@ -412,7 +412,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.0a1"
+version = "0.5.0a2"
 source = { editable = "." }
 dependencies = [
     { name = "langchain" },
@@ -444,7 +444,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.13,<2.0.0" },
+    { name = "langchain", specifier = ">=1.2.11,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.2.21,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.0,<5.0.0" },

@@ -14,7 +14,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentState,
     AsyncTask,
     _build_async_subagent_tools,
-    _extract_parent_context,
+    _extract_callback_context,
     _resolve_headers,
     _tasks_reducer,
 )
@@ -870,10 +870,10 @@ class TestCheckEdgeCases:
         assert "no output" in parsed["result"].lower()
 
 
-class TestExtractParentContext:
+class TestExtractCallbackContext:
     def test_empty_config_returns_empty_dict(self) -> None:
         runtime = _make_runtime()
-        assert _extract_parent_context(runtime) == {}
+        assert _extract_callback_context(runtime) == {}
 
     def test_extracts_thread_id_from_configurable(self) -> None:
         runtime = ToolRuntime(
@@ -884,7 +884,7 @@ class TestExtractParentContext:
             stream_writer=lambda _: None,
             config={"configurable": {"thread_id": "thread-supervisor-123"}},
         )
-        ctx = _extract_parent_context(runtime)
+        ctx = _extract_callback_context(runtime)
         assert ctx["parent_thread_id"] == "thread-supervisor-123"
 
     def test_skips_none_thread_id(self) -> None:
@@ -896,7 +896,7 @@ class TestExtractParentContext:
             stream_writer=lambda _: None,
             config={"configurable": {"thread_id": None}},
         )
-        ctx = _extract_parent_context(runtime)
+        ctx = _extract_callback_context(runtime)
         assert ctx == {}
 
     def test_ignores_metadata(self) -> None:
@@ -912,7 +912,7 @@ class TestExtractParentContext:
                 "metadata": {"assistant_id": "asst-456"},
             },
         )
-        ctx = _extract_parent_context(runtime)
+        ctx = _extract_callback_context(runtime)
         assert ctx == {"parent_thread_id": "thread-123"}
         assert "parent_assistant_id" not in ctx
 

@@ -156,13 +156,13 @@ def _load_theme_preference() -> str:
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
+    import tomllib
+
     try:
         from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
 
         if not DEFAULT_CONFIG_PATH.exists():
             return theme.DEFAULT_THEME
-
-        import tomllib
 
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
@@ -463,7 +463,7 @@ class DeepAgentsApp(App):
     command system."""
 
     SCROLL_SENSITIVITY_Y = 1.0
-    """Vertical scroll speed in lines per scroll event (Textual default is 3)."""
+    """Vertical scroll speed (reduced from Textual default for finer control)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -2690,10 +2690,12 @@ class DeepAgentsApp(App):
                 return
 
             # Reload user themes from config.toml and re-register with Textual
+            theme_reload_ok = True
             try:
                 theme.reload_registry()
                 self._register_custom_themes()
             except Exception:
+                theme_reload_ok = False
                 logger.warning("Failed to reload user themes", exc_info=True)
 
             if changes:
@@ -2703,7 +2705,12 @@ class DeepAgentsApp(App):
             else:
                 report = "Configuration reloaded. No changes detected."
             report += "\nModel config caches cleared."
-            report += "\nTheme registry reloaded."
+            if theme_reload_ok:
+                report += "\nTheme registry reloaded."
+            else:
+                report += (
+                    "\nTheme registry reload failed. Check config.toml for errors."
+                )
             await self._mount_message(AppMessage(report))
 
             # Re-discover skills so autocomplete reflects any new/removed skills
@@ -2726,9 +2733,9 @@ class DeepAgentsApp(App):
         """Handle a `/skill:<name>` command by loading and invoking a skill.
 
         Looks up the skill from cached metadata (populated at startup), falling
-        back to a fresh filesystem walk on cache miss. Reads the SKILL.md body,
-        wraps it in a prompt envelope with any user-provided arguments, and
-        sends the composed message to the agent.
+        back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
+        body, wraps it in a prompt envelope with any user-provided arguments,
+        and sends the composed message to the agent.
 
         Args:
             command: The full command string (e.g., `/skill:web-research find X`).
@@ -4312,6 +4319,7 @@ class DeepAgentsApp(App):
                                 " be saved. Check logs for details.",
                                 severity="warning",
                                 timeout=6,
+                                markup=False,
                             )
                     except Exception:
                         logger.warning(

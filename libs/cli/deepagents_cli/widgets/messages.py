@@ -276,10 +276,10 @@ class QueuedUserMessage(Static):
 
 
 def _strip_frontmatter(text: str) -> str:
-    """Remove YAML frontmatter delimited by ``---`` markers.
+    """Remove YAML frontmatter delimited by `---` markers.
 
     Args:
-        text: Raw SKILL.md content.
+        text: Raw `SKILL.md` content.
 
     Returns:
         Body text with frontmatter removed and leading whitespace stripped.
@@ -300,7 +300,7 @@ class SkillMessage(Vertical):
     """Widget displaying a skill invocation with collapsible body.
 
     Shows skill name, source badge, description, and user args as a compact
-    header.  The full SKILL.md body (frontmatter stripped) is hidden behind a
+    header. The full SKILL.md body (frontmatter stripped) is hidden behind a
     preview/expand toggle (click or Ctrl+O).  The expanded view renders
     markdown via Textual's `Markdown` widget.
     """

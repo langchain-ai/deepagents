@@ -136,8 +136,14 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                     stack[-2].refresh(layout=True)
             except Exception:
                 logger.warning("Failed to preview theme '%s'", name, exc_info=True)
-                if self._original_theme is not None:
+                try:
                     self.app.theme = self._original_theme
+                except Exception:
+                    logger.warning(
+                        "Failed to restore original theme '%s'",
+                        self._original_theme,
+                        exc_info=True,
+                    )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Commit the selected theme.

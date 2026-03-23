@@ -176,7 +176,7 @@ import os, sys, base64, json
 path = base64.b64decode('{path_b64}').decode('utf-8')
 
 if not os.path.isfile(path):
-    print(json.dumps({{'error': 'file_not_found'}}))
+    print(json.dumps({{'error': 'File not found'}}))
     sys.exit(0)
 
 if os.path.getsize(path) == 0:
@@ -336,7 +336,7 @@ except PermissionError:
             return ReadResult(error=f"File '{file_path}': not found")
 
         if "error" in data:
-            return ReadResult(error=f"File '{file_path}': {data['error']}")
+            return ReadResult(error=data["error"])
 
         return ReadResult(
             file_data=create_file_data(

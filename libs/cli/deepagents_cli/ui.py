@@ -82,7 +82,8 @@ def show_help() -> None:
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
-        "                           LangSmith is included; Modal/Daytona/Runloop"
+        "                             LangSmith is included;"
+        " Agentcore/Modal/Daytona/Runloop"
         " require downloading extras"
     )
     console.print(

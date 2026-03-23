@@ -97,11 +97,12 @@ vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
 
 # Sandbox providers
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
 daytona = ["langchain-daytona>=0.0.4"]
 modal = ["langchain-modal>=0.0.2"]
 runloop = ["langchain-runloop>=0.0.3"]
 all-sandboxes = [
-    "deepagents-cli[daytona,modal,runloop]",
+    "deepagents-cli[agentcore,daytona,modal,runloop]",
 ]
 
 all-providers = [

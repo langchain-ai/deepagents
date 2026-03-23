@@ -54,7 +54,7 @@ Add this middleware to the subagent's middleware stack:
 from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
 
 # Same deployment (ASGI transport -- callback agent and subagent share a server):
-notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
+notifier = CompletionCallbackMiddleware(callback_graph_id="supervisor")
 
 # Remote deployment (callback destination on a different server):
 notifier = CompletionCallbackMiddleware(
@@ -101,9 +101,9 @@ class CompletionCallbackState(AgentState):
     !!! warning "Experimental"
         This state schema is experimental and may change in future releases.
 
-    These fields are injected by the parent's `start_async_task`
-    tool and read by `CompletionNotifierMiddleware` to send notifications
-    back to the parent's thread.
+    `callback_thread_id` is written by the parent's `start_async_task`
+    tool and read by `CompletionCallbackMiddleware` when sending callback
+    notifications.
     """
 
     callback_thread_id: NotRequired[str | None]
@@ -111,7 +111,7 @@ class CompletionCallbackState(AgentState):
 
 
 def _resolve_headers(headers: dict[str, str] | None) -> dict[str, str]:
-    """Build headers for the parent's LangGraph server.
+    """Build headers for the callback LangGraph server.
 
     Ensures `x-auth-scheme: langsmith` is present unless explicitly overridden.
     """
@@ -222,14 +222,7 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
         ```python
         from deepagents.middleware.completion_notifier import CompletionCallbackMiddleware
 
-        # Same deployment (ASGI transport):
-        notifier = CompletionNotifierMiddleware(callback_graph_id="supervisor")
-
-        # Remote deployment:
-        notifier = CompletionCallbackMiddleware(
-            callback_graph_id="supervisor",
-            url="https://supervisor.langsmith.dev",
-        )
+        notifier = CompletionCallbackMiddleware(callback_graph_id="supervisor")
 
         graph = create_agent(
             model=model,
@@ -308,3 +301,6 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
                 notification = self._format_notification("The agent encountered an error while calling the model.")
                 await self._send_notification(callback_thread_id, notification)
             raise
+
+
+a

@@ -48,6 +48,40 @@ potentially fix:
 """
 
 
+def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # noqa: PLR0911
+    """Map a caught exception to a standardized `FileOperationError` code.
+
+    Checks the exception type first, then falls back to inspecting the message
+    string for known patterns. Returns `None` when the exception does not match
+    any known file-operation error.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        A `FileOperationError` literal, or `None` if unrecognized.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    if isinstance(exc, IsADirectoryError):
+        return "is_directory"
+    if isinstance(exc, (ValueError, NotADirectoryError, FileExistsError)):
+        return "invalid_path"
+
+    msg = str(exc).lower()
+    if "is a directory" in msg:
+        return "is_directory"
+    if "permission denied" in msg or "access denied" in msg:
+        return "permission_denied"
+    if "not found" in msg or "no such file" in msg or "does not exist" in msg:
+        return "file_not_found"
+    if "invalid path" in msg or "invalid argument" in msg:
+        return "invalid_path"
+    return None
+
+
 @dataclass
 class FileDownloadResponse:
     """Result of a single file download operation.

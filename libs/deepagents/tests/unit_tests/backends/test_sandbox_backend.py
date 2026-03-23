@@ -1,11 +1,7 @@
 """Tests for BaseSandbox backend operations.
 
-Verifies that write/edit use upload_files/download_files (bypassing ARG_MAX),
-and that remaining command templates format correctly.
-
-Related issues:
-- https://github.com/langchain-ai/deepagents/pull/872
-- ARG_MAX failures when writing large payloads via docker exec
+Verifies that write/edit use upload_files/download_files correctly and that
+remaining command templates format correctly.
 """
 
 import base64

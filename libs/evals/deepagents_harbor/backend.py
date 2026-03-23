@@ -11,7 +11,6 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileInfo,
-    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -20,6 +19,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    map_file_operation_error,
 )
 from deepagents.backends.utils import check_empty_content, create_file_data
 from harbor.environments.base import BaseEnvironment
@@ -39,29 +39,6 @@ _GREP_FIELD_COUNT = 3
 
 _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
-
-
-def _map_file_operation_error(exc: Exception) -> FileOperationError | None:
-    """Map known download exceptions to standardized backend error codes."""
-    if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
-    if isinstance(exc, PermissionError):
-        return "permission_denied"
-    if isinstance(exc, IsADirectoryError):
-        return "is_directory"
-    if isinstance(exc, ValueError):
-        return "invalid_path"
-
-    msg = str(exc).lower()
-    if "is a directory" in msg:
-        return "is_directory"
-    if "permission denied" in msg or "access denied" in msg:
-        return "permission_denied"
-    if "not found" in msg or "no such file" in msg or "does not exist" in msg:
-        return "file_not_found"
-    if "invalid path" in msg or "invalid argument" in msg:
-        return "invalid_path"
-    return None
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -520,7 +497,7 @@ done
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
-                error = _map_file_operation_error(exc)
+                error = map_file_operation_error(exc)
                 if error is None:
                     raise
                 logger.warning("Failed to upload %s: %s", path, exc)
@@ -547,7 +524,7 @@ done
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
                 except Exception as exc:
-                    error = _map_file_operation_error(exc)
+                    error = map_file_operation_error(exc)
                     if error is None:
                         raise
                     logger.warning("Failed to download %s: %s", path, exc)

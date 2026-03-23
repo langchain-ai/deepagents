@@ -8,7 +8,11 @@ import warnings
 
 import pytest
 
-from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    SandboxBackendProtocol,
+    map_file_operation_error,
+)
 
 
 class BareBackend(BackendProtocol):
@@ -179,3 +183,40 @@ class TestLegacySubclassOverrideRouting:
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")
+
+
+class TestMapFileOperationError:
+    """map_file_operation_error classifies exceptions into FileOperationError codes."""
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (FileNotFoundError("gone"), "file_not_found"),
+            (PermissionError("denied"), "permission_denied"),
+            (IsADirectoryError("dir"), "is_directory"),
+            (ValueError("bad path"), "invalid_path"),
+            (NotADirectoryError("not a dir"), "invalid_path"),
+            (FileExistsError("exists"), "invalid_path"),
+        ],
+    )
+    def test_known_exception_types(self, exc: Exception, expected: str) -> None:
+        assert map_file_operation_error(exc) == expected
+
+    @pytest.mark.parametrize(
+        ("msg", "expected"),
+        [
+            ("is a directory", "is_directory"),
+            ("permission denied", "permission_denied"),
+            ("access denied", "permission_denied"),
+            ("not found", "file_not_found"),
+            ("no such file", "file_not_found"),
+            ("does not exist", "file_not_found"),
+            ("invalid path", "invalid_path"),
+            ("invalid argument", "invalid_path"),
+        ],
+    )
+    def test_message_fallback(self, msg: str, expected: str) -> None:
+        assert map_file_operation_error(OSError(msg)) == expected
+
+    def test_unrecognized_returns_none(self) -> None:
+        assert map_file_operation_error(RuntimeError("something else")) is None

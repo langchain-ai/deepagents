@@ -202,25 +202,64 @@ class ThemeColors:
     """
 
     primary: str
+    """Accent for headings, borders, links, and active elements."""
+
     primary_dev: str
+    """Accent used when running from an editable (dev) install."""
+
     secondary: str
+    """Secondary accent for badges, labels, and decorative highlights."""
+
     success: str
+    """Positive outcomes — tool success, approved actions."""
+
     warning: str
+    """Caution and notice states — pending tool calls, notices."""
+
     error: str
+    """Error and destructive-action indicator."""
+
     muted: str
+    """De-emphasized text — timestamps, secondary labels."""
+
     mode_bash: str
+    """Shell mode indicator — borders, prompts, and message prefixes."""
+
     mode_command: str
+    """Command mode indicator — borders, prompts, and message prefixes."""
+
     foreground: str
+    """Primary body text."""
+
     background: str
+    """Base application background."""
+
     surface: str
+    """Elevated card / panel background."""
+
     diff_add_fg: str
+    """Added-line foreground in inline diffs."""
+
     diff_add_bg: str
+    """Added-line background in inline diffs."""
+
     diff_remove_fg: str
+    """Removed-line foreground in inline diffs."""
+
     diff_remove_bg: str
+    """Removed-line background in inline diffs."""
+
     tool_border: str
+    """Tool-call card border."""
+
     tool_border_hover: str
+    """Tool-call card border on hover / focus."""
+
     error_bg: str
+    """Subtle tinted background for error states."""
+
     spinner: str
+    """Loading spinner color."""
 
     def __post_init__(self) -> None:
         """Validate that every field is a valid hex color.

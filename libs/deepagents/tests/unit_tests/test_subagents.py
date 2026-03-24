@@ -634,6 +634,7 @@ class TestSubAgents:
             {"messages": [HumanMessage(content="Run the long workflow.")]},
             config={
                 "configurable": {"thread_id": thread_id},
+                "recursion_limit": 5000,
             },
             durability="exit",
         )

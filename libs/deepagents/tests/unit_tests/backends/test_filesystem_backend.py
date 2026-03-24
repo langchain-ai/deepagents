@@ -602,3 +602,72 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+def test_filesystem_backend_delete_normal_mode(tmp_path: Path) -> None:
+    root = tmp_path / "fs_delete"
+    root.mkdir()
+    f = root / "target.txt"
+    f.write_text("delete me")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    result = be.delete(str(f))
+    assert result.error is None
+    assert result.path == str(f)
+    assert result.files_update is None
+    assert not f.exists()
+
+
+def test_filesystem_backend_delete_virtual_mode(tmp_path: Path) -> None:
+    root = tmp_path / "fs_delete_v"
+    root.mkdir()
+    f = root / "target.txt"
+    f.write_text("delete me")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    result = be.delete("/target.txt")
+    assert result.error is None
+    assert result.path == "/target.txt"
+    assert not f.exists()
+
+
+def test_filesystem_backend_delete_not_found(tmp_path: Path) -> None:
+    root = tmp_path / "fs_delete_nf"
+    root.mkdir()
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    result = be.delete("/nonexistent.txt")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+
+
+def test_filesystem_backend_delete_directory_error(tmp_path: Path) -> None:
+    root = tmp_path / "fs_delete_dir"
+    root.mkdir()
+    d = root / "subdir"
+    d.mkdir()
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    result = be.delete("/subdir")
+    assert result.error is not None
+    assert "directory" in result.error.lower()
+
+
+def test_filesystem_backend_delete_then_recreate(tmp_path: Path) -> None:
+    root = tmp_path / "fs_delete_rc"
+    root.mkdir()
+    f = root / "cycle.txt"
+    f.write_text("v1")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    be.delete("/cycle.txt")
+    assert not f.exists()
+
+    res = be.write("/cycle.txt", "v2")
+    assert res.error is None
+    assert f.read_text() == "v2"

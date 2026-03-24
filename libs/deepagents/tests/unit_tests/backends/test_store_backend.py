@@ -103,6 +103,47 @@ def test_store_backend_ls_nested_directories():
     assert empty_listing.entries == []
 
 
+def test_store_backend_delete() -> None:
+    rt = make_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    res = be.write("/docs/readme.md", "hello store")
+    assert res.error is None
+
+    del_res = be.delete("/docs/readme.md")
+    assert del_res.error is None
+    assert del_res.path == "/docs/readme.md"
+    assert del_res.files_update is None
+
+    read_res = be.read("/docs/readme.md")
+    assert read_res.error is not None
+    assert "not found" in read_res.error.lower()
+
+
+def test_store_backend_delete_not_found() -> None:
+    rt = make_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    result = be.delete("/nonexistent.txt")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+
+
+def test_store_backend_delete_then_recreate() -> None:
+    rt = make_runtime()
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+
+    be.write("/file.txt", "v1")
+    be.delete("/file.txt")
+
+    res = be.write("/file.txt", "v2")
+    assert res.error is None
+
+    read_res = be.read("/file.txt")
+    assert read_res.error is None
+    assert "v2" in read_res.file_data["content"]
+
+
 def test_store_backend_ls_trailing_slash():
     rt = make_runtime()
     be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))

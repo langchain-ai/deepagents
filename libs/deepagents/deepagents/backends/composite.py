@@ -24,6 +24,7 @@ from typing import cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
@@ -565,6 +566,57 @@ class CompositeBackend(BackendProtocol):
                     state = runtime.state
                     files = state.get("files", {})
                     files.update(res.files_update)
+                    state["files"] = files
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
+                pass
+        return res
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file, routing to appropriate backend.
+
+        Args:
+            file_path: Absolute file path.
+
+        Returns:
+            DeleteResult with path on success, or error message on failure.
+        """
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        res = backend.delete(stripped_key)
+        if res.path is not None:
+            res = replace(res, path=file_path)
+        if res.files_update:
+            try:
+                runtime = getattr(self.default, "runtime", None)
+                if runtime is not None:
+                    state = runtime.state
+                    files = state.get("files", {})
+                    for k, v in res.files_update.items():
+                        if v is None:
+                            files.pop(k, None)
+                        else:
+                            files[k] = v
+                    state["files"] = files
+            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
+                pass
+        return res
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of delete."""
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        res = await backend.adelete(stripped_key)
+        if res.path is not None:
+            res = replace(res, path=file_path)
+        if res.files_update:
+            try:
+                runtime = getattr(self.default, "runtime", None)
+                if runtime is not None:
+                    state = runtime.state
+                    files = state.get("files", {})
+                    for k, v in res.files_update.items():
+                        if v is None:
+                            files.pop(k, None)
+                        else:
+                            files[k] = v
                     state["files"] = files
             except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
                 pass

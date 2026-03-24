@@ -227,6 +227,32 @@ class EditResult:
 
 
 @dataclass
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of deleted file, None on failure.
+        files_update: State update dict for checkpoint backends, None for external storage.
+            Checkpoint backends populate this with `{file_path: None}` to signal
+            removal from LangGraph state.
+            External backends set None (already deleted from disk/S3/database/etc).
+
+    Examples:
+        >>> # Checkpoint storage
+        >>> DeleteResult(path="/f.txt", files_update={"/f.txt": None})
+        >>> # External storage
+        >>> DeleteResult(path="/f.txt", files_update=None)
+        >>> # Error
+        >>> DeleteResult(error="File not found")
+    """
+
+    error: str | None = None
+    path: str | None = None
+    files_update: dict[str, Any] | None = None
+
+
+@dataclass
 class LsResult:
     """Result from backend ls operations.
 
@@ -498,6 +524,28 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+
+    def delete(
+        self,
+        file_path: str,
+    ) -> "DeleteResult":
+        """Delete a file from the backend.
+
+        Args:
+            file_path: Absolute path to the file to delete. Must start with '/'.
+
+        Returns:
+            DeleteResult with path on success, or error message if the file
+            doesn't exist or deletion fails.
+        """
+        raise NotImplementedError
+
+    async def adelete(
+        self,
+        file_path: str,
+    ) -> "DeleteResult":
+        """Async version of delete."""
+        return await asyncio.to_thread(self.delete, file_path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.

@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
@@ -194,6 +195,34 @@ Output: single-line JSON with `{{"count": N}}` on success or
 `{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
 files cannot be read.
 """
+
+_DELETE_COMMAND_TEMPLATE = """python3 -c "
+import sys, os, base64, json
+
+path_b64 = sys.stdin.read().strip()
+if not path_b64:
+    print(json.dumps({{'error': 'no_input'}}))
+    sys.exit(0)
+
+try:
+    file_path = base64.b64decode(path_b64).decode('utf-8')
+except Exception:
+    print(json.dumps({{'error': 'decode_failed'}}))
+    sys.exit(0)
+
+if not os.path.exists(file_path):
+    print(json.dumps({{'error': 'file_not_found'}}))
+    sys.exit(0)
+
+if os.path.isdir(file_path):
+    print(json.dumps({{'error': 'is_directory'}}))
+    sys.exit(0)
+
+os.remove(file_path)
+print(json.dumps({{'ok': True}}))
+" <<'__DEEPAGENTS_EOF__'
+{path_b64}
+__DEEPAGENTS_EOF__"""
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os, sys, base64, json
@@ -579,6 +608,29 @@ except PermissionError:
                 error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
             )
         return EditResult(error=f"Error editing file '{file_path}': {error}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the sandbox."""
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = _DELETE_COMMAND_TEMPLATE.format(path_b64=path_b64)
+        result = self.execute(cmd)
+
+        output = result.output.strip()
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return DeleteResult(error=f"Unexpected output from delete command: {output}")
+
+        if "error" in data:
+            error_map = {
+                "file_not_found": f"File '{file_path}' not found",
+                "is_directory": f"'{file_path}' is a directory, not a file",
+                "no_input": "No path received for delete operation",
+                "decode_failed": "Failed to decode delete payload",
+            }
+            return DeleteResult(error=error_map.get(data["error"], f"Delete failed: {data['error']}"))
+
+        return DeleteResult(path=file_path, files_update=None)
 
     def grep(
         self,

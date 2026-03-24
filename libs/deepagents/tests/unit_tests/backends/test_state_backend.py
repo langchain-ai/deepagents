@@ -341,3 +341,57 @@ def test_state_backend_grep_with_path_variations(path: str, expected_count: int,
     assert len(matches) == expected_count
     match_paths = {m["path"] for m in matches}
     assert match_paths == set(expected_paths)
+
+
+def test_state_backend_delete() -> None:
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    res = be.write("/notes.txt", "hello world")
+    assert res.error is None
+    rt.state["files"].update(res.files_update)
+
+    del_res = be.delete("/notes.txt")
+    assert del_res.error is None
+    assert del_res.path == "/notes.txt"
+    assert del_res.files_update == {"/notes.txt": None}
+
+    # Apply the delete to state
+    for k, v in del_res.files_update.items():
+        if v is None:
+            rt.state["files"].pop(k, None)
+
+    # Verify file is gone
+    read_res = be.read("/notes.txt")
+    assert read_res.error is not None
+    assert "not found" in read_res.error.lower()
+
+
+def test_state_backend_delete_not_found() -> None:
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    result = be.delete("/nonexistent.txt")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+
+
+def test_state_backend_delete_then_recreate() -> None:
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    res = be.write("/file.txt", "v1")
+    rt.state["files"].update(res.files_update)
+
+    del_res = be.delete("/file.txt")
+    for k, v in del_res.files_update.items():
+        if v is None:
+            rt.state["files"].pop(k, None)
+
+    res2 = be.write("/file.txt", "v2")
+    assert res2.error is None
+    rt.state["files"].update(res2.files_update)
+
+    read_res = be.read("/file.txt")
+    assert read_res.error is None
+    assert "v2" in read_res.file_data["content"]

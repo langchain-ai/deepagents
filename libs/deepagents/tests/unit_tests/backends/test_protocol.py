@@ -60,6 +60,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.edit("/file.txt", "old", "new")
 
+    def test_delete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.delete("/file.txt")
+
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.upload_files([("/file.txt", b"data")])
@@ -103,6 +107,10 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
+
+    async def test_adelete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.adelete("/file.txt")
 
 
 class TestDeprecatedMethodsRouteToNewNames:

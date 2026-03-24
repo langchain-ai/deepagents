@@ -1393,3 +1393,51 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_backend_delete_default() -> None:
+    rt = make_runtime()
+    be = build_composite_state_backend(
+        rt,
+        routes={"/memories/": lambda r: StoreBackend(r, namespace=lambda _ctx: ("mem",))},
+    )
+
+    res = be.write("/file.txt", "hello")
+    assert res.error is None
+
+    del_res = be.delete("/file.txt")
+    assert del_res.error is None
+    assert del_res.path == "/file.txt"
+
+    read_res = be.read("/file.txt")
+    assert read_res.error is not None
+
+
+def test_composite_backend_delete_routed() -> None:
+    rt = make_runtime()
+    be = build_composite_state_backend(
+        rt,
+        routes={"/memories/": lambda r: StoreBackend(r, namespace=lambda _ctx: ("mem",))},
+    )
+
+    res = be.write("/memories/note.txt", "remember this")
+    assert res.error is None
+
+    del_res = be.delete("/memories/note.txt")
+    assert del_res.error is None
+    assert del_res.path == "/memories/note.txt"
+
+    read_res = be.read("/memories/note.txt")
+    assert read_res.error is not None
+
+
+def test_composite_backend_delete_not_found() -> None:
+    rt = make_runtime()
+    be = build_composite_state_backend(
+        rt,
+        routes={"/memories/": lambda r: StoreBackend(r, namespace=lambda _ctx: ("mem",))},
+    )
+
+    result = be.delete("/nonexistent.txt")
+    assert result.error is not None
+    assert "not found" in result.error.lower()

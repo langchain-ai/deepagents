@@ -796,3 +796,32 @@ def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
     assert "unexpected server response" in result.error
     assert len(cleanup_commands) == 1
     assert ".deepagents_edit_" in cleanup_commands[0]
+
+
+def test_sandbox_delete_success() -> None:
+    sandbox = MockSandbox()
+    sandbox._file_store["/test/file.txt"] = b"content"
+    sandbox._next_output = json.dumps({"ok": True})
+
+    result = sandbox.delete("/test/file.txt")
+    assert result.error is None
+    assert result.path == "/test/file.txt"
+    assert result.files_update is None
+
+
+def test_sandbox_delete_not_found() -> None:
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "file_not_found"})
+
+    result = sandbox.delete("/nonexistent.txt")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+
+
+def test_sandbox_delete_is_directory() -> None:
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "is_directory"})
+
+    result = sandbox.delete("/some/dir")
+    assert result.error is not None
+    assert "directory" in result.error.lower()

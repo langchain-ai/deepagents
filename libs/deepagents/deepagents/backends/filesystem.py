@@ -14,6 +14,7 @@ import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileDownloadResponse,
     FileInfo,
@@ -432,6 +433,30 @@ class FilesystemBackend(BackendProtocol):
             return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the filesystem.
+
+        Args:
+            file_path: Path to the file to delete.
+
+        Returns:
+            `DeleteResult` with path on success, or error message if the file
+                doesn't exist or deletion fails.
+        """
+        resolved_path = self._resolve_path(file_path)
+
+        if not resolved_path.exists():
+            return DeleteResult(error=f"File '{file_path}' not found")
+
+        if not resolved_path.is_file():
+            return DeleteResult(error=f"'{file_path}' is a directory, not a file")
+
+        try:
+            resolved_path.unlink()
+            return DeleteResult(path=file_path, files_update=None)
+        except OSError as e:
+            return DeleteResult(error=f"Error deleting file '{file_path}': {e}")
 
     def grep(
         self,

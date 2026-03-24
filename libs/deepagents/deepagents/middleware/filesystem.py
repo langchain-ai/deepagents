@@ -7,7 +7,10 @@ import mimetypes
 import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+
+if TYPE_CHECKING:
+    from langchain_core.runnables.config import RunnableConfig
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -1520,7 +1523,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if not callable(self.backend):
             return self.backend
-        config = cast("dict[str, Any]", getattr(runtime, "config", {}))
+        config = cast("RunnableConfig", getattr(runtime, "config", {}))
         tool_runtime = ToolRuntime(
             state=state,
             context=runtime.context,
@@ -1529,7 +1532,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             config=config,
             tool_call_id=None,
         )
-        return self.backend(tool_runtime)  # ty: ignore[call-top-callable]
+        return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.

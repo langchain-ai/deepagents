@@ -1,7 +1,6 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
-import itertools
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -1268,9 +1267,7 @@ class TestLargeHumanMessageEviction:
         threshold = 20_000
         large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
 
-        fake_model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="Got it.")])
-        )
+        fake_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Got it.")]))
 
         agent = create_deep_agent(model=fake_model)
         result = agent.invoke({"messages": [HumanMessage(content=large_content)]})

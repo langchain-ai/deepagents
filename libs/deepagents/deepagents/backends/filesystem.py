@@ -17,6 +17,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -24,7 +25,6 @@ from deepagents.backends.protocol import (
     LsResult,
     ReadResult,
     WriteResult,
-    map_file_operation_error,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -692,7 +692,7 @@ class FilesystemBackend(BackendProtocol):
 
                 responses.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 responses.append(FileUploadResponse(path=path, error=error))
@@ -719,8 +719,34 @@ class FilesystemBackend(BackendProtocol):
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
+
+
+def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:
+    """Map a caught exception to a standardized `FileOperationError` code.
+
+    Classification is based on exception type only (stdlib hierarchy).
+    Returns `None` for any exception that cannot be classified by type,
+    letting callers decide whether to re-raise or fall back to `str(exc)`.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        A `FileOperationError` literal, or `None` if unrecognized.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    if isinstance(exc, IsADirectoryError):
+        return "is_directory"
+    if isinstance(exc, (NotADirectoryError, FileExistsError)):
+        return "invalid_path"
+    if isinstance(exc, ValueError):
+        return "invalid_path"
+    return None

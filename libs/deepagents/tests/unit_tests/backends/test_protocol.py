@@ -203,26 +203,19 @@ class TestMapFileOperationError:
     def test_known_exception_types(self, exc: Exception, expected: str) -> None:
         assert map_file_operation_error(exc) == expected
 
-    @pytest.mark.parametrize(
-        ("msg", "expected"),
-        [
-            ("is a directory", "is_directory"),
-            ("permission denied", "permission_denied"),
-            ("access denied", "permission_denied"),
-            ("not found", "file_not_found"),
-            ("no such file", "file_not_found"),
-            ("does not exist", "file_not_found"),
-            ("invalid path", "invalid_path"),
-            ("invalid argument", "invalid_path"),
-        ],
-    )
-    def test_message_fallback(self, msg: str, expected: str) -> None:
-        assert map_file_operation_error(OSError(msg)) == expected
-
     def test_unrecognized_returns_none(self) -> None:
+        """Non-stdlib exception types return None regardless of message."""
         assert map_file_operation_error(RuntimeError("something else")) is None
+        assert map_file_operation_error(RuntimeError("permission denied")) is None
+        assert map_file_operation_error(OSError("is a directory")) is None
 
     def test_unrelated_value_error_returns_none(self) -> None:
         """ValueError without path-related keywords should not be mapped."""
         assert map_file_operation_error(ValueError("unexpected encoding")) is None
         assert map_file_operation_error(ValueError("invalid literal for int()")) is None
+        assert map_file_operation_error(ValueError("permission denied on /foo")) is None
+
+    def test_value_error_path_security_messages(self) -> None:
+        """ValueError with path-security keywords should map to invalid_path."""
+        assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
+        assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"

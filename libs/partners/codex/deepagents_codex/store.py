@@ -32,7 +32,7 @@ class CodexCredentials:
 class CodexAuthStore:
     """File-backed credential store for Codex OAuth tokens.
 
-    Stores credentials at ``~/.deepagents/auth/codex.json`` with
+    Stores credentials at `~/.deepagents/auth/codex.json` with
     restricted file permissions (0o600 file, 0o700 directory).
     """
 

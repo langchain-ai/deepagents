@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      organization: read
       pull-requests: write
 
     steps:
@@ -91,8 +92,8 @@ jobs:
                 console.log(`${sender} is an org member but state is "${membership.state}"`);
                 return { isMember: false, login: sender };
               } catch (e) {
-                if (e.status === 404) {
-                  console.log(`${sender} is not an org member`);
+                if (e.status === 404 || e.status === 403) {
+                  console.log(`${sender} is not an org member (HTTP ${e.status})`);
                   return { isMember: false, login: sender };
                 }
                 const status = e.status ?? 'unknown';

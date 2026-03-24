@@ -883,7 +883,6 @@ def create_cli_agent(
         # File operations and execute tool are provided by the sandbox backend
 
     # Local context middleware (git info, directory tree, etc.).
-    # Async execution is handled within the middleware when available.
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)

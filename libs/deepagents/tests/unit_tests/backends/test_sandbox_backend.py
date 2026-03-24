@@ -317,7 +317,7 @@ def test_sandbox_edit_inline_file_not_found() -> None:
     result = sandbox.edit("/test/missing.txt", "old", "new")
 
     assert result.error is not None
-    assert "Failed to read" in result.error
+    assert "not found" in result.error.lower()
 
 
 def test_sandbox_edit_inline_string_not_found() -> None:
@@ -442,7 +442,7 @@ def test_sandbox_edit_upload_file_not_found() -> None:
     result = sandbox.edit("/test/missing.txt", large_old, "new")
 
     assert result.error is not None
-    assert "Failed to read" in result.error
+    assert "not found" in result.error.lower()
 
 
 def test_sandbox_edit_upload_replace_all() -> None:

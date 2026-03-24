@@ -24,6 +24,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     "tool_usage": [
         "test_tool_usage_relational",
         "test_tool_selection",
+        "test_tool_usage_incident_graph",
         "test_todos",
     ],
     "followup_quality": ["test_followup_quality"],

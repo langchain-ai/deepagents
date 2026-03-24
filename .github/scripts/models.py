@@ -166,7 +166,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- Fireworks --
     Model(
         "fireworks:fireworks/deepseek-v3p2",
-        frozenset({"eval:set0", "eval:open", "eval:fireworks", "harbor:set0", "harbor:open", "harbor:fireworks"}),
+        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
         "fireworks:fireworks/deepseek-v3-0324",

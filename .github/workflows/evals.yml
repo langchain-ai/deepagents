@@ -167,7 +167,7 @@ jobs:
     name: "📊 Eval (${{ matrix.model }})"
     needs: prep
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}

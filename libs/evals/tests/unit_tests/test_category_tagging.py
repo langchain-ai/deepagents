@@ -21,7 +21,12 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     "summarization": ["test_summarization"],
     "subagents": ["test_subagents"],
     "system_prompt": ["test_system_prompt"],
-    "tool_usage": ["test_tool_usage_relational", "test_tool_selection"],
+    "tool_usage": [
+        "test_tool_usage_relational",
+        "test_tool_selection",
+        "test_tool_usage_incident_graph",
+        "test_todos",
+    ],
     "followup_quality": ["test_followup_quality"],
     "external_benchmarks": ["test_external_benchmarks"],
     "tau2_airline": ["test_tau2_airline"],
@@ -41,6 +46,49 @@ def test_all_labeled_categories_are_registered():
 
 def test_expected_categories_match_eval_categories():
     assert set(EXPECTED_CATEGORY_MODULES.keys()) == set(EVAL_CATEGORIES)
+
+
+def test_expected_modules_match_filesystem():
+    """Discover pytestmark assignments on disk and assert they match `EXPECTED_CATEGORY_MODULES`.
+
+    Prevents drift when a new eval test file is added but `EXPECTED_CATEGORY_MODULES`
+    is not updated.
+    """
+    import ast
+    from pathlib import Path
+
+    evals_dir = Path(__file__).resolve().parent.parent / "evals"
+    discovered: dict[str, set[str]] = {}
+
+    for path in sorted(evals_dir.rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "pytestmark" not in targets:
+                continue
+            # Extract category strings from pytest.mark.eval_category("...")
+            for elt in ast.walk(node.value):
+                if (
+                    isinstance(elt, ast.Call)
+                    and isinstance(elt.func, ast.Attribute)
+                    and elt.func.attr == "eval_category"
+                    and elt.args
+                    and isinstance(elt.args[0], ast.Constant)
+                ):
+                    cat = str(elt.args[0].value)
+                    if cat not in discovered:
+                        discovered[cat] = set()
+                    discovered[cat].add(path.stem)
+
+    # Compare as sets so insertion order in EXPECTED_CATEGORY_MODULES doesn't matter.
+    expected = {cat: set(modules) for cat, modules in EXPECTED_CATEGORY_MODULES.items()}
+    assert discovered == expected, (
+        f"Mismatch between eval test files on disk and EXPECTED_CATEGORY_MODULES.\n"
+        f"  On disk:  {dict(discovered)}\n"
+        f"  Expected: {expected}"
+    )
 
 
 # ---------------------------------------------------------------------------

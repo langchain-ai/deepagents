@@ -224,6 +224,8 @@ IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for 
 
 **Decision rule:** if the value could ever come from outside the codebase (user input, tool output, API responses, file contents), use `from_markup` with `$var`. If it's a hardcoded string, glyph, or computed int, `styled` is fine.
 
+**`App.notify()` defaults to `markup=True`:** Textual's `App.notify(message)` parses the message string as Rich markup by default. Any dynamic content (exception messages, file paths, user input, command strings) containing brackets `[]`, ANSI escape codes, or `=` will cause a `MarkupError` crash in Textual's Toast renderer. Always pass `markup=False` when the message contains f-string interpolated variables. Hardcoded string literals are safe with the default.
+
 **Rich `console.print()` and number highlighting:**
 
 `console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
@@ -245,6 +247,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - Keep top-level imports in `main.py` and other entry-point modules minimal.
 - Defer heavy imports to the point where they are actually needed (inside functions/methods).
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
+- Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
+- When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
+- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
 **CLI help screen:**
 
@@ -258,7 +264,7 @@ When adding a user-facing CLI feature (new slash command, keybinding, workflow),
 
 Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `libs/cli/deepagents_cli/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
 
-To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS` (keep alphabetical order), (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
 
 **Adding a new model provider:**
 

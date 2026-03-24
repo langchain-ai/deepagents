@@ -961,11 +961,6 @@ class TestModePrefixStripping:
             chat._text_area.text = "h"
             await pilot.pause()
 
-            # Completions should include /help
-            assert chat._current_suggestions
-            labels = [s[0] for s in chat._current_suggestions]
-            assert "/help" in labels
-
     async def test_submission_prepends_shell_prefix(self) -> None:
         """Submitting in shell mode should prepend `'!'` to the value."""
         app = _RecordingApp()
@@ -2090,11 +2085,31 @@ class TestVSCodeSpaceWorkaround:
             assert ta.text == "hello "
 
 
-class TestCtrlUDeleteLine:
-    """Test that ctrl+u deletes the current line rather than clearing all input."""
+class TestCtrlUDeleteToLineStart:
+    """Test that ctrl+u deletes from cursor to start of line (readline convention)."""
 
-    async def test_ctrl_u_clears_single_line(self) -> None:
-        """ctrl+u on a single line should clear that line's content."""
+    async def test_ctrl_u_deletes_to_line_start(self) -> None:
+        """ctrl+u with cursor mid-line should delete text before the cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+            # Cursor at end after insert — move to col 5
+            ta.move_cursor((0, 5))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == " world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_at_end_of_line_clears_line(self) -> None:
+        """ctrl+u at end of single line should clear it entirely."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2124,8 +2139,27 @@ class TestCtrlUDeleteLine:
             assert ta.text == ""
             assert ta.cursor_location == (0, 0)
 
-    async def test_ctrl_u_removes_middle_line_in_multiline(self) -> None:
-        """ctrl+u should delete the line the cursor is on, leaving others."""
+    async def test_ctrl_u_at_start_of_line_is_noop(self) -> None:
+        """ctrl+u at column 0 should not delete anything."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "hello world"
+            await pilot.pause()
+            ta.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "hello world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_multiline_only_affects_current_line(self) -> None:
+        """ctrl+u in a multiline buffer should only delete on the cursor's line."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2134,75 +2168,15 @@ class TestCtrlUDeleteLine:
 
             ta.text = "line one\nline two\nline three"
             await pilot.pause()
-            # Place cursor on line 1 (second line)
+            # Place cursor at col 4 on line 1
             ta.move_cursor((1, 4))
             await pilot.pause()
 
             await pilot.press("ctrl+u")
             await pilot.pause()
 
-            assert ta.text == "line one\nline three"
-            # Cursor should be at row 1, col 0 (the line that shifted up)
+            assert ta.text == "line one\n two\nline three"
             assert ta.cursor_location == (1, 0)
-
-    async def test_ctrl_u_removes_last_line_in_multiline(self) -> None:
-        """ctrl+u on the last line should remove it and land on the new last line."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            ta = chat._text_area
-            assert ta is not None
-
-            ta.text = "first\nsecond\nthird"
-            await pilot.pause()
-            # Place cursor on last line
-            ta.move_cursor((2, 3))
-            await pilot.pause()
-
-            await pilot.press("ctrl+u")
-            await pilot.pause()
-
-            assert ta.text == "first\nsecond"
-            assert ta.cursor_location == (1, 0)
-
-    async def test_ctrl_u_removes_first_line_in_multiline(self) -> None:
-        """ctrl+u on the first line should remove it and cursor moves to row 0."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            ta = chat._text_area
-            assert ta is not None
-
-            ta.text = "alpha\nbeta\ngamma"
-            await pilot.pause()
-            ta.move_cursor((0, 2))
-            await pilot.pause()
-
-            await pilot.press("ctrl+u")
-            await pilot.pause()
-
-            assert ta.text == "beta\ngamma"
-            assert ta.cursor_location == (0, 0)
-
-    async def test_ctrl_u_does_not_clear_other_lines(self) -> None:
-        """ctrl+u should only affect the current line, not the whole buffer."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            ta = chat._text_area
-            assert ta is not None
-
-            ta.text = "keep this\ndelete me\nkeep this too"
-            await pilot.pause()
-            ta.move_cursor((1, 0))
-            await pilot.pause()
-
-            await pilot.press("ctrl+u")
-            await pilot.pause()
-
-            assert "keep this" in ta.text
-            assert "keep this too" in ta.text
-            assert "delete me" not in ta.text
 
 
 class _TextAreaTypingApp(App[None]):

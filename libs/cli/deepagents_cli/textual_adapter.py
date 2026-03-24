@@ -8,12 +8,11 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -38,6 +37,7 @@ from deepagents_cli._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -53,9 +53,6 @@ from deepagents_cli.widgets.messages import (
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
-
-_git_branch_cache: dict[str, str | None] = {}
-"""Cache git-branch lookups by current working directory."""
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -175,83 +172,6 @@ if TYPE_CHECKING:
 
 _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
-
-
-def _get_git_branch() -> str | None:
-    """Return the current git branch name, or None if not in a repo."""
-    import subprocess  # noqa: S404
-
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
-        return None
-    if cwd in _git_branch_cache:
-        return _git_branch_cache[cwd]
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
-
-
-def _build_stream_config(
-    thread_id: str,
-    assistant_id: str | None,
-    *,
-    sandbox_type: str | None = None,
-) -> dict[str, Any]:
-    """Build the LangGraph stream config dict.
-
-    The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`),
-    git branch, and sandbox type in metadata when available.
-
-    Args:
-        thread_id: The CLI session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
-        sandbox_type: Sandbox provider name for trace metadata, or `None`
-            if no sandbox is active.
-
-    Returns:
-        Config dict with `configurable` and `metadata` keys.
-    """
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
-    if assistant_id:
-        metadata.update(
-            {
-                "assistant_id": assistant_id,
-                "agent_name": assistant_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -464,6 +384,7 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -482,6 +403,9 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -539,7 +463,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -569,9 +493,10 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {
-        "messages": [{"role": "user", "content": message_content}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False

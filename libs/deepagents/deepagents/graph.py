@@ -18,6 +18,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from deepagents._models import resolve_model
+from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -161,8 +162,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             into `AsyncSubAgentMiddleware` instead of `SubAgentMiddleware`.
             They should provide `name`, `description`, and `graph_id`, and may
             optionally include `url` and `headers`. These subagents run as
-            background jobs and expose the async subagent tools for launching,
-            checking, updating, cancelling, and listing jobs.
+            background tasks and expose the async subagent tools for launching,
+            checking, updating, cancelling, and listing tasks.
 
             If no subagent named `general-purpose` is provided, a default
             general-purpose synchronous subagent is added automatically.
@@ -325,6 +326,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             "recursion_limit": 1000,
             "metadata": {
                 "ls_integration": "deepagents",
+                "versions": {"deepagents": __version__},
             },
         }
     )

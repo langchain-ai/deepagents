@@ -839,6 +839,10 @@ class TestCreateCliAgentSkillsSources:
         project_agent_skills_dir = tmp_path / "project-agent-skills"
         project_agent_skills_dir.mkdir()
         built_in_dir = Settings.get_built_in_skills_dir()
+        user_claude_skills_dir = tmp_path / "user-claude-skills"
+        user_claude_skills_dir.mkdir()
+        project_claude_skills_dir = tmp_path / "project-claude-skills"
+        project_claude_skills_dir.mkdir()
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
@@ -849,6 +853,10 @@ class TestCreateCliAgentSkillsSources:
             project_agent_skills_dir
         )
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_claude_skills_dir.return_value = user_claude_skills_dir
+        mock_settings.get_project_claude_skills_dir.return_value = (
+            project_claude_skills_dir
+        )
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -897,6 +905,8 @@ class TestCreateCliAgentSkillsSources:
             str(user_agent_skills_dir),
             str(project_skills_dir),
             str(project_agent_skills_dir),
+            str(tmp_path / "user-claude-skills"),
+            str(tmp_path / "project-claude-skills"),
         ]
 
 
@@ -1373,6 +1383,77 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+
+class TestEnableAskUser:
+    """Verify enable_ask_user controls AskUserMiddleware inclusion."""
+
+    def _capture_middleware(
+        self, tmp_path: Path, *, enable_ask_user: bool
+    ) -> list[Any]:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir(exist_ok=True)
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir(exist_ok=True)
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured: list[list[Any]] = []
+
+        def capture(**kwargs: Any) -> Mock:
+            captured.append(kwargs.get("middleware", []))
+            agent = Mock()
+            agent.with_config.return_value = agent
+            return agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                side_effect=capture,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_ask_user=enable_ask_user,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        return captured[0]
+
+    def test_ask_user_included_when_enabled(self, tmp_path: Path) -> None:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert any(isinstance(mw, AskUserMiddleware) for mw in middleware)
+
+    def test_ask_user_excluded_when_disabled(self, tmp_path: Path) -> None:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
+        assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
 
 class TestLoadAsyncSubagents:

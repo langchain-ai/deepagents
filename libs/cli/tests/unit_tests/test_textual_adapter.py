@@ -16,13 +16,13 @@ from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
 
-from deepagents_cli import textual_adapter
+from deepagents_cli import config as config_module
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.textual_adapter import (
     ModelStats,
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
-    _build_stream_config,
     _format_duration,
     _is_summarization_chunk,
     execute_task_textual,
@@ -125,15 +125,15 @@ class TestTextualUIAdapterInit:
 
 
 class TestBuildStreamConfig:
-    """Tests for `_build_stream_config` metadata construction."""
+    """Tests for `build_stream_config` metadata construction."""
 
     def setup_method(self) -> None:
         """Clear the git-branch cache between tests."""
-        textual_adapter._git_branch_cache.clear()
+        config_module._git_branch_cache.clear()
 
     def test_assistant_fields_present(self) -> None:
         """Assistant-specific metadata should be present when `assistant_id` is set."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         assert config["metadata"]["assistant_id"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
@@ -141,7 +141,7 @@ class TestBuildStreamConfig:
 
     def test_updated_at_is_valid_iso_timestamp(self) -> None:
         """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         raw = config["metadata"]["updated_at"]
         assert isinstance(raw, str)
         parsed = datetime.fromisoformat(raw)
@@ -149,7 +149,7 @@ class TestBuildStreamConfig:
 
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
-        config = _build_stream_config("t-789", assistant_id=None)
+        config = build_stream_config("t-789", assistant_id=None)
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
         assert "agent_name" not in metadata
@@ -158,7 +158,7 @@ class TestBuildStreamConfig:
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
-        config = _build_stream_config("t-000", assistant_id="")
+        config = build_stream_config("t-000", assistant_id="")
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
         assert "agent_name" not in metadata
@@ -168,46 +168,76 @@ class TestBuildStreamConfig:
     def test_git_branch_included_when_available(self) -> None:
         """Git branch should be included in metadata when in a git repo."""
         with patch(
-            "deepagents_cli.textual_adapter._get_git_branch",
+            "deepagents_cli.config._get_git_branch",
             return_value="feature-branch",
         ):
-            config = _build_stream_config("t-git", assistant_id="agent")
+            config = build_stream_config("t-git", assistant_id="agent")
         assert config["metadata"]["git_branch"] == "feature-branch"
 
     def test_git_branch_absent_when_not_in_repo(self) -> None:
         """Git branch should be absent when not in a git repo."""
         with patch(
-            "deepagents_cli.textual_adapter._get_git_branch",
+            "deepagents_cli.config._get_git_branch",
             return_value=None,
         ):
-            config = _build_stream_config("t-nogit", assistant_id="agent")
+            config = build_stream_config("t-nogit", assistant_id="agent")
         assert "git_branch" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""
-        config = _build_stream_config("t-abc", assistant_id=None)
+        config = build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
 
     def test_sandbox_type_included_when_set(self) -> None:
         """Sandbox type should appear in metadata when provided."""
-        config = _build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
+        config = build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
         assert config["metadata"]["sandbox_type"] == "daytona"
 
     def test_sandbox_type_absent_when_none(self) -> None:
         """Sandbox type should be absent from metadata when not provided."""
-        config = _build_stream_config("t-nosb", assistant_id=None)
+        config = build_stream_config("t-nosb", assistant_id=None)
         assert "sandbox_type" not in config["metadata"]
 
     def test_sandbox_type_none_string_excluded(self) -> None:
         """The argparse sentinel `"none"` should not leak into metadata."""
-        config = _build_stream_config("t-none", assistant_id=None, sandbox_type="none")
+        config = build_stream_config("t-none", assistant_id=None, sandbox_type="none")
         assert "sandbox_type" not in config["metadata"]
 
     def test_no_model_keys_in_configurable(self) -> None:
         """Model/model_params should not be in configurable."""
-        config = _build_stream_config("t-no-model", assistant_id=None)
+        config = build_stream_config("t-no-model", assistant_id=None)
         assert "model" not in config["configurable"]
         assert "model_params" not in config["configurable"]
+
+    def test_versions_contains_cli_version(self) -> None:
+        """CLI version should always be present in metadata.versions."""
+        from deepagents_cli._version import __version__
+
+        config = build_stream_config("t-ver", assistant_id=None)
+        assert config["metadata"]["versions"]["deepagents-cli"] == __version__
+
+    def test_versions_contains_sdk_version_when_installed(self) -> None:
+        """SDK version should be in versions when deepagents is installed."""
+        with patch(
+            "importlib.metadata.version",
+            return_value="0.5.0",
+        ):
+            config = build_stream_config("t-sdk", assistant_id=None)
+        assert config["metadata"]["versions"]["deepagents"] == "0.5.0"
+
+    def test_versions_omits_sdk_when_not_installed(self) -> None:
+        """SDK version key should be absent when deepagents is not installed."""
+        from importlib.metadata import PackageNotFoundError
+
+        with patch(
+            "importlib.metadata.version",
+            side_effect=PackageNotFoundError("deepagents"),
+        ):
+            config = build_stream_config("t-nosdk", assistant_id=None)
+        assert "deepagents" not in config["metadata"]["versions"]
+        from deepagents_cli._version import __version__
+
+        assert config["metadata"]["versions"]["deepagents-cli"] == __version__
 
 
 class TestGetGitBranch:
@@ -215,7 +245,7 @@ class TestGetGitBranch:
 
     def setup_method(self) -> None:
         """Clear the git-branch cache between tests."""
-        textual_adapter._git_branch_cache.clear()
+        config_module._git_branch_cache.clear()
 
     def test_reuses_cached_branch_for_same_working_directory(self) -> None:
         """Repeated lookups in one repo should only spawn `git` once."""
@@ -223,13 +253,13 @@ class TestGetGitBranch:
 
         with (
             patch(
-                "deepagents_cli.textual_adapter.Path.cwd",
+                "deepagents_cli.config.Path.cwd",
                 return_value=Path("/tmp/repo"),
             ),
             patch("subprocess.run", return_value=result) as mock_run,
         ):
-            assert textual_adapter._get_git_branch() == "feature-branch"
-            assert textual_adapter._get_git_branch() == "feature-branch"
+            assert config_module._get_git_branch() == "feature-branch"
+            assert config_module._get_git_branch() == "feature-branch"
 
         assert mock_run.call_count == 1
 
@@ -239,31 +269,31 @@ class TestGetGitBranchOSError:
 
     def setup_method(self) -> None:
         """Clear the git-branch cache between tests."""
-        textual_adapter._git_branch_cache.clear()
+        config_module._git_branch_cache.clear()
 
     def test_returns_none_on_cwd_oserror(self) -> None:
         """_get_git_branch should return None when cwd is inaccessible."""
         with patch(
-            "deepagents_cli.textual_adapter.Path.cwd",
+            "deepagents_cli.config.Path.cwd",
             side_effect=OSError("deleted"),
         ):
-            assert textual_adapter._get_git_branch() is None
+            assert config_module._get_git_branch() is None
 
 
 class TestBuildStreamConfigOSError:
-    """Tests for _build_stream_config when Path.cwd() raises OSError."""
+    """Tests for build_stream_config when Path.cwd() raises OSError."""
 
     def setup_method(self) -> None:
         """Clear the git-branch cache between tests."""
-        textual_adapter._git_branch_cache.clear()
+        config_module._git_branch_cache.clear()
 
     def test_cwd_absent_on_oserror(self) -> None:
         """Cwd should be absent from metadata when Path.cwd() raises."""
         with patch(
-            "deepagents_cli.textual_adapter.Path.cwd",
+            "deepagents_cli.config.Path.cwd",
             side_effect=OSError("deleted"),
         ):
-            config = _build_stream_config("t-err", assistant_id="agent")
+            config = build_stream_config("t-err", assistant_id="agent")
         assert "cwd" not in config["metadata"]
 
 

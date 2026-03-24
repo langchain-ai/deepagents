@@ -1,0 +1,38 @@
+{
+  "agent": "demo-agent",
+  "description": "Demo deployment of a coding assistant",
+  "model": "anthropic:claude-sonnet-4-6",
+
+  "memory": {
+    "scope": "user",
+    "sources": [".deepagents/AGENTS.md"]
+  },
+
+  "skills": {
+    "sources": [".deepagents/skills"]
+  },
+
+  "tools": {
+    "shell": true,
+    "web_search": true,
+    "fetch_url": true,
+    "http_request": true,
+    "custom": "./custom_tools.py:tools"
+  },
+
+  "backend": {
+    "type": "store",
+    "namespace": {
+      "scope": "user",
+      "prefix": "filesystem"
+    }
+  },
+
+  "sandbox": {
+    "provider": "langsmith",
+    "scope": "thread"
+  },
+
+  "env": ".env",
+  "python_version": "3.12"
+}

@@ -11,6 +11,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -41,14 +42,29 @@ _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
 
 
-def _format_transfer_error(exc: Exception) -> str:
-    """Convert transfer exceptions into standardized error codes.
+def _format_transfer_error(exc: Exception) -> FileOperationError | str:
+    """Convert a file transfer exception to an error string for batch responses.
 
-    Returns a `FileOperationError` literal for known exception types, or
-    `str(exc)` for unmapped exceptions so the caller can still surface
-    a meaningful message.
+    Returns a `FileOperationError` literal when the exception maps to a known
+    file-operation error. Unclassified exceptions are logged at error level and
+    fall back to `str(exc)` to preserve partial-success semantics.
+
+    Args:
+        exc: The caught exception.
+
+    Returns:
+        A `FileOperationError` literal or `str(exc)` for unrecognized failures.
     """
-    return map_file_operation_error(exc) or str(exc)
+    classified = map_file_operation_error(exc)
+    if classified is not None:
+        return classified
+    logger.error(
+        "Unclassified file transfer error (%s): %s",
+        type(exc).__name__,
+        exc,
+        exc_info=True,
+    )
+    return str(exc)
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -519,8 +535,9 @@ done
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to upload %s: %s", path, exc, exc_info=True)
-                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
+                error = _format_transfer_error(exc)
+                logger.warning("Failed to upload %s: %s", path, error)
+                results.append(FileUploadResponse(path=path, error=error))
             finally:
                 try:
                     tmp_path.unlink()
@@ -543,12 +560,9 @@ done
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Failed to download %s: %s", path, exc, exc_info=True)
-                    results.append(
-                        FileDownloadResponse(
-                            path=path, content=None, error=_format_transfer_error(exc)
-                        )
-                    )
+                    error = _format_transfer_error(exc)
+                    logger.warning("Failed to download %s: %s", path, error)
+                    results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

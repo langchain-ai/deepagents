@@ -213,6 +213,7 @@ class TestMapFileOperationError:
             ("no such file", "file_not_found"),
             ("does not exist", "file_not_found"),
             ("invalid path", "invalid_path"),
+            ("path traversal", "invalid_path"),
         ],
     )
     def test_message_fallback(self, msg: str, expected: str) -> None:
@@ -227,7 +228,7 @@ class TestMapFileOperationError:
         assert map_file_operation_error(ValueError("invalid literal for int()")) is None
 
     def test_value_error_path_security_messages(self) -> None:
-        """ValueError from _resolve_path path-security checks should map."""
+        """ValueError with path-security keywords should map to invalid_path."""
         assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
         assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"
 
@@ -238,3 +239,8 @@ class TestMapFileOperationError:
     def test_generic_invalid_argument_is_not_classified(self) -> None:
         """'invalid argument' should not match — too generic."""
         assert map_file_operation_error(OSError("invalid argument for timeout")) is None
+
+    def test_value_error_falls_through_to_message_matching(self) -> None:
+        """ValueError with non-path file keywords should fall through to message matcher."""
+        assert map_file_operation_error(ValueError("permission denied on /foo")) == "permission_denied"
+        assert map_file_operation_error(ValueError("file not found: /bar")) == "file_not_found"

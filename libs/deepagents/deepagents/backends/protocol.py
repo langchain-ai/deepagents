@@ -48,16 +48,6 @@ potentially fix:
 """
 
 
-FileTransferError: TypeAlias = str
-"""Error string returned by file transfer APIs.
-
-Backends should prefer the standardized `FileOperationError` literals when
-possible. When a backend encounters an unrecognized provider-specific failure,
-it may return the original error string to preserve partial-success behavior
-for batched transfers.
-"""
-
-
 def _match_file_error_message(msg: str) -> FileOperationError | None:
     """Match a lowercased error message to a `FileOperationError` code.
 
@@ -100,18 +90,18 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
     if isinstance(exc, ValueError):
-        # ValueError from _resolve_path path-security checks. Only match
-        # known path-related messages to avoid false positives from unrelated
-        # ValueErrors (e.g. encoding, int parsing).
+        # ValueError from path-security checks (e.g. _resolve_path). Check
+        # path-related keywords first; fall through to general message
+        # matching for other patterns.
         vmsg = str(exc).lower()
         if "path traversal" in vmsg or "outside root" in vmsg or "invalid path" in vmsg:
             return "invalid_path"
-        return None
+        return _match_file_error_message(vmsg)
 
     # Message-based fallback for exceptions whose type alone is not
     # enough to classify (e.g. a remote sandbox returning "permission denied"
-    # wrapped in a generic RuntimeError or OSError). Patterns are kept
-    # specific to file-operation messages to minimize false positives.
+    # wrapped in a generic RuntimeError). Patterns are kept specific to
+    # file-operation messages to minimize false positives.
     return _match_file_error_message(str(exc).lower())
 
 
@@ -121,17 +111,16 @@ class FileDownloadResponse:
 
     The response is designed to allow partial success in batch operations.
     Known recoverable errors use `FileOperationError` literals; unknown
-    errors fall back to `str(exc)` so the caller still gets a meaningful
-    message.
+    errors use a descriptive error string so the caller still gets a
+    meaningful message.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
             when processing batch results, especially useful for error messages.
         content: File contents as bytes on success, None on failure.
-        error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized.
-
-            `None` on success.
+        error: A `FileOperationError` literal for known conditions, or a
+            backend-specific error string when the failure cannot be
+            normalized. `None` on success.
 
     Examples:
         >>> # Success
@@ -142,7 +131,7 @@ class FileDownloadResponse:
 
     path: str
     content: bytes | None = None
-    error: FileTransferError | None = None
+    error: FileOperationError | str | None = None
 
 
 @dataclass
@@ -151,16 +140,15 @@ class FileUploadResponse:
 
     The response is designed to allow partial success in batch operations.
     Known recoverable errors use `FileOperationError` literals; unknown
-    errors fall back to `str(exc)` so the caller still gets a meaningful
-    message.
+    errors use a descriptive error string so the caller still gets a
+    meaningful message.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
             when processing batch results and for clear error messages.
-        error: Standardized error code on failure, or a backend-specific error
-            string when the failure cannot be normalized.
-
-            `None` on success.
+        error: A `FileOperationError` literal for known conditions, or a
+            backend-specific error string when the failure cannot be
+            normalized. `None` on success.
 
     Examples:
         >>> # Success
@@ -170,7 +158,7 @@ class FileUploadResponse:
     """
 
     path: str
-    error: FileTransferError | None = None
+    error: FileOperationError | str | None = None
 
 
 class FileInfo(TypedDict):

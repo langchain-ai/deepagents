@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 from tests.evals.utils import TrajectoryScorer, final_text_contains, run_agent, tool_call
 
+pytestmark = [pytest.mark.eval_category("tool_usage")]
+
 
 @pytest.mark.langsmith
 def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> None:
@@ -28,6 +30,8 @@ def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> No
         ),
         scorer=TrajectoryScorer()
         .expect(
+            agent_steps=7,
+            tool_call_requests=6,
             tool_calls=[tool_call(name="write_todos", step=i) for i in range(1, 7)],
         )
         .success(final_text_contains("DONE")),
@@ -51,6 +55,8 @@ def test_write_todos_three_steps_returns_text(model: BaseChatModel) -> None:
         ),
         scorer=TrajectoryScorer()
         .expect(
+            agent_steps=5,
+            tool_call_requests=4,
             tool_calls=[tool_call(name="write_todos", step=i) for i in range(1, 5)],
         )
         .success(final_text_contains("DONE")),

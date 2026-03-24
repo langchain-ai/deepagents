@@ -2,7 +2,7 @@
 
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -17,6 +17,9 @@ from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+
+if TYPE_CHECKING:
+    from langchain_core.runnables.config import RunnableConfig
 
 
 class SubAgent(TypedDict):
@@ -323,6 +326,10 @@ def _get_subagents_legacy(
             tools=default_tools,
             middleware=general_purpose_middleware,
             name="general-purpose",
+        ).with_config(
+            {
+                "recursion_limit": 10_000,
+            }
         )
         specs.append(
             {
@@ -427,6 +434,14 @@ def _build_task_tool(  # noqa: C901
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
+    def _subagent_config(runtime: ToolRuntime) -> "RunnableConfig":
+        config: "RunnableConfig" = {"recursion_limit": runtime.config["recursion_limit"]}
+        for key in ("tags", "metadata", "callbacks", "configurable"):
+            value = runtime.config.get(key)
+            if value is not None:
+                config[key] = value
+        return config
+
     def task(
         description: Annotated[
             str,
@@ -442,8 +457,7 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        recursion_limit = runtime.config["recursion_limit"]
-        result = subagent.invoke(subagent_state, {"configurable": {"recursion_limit": recursion_limit}})
+        result = subagent.invoke(subagent_state, _subagent_config(runtime))
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -461,8 +475,7 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        recursion_limit = runtime.config["recursion_limit"]
-        result = await subagent.invoke(subagent_state, {"configurable": {"recursion_limit": recursion_limit}})
+        result = await subagent.invoke(subagent_state, _subagent_config(runtime))
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

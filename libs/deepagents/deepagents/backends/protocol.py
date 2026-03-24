@@ -48,32 +48,13 @@ potentially fix:
 """
 
 
-def _match_file_error_message(msg: str) -> FileOperationError | None:
-    """Match a lowercased error message to a `FileOperationError` code.
-
-    Args:
-        msg: Lowercased exception message string.
-
-    Returns:
-        A `FileOperationError` literal, or `None` if no pattern matches.
-    """
-    if "is a directory" in msg:
-        return "is_directory"
-    if "permission denied" in msg or "access denied" in msg:
-        return "permission_denied"
-    if "no such file" in msg or "does not exist" in msg or "file not found" in msg:
-        return "file_not_found"
-    if "invalid path" in msg or "path traversal" in msg:
-        return "invalid_path"
-    return None
-
-
-def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # noqa: PLR0911
+def map_file_operation_error(exc: Exception) -> FileOperationError | None:
     """Map a caught exception to a standardized `FileOperationError` code.
 
-    Checks the exception type first, then falls back to inspecting the message
-    string for known patterns. Returns `None` when the exception does not match
-    any known file-operation error.
+    Classification is based on exception type only (stdlib hierarchy and
+    `ValueError` path-security checks). Returns `None` for any exception
+    that cannot be classified by type, letting callers decide whether to
+    re-raise or fall back to `str(exc)`.
 
     Args:
         exc: The exception to classify.
@@ -90,19 +71,13 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
     if isinstance(exc, ValueError):
-        # ValueError from path-security checks (e.g. _resolve_path). Check
-        # path-related keywords first; fall through to general message
-        # matching for other patterns.
+        # ValueError from path-security checks (e.g. _resolve_path). Only
+        # match known path-related messages to avoid false positives from
+        # unrelated ValueErrors (e.g. encoding, int parsing).
         vmsg = str(exc).lower()
         if "path traversal" in vmsg or "outside root" in vmsg or "invalid path" in vmsg:
             return "invalid_path"
-        return _match_file_error_message(vmsg)
-
-    # Message-based fallback for exceptions whose type alone is not
-    # enough to classify (e.g. a remote sandbox returning "permission denied"
-    # wrapped in a generic RuntimeError). Patterns are kept specific to
-    # file-operation messages to minimize false positives.
-    return _match_file_error_message(str(exc).lower())
+    return None
 
 
 @dataclass

@@ -203,44 +203,19 @@ class TestMapFileOperationError:
     def test_known_exception_types(self, exc: Exception, expected: str) -> None:
         assert map_file_operation_error(exc) == expected
 
-    @pytest.mark.parametrize(
-        ("msg", "expected"),
-        [
-            ("is a directory", "is_directory"),
-            ("permission denied", "permission_denied"),
-            ("access denied", "permission_denied"),
-            ("file not found", "file_not_found"),
-            ("no such file", "file_not_found"),
-            ("does not exist", "file_not_found"),
-            ("invalid path", "invalid_path"),
-            ("path traversal", "invalid_path"),
-        ],
-    )
-    def test_message_fallback(self, msg: str, expected: str) -> None:
-        assert map_file_operation_error(OSError(msg)) == expected
-
     def test_unrecognized_returns_none(self) -> None:
+        """Non-stdlib exception types return None regardless of message."""
         assert map_file_operation_error(RuntimeError("something else")) is None
+        assert map_file_operation_error(RuntimeError("permission denied")) is None
+        assert map_file_operation_error(OSError("is a directory")) is None
 
     def test_unrelated_value_error_returns_none(self) -> None:
         """ValueError without path-related keywords should not be mapped."""
         assert map_file_operation_error(ValueError("unexpected encoding")) is None
         assert map_file_operation_error(ValueError("invalid literal for int()")) is None
+        assert map_file_operation_error(ValueError("permission denied on /foo")) is None
 
     def test_value_error_path_security_messages(self) -> None:
         """ValueError with path-security keywords should map to invalid_path."""
         assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
         assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"
-
-    def test_generic_not_found_is_not_classified(self) -> None:
-        """Bare 'not found' should not match — requires 'file not found'."""
-        assert map_file_operation_error(RuntimeError("Key not found in cache")) is None
-
-    def test_generic_invalid_argument_is_not_classified(self) -> None:
-        """'invalid argument' should not match — too generic."""
-        assert map_file_operation_error(OSError("invalid argument for timeout")) is None
-
-    def test_value_error_falls_through_to_message_matching(self) -> None:
-        """ValueError with non-path file keywords should fall through to message matcher."""
-        assert map_file_operation_error(ValueError("permission denied on /foo")) == "permission_denied"
-        assert map_file_operation_error(ValueError("file not found: /bar")) == "file_not_found"

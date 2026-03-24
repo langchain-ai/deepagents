@@ -41,16 +41,6 @@ _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
 
 
-def _format_transfer_error(exc: Exception) -> str:
-    """Convert transfer exceptions into standardized error codes.
-
-    Returns a `FileOperationError` literal for known exception types, or
-    `str(exc)` for unmapped exceptions so the caller can still surface
-    a meaningful message.
-    """
-    return map_file_operation_error(exc) or str(exc)
-
-
 class HarborSandbox(SandboxBackendProtocol):
     """A sandbox implementation using Harbor environments.
 
@@ -512,15 +502,21 @@ done
                     tmp.write(content)
                     tmp_path = Path(tmp.name)
             except OSError as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
                 logger.warning("Failed to create temp file for upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
+                results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                logger.warning("Failed to upload %s: %s", path, error)
+                results.append(FileUploadResponse(path=path, error=error))
             finally:
                 try:
                     tmp_path.unlink()
@@ -542,13 +538,12 @@ done
                     await self.environment.download_file(path, local)
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Failed to download %s: %s", path, exc)
-                    results.append(
-                        FileDownloadResponse(
-                            path=path, content=None, error=_format_transfer_error(exc)
-                        )
-                    )
+                except Exception as exc:
+                    error = map_file_operation_error(exc)
+                    if error is None:
+                        raise
+                    logger.warning("Failed to download %s: %s", path, error)
+                    results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

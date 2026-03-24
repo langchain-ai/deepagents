@@ -36,6 +36,7 @@ from deepagents.backends.protocol import (
     LsResult,
     ReadResult,
     WriteResult,
+    map_file_operation_error,
 )
 from deepagents.backends.sandbox import BaseSandbox
 
@@ -204,8 +205,11 @@ class LocalSubprocessSandbox(BaseSandbox):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 Path(path).write_bytes(data)
                 results.append(FileUploadResponse(path=path, error=None))
-            except OSError as exc:
-                results.append(FileUploadResponse(path=path, error=str(exc)))
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                results.append(FileUploadResponse(path=path, error=error))
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -215,10 +219,11 @@ class LocalSubprocessSandbox(BaseSandbox):
             try:
                 content = Path(real_path).read_bytes()
                 results.append(FileDownloadResponse(path=real_path, content=content, error=None))
-            except FileNotFoundError:
-                results.append(FileDownloadResponse(path=real_path, content=None, error="file_not_found"))
-            except OSError as exc:
-                results.append(FileDownloadResponse(path=real_path, content=None, error=str(exc)))
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                results.append(FileDownloadResponse(path=real_path, content=None, error=error))
         return results
 
 

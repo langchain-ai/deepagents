@@ -1,8 +1,8 @@
-PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard libs/*/Makefile libs/partners/*/Makefile))))
+PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard */Makefile partners/*/Makefile))))
 
 # Map package dirs to their required Python version
 # acp requires 3.14, everything else uses 3.12
-python_version = $(if $(filter libs/acp,$1),3.14,3.12)
+python_version = $(if $(filter acp,$1),3.14,3.12)
 
 .PHONY: help lock lock-check lint format
 
@@ -16,25 +16,25 @@ help: ## Show this help message
 
 lock: ## Update all lockfiles
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
-		echo "🔒 Locking $$dir"; \
-		uv lock --directory $$dir --python $(call python_version,$$dir); \
-	done
+	$(foreach pkg,$(PACKAGE_DIRS), \
+		echo "🔒 Locking $(pkg)"; \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
+	)
 	@echo "✅ All lockfiles updated!"
 
 lock-check: ## Check all lockfiles are up-to-date
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
-		echo "🔍 Checking $$dir"; \
-		uv lock --check --directory $$dir --python $(call python_version,$$dir); \
-	done
+	$(foreach pkg,$(PACKAGE_DIRS), \
+		echo "🔍 Checking $(pkg)"; \
+		uv lock --check --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
+	)
 	@echo "✅ All lockfiles are up-to-date!"
 
 lint: ## Lint all packages
 	@set -e; \
 	for dir in $(PACKAGE_DIRS); do \
 		echo "🔍 Linting $$dir"; \
-		$(MAKE) -C $$dir lint; \
+		$(MAKE) -C "$$dir" lint; \
 	done
 	@echo "✅ All packages linted!"
 
@@ -42,6 +42,6 @@ format: ## Format all packages
 	@set -e; \
 	for dir in $(PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \
-		$(MAKE) -C $$dir format; \
+		$(MAKE) -C "$$dir" format; \
 	done
 	@echo "✅ All packages formatted!"

@@ -48,12 +48,12 @@ potentially fix:
 """
 
 
-def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # noqa: PLR0911
+def map_file_operation_error(exc: Exception) -> FileOperationError | None:
     """Map a caught exception to a standardized `FileOperationError` code.
 
-    Checks the exception type first, then falls back to inspecting the message
-    string for known patterns. Returns `None` when the exception does not match
-    any known file-operation error.
+    Classification is based on exception type only (stdlib hierarchy).
+    Returns `None` for any exception that cannot be classified by type,
+    letting callers decide whether to re-raise or fall back to `str(exc)`.
 
     Args:
         exc: The exception to classify.
@@ -69,15 +69,7 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
         return "is_directory"
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
-
-    msg = str(exc).lower()
-    if "is a directory" in msg:
-        return "is_directory"
-    if "permission denied" in msg or "access denied" in msg:
-        return "permission_denied"
-    if "not found" in msg or "no such file" in msg or "does not exist" in msg:
-        return "file_not_found"
-    if "invalid path" in msg or "invalid argument" in msg or "path traversal" in msg:
+    if isinstance(exc, ValueError):
         return "invalid_path"
     return None
 
@@ -87,16 +79,10 @@ class FileDownloadResponse:
     """Result of a single file download operation.
 
     The response is designed to allow partial success in batch operations.
-    Known recoverable errors use `FileOperationError` literals; unknown
-    errors fall back to `str(exc)` so the caller still gets a meaningful
-    message.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results, especially useful for error messages.
-        content: File contents as bytes on success, None on failure.
-        error: A `FileOperationError` literal for known conditions, an
-            arbitrary string for unexpected errors, or None on success.
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success
@@ -106,8 +92,18 @@ class FileDownloadResponse:
     """
 
     path: str
+    """The file path that was requested. Included for easy correlation when
+    processing batch results, especially useful for error messages."""
+
     content: bytes | None = None
-    error: str | None = None
+    """File contents as bytes on success, `None` on failure."""
+
+    error: FileOperationError | None = None
+    """A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 @dataclass
@@ -115,15 +111,10 @@ class FileUploadResponse:
     """Result of a single file upload operation.
 
     The response is designed to allow partial success in batch operations.
-    Known recoverable errors use `FileOperationError` literals; unknown
-    errors fall back to `str(exc)` so the caller still gets a meaningful
-    message.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results and for clear error messages.
-        error: A `FileOperationError` literal for known conditions, an
-            arbitrary string for unexpected errors, or None on success.
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success
@@ -133,28 +124,51 @@ class FileUploadResponse:
     """
 
     path: str
-    error: str | None = None
+    """The file path that was requested.
+
+    Included for easy correlation when processing batch results and for clear
+    error messages.
+    """
+
+    error: FileOperationError | None = None
+    """error: A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 class FileInfo(TypedDict):
     """Structured file listing info.
 
-    Minimal contract used across backends. Only "path" is required.
+    Minimal contract used across backends. Only `path` is required.
     Other fields are best-effort and may be absent depending on backend.
     """
 
     path: str
+    """Absolute or relative file path."""
+
     is_dir: NotRequired[bool]
-    size: NotRequired[int]  # bytes (approx)
-    modified_at: NotRequired[str]  # ISO timestamp if known
+    """Whether the entry is a directory."""
+
+    size: NotRequired[int]
+    """File size in bytes (approximate)."""
+
+    modified_at: NotRequired[str]
+    """ISO 8601 timestamp of last modification, if known."""
 
 
 class GrepMatch(TypedDict):
-    """Structured grep match entry."""
+    """A single match from a grep search."""
 
     path: str
+    """Path to the file containing the match."""
+
     line: int
+    """1-indexed line number of the match."""
+
     text: str
+    """Content of the matching line."""
 
 
 class FileData(TypedDict):

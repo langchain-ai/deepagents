@@ -594,7 +594,10 @@ class LocalContextMiddleware(AgentMiddleware):
             Stripped script output, or `None` on failure/empty output.
         """
         backend = self.backend
-        if not isinstance(backend, _AsyncExecutableBackend):
+        if not (
+            isinstance(backend, _AsyncExecutableBackend)
+            and asyncio.iscoroutinefunction(backend.aexecute)
+        ):
             try:
                 return await asyncio.to_thread(self._run_detect_script)
             except Exception:

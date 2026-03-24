@@ -13,6 +13,7 @@ import pytest
 from deepagents.backends.protocol import ExecuteResponse
 
 from deepagents_cli.local_context import (
+    _DETECT_SCRIPT_TIMEOUT,
     _TOOL_NAME_DISPLAY_LIMIT,
     DETECT_CONTEXT_SCRIPT,
     LocalContextMiddleware,
@@ -764,6 +765,58 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)
 
         assert result is None
+
+
+class TestTimeoutForwarding:
+    """Verify `_DETECT_SCRIPT_TIMEOUT` is forwarded to backend execution."""
+
+    def test_sync_execute_receives_timeout(self) -> None:
+        """Test _run_detect_script passes timeout to backend.execute()."""
+
+        class _RecordingBackend:
+            received_timeout: int | None = None
+
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,
+            ) -> ExecuteResponse:
+                self.received_timeout = timeout
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
+
+        backend = _RecordingBackend()
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        middleware.before_agent(state, runtime)
+
+        assert backend.received_timeout == _DETECT_SCRIPT_TIMEOUT
+
+    async def test_async_execute_receives_timeout(self) -> None:
+        """Test _arun_detect_script passes timeout to backend.aexecute()."""
+
+        class _RecordingAsyncBackend:
+            received_timeout: int | None = None
+
+            async def aexecute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
+                self.received_timeout = timeout
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
+
+        backend = _RecordingAsyncBackend()
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        await middleware.abefore_agent(state, runtime)
+
+        assert backend.received_timeout == _DETECT_SCRIPT_TIMEOUT
 
 
 class TestHandleDetectResult:

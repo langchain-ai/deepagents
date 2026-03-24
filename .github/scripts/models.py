@@ -370,7 +370,7 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "nvidia/nemotron-3-super-120b-a12b",
+        "openrouter:nvidia/nemotron-3-super-120b-a12b",
         frozenset(
             {
                 "eval:openrouter",

@@ -101,7 +101,13 @@ def main() -> None:
         sys.exit(1)
 
     if not results:
-        print("error: no results to plot", file=sys.stderr)
+        source = args.summary or args.results or "toy"
+        msg = (
+            f"error: no results to plot from {source}\n"
+            "hint: the summary file may be an empty JSON array (all evals "
+            "cancelled or failed). Check the eval runner logs for details."
+        )
+        print(msg, file=sys.stderr)
         sys.exit(1)
 
     # Detect categories from results (use all categories present across models).

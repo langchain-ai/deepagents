@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to run. Set definitions: .github/scripts/models.py. Use models_override for individual models."
-        required: true
-        default: "set0"
+        description: "Model set to run. Set definitions: .github/scripts/models.py. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
         type: choice
         options:
+          - ""
           - all
           - set0
           - set1
@@ -283,7 +284,7 @@ jobs:
       - name: "🧪 Create LangSmith experiment"
         id: langsmith
         run: |
-          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME")
+          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
 

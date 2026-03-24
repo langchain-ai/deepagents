@@ -25,11 +25,12 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to evaluate. Set definitions: .github/scripts/models.py. Use models_override for individual models."
-        required: true
-        default: "set0"
+        description: "Model set to evaluate. Set definitions: .github/scripts/models.py. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
         type: choice
         options:
+          - ""
           - all
           - set0
           - set1
@@ -127,16 +128,17 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${MODELS_OVERRIDE}" != "(empty)" ]; then
+            echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "| \`eval_categories\` (list) | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           # Build eval_categories as a bullet list
@@ -153,7 +155,6 @@ jobs:
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6

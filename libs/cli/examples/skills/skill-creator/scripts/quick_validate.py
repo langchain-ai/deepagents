@@ -58,6 +58,7 @@ def validate_skill(skill_path):
         "license",
         "compatibility",
         "allowed-tools",
+        "argument-hint",
         "metadata",
     }
 

@@ -4,6 +4,9 @@ File listing, grep, glob, and read use shell commands via `execute()`. Write
 delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
 for payloads under `_EDIT_INLINE_MAX_BYTES` and falls back to uploading old/new
 strings as temp files with a server-side replace script for larger ones.
+
+Concrete subclasses implement `execute()` and `upload_files()`; all other
+operations are derived from those.
 """
 
 from __future__ import annotations
@@ -561,7 +564,7 @@ except PermissionError:
         """Map server-side error codes to `EditResult` objects."""
         if error == "file_not_found":
             return EditResult(
-                error=f"Error: Failed to read '{file_path}': file_not_found",
+                error=f"Error: File '{file_path}' not found",
             )
         if error == "not_a_text_file":
             return EditResult(

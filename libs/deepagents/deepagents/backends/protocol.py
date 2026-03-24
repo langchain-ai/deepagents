@@ -51,10 +51,9 @@ potentially fix:
 def map_file_operation_error(exc: Exception) -> FileOperationError | None:
     """Map a caught exception to a standardized `FileOperationError` code.
 
-    Classification is based on exception type only (stdlib hierarchy and
-    `ValueError` path-security checks). Returns `None` for any exception
-    that cannot be classified by type, letting callers decide whether to
-    re-raise or fall back to `str(exc)`.
+    Classification is based on exception type only (stdlib hierarchy).
+    Returns `None` for any exception that cannot be classified by type,
+    letting callers decide whether to re-raise or fall back to `str(exc)`.
 
     Args:
         exc: The exception to classify.
@@ -71,12 +70,7 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
     if isinstance(exc, ValueError):
-        # ValueError from path-security checks (e.g. _resolve_path). Only
-        # match known path-related messages to avoid false positives from
-        # unrelated ValueErrors (e.g. encoding, int parsing).
-        vmsg = str(exc).lower()
-        if "path traversal" in vmsg or "outside root" in vmsg or "invalid path" in vmsg:
-            return "invalid_path"
+        return "invalid_path"
     return None
 
 
@@ -85,9 +79,10 @@ class FileDownloadResponse:
     """Result of a single file download operation.
 
     The response is designed to allow partial success in batch operations.
-    Known recoverable errors use `FileOperationError` literals; unknown
-    errors use a descriptive error string so the caller still gets a
-    meaningful message.
+
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success
@@ -116,9 +111,10 @@ class FileUploadResponse:
     """Result of a single file upload operation.
 
     The response is designed to allow partial success in batch operations.
-    Known recoverable errors use `FileOperationError` literals; unknown
-    errors use a descriptive error string so the caller still gets a
-    meaningful message.
+
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success

@@ -451,11 +451,6 @@ class LocalContextMiddleware(AgentMiddleware):
 
         Args:
             backend: Backend instance that provides shell command execution.
-
-                Backends that only implement async execution (e.g. `HarborSandbox`)
-                are supported via `abefore_agent`. Sync-only backends work via
-                `before_agent` directly or through `asyncio.to_thread` in async
-                contexts.
             mcp_server_info: MCP server metadata to include in the system prompt.
         """
         self.backend = backend
@@ -524,7 +519,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
 
-        return self._handle_detect_result(result)
+        return LocalContextMiddleware._handle_detect_result(result)
 
     # override - state parameter is intentionally narrowed from
     # AgentState to LocalContextState for type safety within this middleware.
@@ -621,7 +616,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
 
-        return self._handle_detect_result(result)
+        return LocalContextMiddleware._handle_detect_result(result)
 
     async def abefore_agent(  # type: ignore[override]
         self,

@@ -223,7 +223,19 @@ def test_read_handles_malformed_output() -> None:
     result = sandbox.read("/test/file.txt")
 
     assert result.error is not None
-    assert "not found" in result.error
+    assert "unexpected server response" in result.error
+    assert "not json at all" in result.error
+
+
+def test_read_handles_non_dict_json_output() -> None:
+    """Test that read() returns error when execute() returns valid JSON that is not a dict."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "[1, 2, 3]"
+
+    result = sandbox.read("/test/file.txt")
+
+    assert result.error is not None
+    assert "unexpected server response" in result.error
 
 
 # -- write tests --------------------------------------------------------------
@@ -373,6 +385,17 @@ def test_sandbox_edit_inline_malformed_output() -> None:
     assert result.error is not None
     assert "unexpected server response" in result.error
     assert "not json at all" in result.error
+
+
+def test_sandbox_edit_inline_non_dict_json_output() -> None:
+    """Test that inline edit returns error when execute() returns non-dict JSON."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "[1, 2, 3]"
+
+    result = sandbox.edit("/test/file.txt", "old", "new")
+
+    assert result.error is not None
+    assert "unexpected server response" in result.error
 
 
 def test_sandbox_edit_inline_does_not_download() -> None:

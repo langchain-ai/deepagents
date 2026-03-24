@@ -513,16 +513,14 @@ done
                     tmp_path = Path(tmp.name)
             except OSError as exc:
                 logger.warning("Failed to create temp file for upload %s: %s", path, exc)
-                error = _format_transfer_error(exc)
-                results.append(FileUploadResponse(path=path, error=error))
+                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
                 continue
             try:
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:  # noqa: BLE001
-                error = _format_transfer_error(exc)
                 logger.warning("Failed to upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error=error))
+                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
             finally:
                 try:
                     tmp_path.unlink()
@@ -545,9 +543,12 @@ done
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
                 except Exception as exc:  # noqa: BLE001
-                    error = _format_transfer_error(exc)
                     logger.warning("Failed to download %s: %s", path, exc)
-                    results.append(FileDownloadResponse(path=path, content=None, error=error))
+                    results.append(
+                        FileDownloadResponse(
+                            path=path, content=None, error=_format_transfer_error(exc)
+                        )
+                    )
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

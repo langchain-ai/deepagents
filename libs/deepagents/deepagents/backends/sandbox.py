@@ -2,14 +2,15 @@
 
 File listing, grep, glob, and read use shell commands via `execute()`. Write
 delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
-for small payloads and falls back to uploading old/new strings as temp files
-with a server-side replace script for large ones.
+for payloads under `_EDIT_INLINE_MAX_BYTES` and falls back to uploading old/new
+strings as temp files with a server-side replace script for larger ones.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import shlex
 from abc import ABC, abstractmethod
@@ -30,6 +31,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import _get_file_type, create_file_data
+
+logger = logging.getLogger(__name__)
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -63,14 +66,14 @@ import os, sys, base64
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
 if os.path.exists(path):
-    print('Error: File already exists: ' + repr(path), file=sys.stderr)
+    print('Error: File already exists: ' + repr(path))
     sys.exit(1)
 os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
 " 2>&1"""
 """Preflight check for write operations: verify the target file does not already
 exist and create parent directories.
 
-Only the (small) base64-encoded *path* is interpolated — file content is
+Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
@@ -336,7 +339,7 @@ except PermissionError:
         file_type = _get_file_type(file_path)
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
 
-        # Coerce to int to prevent injection if callers pass unvalidated strings.
+        # Defensive int coercion in case callers bypass type checking.
         cmd = _READ_COMMAND_TEMPLATE.format(
             path_b64=path_b64,
             file_type=file_type,
@@ -349,10 +352,12 @@ except PermissionError:
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
-            return ReadResult(error=f"File '{file_path}': not found")
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
 
         if not isinstance(data, dict):
-            return ReadResult(error=f"File '{file_path}': not found")
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
 
         if "error" in data:
             return ReadResult(error=f"File '{file_path}': {data['error']}")
@@ -387,14 +392,22 @@ except PermissionError:
         # the risk is minimal in single-agent sandbox environments.
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
+        try:
+            result = self.execute(check_cmd)
+        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass execute()
+            msg = f"Failed to write file '{file_path}': {exc}"
+            return WriteResult(error=msg)
 
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
         # Transfer content via upload_files()
-        responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        try:
+            responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass upload_files()
+            msg = f"Failed to write file '{file_path}': {exc}"
+            return WriteResult(error=msg)
         if not responses:
             return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
         if responses[0].error:
@@ -518,8 +531,15 @@ except PermissionError:
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
-            # Script may not have completed — best-effort cleanup of temp files
-            self.execute(f"rm -f {shlex.quote(old_tmp)} {shlex.quote(new_tmp)}")
+            # Script may not have started or its finally block may not have
+            # run — best-effort cleanup of temp files.
+            cleanup = self.execute(f"rm -f {shlex.quote(old_tmp)} {shlex.quote(new_tmp)}")
+            if cleanup.exit_code != 0:
+                logger.warning(
+                    "Failed to clean up temp files for edit %s: %s",
+                    file_path,
+                    cleanup.output[:200],
+                )
             detail = output[:200] if output else "(empty)"
             return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 

@@ -35,6 +35,16 @@ on:
           - set1
           - set2
           - open
+          - anthropic
+          - openai
+          - google_genai
+          - openrouter
+          - baseten
+          - fireworks
+          - ollama
+          - groq
+          - xai
+          - nvidia
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
@@ -58,10 +68,10 @@ on:
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
-          - "baseten:deepseek-ai/DeepSeek-V3.2"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/deepseek-v3p2"
           - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
           - "fireworks:fireworks/minimax-m2p1"
           - "fireworks:fireworks/kimi-k2p5"
           - "fireworks:fireworks/glm-5"
@@ -69,11 +79,6 @@ on:
           - "ollama:glm-5"
           - "ollama:minimax-m2.5"
           - "ollama:qwen3.5:397b-cloud"
-          - "groq:openai/gpt-oss-120b"
-          - "groq:qwen/qwen3-32b"
-          - "groq:moonshotai/kimi-k2-instruct"
-          - "xai:grok-4"
-          - "xai:grok-3-mini-fast"
           - "ollama:nemotron-3-nano:30b"
           - "ollama:cogito-2.1:671b"
           - "ollama:devstral-2:123b"
@@ -81,6 +86,11 @@ on:
           - "ollama:qwen3-next:80b"
           - "ollama:qwen3-coder:480b-cloud"
           - "ollama:deepseek-v3.2:cloud"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "xai:grok-4"
+          - "xai:grok-3-mini-fast"
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
       models_override:
         description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
@@ -88,7 +98,7 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Leave empty to run all categories."
+        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
         required: false
         default: ""
         type: string

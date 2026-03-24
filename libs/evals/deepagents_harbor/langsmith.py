@@ -296,7 +296,8 @@ async def create_experiment_async(
 
         if experiment_name is None:
             timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d_%H-%M-%S")
-            experiment_name = f"{dataset_name}-{timestamp}"
+            suffix = uuid.uuid4().hex[:8]
+            experiment_name = f"{dataset_name}-{timestamp}-{suffix}"
 
         experiment_metadata = metadata or {}
 

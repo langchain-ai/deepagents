@@ -368,6 +368,10 @@ def _get_subagents_legacy(
                     tools=_tools,
                     middleware=_middleware,
                     name=agent_["name"],
+                ).with_config(
+                    {
+                        "recursion_limit": 10_000,
+                    }
                 ),
             }
         )

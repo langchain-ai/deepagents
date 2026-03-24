@@ -1,8 +1,9 @@
 """Eval tests for incident-management graph tool usage.
 
 A synthetic operational incident-management domain with many entities and tools.
-The agent receives only graph lookup/search tools and must compose them to answer
-questions efficiently.
+
+The agent receives only graph lookup/search tools and must compose them to
+answer questions efficiently.
 """
 
 from __future__ import annotations
@@ -116,7 +117,16 @@ class TeamSearchResult(TypedDict):
 
 
 DataItemT = TypeVar(
-    "DataItemT", Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy
+    "DataItemT",
+    Incident,
+    Service,
+    Engineer,
+    Team,
+    Repo,
+    Runbook,
+    Environment,
+    Alert,
+    Deploy,
 )
 
 
@@ -124,9 +134,24 @@ ENGINEER_DATA: list[Engineer] = [
     {"id": 7118, "name": "Alice Kim", "email": "alice@ops.example.com", "team_id": 481},
     {"id": 7243, "name": "Ben Ortiz", "email": "ben@ops.example.com", "team_id": 481},
     {"id": 7381, "name": "Cara Singh", "email": "cara@ops.example.com", "team_id": 562},
-    {"id": 7459, "name": "Diego Park", "email": "diego@ops.example.com", "team_id": 562},
-    {"id": 7526, "name": "Evan Brooks", "email": "evan@ops.example.com", "team_id": 693},
-    {"id": 7684, "name": "Farah Chen", "email": "farah@ops.example.com", "team_id": 693},
+    {
+        "id": 7459,
+        "name": "Diego Park",
+        "email": "diego@ops.example.com",
+        "team_id": 562,
+    },
+    {
+        "id": 7526,
+        "name": "Evan Brooks",
+        "email": "evan@ops.example.com",
+        "team_id": 693,
+    },
+    {
+        "id": 7684,
+        "name": "Farah Chen",
+        "email": "farah@ops.example.com",
+        "team_id": 693,
+    },
 ]
 
 TEAM_DATA: list[Team] = [
@@ -240,11 +265,36 @@ INCIDENT_DATA: list[Incident] = [
 ]
 
 ALERT_DATA: list[Alert] = [
-    {"id": 55101, "service_id": 8401, "name": "payments-api 5xx rate", "status": "firing"},
-    {"id": 55114, "service_id": 8401, "name": "payments-api latency p95", "status": "firing"},
-    {"id": 55128, "service_id": 8514, "name": "checkout-web latency p95", "status": "firing"},
-    {"id": 55139, "service_id": 8627, "name": "identity-api auth failures", "status": "resolved"},
-    {"id": 55152, "service_id": 8799, "name": "analytics-worker queue depth", "status": "firing"},
+    {
+        "id": 55101,
+        "service_id": 8401,
+        "name": "payments-api 5xx rate",
+        "status": "firing",
+    },
+    {
+        "id": 55114,
+        "service_id": 8401,
+        "name": "payments-api latency p95",
+        "status": "firing",
+    },
+    {
+        "id": 55128,
+        "service_id": 8514,
+        "name": "checkout-web latency p95",
+        "status": "firing",
+    },
+    {
+        "id": 55139,
+        "service_id": 8627,
+        "name": "identity-api auth failures",
+        "status": "resolved",
+    },
+    {
+        "id": 55152,
+        "service_id": 8799,
+        "name": "analytics-worker queue depth",
+        "status": "firing",
+    },
 ]
 
 DEPLOY_DATA: list[Deploy] = [
@@ -770,7 +820,9 @@ async def test_two_tools_current_incident_service_name(model: BaseChatModel) -> 
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
                 tool_call(
-                    name="get_incident_service", step=2, args_contains={"incident_id": 41017}
+                    name="get_incident_service",
+                    step=2,
+                    args_contains={"incident_id": 41017},
                 ),
             ],
         ),
@@ -791,7 +843,9 @@ async def test_three_tools_find_service_owner_team(model: BaseChatModel) -> None
             tool_call_requests=3,
             tool_calls=[
                 tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "checkout-web"}
+                    name="find_services_by_name",
+                    step=1,
+                    args_contains={"name": "checkout-web"},
                 ),
                 tool_call(name="get_service_team", step=2, args_contains={"service_id": 8514}),
                 tool_call(name="get_team_name", step=3, args_contains={"team_id": 562}),
@@ -814,11 +868,21 @@ async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
             tool_call_requests=4,
             tool_calls=[
                 tool_call(
-                    name="get_incident_service", step=1, args_contains={"incident_id": 41029}
+                    name="get_incident_service",
+                    step=1,
+                    args_contains={"incident_id": 41029},
                 ),
                 tool_call(name="get_service_team", step=2, args_contains={"service_id": 8514}),
-                tool_call(name="get_team_oncall_engineer", step=3, args_contains={"team_id": 562}),
-                tool_call(name="get_engineer_name", step=4, args_contains={"engineer_id": 7381}),
+                tool_call(
+                    name="get_team_oncall_engineer",
+                    step=3,
+                    args_contains={"team_id": 562},
+                ),
+                tool_call(
+                    name="get_engineer_name",
+                    step=4,
+                    args_contains={"engineer_id": 7381},
+                ),
             ],
         ),
     )
@@ -838,9 +902,15 @@ async def test_four_tools_service_runbook_url(model: BaseChatModel) -> None:
             tool_call_requests=3,
             tool_calls=[
                 tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "payments-api"}
+                    name="find_services_by_name",
+                    step=1,
+                    args_contains={"name": "payments-api"},
                 ),
-                tool_call(name="get_service_runbook", step=2, args_contains={"service_id": 8401}),
+                tool_call(
+                    name="get_service_runbook",
+                    step=2,
+                    args_contains={"service_id": 8401},
+                ),
                 tool_call(name="get_runbook_url", step=3, args_contains={"runbook_id": 12041}),
             ],
         ),
@@ -864,21 +934,31 @@ async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) 
             tool_call_requests=5,
             tool_calls=[
                 tool_call(
-                    name="get_incident_service", step=1, args_contains={"incident_id": 41017}
+                    name="get_incident_service",
+                    step=1,
+                    args_contains={"incident_id": 41017},
                 ),
                 tool_call(name="get_service_repo", step=2, args_contains={"service_id": 8401}),
                 tool_call(
-                    name="get_latest_deploy_for_service", step=2, args_contains={"service_id": 8401}
+                    name="get_latest_deploy_for_service",
+                    step=2,
+                    args_contains={"service_id": 8401},
                 ),
                 tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 9104}),
-                tool_call(name="get_deploy_version", step=3, args_contains={"deploy_id": 66011}),
+                tool_call(
+                    name="get_deploy_version",
+                    step=3,
+                    args_contains={"deploy_id": 66011},
+                ),
             ],
         ),
     )
 
 
 @pytest.mark.langsmith
-async def test_five_tools_incident_environment_name_and_region(model: BaseChatModel) -> None:
+async def test_five_tools_incident_environment_name_and_region(
+    model: BaseChatModel,
+) -> None:
     agent = create_deep_agent(model=model, tools=INCIDENT_GRAPH_TOOLS)
     await run_agent_async(
         agent,
@@ -894,16 +974,24 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
             tool_call_requests=4,
             tool_calls=[
                 tool_call(
-                    name="get_incident_service", step=1, args_contains={"incident_id": 41058}
+                    name="get_incident_service",
+                    step=1,
+                    args_contains={"incident_id": 41058},
                 ),
                 tool_call(
-                    name="get_service_environment", step=2, args_contains={"service_id": 8799}
+                    name="get_service_environment",
+                    step=2,
+                    args_contains={"service_id": 8799},
                 ),
                 tool_call(
-                    name="get_environment_name", step=3, args_contains={"environment_id": 442}
+                    name="get_environment_name",
+                    step=3,
+                    args_contains={"environment_id": 442},
                 ),
                 tool_call(
-                    name="get_environment_region", step=3, args_contains={"environment_id": 442}
+                    name="get_environment_region",
+                    step=3,
+                    args_contains={"environment_id": 442},
                 ),
             ],
         ),
@@ -911,7 +999,9 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
 
 
 @pytest.mark.langsmith
-async def test_five_tools_service_dependency_names_parallel(model: BaseChatModel) -> None:
+async def test_five_tools_service_dependency_names_parallel(
+    model: BaseChatModel,
+) -> None:
     agent = create_deep_agent(model=model, tools=INCIDENT_GRAPH_TOOLS)
     await run_agent_async(
         agent,
@@ -927,10 +1017,14 @@ async def test_five_tools_service_dependency_names_parallel(model: BaseChatModel
             tool_call_requests=4,
             tool_calls=[
                 tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "checkout-web"}
+                    name="find_services_by_name",
+                    step=1,
+                    args_contains={"name": "checkout-web"},
                 ),
                 tool_call(
-                    name="list_service_dependencies", step=2, args_contains={"service_id": 8514}
+                    name="list_service_dependencies",
+                    step=2,
+                    args_contains={"service_id": 8514},
                 ),
                 tool_call(name="get_service_name", step=3, args_contains={"service_id": 8401}),
                 tool_call(name="get_service_name", step=3, args_contains={"service_id": 8627}),
@@ -956,10 +1050,14 @@ async def test_five_tools_service_alert_names_parallel(model: BaseChatModel) -> 
             tool_call_requests=4,
             tool_calls=[
                 tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "payments-api"}
+                    name="find_services_by_name",
+                    step=1,
+                    args_contains={"name": "payments-api"},
                 ),
                 tool_call(
-                    name="list_service_alert_ids", step=2, args_contains={"service_id": 8401}
+                    name="list_service_alert_ids",
+                    step=2,
+                    args_contains={"service_id": 8401},
                 ),
                 tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 55101}),
                 tool_call(name="get_alert_name", step=3, args_contains={"alert_id": 55114}),
@@ -969,7 +1067,9 @@ async def test_five_tools_service_alert_names_parallel(model: BaseChatModel) -> 
 
 
 @pytest.mark.langsmith
-async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatModel) -> None:
+async def test_six_tools_current_incident_oncall_name_and_email(
+    model: BaseChatModel,
+) -> None:
     agent = create_deep_agent(model=model, tools=INCIDENT_GRAPH_TOOLS)
     await run_agent_async(
         agent,
@@ -986,12 +1086,26 @@ async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatM
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
                 tool_call(
-                    name="get_incident_service", step=2, args_contains={"incident_id": 41017}
+                    name="get_incident_service",
+                    step=2,
+                    args_contains={"incident_id": 41017},
                 ),
                 tool_call(name="get_service_team", step=3, args_contains={"service_id": 8401}),
-                tool_call(name="get_team_oncall_engineer", step=4, args_contains={"team_id": 481}),
-                tool_call(name="get_engineer_name", step=5, args_contains={"engineer_id": 7243}),
-                tool_call(name="get_engineer_email", step=5, args_contains={"engineer_id": 7243}),
+                tool_call(
+                    name="get_team_oncall_engineer",
+                    step=4,
+                    args_contains={"team_id": 481},
+                ),
+                tool_call(
+                    name="get_engineer_name",
+                    step=5,
+                    args_contains={"engineer_id": 7243},
+                ),
+                tool_call(
+                    name="get_engineer_email",
+                    step=5,
+                    args_contains={"engineer_id": 7243},
+                ),
             ],
         ),
     )
@@ -1014,18 +1128,26 @@ async def test_six_tools_service_repo_and_branch(model: BaseChatModel) -> None:
             tool_call_requests=4,
             tool_calls=[
                 tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "identity-api"}
+                    name="find_services_by_name",
+                    step=1,
+                    args_contains={"name": "identity-api"},
                 ),
                 tool_call(name="get_service_repo", step=2, args_contains={"service_id": 8627}),
                 tool_call(name="get_repo_name", step=3, args_contains={"repo_id": 9346}),
-                tool_call(name="get_repo_default_branch", step=3, args_contains={"repo_id": 9346}),
+                tool_call(
+                    name="get_repo_default_branch",
+                    step=3,
+                    args_contains={"repo_id": 9346},
+                ),
             ],
         ),
     )
 
 
 @pytest.mark.langsmith
-async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel) -> None:
+async def test_six_tools_incident_title_severity_and_status(
+    model: BaseChatModel,
+) -> None:
     agent = create_deep_agent(model=model, tools=INCIDENT_GRAPH_TOOLS)
     await run_agent_async(
         agent,
@@ -1041,18 +1163,30 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
             agent_steps=3,
             tool_call_requests=3,
             tool_calls=[
-                tool_call(name="get_incident_title", step=1, args_contains={"incident_id": 41043}),
                 tool_call(
-                    name="get_incident_severity", step=1, args_contains={"incident_id": 41043}
+                    name="get_incident_title",
+                    step=1,
+                    args_contains={"incident_id": 41043},
                 ),
-                tool_call(name="get_incident_status", step=1, args_contains={"incident_id": 41043}),
+                tool_call(
+                    name="get_incident_severity",
+                    step=1,
+                    args_contains={"incident_id": 41043},
+                ),
+                tool_call(
+                    name="get_incident_status",
+                    step=1,
+                    args_contains={"incident_id": 41043},
+                ),
             ],
         ),
     )
 
 
 @pytest.mark.langsmith
-async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel) -> None:
+async def test_six_tools_current_incident_metrics_parallel(
+    model: BaseChatModel,
+) -> None:
     agent = create_deep_agent(model=model, tools=INCIDENT_GRAPH_TOOLS)
     await run_agent_async(
         agent,
@@ -1069,7 +1203,9 @@ async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel)
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
                 tool_call(
-                    name="get_incident_service", step=2, args_contains={"incident_id": 41017}
+                    name="get_incident_service",
+                    step=2,
+                    args_contains={"incident_id": 41017},
                 ),
                 tool_call(
                     name="get_metric_value",

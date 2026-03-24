@@ -18,7 +18,7 @@ lock: ## Update all lockfiles
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "🔒 Locking $(pkg)"; \
-		uv lock --directory $(pkg) --python $(call python_version,$(pkg)); \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
 	)
 	@echo "✅ All lockfiles updated!"
 
@@ -26,7 +26,7 @@ lock-check: ## Check all lockfiles are up-to-date
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "🔍 Checking $(pkg)"; \
-		uv lock --check --directory $(pkg) --python $(call python_version,$(pkg)); \
+		uv lock --check --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
 	)
 	@echo "✅ All lockfiles are up-to-date!"
 
@@ -34,7 +34,7 @@ lint: ## Lint all packages
 	@set -e; \
 	for dir in $(PACKAGE_DIRS); do \
 		echo "🔍 Linting $$dir"; \
-		$(MAKE) -C $$dir lint; \
+		$(MAKE) -C "$$dir" lint; \
 	done
 	@echo "✅ All packages linted!"
 
@@ -42,6 +42,6 @@ format: ## Format all packages
 	@set -e; \
 	for dir in $(PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \
-		$(MAKE) -C $$dir format; \
+		$(MAKE) -C "$$dir" format; \
 	done
 	@echo "✅ All packages formatted!"

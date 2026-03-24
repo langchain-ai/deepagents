@@ -221,8 +221,16 @@ jobs:
       - name: "📊 Run Evals"
         run: make evals
 
+      - name: "🔍 Check eval report"
+        if: '!cancelled()'
+        run: |
+          if [ ! -f evals_report.json ]; then
+            echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
+            exit 1
+          fi
+
       - name: "📤 Upload eval report"
-        if: always()
+        if: '!cancelled()'
         uses: actions/upload-artifact@v7
         with:
           name: evals-report-${{ strategy.job-index }}

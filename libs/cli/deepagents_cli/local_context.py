@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 
 
 _TOOL_NAME_DISPLAY_LIMIT = 10
+"""Maximum number of tool names shown per MCP server in the system prompt."""
+
+_DETECT_SCRIPT_TIMEOUT = 30
+"""Timeout in seconds for the environment detection script."""
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -81,7 +85,9 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
 class _ExecutableBackend(Protocol):
     """Any backend that supports `execute(command) -> ExecuteResponse`."""
 
-    def execute(self, command: str) -> ExecuteResponse: ...
+    def execute(
+        self, command: str, *, timeout: int | None = None
+    ) -> ExecuteResponse: ...
 
 
 @runtime_checkable
@@ -497,7 +503,9 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
         try:
-            result = backend.execute(DETECT_CONTEXT_SCRIPT)
+            result = backend.execute(
+                DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT
+            )
         except NotImplementedError:
             # Expected for async-only backends (e.g. HarborSandbox) that
             # define a stub execute() raising NotImplementedError.
@@ -598,7 +606,9 @@ class LocalContextMiddleware(AgentMiddleware):
                 )
                 return None
         try:
-            result = await backend.aexecute(DETECT_CONTEXT_SCRIPT)
+            result = await backend.aexecute(
+                DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT
+            )
         except Exception:
             logger.warning(
                 "Local context detection failed (backend: %s); context will "

@@ -50,7 +50,12 @@ class _SyncBackendFake:
                 output=output or "", exit_code=exit_code
             )
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ARG002
+    ) -> ExecuteResponse:
         """Delegate to internal mock so callers can assert calls."""
         return self._mock(command)
 
@@ -595,15 +600,22 @@ class TestAsyncLocalContextMiddleware:
         class _BothHooks:
             """Backend exposing both sync and async execution methods."""
 
-            def execute(self, command: str) -> Mock:  # noqa: ARG002
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002
+            ) -> ExecuteResponse:
                 msg = "abefore_agent should use aexecute when available"
                 raise AssertionError(msg)
 
-            async def aexecute(self, command: str) -> Mock:  # noqa: ARG002
-                result = Mock()
-                result.output = SAMPLE_CONTEXT
-                result.exit_code = 0
-                return result
+            async def aexecute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002, ASYNC109
+            ) -> ExecuteResponse:
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
 
         middleware = LocalContextMiddleware(backend=_BothHooks())
         state: LocalContextState = {"messages": []}
@@ -620,18 +632,20 @@ class TestAsyncLocalContextMiddleware:
         class _SyncOnly:
             """Backend with only sync execute (no aexecute)."""
 
-            def __init__(self, result: Mock) -> None:
+            def __init__(self, result: ExecuteResponse) -> None:
                 self._result = result
                 self.call_count = 0
 
-            def execute(self, command: str) -> Mock:  # noqa: ARG002
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002
+            ) -> ExecuteResponse:
                 self.call_count += 1
                 return self._result
 
-        result_mock = Mock()
-        result_mock.output = SAMPLE_CONTEXT
-        result_mock.exit_code = 0
-        backend = _SyncOnly(result_mock)
+        backend = _SyncOnly(ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0))
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {"messages": []}
         runtime: Any = Mock()

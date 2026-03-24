@@ -60,8 +60,8 @@ class AgentTrajectory:
                     name = tc.get("name")
                     args = tc.get("args")
                     lines.append(f"  - {name} {args}")
-            else:
-                text = step.action.text
+            text = step.action.text
+            if text and text.strip():
                 text_preview = text.strip().replace("\n", "\\n")
                 lines.append(f"  text: {text_preview}")
         return "\n".join(lines)

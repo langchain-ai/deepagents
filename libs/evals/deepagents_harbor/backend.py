@@ -6,6 +6,7 @@ import shlex
 import tempfile
 from pathlib import Path
 
+from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
@@ -20,7 +21,6 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.utils import check_empty_content, create_file_data
 from harbor.environments.base import BaseEnvironment
 

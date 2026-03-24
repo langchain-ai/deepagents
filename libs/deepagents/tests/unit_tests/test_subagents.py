@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import uuid
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
@@ -554,6 +555,93 @@ class TestSubAgents:
         assert "JavaScript was created by Brendan Eich" in javascript_tool_message.content, (
             f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
         )
+
+    def test_subagent_can_run_for_hundreds_of_steps(self) -> None:
+        """Test that a subagent can continue for hundreds of model steps.
+
+        This exercises an end-to-end parent -> subagent invocation where the
+        subagent fake model programmatically emits a long sequence of messages
+        before returning its final result.
+        """
+        total_subagent_steps = 500
+        observed_steps: list[int] = []
+
+        @tool
+        def record_step(step: int) -> str:
+            """Record a subagent step."""
+            observed_steps.append(step)
+            return f"Recorded step {step}"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Work through all planned steps and report completion.",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_long_running_subagent",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The long-running subagent finished successfully."),
+                ]
+            )
+        )
+
+        subagent_messages = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "record_step",
+                        "args": {"step": step},
+                        "id": f"call_record_step_{step}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for step in range(1, total_subagent_steps)
+        ]
+        subagent_messages.append(AIMessage(content=f"Completed {total_subagent_steps} steps."))
+        subagent_chat_model = GenericFakeChatModel(messages=iter(subagent_messages))
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            tools=[record_step],
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent for various tasks.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        thread_id = str(uuid.uuid4())
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the long workflow.")]},
+            config={
+                "configurable": {"thread_id": thread_id},
+            },
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == f"Completed {total_subagent_steps} steps."
+        assert len(subagent_chat_model.call_history) == total_subagent_steps
+        assert observed_steps == list(range(1, total_subagent_steps))
 
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.

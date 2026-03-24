@@ -519,7 +519,7 @@ done
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to upload %s: %s", path, exc)
+                logger.warning("Failed to upload %s: %s", path, exc, exc_info=True)
                 results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
             finally:
                 try:
@@ -543,7 +543,7 @@ done
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Failed to download %s: %s", path, exc)
+                    logger.warning("Failed to download %s: %s", path, exc, exc_info=True)
                     results.append(
                         FileDownloadResponse(
                             path=path, content=None, error=_format_transfer_error(exc)

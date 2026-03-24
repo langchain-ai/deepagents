@@ -209,11 +209,10 @@ class TestMapFileOperationError:
             ("is a directory", "is_directory"),
             ("permission denied", "permission_denied"),
             ("access denied", "permission_denied"),
-            ("not found", "file_not_found"),
+            ("file not found", "file_not_found"),
             ("no such file", "file_not_found"),
             ("does not exist", "file_not_found"),
             ("invalid path", "invalid_path"),
-            ("invalid argument", "invalid_path"),
         ],
     )
     def test_message_fallback(self, msg: str, expected: str) -> None:
@@ -226,3 +225,16 @@ class TestMapFileOperationError:
         """ValueError without path-related keywords should not be mapped."""
         assert map_file_operation_error(ValueError("unexpected encoding")) is None
         assert map_file_operation_error(ValueError("invalid literal for int()")) is None
+
+    def test_value_error_path_security_messages(self) -> None:
+        """ValueError from _resolve_path path-security checks should map."""
+        assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
+        assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"
+
+    def test_generic_not_found_is_not_classified(self) -> None:
+        """Bare 'not found' should not match — requires 'file not found'."""
+        assert map_file_operation_error(RuntimeError("Key not found in cache")) is None
+
+    def test_generic_invalid_argument_is_not_classified(self) -> None:
+        """'invalid argument' should not match — too generic."""
+        assert map_file_operation_error(OSError("invalid argument for timeout")) is None

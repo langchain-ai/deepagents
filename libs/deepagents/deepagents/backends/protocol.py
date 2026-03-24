@@ -58,6 +58,26 @@ for batched transfers.
 """
 
 
+def _match_file_error_message(msg: str) -> FileOperationError | None:
+    """Match a lowercased error message to a `FileOperationError` code.
+
+    Args:
+        msg: Lowercased exception message string.
+
+    Returns:
+        A `FileOperationError` literal, or `None` if no pattern matches.
+    """
+    if "is a directory" in msg:
+        return "is_directory"
+    if "permission denied" in msg or "access denied" in msg:
+        return "permission_denied"
+    if "no such file" in msg or "does not exist" in msg or "file not found" in msg:
+        return "file_not_found"
+    if "invalid path" in msg or "path traversal" in msg:
+        return "invalid_path"
+    return None
+
+
 def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # noqa: PLR0911
     """Map a caught exception to a standardized `FileOperationError` code.
 
@@ -79,17 +99,20 @@ def map_file_operation_error(exc: Exception) -> FileOperationError | None:  # no
         return "is_directory"
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
         return "invalid_path"
+    if isinstance(exc, ValueError):
+        # ValueError from _resolve_path path-security checks. Only match
+        # known path-related messages to avoid false positives from unrelated
+        # ValueErrors (e.g. encoding, int parsing).
+        vmsg = str(exc).lower()
+        if "path traversal" in vmsg or "outside root" in vmsg or "invalid path" in vmsg:
+            return "invalid_path"
+        return None
 
-    msg = str(exc).lower()
-    if "is a directory" in msg:
-        return "is_directory"
-    if "permission denied" in msg or "access denied" in msg:
-        return "permission_denied"
-    if "not found" in msg or "no such file" in msg or "does not exist" in msg:
-        return "file_not_found"
-    if "invalid path" in msg or "invalid argument" in msg or "path traversal" in msg:
-        return "invalid_path"
-    return None
+    # Message-based fallback for exceptions whose type alone is not
+    # enough to classify (e.g. a remote sandbox returning "permission denied"
+    # wrapped in a generic RuntimeError or OSError). Patterns are kept
+    # specific to file-operation messages to minimize false positives.
+    return _match_file_error_message(str(exc).lower())
 
 
 @dataclass

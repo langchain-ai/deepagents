@@ -563,7 +563,7 @@ class TestSubAgents:
         subagent fake model programmatically emits a long sequence of messages
         before returning its final result.
         """
-        total_subagent_steps = 500
+        total_subagent_steps = 1_100
         observed_steps: list[int] = []
 
         @tool

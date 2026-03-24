@@ -323,10 +323,6 @@ def _get_subagents_legacy(
             tools=default_tools,
             middleware=general_purpose_middleware,
             name="general-purpose",
-        ).with_config(
-            {
-                "recursion_limit": 10_000,
-            }
         )
         specs.append(
             {
@@ -368,10 +364,6 @@ def _get_subagents_legacy(
                     tools=_tools,
                     middleware=_middleware,
                     name=agent_["name"],
-                ).with_config(
-                    {
-                        "recursion_limit": 10_000,
-                    }
                 ),
             }
         )
@@ -450,7 +442,12 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
+        result = subagent.invoke(
+            subagent_state,
+            {
+                "recursion_limit": 10_000,
+            },
+        )
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -468,7 +465,12 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
+        result = await subagent.ainvoke(
+            subagent_state,
+            {
+                "recursion_limit": 10_000,
+            },
+        )
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

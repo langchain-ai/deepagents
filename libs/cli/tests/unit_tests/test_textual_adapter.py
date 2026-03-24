@@ -880,6 +880,49 @@ class TestExecuteTaskTextualAskUser:
         assert ask_user_resume["error"] == "ask_user not supported by this UI"
         assert ask_user_resume["answers"] == [""]
 
+    async def test_request_ask_user_cancelled_does_not_resume(self) -> None:
+        """Cancelling an ask_user prompt should stop the current turn."""
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            future: Future[object] = Future()
+            future.set_result({"type": "cancelled"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        # Should not send a resume Command back to the agent.
+        assert len(agent.stream_inputs) == 1
+
     async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
         self,
     ) -> None:

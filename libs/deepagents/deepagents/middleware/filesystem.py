@@ -19,9 +19,10 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents.backends import StateBackend
@@ -316,6 +317,40 @@ Here is a preview showing the head and tail of the result (lines of the form `..
 {content_sample}
 """
 
+TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
+
+You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
+Here is a preview showing the head and tail of the content:
+
+{content_sample}
+"""
+
+
+def _build_evicted_human_content(
+    message: HumanMessage,
+    replacement_text: str,
+) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted HumanMessage, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original HumanMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
+
 
 def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
     """Create a preview of content showing head and tail with truncation marker.
@@ -346,14 +381,14 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-def _extract_text_from_message(message: ToolMessage) -> str:
-    """Extract text from a ToolMessage using its `content_blocks` property.
+def _extract_text_from_message(message: BaseMessage) -> str:
+    """Extract text from a message using its `content_blocks` property.
 
     Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
     so that binary payloads don't inflate the size measurement.
 
     Args:
-        message: The ToolMessage to extract text from.
+        message: The BaseMessage to extract text from.
 
     Returns:
         Joined text from all text content blocks, or stringified content as fallback.
@@ -1097,6 +1132,81 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_execute,
         )
 
+    def before_agent(
+        self,
+        state: FilesystemState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Evict an oversized HumanMessage to the filesystem before the agent loop.
+
+        Checks the most recent message in `state["messages"]`. If it is a
+        HumanMessage whose text content exceeds `tool_token_limit_before_evict`,
+        the full content is written to the backend and the message is replaced
+        with a truncated preview pointing to the file.
+
+        Only the last message is checked because it is the newly arrived input;
+        earlier messages were already in state from prior invocations and would
+        have been evicted then.
+
+        Because this runs in `before_agent` (once per invocation), the
+        replacement is persisted to state via the `add_messages` reducer,
+        so subsequent model steps see the already-small message.
+
+        Args:
+            state: The current agent state.
+            runtime: The runtime context.
+
+        Returns:
+            A state update replacing the oversized message, or `None`.
+        """
+        if not self._tool_token_limit_before_evict:
+            return None
+
+        messages = state["messages"]
+        if not messages:
+            return None
+
+        last = messages[-1]
+        if not isinstance(last, HumanMessage):
+            return None
+
+        backend = self._get_backend_from_runtime(state, runtime)
+        processed = self._process_large_human_message(last, backend)
+        if processed is last:
+            return None
+        return {"messages": [processed]}
+
+    async def abefore_agent(
+        self,
+        state: FilesystemState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Async version of `before_agent`.
+
+        Args:
+            state: The current agent state.
+            runtime: The runtime context.
+
+        Returns:
+            A state update replacing the oversized message, or `None`.
+        """
+        if not self._tool_token_limit_before_evict:
+            return None
+
+        messages = state["messages"]
+        if not messages:
+            return None
+
+        last = messages[-1]
+        if not isinstance(last, HumanMessage):
+            return None
+
+        backend = self._get_backend_from_runtime(state, runtime)
+        processed = await self._aprocess_large_human_message(last, backend)
+        if processed is last:
+            return None
+        return {"messages": [processed]}
+
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -1299,6 +1409,127 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             response_metadata=dict(message.response_metadata),
         )
         return processed_message, result.files_update
+
+    def _process_large_human_message(
+        self,
+        message: HumanMessage,
+        resolved_backend: BackendProtocol,
+    ) -> HumanMessage:
+        """Replace an oversized HumanMessage with a truncated preview and file reference.
+
+        Writes the full text to the backend and returns a slimmed-down
+        HumanMessage. If eviction is not configured or the message is below the
+        threshold, returns the original message unchanged.
+
+        Args:
+            message: The HumanMessage to potentially evict.
+            resolved_backend: The filesystem backend to write the content to.
+
+        Returns:
+            The original message if small enough, or a new HumanMessage with
+            truncated content and a file reference.
+        """
+        if not self._tool_token_limit_before_evict:
+            return message
+
+        content_str = _extract_text_from_message(message)
+
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+            return message
+
+        msg_id = message.id or "unknown"
+        file_path = f"/large_messages/{msg_id}"
+        result = resolved_backend.write(file_path, content_str)
+        if result.error:
+            return message
+
+        content_sample = _create_content_preview(content_str)
+        replacement_text = TOO_LARGE_HUMAN_MSG.format(
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        evicted = _build_evicted_human_content(message, replacement_text)
+        return HumanMessage(
+            content=cast("str | list[str | dict]", evicted),
+            id=message.id,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
+        )
+
+    async def _aprocess_large_human_message(
+        self,
+        message: HumanMessage,
+        resolved_backend: BackendProtocol,
+    ) -> HumanMessage:
+        """Async version of `_process_large_human_message`.
+
+        Args:
+            message: The HumanMessage to potentially evict.
+            resolved_backend: The filesystem backend to write the content to.
+
+        Returns:
+            The original message if small enough, or a new HumanMessage with
+            truncated content and a file reference.
+        """
+        if not self._tool_token_limit_before_evict:
+            return message
+
+        content_str = _extract_text_from_message(message)
+
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+            return message
+
+        msg_id = message.id or "unknown"
+        file_path = f"/large_messages/{msg_id}"
+        result = await resolved_backend.awrite(file_path, content_str)
+        if result.error:
+            return message
+
+        content_sample = _create_content_preview(content_str)
+        replacement_text = TOO_LARGE_HUMAN_MSG.format(
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        evicted = _build_evicted_human_content(message, replacement_text)
+        return HumanMessage(
+            content=cast("str | list[str | dict]", evicted),
+            id=message.id,
+            additional_kwargs=dict(message.additional_kwargs),
+            response_metadata=dict(message.response_metadata),
+        )
+
+    def _get_backend_from_runtime(
+        self,
+        state: AgentState[Any],
+        runtime: Runtime[ContextT],
+    ) -> BackendProtocol:
+        """Resolve the backend from a bare `Runtime`.
+
+        Constructs a `ToolRuntime` from the `Runtime` to satisfy the backend
+        factory interface. Used by hooks like `before_agent` that receive
+        `Runtime` rather than `ToolRuntime`.
+
+        Args:
+            state: The current agent state.
+            runtime: The runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if not callable(self.backend):
+            return self.backend
+        config = cast("dict[str, Any]", getattr(runtime, "config", {}))
+        tool_runtime = ToolRuntime(
+            state=state,
+            context=runtime.context,
+            stream_writer=runtime.stream_writer,
+            store=runtime.store,
+            config=config,
+            tool_call_id=None,
+        )
+        return self.backend(tool_runtime)  # ty: ignore[call-top-callable]
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.

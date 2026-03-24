@@ -1,6 +1,7 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import itertools
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -1250,3 +1251,34 @@ class TestDeepAgentStructure:
         assert_all_deepagent_qualities(agent)
         assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels
+
+
+class TestLargeHumanMessageEviction:
+    """Test that oversized HumanMessages are evicted to the filesystem."""
+
+    def test_large_human_message_evicted_before_model_call(self) -> None:
+        """An oversized HumanMessage is replaced with a preview and file reference.
+
+        The agent receives a HumanMessage (no id) whose text content exceeds
+        the eviction threshold. The filesystem middleware's ``before_agent``
+        hook should write the full content to the backend and replace the
+        message in state with a truncated preview, preventing context-window
+        overflow on the model call.
+        """
+        threshold = 20_000
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="Got it.")])
+        )
+
+        agent = create_deep_agent(model=fake_model)
+        result = agent.invoke({"messages": [HumanMessage(content=large_content)]})
+
+        human_messages = [msg for msg in result["messages"] if isinstance(msg, HumanMessage)]
+        assert len(human_messages) == 1
+        evicted = human_messages[0]
+
+        assert len(evicted.content) < len(large_content)
+        assert "/large_messages/" in evicted.content
+        assert "read_file" in evicted.content

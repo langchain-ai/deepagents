@@ -334,3 +334,29 @@ async def test_aupload_files_partial_success_on_unknown_errors() -> None:
     assert responses[0].error == "transient failure"
     assert responses[1].error is None
     assert env.uploaded["/app/good.txt"] == b"second"
+
+
+# -- sync stub tests -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("execute", ("echo hi",)),
+        ("read", ("/app/test.txt",)),
+        ("write", ("/app/test.txt", "content")),
+        ("edit", ("/app/test.txt", "old", "new")),
+        ("ls", ("/app",)),
+        ("grep", ("pattern", "/app")),
+        ("glob", ("*.txt",)),
+        ("upload_files", ([("/app/f.txt", b"data")],)),
+        ("download_files", (["/app/f.txt"],)),
+    ],
+)
+def test_sync_stubs_raise_not_implemented(method_name: str, args: tuple[object, ...]) -> None:
+    """Every sync method on HarborSandbox must raise NotImplementedError."""
+    env = _FakeHarborEnvironment()
+    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(NotImplementedError, match="only supports async"):
+        getattr(sandbox, method_name)(*args)

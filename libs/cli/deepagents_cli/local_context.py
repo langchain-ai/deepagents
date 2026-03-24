@@ -86,7 +86,7 @@ class _ExecutableBackend(Protocol):
 
 @runtime_checkable
 class _AsyncExecutableBackend(Protocol):
-    """Any backend that supports `aexecute(command) -> ExecuteResponse`."""
+    """Any backend that provides an async `aexecute` method."""
 
     async def aexecute(
         self,
@@ -447,7 +447,9 @@ class LocalContextMiddleware(AgentMiddleware):
             backend: Backend instance that provides shell command execution.
 
                 Backends that only implement async execution (e.g. `HarborSandbox`)
-                are supported via `abefore_agent`.
+                are supported via `abefore_agent`. Sync-only backends work via
+                `before_agent` directly or through `asyncio.to_thread` in async
+                contexts.
             mcp_server_info: MCP server metadata to include in the system prompt.
         """
         self.backend = backend
@@ -576,12 +578,25 @@ class LocalContextMiddleware(AgentMiddleware):
     async def _arun_detect_script(self) -> str | None:
         """Run the environment detection script asynchronously.
 
+        Prefers `aexecute` when the backend implements `_AsyncExecutableBackend`.
+        Falls back to running the sync detection script in a thread pool
+        for sync-only backends.
+
         Returns:
             Stripped script output, or `None` on failure/empty output.
         """
         backend = self.backend
         if not isinstance(backend, _AsyncExecutableBackend):
-            return await asyncio.to_thread(self._run_detect_script)
+            try:
+                return await asyncio.to_thread(self._run_detect_script)
+            except Exception:
+                logger.warning(
+                    "Local context detection via sync fallback failed "
+                    "(backend: %s); context will be omitted from system prompt",
+                    type(backend).__name__,
+                    exc_info=True,
+                )
+                return None
         try:
             result = await backend.aexecute(DETECT_CONTEXT_SCRIPT)
         except Exception:
@@ -600,7 +615,7 @@ class LocalContextMiddleware(AgentMiddleware):
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
     ) -> dict[str, Any] | None:
-        """Async variant of `before_agent` for async-only backends.
+        """Async variant of `before_agent` for use in async execution contexts.
 
         Args:
             state: Current agent state.

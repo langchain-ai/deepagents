@@ -472,9 +472,9 @@ class TestLocalContextMiddleware:
     def test_before_agent_returns_none_for_async_only_backend(self) -> None:
         """Test before_agent gracefully returns None for async-only backends.
 
-        HarborSandbox defines execute() but raises NotImplementedError.
-        The sync before_agent should catch this and return None so the
-        async abefore_agent path handles detection instead.
+        Some async-only backends define a sync execute() stub that raises
+        NotImplementedError. The sync before_agent should catch this and
+        return None so the async abefore_agent path handles detection instead.
         """
         backend = _SyncBackendFake(side_effect=NotImplementedError("async only"))
         middleware = LocalContextMiddleware(backend=backend)
@@ -484,6 +484,23 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)
 
         assert result is None
+
+    def test_before_agent_returns_none_for_pure_async_backend(self) -> None:
+        """Test before_agent returns None for backends with only aexecute.
+
+        When a backend implements `_AsyncExecutableBackend` but not
+        `_ExecutableBackend`, the sync path should skip detection gracefully
+        so the async `abefore_agent` handles it instead.
+        """
+        backend = _make_async_backend(output=SAMPLE_CONTEXT)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)
+
+        assert result is None
+        backend._mock.assert_not_called()
 
 
 def _make_async_backend(output: str = "", exit_code: int = 0) -> _AsyncBackendFake:
@@ -675,6 +692,83 @@ class TestAsyncLocalContextMiddleware:
 
         assert result is None
         backend._mock.assert_not_called()
+
+    async def test_abefore_agent_handles_empty_output(self) -> None:
+        """Test abefore_agent returns None when script produces whitespace only."""
+        backend = _make_async_backend(output="   \n  ", exit_code=0)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+    async def test_abefore_agent_second_summarization_refreshes(self) -> None:
+        """Test a second summarization with different cutoff triggers re-run."""
+        backend = _make_async_backend(output="refreshed again")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "first refresh",
+            "_summarization_event": _make_summarization_event(20),
+            "_local_context_refreshed_at_cutoff": 10,
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["local_context"] == "refreshed again"
+        assert result["_local_context_refreshed_at_cutoff"] == 20
+
+    async def test_abefore_agent_missing_cutoff_index_skips_refresh(self) -> None:
+        """Test summarization event missing cutoff_index skips refresh."""
+        backend = _make_async_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "existing",
+            "_summarization_event": {"summary_message": None, "file_path": None},
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
+        # is False. Falls through to initial-detection guard; local_context set.
+        assert result is None
+        backend._mock.assert_not_called()
+
+    async def test_abefore_agent_sync_fallback_failure(self) -> None:
+        """Test abefore_agent handles failure in asyncio.to_thread fallback."""
+        backend = _SyncBackendFake(side_effect=RuntimeError("connection failed"))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+
+class TestHandleDetectResult:
+    """Tests for the shared _handle_detect_result static method."""
+
+    def test_none_exit_code_returns_none(self) -> None:
+        """Test that exit_code=None is treated as failure."""
+        result = ExecuteResponse(output="some output", exit_code=None)
+        assert LocalContextMiddleware._handle_detect_result(result) is None
+
+    def test_zero_exit_code_with_output(self) -> None:
+        """Test that exit_code=0 with output returns stripped output."""
+        result = ExecuteResponse(output="  hello  ", exit_code=0)
+        assert LocalContextMiddleware._handle_detect_result(result) == "hello"
+
+    def test_zero_exit_code_empty_output(self) -> None:
+        """Test that exit_code=0 with empty output returns None."""
+        result = ExecuteResponse(output="", exit_code=0)
+        assert LocalContextMiddleware._handle_detect_result(result) is None
 
 
 class TestAsyncExecutableBackend:

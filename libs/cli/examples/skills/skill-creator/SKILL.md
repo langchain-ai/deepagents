@@ -1,7 +1,6 @@
 ---
 name: skill-creator
 description: "Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like \"create a skill\", \"new skill\", \"make a skill\", \"skill for X\", \"how do I create a skill\", or \"help me build a skill\"."
-argument-hint: "[task]"
 ---
 
 # Skill Creator
@@ -120,7 +119,7 @@ A skill should only contain essential files that directly support its functional
 - CHANGELOG.md
 - etc.
 
-The skill should only contain the information needed for an AI agent to do the job at hand. It should not contain auxiliary context about the process that went into creating it, setup and testing procedures, user-facing documentation, etc. Creating additional documentation files just adds clutter and confusion.
+The skill should only contain the information needed for an AI agent to do the job at hand. It should not contain auxilary context about the process that went into creating it, setup and testing procedures, user-facing documentation, etc. Creating additional documentation files just adds clutter and confusion.
 
 ### Progressive Disclosure Design Principle
 
@@ -350,7 +349,7 @@ Write the YAML frontmatter with `name` and `description`:
   - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to the agent.
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when working with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
 
-The only other allowed fields in YAML frontmatter are optional properties per the Agent Skills spec: `license`, `compatibility`, `allowed-tools`, `argument-hint`, and `metadata`. Do not include any fields beyond these.
+Do not include any other fields in YAML frontmatter.
 
 ##### Body
 
@@ -367,10 +366,10 @@ scripts/quick_validate.py <path/to/skill-folder>
 The validation script checks:
 
 - YAML frontmatter format and required fields
-- Skill naming conventions (Unicode lowercase alphanumeric with hyphens, max 64 characters)
+- Skill naming conventions (hyphen-case, max 64 characters)
 - Description completeness (no angle brackets, max 1024 characters)
 - Required fields: `name` and `description`
-- Allowed frontmatter properties only: `name`, `description`, `license`, `compatibility`, `allowed-tools`, `argument-hint`, `metadata`
+- Allowed frontmatter properties only: `name`, `description`, `license`, `compatibility`, `allowed-tools`, `metadata`
 
 If validation fails, fix the reported errors and run the validation command again.
 

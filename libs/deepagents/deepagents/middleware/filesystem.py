@@ -4,6 +4,7 @@
 import asyncio
 import concurrent.futures
 import mimetypes
+import uuid
 import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -1440,8 +1441,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message
 
-        msg_id = message.id or "unknown"
-        file_path = f"/large_messages/{msg_id}"
+        file_id = uuid.uuid4().hex[:12]
+        file_path = f"/large_messages/{file_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message
@@ -1483,8 +1484,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message
 
-        msg_id = message.id or "unknown"
-        file_path = f"/large_messages/{msg_id}"
+        file_id = uuid.uuid4().hex[:12]
+        file_path = f"/large_messages/{file_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message

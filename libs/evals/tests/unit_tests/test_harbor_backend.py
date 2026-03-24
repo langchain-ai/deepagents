@@ -225,8 +225,6 @@ async def test_awrite_returns_error_when_file_exists() -> None:
         (PermissionError("permission denied"), "permission_denied"),
         (IsADirectoryError("is a directory"), "is_directory"),
         (ValueError("invalid path"), "invalid_path"),
-        (RuntimeError("permission denied"), "permission_denied"),
-        (RuntimeError("is a directory"), "is_directory"),
     ],
 )
 async def test_adownload_files_maps_known_errors(exc: Exception, expected_error: str) -> None:

@@ -89,14 +89,6 @@ class FileDownloadResponse:
     errors use a descriptive error string so the caller still gets a
     meaningful message.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results, especially useful for error messages.
-        content: File contents as bytes on success, None on failure.
-        error: A `FileOperationError` literal for known conditions, or a
-            backend-specific error string when the failure cannot be
-            normalized. `None` on success.
-
     Examples:
         >>> # Success
         >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
@@ -105,8 +97,18 @@ class FileDownloadResponse:
     """
 
     path: str
+    """The file path that was requested. Included for easy correlation when
+    processing batch results, especially useful for error messages."""
+
     content: bytes | None = None
+    """File contents as bytes on success, None on failure."""
+
     error: FileOperationError | str | None = None
+    """A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 @dataclass
@@ -118,13 +120,6 @@ class FileUploadResponse:
     errors use a descriptive error string so the caller still gets a
     meaningful message.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results and for clear error messages.
-        error: A `FileOperationError` literal for known conditions, or a
-            backend-specific error string when the failure cannot be
-            normalized. `None` on success.
-
     Examples:
         >>> # Success
         >>> FileUploadResponse(path="/app/data.txt", error=None)
@@ -133,7 +128,18 @@ class FileUploadResponse:
     """
 
     path: str
+    """The file path that was requested.
+
+    Included for easy correlation when processing batch results and for clear
+    error messages.
+    """
+
     error: FileOperationError | str | None = None
+    """error: A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 class FileInfo(TypedDict):

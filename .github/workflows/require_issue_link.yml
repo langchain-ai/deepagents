@@ -43,7 +43,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
-      organization: read
       pull-requests: write
 
     steps:

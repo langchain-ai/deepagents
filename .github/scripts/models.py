@@ -42,7 +42,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- Anthropic --
     Model(
         "anthropic:claude-haiku-4-5-20251001",
-        frozenset({"eval:set0", "eval:set1"}),
+        frozenset({"eval:set0", "eval:set1", "harbor:anthropic"}),
     ),
     Model(
         "anthropic:claude-sonnet-4-20250514",
@@ -69,32 +69,38 @@ REGISTRY: tuple[Model, ...] = (
         frozenset({"eval:set0", "eval:set1", "harbor:anthropic"}),
     ),
     # -- OpenAI --
-    Model("openai:gpt-4o", frozenset({"eval:set0"})),
-    Model("openai:gpt-4o-mini", frozenset({"eval:set0"})),
+    Model("openai:gpt-4o", frozenset({"eval:set0", "harbor:openai"})),
+    Model("openai:gpt-4o-mini", frozenset({"eval:set0", "harbor:openai"})),
     Model(
         "openai:gpt-4.1",
         frozenset({"eval:set0", "eval:set1", "harbor:openai"}),
     ),
     Model("openai:o3", frozenset({"eval:set0", "harbor:openai"})),
     Model("openai:o4-mini", frozenset({"eval:set0", "harbor:openai"})),
-    Model("openai:gpt-5.1-codex", frozenset({"eval:set0"})),
-    Model("openai:gpt-5.2-codex", frozenset({"eval:set0", "eval:set1"})),
+    Model("openai:gpt-5.1-codex", frozenset({"eval:set0", "harbor:openai"})),
+    Model(
+        "openai:gpt-5.2-codex",
+        frozenset({"eval:set0", "eval:set1", "harbor:openai"}),
+    ),
     Model(
         "openai:gpt-5.4",
         frozenset({"eval:set0", "eval:set1", "harbor:openai"}),
     ),
     # -- Google --
-    Model("google_genai:gemini-2.5-flash", frozenset({"eval:set0"})),
-    Model("google_genai:gemini-2.5-pro", frozenset({"eval:set0", "eval:set1"})),
-    Model("google_genai:gemini-3-flash-preview", frozenset({"eval:set0"})),
+    Model("google_genai:gemini-2.5-flash", frozenset({"eval:set0", "harbor:google_genai"})),
+    Model(
+        "google_genai:gemini-2.5-pro",
+        frozenset({"eval:set0", "eval:set1", "harbor:google_genai"}),
+    ),
+    Model("google_genai:gemini-3-flash-preview", frozenset({"eval:set0", "harbor:google_genai"})),
     Model(
         "google_genai:gemini-3.1-pro-preview",
-        frozenset({"eval:set0", "eval:set1"}),
+        frozenset({"eval:set0", "eval:set1", "harbor:google_genai"}),
     ),
     # -- OpenRouter --
     Model(
         "openrouter:minimax/minimax-m2.7",
-        frozenset({"eval:set0", "eval:open"}),
+        frozenset({"eval:set0", "eval:open", "harbor:openrouter"}),
     ),
     # -- Baseten --
     Model(
@@ -120,36 +126,36 @@ REGISTRY: tuple[Model, ...] = (
     # -- Fireworks --
     Model(
         "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
-        frozenset({"eval:set0", "eval:set1"}),
+        frozenset({"eval:set0", "eval:set1", "harbor:fireworks"}),
     ),
-    Model("fireworks:fireworks/deepseek-v3-0324", frozenset({"eval:set0"})),
-    Model("fireworks:fireworks/minimax-m2p1", frozenset({"eval:set0"})),
-    Model("fireworks:fireworks/kimi-k2p5", frozenset({"eval:set0"})),
-    Model("fireworks:fireworks/glm-5", frozenset({"eval:set0"})),
-    Model("fireworks:fireworks/minimax-m2p5", frozenset({"eval:set0"})),
+    Model("fireworks:fireworks/deepseek-v3-0324", frozenset({"eval:set0", "harbor:fireworks"})),
+    Model("fireworks:fireworks/minimax-m2p1", frozenset({"eval:set0", "harbor:fireworks"})),
+    Model("fireworks:fireworks/kimi-k2p5", frozenset({"eval:set0", "harbor:fireworks"})),
+    Model("fireworks:fireworks/glm-5", frozenset({"eval:set0", "harbor:fireworks"})),
+    Model("fireworks:fireworks/minimax-m2p5", frozenset({"eval:set0", "harbor:fireworks"})),
     # -- Ollama (SET1 + SET2) --
-    Model("ollama:glm-5", frozenset({"eval:set1", "eval:set2"})),
-    Model("ollama:minimax-m2.5", frozenset({"eval:set1", "eval:set2"})),
-    Model("ollama:qwen3.5:397b-cloud", frozenset({"eval:set1", "eval:set2"})),
+    Model("ollama:glm-5", frozenset({"eval:set1", "eval:set2", "harbor:ollama"})),
+    Model("ollama:minimax-m2.5", frozenset({"eval:set1", "eval:set2", "harbor:ollama"})),
+    Model("ollama:qwen3.5:397b-cloud", frozenset({"eval:set1", "eval:set2", "harbor:ollama"})),
     # -- Groq (SET2) --
-    Model("groq:openai/gpt-oss-120b", frozenset({"eval:set2"})),
-    Model("groq:qwen/qwen3-32b", frozenset({"eval:set2"})),
-    Model("groq:moonshotai/kimi-k2-instruct", frozenset({"eval:set2"})),
+    Model("groq:openai/gpt-oss-120b", frozenset({"eval:set2", "harbor:groq"})),
+    Model("groq:qwen/qwen3-32b", frozenset({"eval:set2", "harbor:groq"})),
+    Model("groq:moonshotai/kimi-k2-instruct", frozenset({"eval:set2", "harbor:groq"})),
     # -- xAI (SET2) --
-    Model("xai:grok-4", frozenset({"eval:set2"})),
-    Model("xai:grok-3-mini-fast", frozenset({"eval:set2"})),
+    Model("xai:grok-4", frozenset({"eval:set2", "harbor:xai"})),
+    Model("xai:grok-3-mini-fast", frozenset({"eval:set2", "harbor:xai"})),
     # -- Ollama (SET2 only) --
-    Model("ollama:nemotron-3-nano:30b", frozenset({"eval:set2"})),
-    Model("ollama:cogito-2.1:671b", frozenset({"eval:set2"})),
-    Model("ollama:devstral-2:123b", frozenset({"eval:set2"})),
-    Model("ollama:ministral-3:14b", frozenset({"eval:set2"})),
-    Model("ollama:qwen3-next:80b", frozenset({"eval:set2"})),
-    Model("ollama:qwen3-coder:480b-cloud", frozenset({"eval:set2"})),
-    Model("ollama:deepseek-v3.2:cloud", frozenset({"eval:set2"})),
+    Model("ollama:nemotron-3-nano:30b", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:cogito-2.1:671b", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:devstral-2:123b", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:ministral-3:14b", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:qwen3-next:80b", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:qwen3-coder:480b-cloud", frozenset({"eval:set2", "harbor:ollama"})),
+    Model("ollama:deepseek-v3.2:cloud", frozenset({"eval:set2", "harbor:ollama"})),
     # -- NVIDIA (OPEN) --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:open"}),
+        frozenset({"eval:open", "harbor:nvidia"}),
     ),
 )
 
@@ -169,7 +175,14 @@ _HARBOR_PRESETS: dict[str, str | None] = {
     "all": None,
     "anthropic": "harbor:anthropic",
     "openai": "harbor:openai",
+    "google_genai": "harbor:google_genai",
+    "openrouter": "harbor:openrouter",
     "baseten": "harbor:baseten",
+    "fireworks": "harbor:fireworks",
+    "ollama": "harbor:ollama",
+    "groq": "harbor:groq",
+    "xai": "harbor:xai",
+    "nvidia": "harbor:nvidia",
 }
 
 _WORKFLOW_CONFIG: dict[str, tuple[str, dict[str, str | None]]] = {

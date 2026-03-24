@@ -24,6 +24,7 @@ from deepagents.backends.protocol import (
     LsResult,
     ReadResult,
     WriteResult,
+    map_file_operation_error,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -690,17 +691,11 @@ class FilesystemBackend(BackendProtocol):
                     f.write(content)
 
                 responses.append(FileUploadResponse(path=path, error=None))
-            except FileNotFoundError:
-                responses.append(FileUploadResponse(path=path, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
-            except (ValueError, OSError) as e:
-                # ValueError from _resolve_path for path traversal, OSError for other file errors
-                if isinstance(e, ValueError) or "invalid" in str(e).lower():
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
-                else:
-                    # Generic error fallback
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileUploadResponse(path=path, error=error))
 
         return responses
 
@@ -723,13 +718,9 @@ class FilesystemBackend(BackendProtocol):
                 with os.fdopen(fd, "rb") as f:
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except FileNotFoundError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            except IsADirectoryError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
-            except ValueError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
-            # Let other errors propagate
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses

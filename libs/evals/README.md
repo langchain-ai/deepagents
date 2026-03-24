@@ -52,11 +52,11 @@ export LANGSMITH_TRACING_V2=true       # Required: Enable LangSmith tracing
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
 # export DAYTONA_API_KEY="..."  # Optional: Only if using --env daytona
 
-# Run via Docker (1 task)
+# Run via Docker (sequential, all tasks)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
 
-# Run via Daytona (10 tasks)
+# Run via Daytona (10 concurrent trials)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```
@@ -95,13 +95,13 @@ python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepa
 ```bash
 # Option 1: For experiments (enables side-by-side comparison in LangSmith)
 export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
-make run-terminal-bench-daytona  # Runs 10 tasks on Daytona
+make run-terminal-bench-daytona  # 40 concurrent trials on Daytona
 
 # Option 2: For development (simpler project view in LangSmith)
 export LANGSMITH_PROJECT="deepagents-development"
 make run-terminal-bench-daytona
 
-# Option 3: Run harbor directly (customize -n for number of tasks)
+# Option 3: Run harbor directly (-n = concurrency; add -l N to limit tasks)
 export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
 uv run harbor run \
   --agent-import-path deepagents_harbor:DeepAgentsWrapper \
@@ -150,10 +150,10 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 
 Makefile shortcuts are available for common workflows:
 
-- `make run-terminal-bench-docker` - Run 1 task locally with Docker
-- `make run-terminal-bench-daytona` - Run 10 tasks on Daytona
-- `make run-terminal-bench-modal` - Run 4 tasks on Modal
-- `make run-terminal-bench-runloop` - Run 10 tasks on Runloop
+- `make run-terminal-bench-docker` - Run on Docker (sequential)
+- `make run-terminal-bench-daytona` - Run on Daytona (40 concurrent)
+- `make run-terminal-bench-modal` - Run on Modal (4 concurrent)
+- `make run-terminal-bench-runloop` - Run on Runloop (10 concurrent)
 
 ## Eval Categories
 

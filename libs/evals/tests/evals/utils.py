@@ -963,6 +963,7 @@ async def run_agent_async(
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
+    eval_metadata: dict[str, object] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query asynchronously.
 
@@ -973,12 +974,13 @@ async def run_agent_async(
         initial_files: Optional initial files to seed the agent with.
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
+        eval_metadata: Optional metadata to attach to the logged inputs.
 
     Returns:
-        The resulting ``AgentTrajectory``.
+        The resulting `AgentTrajectory`.
 
     Raises:
-        TypeError: If the invoke result is not a ``Mapping``.
+        TypeError: If the invoke result is not a `Mapping`.
     """
     if isinstance(query, str):
         invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
@@ -995,6 +997,8 @@ async def run_agent_async(
 
     logged_inputs = dict(invoke_inputs)
     logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
+    if eval_metadata is not None:
+        logged_inputs["eval_metadata"] = eval_metadata
 
     t.log_inputs(logged_inputs)
     result = await agent.ainvoke(invoke_inputs, config)

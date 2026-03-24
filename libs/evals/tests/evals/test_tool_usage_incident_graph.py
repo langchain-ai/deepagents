@@ -24,6 +24,8 @@ from tests.evals.utils import (
     tool_call,
 )
 
+pytestmark = [pytest.mark.eval_category("tool_usage")]
+
 
 class Engineer(TypedDict):
     id: int
@@ -409,7 +411,7 @@ def list_incident_ids() -> list[int]:
 
 
 @tool
-def find_incidents_by_title(title: str) -> list[dict]:
+def find_incidents_by_title(title: str) -> list[IncidentSearchResult]:
     """Find incidents with a similar title.
 
     Args:
@@ -439,7 +441,7 @@ def find_engineers_by_name(name: str) -> list[EngineerSearchResult]:
 
 
 @tool
-def find_teams_by_name(name: str) -> list[dict]:
+def find_teams_by_name(name: str) -> list[TeamSearchResult]:
     """Find teams with a similar name.
 
     Args:

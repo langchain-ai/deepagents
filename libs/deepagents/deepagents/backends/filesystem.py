@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import base64
 import json
 import logging
 import os
@@ -17,12 +18,18 @@ from deepagents.backends.protocol import (
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
+    GrepResult,
+    LsResult,
+    ReadResult,
     WriteResult,
+    map_file_operation_error,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     check_empty_content,
-    format_content_with_line_numbers,
+    create_file_data,
     perform_string_replacement,
 )
 
@@ -185,7 +192,7 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
-    def ls_info(self, path: str) -> list[FileInfo]:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
+    def ls(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -198,7 +205,7 @@ class FilesystemBackend(BackendProtocol):
         """
         dir_path = self._resolve_path(path)
         if not dir_path.exists() or not dir_path.is_dir():
-            return []
+            return LsResult(entries=[])
 
         results: list[FileInfo] = []
 
@@ -288,15 +295,15 @@ class FilesystemBackend(BackendProtocol):
 
         # Keep deterministic order by path
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return LsResult(entries=results)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute or relative file path.
@@ -304,34 +311,40 @@ class FilesystemBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
-            # Open with O_NOFOLLOW where available to avoid symlink traversal
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            if _get_file_type(file_path) != "text":
+                with os.fdopen(fd, "rb") as f:
+                    raw = f.read()
+                encoded = base64.standard_b64encode(raw).decode("ascii")
+                return ReadResult(file_data=create_file_data(encoded, encoding="base64"))
+
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
             empty_msg = check_empty_content(content)
             if empty_msg:
-                return empty_msg
+                return ReadResult(file_data=create_file_data(empty_msg))
 
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
-        except (OSError, UnicodeDecodeError) as e:
-            return f"Error reading file '{file_path}': {e}"
+            return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
+        except OSError as e:
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
         self,
@@ -420,12 +433,12 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search for a literal text pattern in files.
 
         Uses ripgrep if available, falling back to Python search.
@@ -436,16 +449,16 @@ class FilesystemBackend(BackendProtocol):
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
-            List of GrepMatch dicts containing path, line number, and matched text.
+            GrepResult with matches or error.
         """
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
         except ValueError:
-            return []
+            return GrepResult(matches=[])
 
         if not base_full.exists():
-            return []
+            return GrepResult(matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob)
@@ -457,7 +470,7 @@ class FilesystemBackend(BackendProtocol):
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
-        return matches
+        return GrepResult(matches=matches)
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.
@@ -574,7 +587,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
@@ -582,8 +595,7 @@ class FilesystemBackend(BackendProtocol):
             path: Base directory to search from. Defaults to root (`/`).
 
         Returns:
-            List of `FileInfo` dicts for matching files, sorted by path. Each dict
-                contains `path`, `is_dir`, `size`, and `modified_at` fields.
+            GlobResult with matching files or error.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -594,7 +606,7 @@ class FilesystemBackend(BackendProtocol):
 
         search_path = self.cwd if path == "/" else self._resolve_path(path)
         if not search_path.exists() or not search_path.is_dir():
-            return []
+            return GlobResult(matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -651,7 +663,7 @@ class FilesystemBackend(BackendProtocol):
             pass
 
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.
@@ -679,17 +691,11 @@ class FilesystemBackend(BackendProtocol):
                     f.write(content)
 
                 responses.append(FileUploadResponse(path=path, error=None))
-            except FileNotFoundError:
-                responses.append(FileUploadResponse(path=path, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
-            except (ValueError, OSError) as e:
-                # ValueError from _resolve_path for path traversal, OSError for other file errors
-                if isinstance(e, ValueError) or "invalid" in str(e).lower():
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
-                else:
-                    # Generic error fallback
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileUploadResponse(path=path, error=error))
 
         return responses
 
@@ -712,13 +718,9 @@ class FilesystemBackend(BackendProtocol):
                 with os.fdopen(fd, "rb") as f:
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except FileNotFoundError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            except IsADirectoryError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
-            except ValueError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
-            # Let other errors propagate
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses

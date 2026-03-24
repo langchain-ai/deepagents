@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.32"
+version = "0.0.34"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,31 +26,40 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.4.10",
-    "langchain>=1.2.10,<2.0.0",
+    "deepagents==0.4.11",
+    "langchain>=1.2.13,<2.0.0",
+    "langgraph>=1.1.2,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
-    # Require at least one integration package
+    # Client-server architecture
+    "langgraph-sdk>=0.3.11,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.15,<1.0.0",
+    "httpx>=0.28.1,<1.0.0",
+
+    # Core model providers - others are added as optional
+    "langchain-anthropic>=1.3.5,<2.0.0",
+    "langchain-google-genai>=4.2.1,<5.0.0",
     "langchain-openai>=1.1.8,<2.0.0",
 
     # UI/Terminal
     "textual>=8.0.0,<9.0.0",
     "textual-autocomplete>=3.0.0,<5.0.0",
+    "textual-speedups>=0.2.1,<1.0.0",
     "prompt-toolkit>=3.0.52,<4.0.0",
     "rich>=14.0.0,<15.0.0",
     "markdownify>=0.13.0,<2.0.0",
 
     # Sandbox integrations
     "langsmith[sandbox]>=0.7.7",
-    "daytona>=0.113.0,<1.0.0",
-    "modal>=0.65.0,<2.0.0",
-    "runloop-api-client>=0.69.0",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
+
+    # Version parsing
+    "packaging>=23.0",
 
     # Utilities
     "uuid-utils>=0.10.0,<1.0.0",
@@ -70,13 +79,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.0.0,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.3.5,<2.0.0"]
 baseten = ["langchain-baseten>=0.1.9,<1.0.0"]
 bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
 cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.0.0,<5.0.0"]
+google-genai = ["langchain-google-genai>=4.2.1,<5.0.0"]
 groq = ["langchain-groq>=1.0.0,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
 ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
@@ -89,6 +98,16 @@ openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
+
+# Sandbox providers
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
+daytona = ["langchain-daytona>=0.0.4"]
+modal = ["langchain-modal>=0.0.2"]
+runloop = ["langchain-runloop>=0.0.3"]
+all-sandboxes = [
+    "deepagents-cli[agentcore,daytona,modal,runloop]",
+]
+
 all-providers = [
     "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
@@ -104,14 +123,19 @@ Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
 Twitter = "https://x.com/LangChain"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
 
 [dependency-groups]
 test = [
+    "textual-dev>=1.7.0,<2.0.0",
     "build>=1.0.0,<2.0.0",
     "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
     "pytest>=8.3.4,<10.0.0",
     "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-benchmark>=5.1.0,<6.0.0",
+    "pytest-codspeed>=4.0.0,<5.0.0",
     "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
@@ -131,10 +155,18 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-modal = { path = "../partners/modal", editable = true }
+langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/runloop",
+]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
@@ -164,6 +196,7 @@ ignore = [
     "TD003",   # Missing issue link in TODO
 ]
 unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -232,6 +265,7 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
+markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
 # pytest-benchmark warns once per xdist worker that benchmarks are disabled
 # under parallel execution. Both plugins are needed: xdist for `make test`,
 # benchmark for `make benchmark`. Suppress the noise here.

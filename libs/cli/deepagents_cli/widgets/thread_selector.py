@@ -9,14 +9,15 @@ import sqlite3
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
-from rich.style import Style
-from rich.text import Text
 from textual.binding import Binding, BindingType
+from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
@@ -25,11 +26,11 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, Key
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets._links import open_style_link
@@ -401,7 +402,10 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         """
         with Vertical(id="delete-confirm"):
             yield Static(
-                f"Delete thread [bold]{self._delete_thread_id}[/bold]?",
+                Content.from_markup(
+                    "Delete thread [bold]$tid[/bold]?",
+                    tid=self._delete_thread_id,
+                ),
                 classes="thread-confirm-text",
             )
             yield Static(
@@ -545,6 +549,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -691,7 +696,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._selected_index = i
                 break
 
-    def _build_title(self, thread_url: str | None = None) -> str | Text:
+    def _build_title(self, thread_url: str | None = None) -> str | Content:
         """Build the title, optionally with a clickable thread ID link.
 
         Args:
@@ -699,14 +704,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 rendered as a clickable hyperlink.
 
         Returns:
-            Plain string or Rich `Text` with an embedded hyperlink.
+            Plain string or `Content` with an embedded hyperlink.
         """
         if not self._current_thread:
             return "Select Thread"
         if thread_url:
-            return Text.assemble(
+            return Content.assemble(
                 "Select Thread (current: ",
-                (self._current_thread, Style(color="cyan", link=thread_url)),
+                (
+                    self._current_thread,
+                    TStyle(
+                        foreground=TColor.parse(theme.get_theme_colors(self).primary),
+                        link=thread_url,
+                    ),
+                ),
                 ")",
             )
         return f"Select Thread (current: {self._current_thread})"
@@ -813,12 +824,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                 yield from self._option_widgets
                             else:
                                 yield Static(
-                                    "[dim]No threads found[/dim]",
+                                    Content.styled("No threads found", "dim"),
                                     classes="thread-empty",
                                 )
                         else:
                             yield Static(
-                                "[dim]Loading threads...[/dim]",
+                                Content.styled("Loading threads...", "dim"),
                                 classes="thread-empty",
                                 id="thread-loading",
                             )
@@ -864,9 +875,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def on_mount(self) -> None:
         """Fetch threads, configure border for ASCII terminals, and build the list."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one("#thread-selector-shell", Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
         filter_input = self._get_filter_input()
         self._filter_focus_order()
@@ -1421,9 +1433,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 await scroll.remove_children()
                 await scroll.mount(
                     Static(
-                        (
-                            f"[red]Failed to load threads: {detail}. "
-                            "Press Esc to close.[/red]"
+                        Content.from_markup(
+                            "[red]Failed to load threads: $detail. "
+                            "Press Esc to close.[/red]",
+                            detail=detail,
                         ),
                         classes="thread-empty",
                     )
@@ -1457,7 +1470,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     self._option_widgets = []
                     await scroll.mount(
                         Static(
-                            "[dim]No threads found[/dim]",
+                            Content.styled("No threads found", "dim"),
                             classes="thread-empty",
                         )
                     )
@@ -1770,6 +1783,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
+                markup=False,
             )
             with contextlib.suppress(NoMatches):
                 self.query_one("#thread-filter", Input).focus()

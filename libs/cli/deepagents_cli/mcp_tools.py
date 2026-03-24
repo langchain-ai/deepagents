@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
 
+    from deepagents_cli.project_utils import ProjectContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +30,10 @@ class MCPToolInfo:
     """Metadata for a single MCP tool."""
 
     name: str
+    """Tool name (may include server name prefix)."""
+
     description: str
+    """Human-readable description of what the tool does."""
 
 
 @dataclass
@@ -35,8 +41,13 @@ class MCPServerInfo:
     """Metadata for a connected MCP server and its tools."""
 
     name: str
+    """Server name from the MCP configuration."""
+
     transport: str
+    """Transport type (`stdio`, `sse`, or `http`)."""
+
     tools: list[MCPToolInfo] = field(default_factory=list)
+    """Tools exposed by this server."""
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -170,7 +181,26 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     return config
 
 
-def discover_mcp_configs() -> list[Path]:
+def _resolve_project_config_base(project_context: ProjectContext | None) -> Path:
+    """Resolve the base directory for project-level MCP configuration lookup.
+
+    Args:
+        project_context: Explicit project path context, if available.
+
+    Returns:
+        Project root when one exists, otherwise the user working directory.
+    """
+    if project_context is not None:
+        return project_context.project_root or project_context.user_cwd
+
+    from deepagents_cli.project_utils import find_project_root
+
+    return find_project_root() or Path.cwd()
+
+
+def discover_mcp_configs(
+    *, project_context: ProjectContext | None = None
+) -> list[Path]:
     """Find MCP config files from standard locations.
 
     Checks three paths in precedence order (lowest to highest):
@@ -179,15 +209,14 @@ def discover_mcp_configs() -> list[Path]:
     2. `<project-root>/.deepagents/.mcp.json` (project subdir)
     3. `<project-root>/.mcp.json` (project root, Claude Code compat)
 
-    Project root is determined by `find_project_root()`, falling back to CWD.
+    Project root is determined from `project_context` when provided, otherwise
+    by `find_project_root()`, falling back to CWD.
 
     Returns:
         List of existing config file paths, ordered lowest-to-highest precedence.
     """
-    from deepagents_cli.project_utils import find_project_root
-
     user_dir = Path.home() / ".deepagents"
-    project_root = find_project_root() or Path.cwd()
+    project_root = _resolve_project_config_base(project_context)
 
     candidates = [
         user_dir / ".mcp.json",
@@ -341,6 +370,61 @@ class MCPSessionManager:
         await self.exit_stack.aclose()
 
 
+def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
+    """Verify that a stdio server's command exists on PATH.
+
+    Args:
+        server_name: Name of the server (for error messages).
+        server_config: Server configuration dictionary with `command` key.
+
+    Raises:
+        RuntimeError: If the command is missing from config or not found on PATH.
+    """
+    command = server_config.get("command")
+    if command is None:
+        msg = f"MCP server '{server_name}': missing 'command' in config."
+        raise RuntimeError(msg)
+    if shutil.which(command) is None:
+        msg = (
+            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            "Install it or check your MCP config."
+        )
+        raise RuntimeError(msg)
+
+
+async def _check_remote_server(server_name: str, server_config: dict[str, Any]) -> None:
+    """Check network connectivity to a remote MCP server URL.
+
+    Sends a lightweight HEAD request with a 2-second timeout to detect DNS
+    failures, refused connections, and network timeouts early, before the MCP
+    session handshake. HTTP error responses (4xx, 5xx) are not treated as
+    failures — only transport errors, invalid URLs, and OS-level socket
+    errors raise.
+
+    Args:
+        server_name: Name of the server (for error messages).
+        server_config: Server configuration dictionary with `url` key.
+
+    Raises:
+        RuntimeError: If the server URL is unreachable or invalid.
+    """
+    import httpx
+
+    url = server_config.get("url")
+    if url is None:
+        msg = f"MCP server '{server_name}': missing 'url' in config."
+        raise RuntimeError(msg)
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.head(url, timeout=2)
+    except (httpx.TransportError, httpx.InvalidURL, OSError) as exc:
+        msg = (
+            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            "Check that the URL is correct and the server is running."
+        )
+        raise RuntimeError(msg) from exc
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
@@ -365,6 +449,24 @@ async def _load_tools_from_config(
         StreamableHttpConnection,
     )
     from langchain_mcp_adapters.tools import load_mcp_tools
+
+    # Pre-flight health checks (best-effort early detection; the session setup
+    # below has its own error handling for TOCTOU races).
+    errors: list[str] = []
+    for server_name, server_config in config["mcpServers"].items():
+        server_type = _resolve_server_type(server_config)
+        try:
+            if server_type in _SUPPORTED_REMOTE_TYPES:
+                await _check_remote_server(server_name, server_config)
+            elif server_type == "stdio":
+                _check_stdio_server(server_name, server_config)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    if errors:
+        msg = "Pre-flight health check(s) failed:\n" + "\n".join(
+            f"  - {e}" for e in errors
+        )
+        raise RuntimeError(msg)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
@@ -476,6 +578,7 @@ async def resolve_and_load_mcp_tools(
     explicit_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    project_context: ProjectContext | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -494,6 +597,8 @@ async def resolve_and_load_mcp_tools(
             - `False`: filter out project stdio servers, log warning.
             - `None` (default): check the persistent trust store; if the
                 fingerprint matches, allow; otherwise filter + warn.
+        project_context: Explicit project path context for config discovery
+            and trust resolution.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -509,7 +614,7 @@ async def resolve_and_load_mcp_tools(
 
     # Auto-discovery
     try:
-        config_paths = discover_mcp_configs()
+        config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
         logger.warning("MCP config auto-discovery failed", exc_info=True)
         config_paths = []
@@ -556,9 +661,8 @@ async def resolve_and_load_mcp_tools(
                 compute_config_fingerprint,
                 is_project_mcp_trusted,
             )
-            from deepagents_cli.project_utils import find_project_root
 
-            project_root = str((find_project_root() or Path.cwd()).resolve())
+            project_root = str(_resolve_project_config_base(project_context).resolve())
             fingerprint = compute_config_fingerprint(project_configs)
             if is_project_mcp_trusted(project_root, fingerprint):
                 configs.append(cfg)
@@ -578,7 +682,12 @@ async def resolve_and_load_mcp_tools(
 
     # Explicit path is highest precedence — errors are fatal
     if explicit_config_path:
-        configs.append(load_mcp_config(explicit_config_path))
+        config_path = (
+            str(project_context.resolve_user_path(explicit_config_path))
+            if project_context is not None
+            else explicit_config_path
+        )
+        configs.append(load_mcp_config(config_path))
 
     if not configs:
         return [], None, []

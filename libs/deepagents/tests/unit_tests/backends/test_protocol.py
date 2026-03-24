@@ -4,9 +4,15 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import warnings
+
 import pytest
 
-from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    SandboxBackendProtocol,
+    map_file_operation_error,
+)
 
 
 class BareBackend(BackendProtocol):
@@ -32,19 +38,19 @@ class TestBackendProtocolRaisesNotImplemented:
 
     def test_ls_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.ls_info("/")
+            backend.ls("/")
 
     def test_read(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.read("/file.txt")
 
-    def test_grep_raw(self, backend: BareBackend) -> None:
+    def test_grep(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.grep_raw("pattern")
+            backend.grep("pattern")
 
-    def test_glob_info(self, backend: BareBackend) -> None:
+    def test_glob(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            backend.glob_info("*.py")
+            backend.glob("*.py")
 
     def test_write(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -76,19 +82,19 @@ class TestAsyncMethodsPropagateNotImplemented:
 
     async def test_als_info(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.als_info("/")
+            await backend.als("/")
 
     async def test_aread(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aread("/file.txt")
 
-    async def test_agrep_raw(self, backend: BareBackend) -> None:
+    async def test_agrep(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.agrep_raw("pattern")
+            await backend.agrep("pattern")
 
-    async def test_aglob_info(self, backend: BareBackend) -> None:
+    async def test_aglob(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.aglob_info("*.py")
+            await backend.aglob("*.py")
 
     async def test_awrite(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -97,6 +103,74 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
+
+
+class TestDeprecatedMethodsRouteToNewNames:
+    """Old method names warn and delegate to the new implementations."""
+
+    def test_ls_info_delegates_to_ls(self) -> None:
+        class MyBackend(BackendProtocol):
+            def ls(self, path):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().ls_info("/") == "ok"
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_raw_delegates_to_grep(self) -> None:
+        class MyBackend(BackendProtocol):
+            def grep(self, pattern, path=None, glob=None):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().grep_raw("x") == "ok"
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_info_delegates_to_glob(self) -> None:
+        class MyBackend(BackendProtocol):
+            def glob(self, pattern, path="/"):
+                return "ok"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().glob_info("*.py") == "ok"
+        assert any("glob_info" in str(x.message) for x in w)
+
+
+class TestLegacySubclassOverrideRouting:
+    """New method names detect legacy overrides and delegate back."""
+
+    def test_ls_routes_to_ls_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def ls_info(self, path):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().ls("/") == "legacy"
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_routes_to_grep_raw_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def grep_raw(self, pattern, path=None, glob=None):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().grep("x") == "legacy"
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_routes_to_glob_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def glob_info(self, pattern, path="/"):
+                return "legacy"
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().glob("*.py") == "legacy"
+        assert any("glob_info" in str(x.message) for x in w)
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -109,3 +183,39 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")
+
+
+class TestMapFileOperationError:
+    """map_file_operation_error classifies exceptions into FileOperationError codes."""
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (FileNotFoundError("gone"), "file_not_found"),
+            (PermissionError("denied"), "permission_denied"),
+            (IsADirectoryError("dir"), "is_directory"),
+            (ValueError("path traversal detected"), "invalid_path"),
+            (ValueError("invalid path segment"), "invalid_path"),
+            (NotADirectoryError("not a dir"), "invalid_path"),
+            (FileExistsError("exists"), "invalid_path"),
+        ],
+    )
+    def test_known_exception_types(self, exc: Exception, expected: str) -> None:
+        assert map_file_operation_error(exc) == expected
+
+    def test_unrecognized_returns_none(self) -> None:
+        """Non-stdlib exception types return None regardless of message."""
+        assert map_file_operation_error(RuntimeError("something else")) is None
+        assert map_file_operation_error(RuntimeError("permission denied")) is None
+        assert map_file_operation_error(OSError("is a directory")) is None
+
+    def test_unrelated_value_error_returns_none(self) -> None:
+        """ValueError without path-related keywords should not be mapped."""
+        assert map_file_operation_error(ValueError("unexpected encoding")) is None
+        assert map_file_operation_error(ValueError("invalid literal for int()")) is None
+        assert map_file_operation_error(ValueError("permission denied on /foo")) is None
+
+    def test_value_error_path_security_messages(self) -> None:
+        """ValueError with path-security keywords should map to invalid_path."""
+        assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
+        assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"

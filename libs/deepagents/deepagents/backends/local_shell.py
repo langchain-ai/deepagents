@@ -173,7 +173,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 "it does not provide sandboxing or process isolation. "
                 "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir, "
                 "and LocalShellBackend provides no sandboxing (execute runs commands on the host; virtual_mode does not restrict shell execution). "
-                "Please consult the API reference for usage guidelines.",
+                "See https://reference.langchain.com/python/deepagents/ for usage guidelines.",
                 DeprecationWarning,
                 stacklevel=2,
             )

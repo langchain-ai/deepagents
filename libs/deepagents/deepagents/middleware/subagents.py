@@ -289,7 +289,7 @@ def _get_subagents_legacy(
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: list[SubAgent | CompiledSubAgent],
+    subagents: Sequence[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
 ) -> list[_SubagentSpec]:
     """Create subagent instances from specifications.
@@ -546,7 +546,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         backend: BackendProtocol | BackendFactory | None = None,
-        subagents: list[SubAgent | CompiledSubAgent] | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
         **deprecated_kwargs: Unpack[_DeprecatedKwargs],

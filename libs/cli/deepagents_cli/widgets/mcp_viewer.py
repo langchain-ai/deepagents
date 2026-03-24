@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -17,7 +18,8 @@ if TYPE_CHECKING:
 
     from deepagents_cli.mcp_tools import MCPServerInfo
 
-from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli import theme
+from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 
 class MCPToolItem(Static):
@@ -39,16 +41,19 @@ class MCPToolItem(Static):
             index: Flat index of this tool in the list.
             classes: CSS classes.
         """
-        label = f"  {name}"
         if description:
-            label += f" [dim]{description}[/dim]"
+            label = Content.from_markup(
+                "  $name [dim]$desc[/dim]", name=name, desc=description
+            )
+        else:
+            label = Content.from_markup("  $name", name=name)
         super().__init__(label, classes=classes)
         self.tool_name = name
         self.tool_description = description
         self.index = index
         self._expanded = False
 
-    def _format_collapsed(self, name: str, description: str) -> str:
+    def _format_collapsed(self, name: str, description: str) -> Content:
         """Build the collapsed (single-line) label.
 
         Truncates the description with `(...)` if it would overflow
@@ -59,10 +64,10 @@ class MCPToolItem(Static):
             description: Tool description.
 
         Returns:
-            Rich-markup label.
+            Styled Content label.
         """
         if not description:
-            return f"  {name}"
+            return Content.from_markup("  $name", name=name)
         prefix_len = 2 + len(name) + 1
         avail = self.size.width - prefix_len - 1 if self.size.width else 0
         ellipsis = " (...)"
@@ -71,10 +76,12 @@ class MCPToolItem(Static):
             desc_text = description[:cut] + ellipsis
         else:
             desc_text = description
-        return f"  {name} [dim]{desc_text}[/dim]"
+        return Content.from_markup(
+            "  $name [dim]$desc[/dim]", name=name, desc=desc_text
+        )
 
     @staticmethod
-    def _format_expanded(name: str, description: str) -> str:
+    def _format_expanded(name: str, description: str) -> Content:
         """Build the expanded (multi-line) label.
 
         Args:
@@ -82,12 +89,15 @@ class MCPToolItem(Static):
             description: Tool description.
 
         Returns:
-            Rich-markup label with full description on next line.
+            Styled Content label with full description on next line.
         """
-        lines = f"  [bold]{name}[/bold]"
         if description:
-            lines += f"\n    [dim]{description}[/dim]"
-        return lines
+            return Content.from_markup(
+                "  [bold]$name[/bold]\n    [dim]$desc[/dim]",
+                name=name,
+                desc=description,
+            )
+        return Content.from_markup("  [bold]$name[/bold]", name=name)
 
     def toggle_expand(self) -> None:
         """Toggle between collapsed and expanded view."""
@@ -259,10 +269,13 @@ class MCPViewerScreen(ModalScreen[None]):
                         tool_count = len(server.tools)
                         t_label = "tool" if tool_count == 1 else "tools"
                         yield Static(
-                            f"[bold]{server.name}[/bold]"
-                            f" [dim]{server.transport}"
-                            f" {glyphs.bullet}"
-                            f" {tool_count} {t_label}[/dim]",
+                            Content.from_markup(
+                                "[bold]$name[/bold]"
+                                f" [dim]$transport {glyphs.bullet}"
+                                f" {tool_count} {t_label}[/dim]",
+                                name=server.name,
+                                transport=server.transport,
+                            ),
                             classes="mcp-server-header",
                         )
                         for tool in server.tools:
@@ -288,9 +301,10 @@ class MCPViewerScreen(ModalScreen[None]):
 
     async def on_mount(self) -> None:
         """Apply ASCII border fallback if needed."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one(Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
     def _move_to(self, index: int) -> None:
         """Move selection to the given index.

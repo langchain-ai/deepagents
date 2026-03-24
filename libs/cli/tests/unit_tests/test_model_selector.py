@@ -691,8 +691,10 @@ class TestFormatOptionLabel:
             has_creds=True,
             status="deprecated",
         )
-        assert "(deprecated)" in label
-        assert "[red]" in label
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert "(deprecated)" in label.plain
+        assert DARK_COLORS.error in label.markup
 
     def test_non_deprecated_model_no_tag(self) -> None:
         """Models without deprecated status should not show the tag."""
@@ -703,7 +705,7 @@ class TestFormatOptionLabel:
             has_creds=True,
             status=None,
         )
-        assert "(deprecated)" not in label
+        assert "(deprecated)" not in label.plain
 
     def test_other_status_renders_yellow(self) -> None:
         """Non-deprecated statuses (e.g., beta) render yellow, not red."""
@@ -714,9 +716,11 @@ class TestFormatOptionLabel:
             has_creds=True,
             status="beta",
         )
-        assert "(deprecated)" not in label
-        assert "(beta)" in label
-        assert "[yellow]" in label
+        assert "(deprecated)" not in label.plain
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert "(beta)" in label.plain
+        assert DARK_COLORS.warning in label.markup
 
     def test_all_suffixes_coexist(self) -> None:
         """Current + default + deprecated all render together."""
@@ -728,9 +732,9 @@ class TestFormatOptionLabel:
             is_default=True,
             status="deprecated",
         )
-        assert "(current)" in label
-        assert "(default)" in label
-        assert "(deprecated)" in label
+        assert "(current)" in label.plain
+        assert "(default)" in label.plain
+        assert "(deprecated)" in label.plain
 
 
 class TestGetModelStatus:
@@ -798,21 +802,22 @@ class TestModelDetailFooter:
             overridden_keys=frozenset(),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "200.0K" in result
-        assert "64.0K" in result
-        assert "text" in result
-        assert "image" in result
-        assert "tool calling" in result
-        assert "reasoning" in result
+        text = str(result)
+        assert "200.0K" in text
+        assert "64.0K" in text
+        assert "text" in text
+        assert "image" in text
+        assert "tool calling" in text
+        assert "reasoning" in text
         # No override marker
-        assert "* =" not in result
+        assert "* =" not in text
 
     def test_format_footer_no_profile(self) -> None:
         """None profile shows 'Model profile not available'."""
         from deepagents_cli.config import UNICODE_GLYPHS
 
         result = ModelSelectorScreen._format_footer(None, UNICODE_GLYPHS)
-        assert "Model profile not available :(" in result
+        assert "Model profile not available :(" in str(result)
 
     def test_format_footer_overridden_fields(self) -> None:
         """Overridden fields show yellow * marker and override legend."""
@@ -828,8 +833,12 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"max_input_tokens"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "[yellow]*" in result
-        assert "= override" in result
+        text = str(result)
+        assert "*" in text
+        assert "= override" in text
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning in result.markup
 
     def test_format_footer_partial_profile(self) -> None:
         """Profile with only token counts still renders without crash."""
@@ -841,9 +850,10 @@ class TestModelDetailFooter:
             overridden_keys=frozenset(),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "4096" in result or "4.1K" in result or "4.0K" in result
+        text = str(result)
+        assert "4096" in text or "4.1K" in text or "4.0K" in text
         # Should not crash and should have content
-        assert "No profile data" not in result
+        assert "No profile data" not in text
 
     def test_format_footer_empty_profile(self) -> None:
         """Empty profile dict shows 'Model profile not available'."""
@@ -855,7 +865,7 @@ class TestModelDetailFooter:
             overridden_keys=frozenset(),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "Model profile not available :(" in result
+        assert "Model profile not available :(" in str(result)
 
     def test_format_footer_override_on_non_displayed_key(self) -> None:
         """Override on a non-displayed key should not show legend."""
@@ -867,7 +877,7 @@ class TestModelDetailFooter:
             overridden_keys=frozenset({"supports_thinking"}),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "= override" not in result
+        assert "= override" not in str(result)
 
     def test_format_footer_non_numeric_tokens(self) -> None:
         """Non-numeric token values render gracefully instead of crashing."""
@@ -879,8 +889,9 @@ class TestModelDetailFooter:
             overridden_keys=frozenset(),
         )
         result = ModelSelectorScreen._format_footer(entry, UNICODE_GLYPHS)
-        assert "unlimited" in result
-        assert "64.0K" in result
+        text = str(result)
+        assert "unlimited" in text
+        assert "64.0K" in text
 
     async def test_footer_updates_on_navigation(self) -> None:
         """Footer content changes when navigating to a different model."""

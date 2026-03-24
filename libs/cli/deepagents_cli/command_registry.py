@@ -50,6 +50,9 @@ class SlashCommand:
     hidden_keywords: str = ""
     """Space-separated terms for fuzzy matching (never displayed)."""
 
+    argument_hint: str = ""
+    """Placeholder text for autocomplete when the command accepts args."""
+
     aliases: tuple[str, ...] = ()
     """Alternative names (e.g. `("/q",)` for `/quit`)."""
 
@@ -88,11 +91,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/remember",
         description="Update memory and skills from conversation",
         bypass_tier=BypassTier.QUEUED,
+        argument_hint="[context]",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",
         description="Guide for creating effective agent skills",
         bypass_tier=BypassTier.QUEUED,
+        argument_hint="[task]",
     ),
     SlashCommand(
         name="/threads",
@@ -216,10 +221,12 @@ ALL_CLASSIFIED: frozenset[str] = (
 # Autocomplete tuples
 # ---------------------------------------------------------------------------
 
-SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
+SLASH_COMMANDS: list[tuple[str, str, str, str]] = [
+    (cmd.name, cmd.description, cmd.hidden_keywords, cmd.argument_hint)
+    for cmd in COMMANDS
 ]
-"""`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
+"""`(name, description, hidden_keywords, argument_hint)`
+    tuples for `SlashCommandController`."""
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:
@@ -256,7 +263,7 @@ appear as `/skill:model`).
 
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     """Build autocomplete tuples for discovered skills.
 
     Each skill becomes a `/skill:<name>` entry with its description
@@ -270,10 +277,15 @@ def build_skill_commands(
         skills: List of discovered skill metadata.
 
     Returns:
-        List of `(name, description, hidden_keywords)` tuples.
+        List of `(name, description, hidden_keywords, argument_hint)` tuples.
     """
     return [
-        (f"/skill:{skill['name']}", skill["description"], skill["name"])
+        (
+            f"/skill:{skill['name']}",
+            skill["description"],
+            skill["name"],
+            skill.get("argument_hint") or "",
+        )
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES
     ]

@@ -109,10 +109,11 @@ class TestBuildSkillCommands:
         ]
         result = build_skill_commands(skills)  # type: ignore[arg-type]
         assert len(result) == 1
-        name, desc, keywords = result[0]
+        name, desc, keywords, hint = result[0]
         assert name == "/skill:web-research"
         assert desc == "Research topics on the web"
         assert keywords == "web-research"
+        assert hint == ""
 
     def test_multiple_skills(self) -> None:
         skills = [
@@ -143,7 +144,7 @@ class TestBuildSkillCommands:
         assert result[1][0] == "/skill:skill-b"
 
     def test_tuple_format(self) -> None:
-        """Each entry is a 3-tuple of strings."""
+        """Each entry is a 4-tuple of strings."""
         skills = [
             {
                 "name": "test",
@@ -159,7 +160,7 @@ class TestBuildSkillCommands:
         result = build_skill_commands(skills)  # type: ignore[arg-type]
         for entry in result:
             assert isinstance(entry, tuple)
-            assert len(entry) == 3
+            assert len(entry) == 4
             assert all(isinstance(s, str) for s in entry)
 
     def test_excludes_static_skill_aliases(self) -> None:

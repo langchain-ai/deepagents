@@ -486,12 +486,12 @@ class TestSlashCommandControllerUpdateCommands:
 
     def test_update_replaces_commands(self, mock_view: MagicMock) -> None:
         """update_commands() replaces the internal commands list."""
-        initial = [("/help", "Show help", "")]
+        initial = [("/help", "Show help", "", "")]
         controller = SlashCommandController(initial, mock_view)
 
         new_commands = [
-            ("/help", "Show help", ""),
-            ("/skill:web-research", "Research topics", "web-research"),
+            ("/help", "Show help", "", ""),
+            ("/skill:web-research", "Research topics", "web-research", ""),
         ]
         controller.update_commands(new_commands)
 
@@ -503,19 +503,19 @@ class TestSlashCommandControllerUpdateCommands:
 
     def test_update_resets_suggestions(self, mock_view: MagicMock) -> None:
         """update_commands() clears any active suggestions."""
-        commands = [("/help", "Show help", "")]
+        commands = [("/help", "Show help", "", "")]
         controller = SlashCommandController(commands, mock_view)
         controller.on_text_changed("/h", 2)
         mock_view.render_completion_suggestions.assert_called()
 
-        controller.update_commands([("/quit", "Exit", "")])
+        controller.update_commands([("/quit", "Exit", "", "")])
         mock_view.clear_completion_suggestions.assert_called()
 
     def test_skill_commands_fuzzy_match(self, mock_view: MagicMock) -> None:
         """Skill commands match via hidden keywords."""
         commands = [
-            ("/help", "Show help", ""),
-            ("/skill:code-review", "Review code changes", "code-review"),
+            ("/help", "Show help", "", ""),
+            ("/skill:code-review", "Review code changes", "code-review", ""),
         ]
         controller = SlashCommandController(commands, mock_view)
         controller.on_text_changed("/code", 5)

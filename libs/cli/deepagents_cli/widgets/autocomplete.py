@@ -112,13 +112,14 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str, str]],
+        commands: list[tuple[str, str, str, str]],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
-            commands: List of `(command, description, hidden_keywords)` tuples.
+            commands: List of
+                `(command, description, hidden_keywords, argument_hint)` tuples.
             view: View to render suggestions to.
         """
         self._commands = commands
@@ -126,14 +127,15 @@ class SlashCommandController:
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
 
-    def update_commands(self, commands: list[tuple[str, str, str]]) -> None:
+    def update_commands(self, commands: list[tuple[str, str, str, str]]) -> None:
         """Replace the commands list and reset suggestions.
 
         Used to merge dynamically discovered skill commands with
         the static command registry at runtime.
 
         Args:
-            commands: New list of `(command, description, hidden_keywords)` tuples.
+            commands: New list of
+                `(command, description, hidden_keywords, argument_hint)` tuples.
         """
         self._commands = commands
         self.reset()
@@ -210,14 +212,14 @@ class SlashCommandController:
 
         if not search:
             # No search text — show all commands (display only cmd + desc)
-            suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][
+            suggestions = [(cmd, desc) for cmd, desc, _, _ in self._commands][
                 :MAX_SUGGESTIONS
             ]
         else:
             # Score and filter commands using fuzzy matching
             scored = [
                 (score, cmd, desc)
-                for cmd, desc, kw in self._commands
+                for cmd, desc, kw, _ in self._commands
                 if (score := self._score_command(search, cmd, desc, kw)) > 0
             ]
             scored.sort(key=lambda x: -x[0])

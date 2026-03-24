@@ -991,14 +991,15 @@ class ChatInput(Vertical):
         )
         self._text_area.focus()
 
-    def update_slash_commands(self, commands: list[tuple[str, str, str]]) -> None:
+    def update_slash_commands(self, commands: list[tuple[str, str, str, str]]) -> None:
         """Update the slash command controller's command list.
 
         Called by the app after discovering skills to merge static
         commands with dynamic `/skill:` entries.
 
         Args:
-            commands: Full list of `(command, description, hidden_keywords)` tuples.
+            commands: Full list of
+                `(command, description, hidden_keywords, argument_hint)` tuples.
         """
         if self._slash_controller:
             self._slash_controller.update_commands(commands)

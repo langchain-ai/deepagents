@@ -91,12 +91,13 @@ class TestSlashCommands:
     def test_tuple_format(self) -> None:
         for entry in SLASH_COMMANDS:
             assert isinstance(entry, tuple)
-            assert len(entry) == 3
-            name, desc, keywords = entry
+            assert len(entry) == 4
+            name, desc, keywords, hint = entry
             assert isinstance(name, str)
             assert name.startswith("/")
             assert isinstance(desc, str)
             assert isinstance(keywords, str)
+            assert isinstance(hint, str)
 
     def test_excludes_aliases(self) -> None:
         names = {entry[0] for entry in SLASH_COMMANDS}

@@ -363,6 +363,7 @@ def _make_skill(
         compatibility=compatibility,
         metadata=metadata if metadata is not None else {},
         allowed_tools=allowed_tools if allowed_tools is not None else [],
+        argument_hint=None,
     )
 
 

@@ -241,4 +241,4 @@ class TestReloadInAutocomplete:
 
     def test_reload_in_slash_commands(self) -> None:
         """`/reload` should be registered in slash command completions."""
-        assert any(command == "/reload" for command, _, _ in SLASH_COMMANDS)
+        assert any(command == "/reload" for command, _, _, _ in SLASH_COMMANDS)

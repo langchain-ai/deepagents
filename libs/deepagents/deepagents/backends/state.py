@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -204,6 +205,19 @@ class StateBackend(BackendProtocol):
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
         return EditResult(path=file_path, files_update={file_path: self._prepare_for_storage(new_file_data)}, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from state.
+
+        Returns DeleteResult with files_update mapping the path to None,
+        signaling that the key should be removed from LangGraph state.
+        """
+        files = self.runtime.state.get("files", {})
+
+        if file_path not in files:
+            return DeleteResult(error=f"Error: File '{file_path}' not found")
+
+        return DeleteResult(path=file_path, files_update={file_path: None})
 
     def grep(
         self,

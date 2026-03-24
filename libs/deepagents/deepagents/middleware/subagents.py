@@ -465,6 +465,10 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        # Use a high recursion limit. We want users to control max steps with
+        # middleware, which can count agent steps directly, instead of relying on
+        # LangGraph's recursion_limit, which counts super steps and does not map
+        # directly to agent steps.
         result = await subagent.ainvoke(
             subagent_state,
             {

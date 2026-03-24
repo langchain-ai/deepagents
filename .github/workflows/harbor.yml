@@ -6,7 +6,7 @@ on:
       models:
         description: "Model set to run. Set definitions: .github/scripts/models.py. Use models_override for individual models."
         required: true
-        default: "all"
+        default: "set0"
         type: choice
         options:
           - all
@@ -15,15 +15,15 @@ on:
           - set2
           - open
           - anthropic
-          - openai
-          - google_genai
-          - openrouter
           - baseten
           - fireworks
-          - ollama
+          - google_genai
           - groq
-          - xai
           - nvidia
+          - openai
+          - ollama
+          - openrouter
+          - xai
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
@@ -31,19 +31,6 @@ on:
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
-          - "openai:gpt-4o"
-          - "openai:gpt-4o-mini"
-          - "openai:gpt-4.1"
-          - "openai:o3"
-          - "openai:o4-mini"
-          - "openai:gpt-5.1-codex"
-          - "openai:gpt-5.2-codex"
-          - "openai:gpt-5.4"
-          - "google_genai:gemini-2.5-flash"
-          - "google_genai:gemini-2.5-pro"
-          - "google_genai:gemini-3-flash-preview"
-          - "google_genai:gemini-3.1-pro-preview"
-          - "openrouter:minimax/minimax-m2.7"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
@@ -55,6 +42,14 @@ on:
           - "fireworks:fireworks/kimi-k2p5"
           - "fireworks:fireworks/glm-5"
           - "fireworks:fireworks/minimax-m2p5"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
           - "ollama:minimax-m2.5"
           - "ollama:qwen3.5:397b-cloud"
@@ -65,12 +60,18 @@ on:
           - "ollama:qwen3-next:80b"
           - "ollama:qwen3-coder:480b-cloud"
           - "ollama:deepseek-v3.2:cloud"
-          - "groq:openai/gpt-oss-120b"
-          - "groq:qwen/qwen3-32b"
-          - "groq:moonshotai/kimi-k2-instruct"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.4"
+          - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
-          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
       models_override:
         description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
         required: false
@@ -104,7 +105,7 @@ on:
         type: choice
         options:
           - sdk
-          - cli
+          # - cli # need to support properly first
 
 permissions:
   contents: read

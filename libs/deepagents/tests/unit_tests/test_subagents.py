@@ -635,6 +635,7 @@ class TestSubAgents:
             config={
                 "configurable": {"thread_id": thread_id},
             },
+            durability="exit",
         )
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]

@@ -209,13 +209,8 @@ class TestMapFileOperationError:
         assert map_file_operation_error(RuntimeError("permission denied")) is None
         assert map_file_operation_error(OSError("is a directory")) is None
 
-    def test_unrelated_value_error_returns_none(self) -> None:
-        """ValueError without path-related keywords should not be mapped."""
-        assert map_file_operation_error(ValueError("unexpected encoding")) is None
-        assert map_file_operation_error(ValueError("invalid literal for int()")) is None
-        assert map_file_operation_error(ValueError("permission denied on /foo")) is None
-
-    def test_value_error_path_security_messages(self) -> None:
-        """ValueError with path-security keywords should map to invalid_path."""
+    def test_value_error_maps_to_invalid_path(self) -> None:
+        """All ValueError instances map to invalid_path regardless of message."""
+        assert map_file_operation_error(ValueError("unexpected encoding")) == "invalid_path"
+        assert map_file_operation_error(ValueError("invalid literal for int()")) == "invalid_path"
         assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
-        assert map_file_operation_error(ValueError("Path:/foo outside root directory: /bar")) == "invalid_path"

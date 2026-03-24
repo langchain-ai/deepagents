@@ -101,9 +101,9 @@ class FileDownloadResponse:
     processing batch results, especially useful for error messages."""
 
     content: bytes | None = None
-    """File contents as bytes on success, None on failure."""
+    """File contents as bytes on success, `None` on failure."""
 
-    error: FileOperationError | str | None = None
+    error: FileOperationError | None = None
     """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -134,7 +134,7 @@ class FileUploadResponse:
     error messages.
     """
 
-    error: FileOperationError | str | None = None
+    error: FileOperationError | None = None
     """error: A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -145,22 +145,34 @@ class FileUploadResponse:
 class FileInfo(TypedDict):
     """Structured file listing info.
 
-    Minimal contract used across backends. Only "path" is required.
+    Minimal contract used across backends. Only `path` is required.
     Other fields are best-effort and may be absent depending on backend.
     """
 
     path: str
+    """Absolute or relative file path."""
+
     is_dir: NotRequired[bool]
-    size: NotRequired[int]  # bytes (approx)
-    modified_at: NotRequired[str]  # ISO timestamp if known
+    """Whether the entry is a directory."""
+
+    size: NotRequired[int]
+    """File size in bytes (approximate)."""
+
+    modified_at: NotRequired[str]
+    """ISO 8601 timestamp of last modification, if known."""
 
 
 class GrepMatch(TypedDict):
-    """Structured grep match entry."""
+    """A single match from a grep search."""
 
     path: str
+    """Path to the file containing the match."""
+
     line: int
+    """1-indexed line number of the match."""
+
     text: str
+    """Content of the matching line."""
 
 
 class FileData(TypedDict):

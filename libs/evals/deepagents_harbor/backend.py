@@ -11,7 +11,6 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileInfo,
-    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -40,31 +39,6 @@ _GREP_FIELD_COUNT = 3
 
 _COMMAND_PREVIEW_CHAR_LIMIT = 200
 """Maximum chars included in timeout error command previews."""
-
-
-def _format_transfer_error(exc: Exception) -> FileOperationError | str:
-    """Convert a file transfer exception to an error string for batch responses.
-
-    Returns a `FileOperationError` literal when the exception maps to a known
-    file-operation error. Unclassified exceptions are logged at error level and
-    fall back to `str(exc)` to preserve partial-success semantics.
-
-    Args:
-        exc: The caught exception.
-
-    Returns:
-        A `FileOperationError` literal or `str(exc)` for unrecognized failures.
-    """
-    classified = map_file_operation_error(exc)
-    if classified is not None:
-        return classified
-    logger.error(
-        "Unclassified file transfer error (%s): %s",
-        type(exc).__name__,
-        exc,
-        exc_info=True,
-    )
-    return str(exc)
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -528,14 +502,19 @@ done
                     tmp.write(content)
                     tmp_path = Path(tmp.name)
             except OSError as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
                 logger.warning("Failed to create temp file for upload %s: %s", path, exc)
-                results.append(FileUploadResponse(path=path, error=_format_transfer_error(exc)))
+                results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
                 await self.environment.upload_file(tmp_path, path)
                 results.append(FileUploadResponse(path=path, error=None))
-            except Exception as exc:  # noqa: BLE001
-                error = _format_transfer_error(exc)
+            except Exception as exc:
+                error = map_file_operation_error(exc)
+                if error is None:
+                    raise
                 logger.warning("Failed to upload %s: %s", path, error)
                 results.append(FileUploadResponse(path=path, error=error))
             finally:
@@ -559,8 +538,10 @@ done
                     await self.environment.download_file(path, local)
                     content = local.read_bytes()
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception as exc:  # noqa: BLE001
-                    error = _format_transfer_error(exc)
+                except Exception as exc:
+                    error = map_file_operation_error(exc)
+                    if error is None:
+                        raise
                     logger.warning("Failed to download %s: %s", path, error)
                     results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results

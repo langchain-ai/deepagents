@@ -239,18 +239,15 @@ async def test_adownload_files_maps_known_errors(exc: Exception, expected_error:
     assert responses[0].error == expected_error
 
 
-async def test_adownload_files_returns_unknown_errors_in_response() -> None:
+async def test_adownload_files_propagates_unknown_errors() -> None:
+    """Unclassified exceptions propagate instead of being captured."""
     env = _FakeHarborEnvironment(
         download_errors={"/app/test.txt": RuntimeError("transient download failure")}
     )
     sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
 
-    responses = await sandbox.adownload_files(["/app/test.txt"])
-
-    assert len(responses) == 1
-    assert responses[0].path == "/app/test.txt"
-    assert responses[0].content is None
-    assert responses[0].error == "transient download failure"
+    with pytest.raises(RuntimeError, match="transient download failure"):
+        await sandbox.adownload_files(["/app/test.txt"])
 
 
 async def test_adownload_files_partial_success() -> None:
@@ -269,20 +266,16 @@ async def test_adownload_files_partial_success() -> None:
     assert responses[1].content is None
 
 
-async def test_adownload_files_partial_success_on_unknown_errors() -> None:
+async def test_adownload_files_unknown_error_aborts_batch() -> None:
+    """Unclassified error on one file aborts the entire batch."""
     env = _FakeHarborEnvironment(
         files={"/app/good.txt": b"content"},
         download_errors={"/app/bad.txt": RuntimeError("transient download failure")},
     )
     sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
 
-    responses = await sandbox.adownload_files(["/app/bad.txt", "/app/good.txt"])
-
-    assert len(responses) == 2
-    assert responses[0].error == "transient download failure"
-    assert responses[0].content is None
-    assert responses[1].error is None
-    assert responses[1].content == b"content"
+    with pytest.raises(RuntimeError, match="transient download failure"):
+        await sandbox.adownload_files(["/app/bad.txt", "/app/good.txt"])
 
 
 # -- aupload_files tests -------------------------------------------------------
@@ -309,29 +302,22 @@ async def test_aupload_files_maps_known_errors() -> None:
     assert responses[0].error == "permission_denied"
 
 
-async def test_aupload_files_returns_unknown_errors_in_response() -> None:
+async def test_aupload_files_propagates_unknown_errors() -> None:
+    """Unclassified exceptions propagate instead of being captured."""
     env = _FakeHarborEnvironment(upload_errors={"/app/file.txt": RuntimeError("transient failure")})
     sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
 
-    responses = await sandbox.aupload_files([("/app/file.txt", b"content")])
-
-    assert len(responses) == 1
-    assert responses[0].path == "/app/file.txt"
-    assert responses[0].error == "transient failure"
+    with pytest.raises(RuntimeError, match="transient failure"):
+        await sandbox.aupload_files([("/app/file.txt", b"content")])
 
 
-async def test_aupload_files_partial_success_on_unknown_errors() -> None:
+async def test_aupload_files_unknown_error_aborts_batch() -> None:
+    """Unclassified error on one file aborts the entire batch."""
     env = _FakeHarborEnvironment(upload_errors={"/app/bad.txt": RuntimeError("transient failure")})
     sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
 
-    responses = await sandbox.aupload_files(
-        [("/app/bad.txt", b"first"), ("/app/good.txt", b"second")]
-    )
-
-    assert len(responses) == 2
-    assert responses[0].error == "transient failure"
-    assert responses[1].error is None
-    assert env.uploaded["/app/good.txt"] == b"second"
+    with pytest.raises(RuntimeError, match="transient failure"):
+        await sandbox.aupload_files([("/app/bad.txt", b"first"), ("/app/good.txt", b"second")])
 
 
 # -- sync stub tests -----------------------------------------------------------

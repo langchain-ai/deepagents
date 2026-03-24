@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
@@ -36,7 +37,6 @@ from deepagents.backends.protocol import (
     LsResult,
     ReadResult,
     WriteResult,
-    map_file_operation_error,
 )
 from deepagents.backends.sandbox import BaseSandbox
 
@@ -206,7 +206,7 @@ class LocalSubprocessSandbox(BaseSandbox):
                 Path(path).write_bytes(data)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 results.append(FileUploadResponse(path=path, error=error))
@@ -220,7 +220,7 @@ class LocalSubprocessSandbox(BaseSandbox):
                 content = Path(real_path).read_bytes()
                 results.append(FileDownloadResponse(path=real_path, content=content, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 results.append(FileDownloadResponse(path=real_path, content=None, error=error))

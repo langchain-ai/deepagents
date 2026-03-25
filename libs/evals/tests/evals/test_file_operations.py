@@ -18,9 +18,8 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("file_operations")]
 
-
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
     """Reads a seeded file and answers a question."""
@@ -39,6 +38,7 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_write_file_simple(model: BaseChatModel) -> None:
     """Writes a file then answers a follow-up."""
@@ -59,6 +59,7 @@ def test_write_file_simple(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_write_files_in_parallel(model: str) -> None:
     """Writes two files in parallel without post-write verification or extra tool calls."""
@@ -89,6 +90,7 @@ def test_write_files_in_parallel(model: str) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
     """Writes two files in parallel, reads them back in parallel, then replies DONE."""
@@ -122,6 +124,7 @@ def test_write_files_in_parallel_confirm_with_verification(model: str) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_write_files_in_parallel_ambiguous_confirmation(model: BaseChatModel) -> None:
     """Intentionally ambiguous: the user asks for a reply but doesn't constrain verification.
@@ -155,6 +158,7 @@ def test_write_files_in_parallel_ambiguous_confirmation(model: BaseChatModel) ->
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
     """Uses ls then answers YES/NO about a directory entry."""
@@ -177,6 +181,7 @@ def test_ls_directory_contains_file_yes_no(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
     """Uses ls then answers YES/NO about a missing directory entry."""
@@ -198,6 +203,7 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_edit_file_replace_text(model: BaseChatModel) -> None:
     """Edits a file by replacing text, then validates the edit."""
@@ -219,6 +225,7 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_read_then_write_derived_output(model: BaseChatModel) -> None:
     """Reads a file and writes a derived output file."""
@@ -242,6 +249,7 @@ def test_read_then_write_derived_output(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
     """Answers a trivial question without using tools."""
@@ -258,6 +266,7 @@ def test_avoid_unnecessary_tool_calls(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_read_files_in_parallel(model: BaseChatModel) -> None:
     """Performs two independent read_file calls in a single agent step."""
@@ -286,6 +295,7 @@ def test_read_files_in_parallel(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
     """Uses grep to find matching files and reports the matching paths."""
@@ -312,6 +322,7 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     """Uses glob to list files matching a pattern."""
@@ -338,6 +349,7 @@ def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
     """Finds a magic phrase in a deeply nested directory efficiently."""
@@ -372,6 +384,7 @@ def test_find_magic_phrase_deep_nesting(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_identify_quote_author_from_directory_parallel_reads(
     model: BaseChatModel,
@@ -445,6 +458,7 @@ Clues: about programming readability; software craftsmanship.
     )
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_identify_quote_author_from_directory_unprompted_efficiency(
     model: BaseChatModel,
@@ -516,6 +530,7 @@ Clues: about programming readability; software craftsmanship.
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_read_file_truncation_recovery_with_pagination(
     model: BaseChatModel,
@@ -552,6 +567,7 @@ def test_read_file_truncation_recovery_with_pagination(
     )
 
 
+@pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_read_file_empty_file_reports_empty(model: BaseChatModel) -> None:
     """Empty files should be reported as empty rather than hallucinated."""

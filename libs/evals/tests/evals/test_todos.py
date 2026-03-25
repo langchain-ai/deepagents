@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 from tests.evals.utils import TrajectoryScorer, final_text_contains, run_agent, tool_call
 
-pytestmark = [pytest.mark.eval_category("tool_usage")]
+pytestmark = [pytest.mark.eval_category("tool_use")]
 
 
 @pytest.mark.langsmith

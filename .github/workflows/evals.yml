@@ -75,6 +75,7 @@ on:
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
           - "ollama:minimax-m2.5"
+          - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:nemotron-3-nano:30b"
           - "ollama:cogito-2.1:671b"

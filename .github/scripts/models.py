@@ -268,6 +268,19 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "ollama:minimax-m2.7:cloud",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:open",
+                "eval:ollama",
+                "harbor:set0",
+                "harbor:open",
+                "harbor:ollama",
+            }
+        ),
+    ),
+    Model(
         "ollama:qwen3.5:397b-cloud",
         frozenset(
             {
@@ -373,11 +386,7 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:minimax/minimax-m2.7",
         frozenset(
             {
-                "eval:set0",
-                "eval:open",
                 "eval:openrouter",
-                "harbor:set0",
-                "harbor:open",
                 "harbor:openrouter",
             }
         ),

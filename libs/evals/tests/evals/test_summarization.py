@@ -1,3 +1,13 @@
+"""Eval tests for context overflow and summarization behavior.
+
+Tests whether the agent handles large files that exceed the context window
+by triggering summarization middleware, offloading conversation history
+to the filesystem, recovering information via needle-in-the-haystack
+follow-ups, and using the compact_conversation tool appropriately.
+
+Written internally for the deepagents eval suite.
+"""
+
 import json
 import re
 import uuid
@@ -230,6 +240,7 @@ def _load_seed_messages() -> list[AnyMessage]:
 
 @pytest.mark.langsmith
 def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
+    """Agent calls compact_conversation when switching to an unrelated task after a long conversation."""
     agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
@@ -244,6 +255,7 @@ def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
 
 @pytest.mark.langsmith
 def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel) -> None:
+    """Agent does NOT call compact_conversation for a follow-up question related to the prior conversation."""
     agent, _, _ = _setup_summarization_test(tmp_path, model, 35_000, include_compact_tool=True)
 
     seed = _load_seed_messages()
@@ -258,6 +270,7 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel)
 
 @pytest.mark.langsmith
 def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel) -> None:
+    """Agent calls compact_conversation when asked to read another large file after a long conversation."""
     another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"
 
     response = requests.get(another_large_file, timeout=30)

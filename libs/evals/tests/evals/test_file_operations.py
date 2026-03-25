@@ -1,3 +1,12 @@
+"""Eval tests for file operations and tool efficiency.
+
+Tests whether the agent can correctly use the built-in file tool surface
+(read, write, edit, ls, grep, glob) including parallel invocation,
+pagination recovery for large files, and avoiding unnecessary tool calls.
+
+Written internally for the deepagents eval suite.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

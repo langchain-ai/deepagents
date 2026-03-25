@@ -1,3 +1,11 @@
+"""Eval tests for stateful sequential tool use.
+
+Tests whether the agent can create and incrementally update a todo list
+across multiple sequential tool calls, maintaining correct state at each step.
+
+Written internally for the deepagents eval suite.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

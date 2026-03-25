@@ -101,7 +101,7 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
+        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
         required: false
         default: ""
         type: string

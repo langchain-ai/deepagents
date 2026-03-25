@@ -1316,6 +1316,44 @@ base_url = "https://wrong-url.com"
         assert kwargs["base_url"] == "https://correct-url.com"
 
 
+class TestOpenRouterVersionCheck:
+    """Tests for OpenRouter version enforcement via the SDK check."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    def test_rejects_old_version(self) -> None:
+        """_get_provider_kwargs raises ImportError for old langchain-openrouter."""
+        with (
+            patch(
+                "deepagents._models.pkg_version",
+                return_value="0.0.1",
+            ),
+            pytest.raises(ImportError, match="langchain-openrouter>="),
+        ):
+            _get_provider_kwargs("openrouter")
+
+    def test_accepts_sufficient_version(self) -> None:
+        """_get_provider_kwargs succeeds when version meets minimum."""
+        from deepagents._models import OPENROUTER_MIN_VERSION
+
+        with patch(
+            "deepagents._models.pkg_version",
+            return_value=OPENROUTER_MIN_VERSION,
+        ):
+            kwargs = _get_provider_kwargs("openrouter")
+
+        assert "app_url" in kwargs
+
+    def test_skipped_for_other_providers(self) -> None:
+        """Version check is not invoked for non-openrouter providers."""
+        with patch("deepagents._models.check_openrouter_version") as mock:
+            _get_provider_kwargs("openai")
+
+        mock.assert_not_called()
+
+
 class TestOpenRouterHeaders:
     """Tests for OpenRouter default attribution headers."""
 
@@ -1324,11 +1362,12 @@ class TestOpenRouterHeaders:
         clear_caches()
 
     def test_injects_attribution_kwargs(self) -> None:
-        """Injects app_url and app_title for openrouter provider."""
+        """Injects app_url, app_title, and app_categories for openrouter."""
         kwargs = _get_provider_kwargs("openrouter")
 
-        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
         assert kwargs["app_title"] == "Deep Agents CLI"
+        assert kwargs["app_categories"] == ["cli-agent"]
 
     def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
         """Per-model app_title overrides built-in default."""
@@ -1347,13 +1386,31 @@ app_title = "My Custom App"
 
         assert kwargs["app_title"] == "My Custom App"
         # Built-in app_url should still be present
-        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
+
+    def test_per_model_categories_override(self, tmp_path: Path) -> None:
+        """Per-model app_categories overrides built-in default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openrouter]
+models = ["deepseek/deepseek-chat"]
+
+[models.providers.openrouter.params."deepseek/deepseek-chat"]
+app_categories = ["cloud-agent"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs(
+                "openrouter", model_name="deepseek/deepseek-chat"
+            )
+
+        assert kwargs["app_categories"] == ["cloud-agent"]
 
     def test_no_attribution_for_other_providers(self) -> None:
         """Other providers do not get OpenRouter attribution kwargs."""
         kwargs = _get_provider_kwargs("openai")
         assert "app_url" not in kwargs
         assert "app_title" not in kwargs
+        assert "app_categories" not in kwargs
 
 
 class TestCreateModelFromClass:

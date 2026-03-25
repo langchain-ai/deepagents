@@ -67,9 +67,11 @@ REGISTRY: tuple[Model, ...] = (
             {
                 "eval:set0",
                 "eval:set1",
+                "eval:fast",
                 "eval:anthropic",
                 "harbor:set0",
                 "harbor:set1",
+                "harbor:fast",
                 "harbor:anthropic",
             }
         ),
@@ -88,9 +90,11 @@ REGISTRY: tuple[Model, ...] = (
             {
                 "eval:set0",
                 "eval:set1",
+                "eval:frontier",
                 "eval:anthropic",
                 "harbor:set0",
                 "harbor:set1",
+                "harbor:frontier",
                 "harbor:anthropic",
             }
         ),
@@ -206,7 +210,14 @@ REGISTRY: tuple[Model, ...] = (
     Model(
         "google_genai:gemini-3-flash-preview",
         frozenset(
-            {"eval:set0", "eval:google_genai", "harbor:set0", "harbor:google_genai"}
+            {
+                "eval:set0",
+                "eval:fast",
+                "eval:google_genai",
+                "harbor:set0",
+                "harbor:fast",
+                "harbor:google_genai",
+            }
         ),
     ),
     Model(
@@ -215,9 +226,11 @@ REGISTRY: tuple[Model, ...] = (
             {
                 "eval:set0",
                 "eval:set1",
+                "eval:frontier",
                 "eval:google_genai",
                 "harbor:set0",
                 "harbor:set1",
+                "harbor:frontier",
                 "harbor:google_genai",
             }
         ),
@@ -361,9 +374,24 @@ REGISTRY: tuple[Model, ...] = (
             {
                 "eval:set0",
                 "eval:set1",
+                "eval:frontier",
                 "eval:openai",
                 "harbor:set0",
                 "harbor:set1",
+                "harbor:frontier",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.4-mini",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:fast",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:fast",
                 "harbor:openai",
             }
         ),
@@ -412,6 +440,8 @@ _EVAL_PRESETS: dict[str, str | None] = {
     "set0": "eval:set0",
     "set1": "eval:set1",
     "set2": "eval:set2",
+    "frontier": "eval:frontier",
+    "fast": "eval:fast",
     "open": "eval:open",
     # -- Provider groups --
     "anthropic": "eval:anthropic",
@@ -432,6 +462,8 @@ _HARBOR_PRESETS: dict[str, str | None] = {
     "set0": "harbor:set0",
     "set1": "harbor:set1",
     "set2": "harbor:set2",
+    "frontier": "harbor:frontier",
+    "fast": "harbor:fast",
     "open": "harbor:open",
     # -- Provider groups --
     "anthropic": "harbor:anthropic",

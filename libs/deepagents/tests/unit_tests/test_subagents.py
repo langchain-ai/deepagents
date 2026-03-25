@@ -556,21 +556,16 @@ class TestSubAgents:
             f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
         )
 
-    def test_subagent_can_run_for_hundreds_of_steps(self) -> None:
-        """Test that a subagent can continue for hundreds of model steps.
-
-        This exercises an end-to-end parent -> subagent invocation where the
-        subagent fake model programmatically emits a long sequence of messages
-        before returning its final result.
-        """
-        total_subagent_steps = 1_100
-        observed_steps: list[int] = []
+    def test_subagent_propagates_recursion_limit_to_tool_runtime(self) -> None:
+        """Test that subagent tools receive the parent's recursion limit via `ToolRuntime.config`."""
+        captured_config: Any = None
 
         @tool
-        def record_step(step: int) -> str:
-            """Record a subagent step."""
-            observed_steps.append(step)
-            return f"Recorded step {step}"
+        def capture_recursion_limit(runtime: ToolRuntime) -> str:
+            """Capture the recursion limit from runtime config."""
+            nonlocal captured_config
+            captured_config = runtime.config
+            return "OK"
 
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
@@ -581,39 +576,42 @@ class TestSubAgents:
                             {
                                 "name": "task",
                                 "args": {
-                                    "description": "Work through all planned steps and report completion.",
+                                    "description": "Check the recursion limit and report it.",
                                     "subagent_type": "general-purpose",
                                 },
-                                "id": "call_long_running_subagent",
+                                "id": "call_subagent_recursion_limit",
                                 "type": "tool_call",
                             }
                         ],
                     ),
-                    AIMessage(content="The long-running subagent finished successfully."),
+                    AIMessage(content="The subagent finished successfully."),
                 ]
             )
         )
 
-        subagent_messages = [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "record_step",
-                        "args": {"step": step},
-                        "id": f"call_record_step_{step}",
-                        "type": "tool_call",
-                    }
-                ],
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_recursion_limit",
+                                "args": {},
+                                "id": "call_capture_recursion_limit",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
             )
-            for step in range(1, total_subagent_steps)
-        ]
-        subagent_messages.append(AIMessage(content=f"Completed {total_subagent_steps} steps."))
-        subagent_chat_model = GenericFakeChatModel(messages=iter(subagent_messages))
+        )
 
         compiled_subagent = create_agent(
             model=subagent_chat_model,
-            tools=[record_step],
+            tools=[capture_recursion_limit],
+            name="subagent-runtime-check",
         )
 
         parent_agent = create_deep_agent(
@@ -628,22 +626,21 @@ class TestSubAgents:
             ],
         )
 
-        thread_id = str(uuid.uuid4())
-
         result = parent_agent.invoke(
-            {"messages": [HumanMessage(content="Run the long workflow.")]},
+            {"messages": [HumanMessage(content="Run the recursion limit check.")]},
             config={
-                "configurable": {"thread_id": thread_id},
-                "recursion_limit": 5000,
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                "recursion_limit": 2000,
             },
             durability="exit",
         )
 
+        breakpoint()
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
-        assert tool_messages[0].content == f"Completed {total_subagent_steps} steps."
-        assert len(subagent_chat_model.call_history) == total_subagent_steps
-        assert observed_steps == list(range(1, total_subagent_steps))
+        assert captured_config is not None
+        assert captured_config["recursion_limit"] == 2000
+        assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
 
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.

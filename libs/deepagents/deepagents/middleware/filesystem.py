@@ -509,6 +509,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -519,6 +520,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            human_message_token_limit_before_evict: Optional token limit before
+                evicting a HumanMessage to the filesystem.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -538,6 +541,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
@@ -1445,11 +1449,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             Tuple of (messages, command) if any processing occurred, else `None`.
         """
-        if not self._tool_token_limit_before_evict:
+        if not self._human_message_token_limit_before_evict:
             return None
 
         messages = request.messages
-        threshold = NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict
+        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
         has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
         new_eviction_needed = False
         if messages and isinstance(messages[-1], HumanMessage):
@@ -1502,11 +1506,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             Tuple of (messages, command) if any processing occurred, else `None`.
         """
-        if not self._tool_token_limit_before_evict:
+        if not self._human_message_token_limit_before_evict:
             return None
 
         messages = request.messages
-        threshold = NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict
+        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
         has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
         new_eviction_needed = False
         if messages and isinstance(messages[-1], HumanMessage):

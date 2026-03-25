@@ -1266,7 +1266,7 @@ class TestLargeHumanMessageEviction:
         state via ``lc_evicted_to``, while preserving the original content.
         The model should see a truncated preview, not the full content.
         """
-        threshold = 20_000
+        threshold = 50_000
         large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
 
         fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Got it.")]))
@@ -1297,7 +1297,7 @@ class TestLargeHumanMessageEviction:
         separated by a normal-sized message. On each model call, all
         previously-tagged messages should be truncated in the model request.
         """
-        threshold = 20_000
+        threshold = 50_000
         large_content_1 = "a" * (NUM_CHARS_PER_TOKEN * threshold + 1)
         large_content_2 = "b" * (NUM_CHARS_PER_TOKEN * threshold + 1)
         short_content = "short message"

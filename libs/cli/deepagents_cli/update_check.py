@@ -26,27 +26,33 @@ CACHE_TTL = 86_400  # 24 hours
 USER_AGENT = f"deepagents-cli/{__version__} update-check"
 
 
-def _parse_version(v: str) -> tuple[int, ...]:
-    """Parse a dotted version string into a comparable integer tuple.
+def _parse_version(v: str) -> Version:
+    """Parse a PEP 440 version string into a comparable `Version` object.
+
+    Supports stable (`1.2.3`) and pre-release (`1.2.3a1`, `1.2.3rc2`) versions.
 
     Args:
-        v: Version string like `'1.2.3'`.
+        v: Version string like `'1.2.3'` or `'1.2.3a1'`.
 
     Returns:
         Tuple of integers, e.g. `(1, 2, 3)`.
 
     """
-    return tuple(int(x) for x in v.strip().split("."))
+    return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
 def get_latest_version() -> str | None:
     """Fetch the latest deepagents-cli version from PyPI, with caching.
 
     Results are cached to `CACHE_FILE` to avoid repeated network calls.
+    The cache stores both the latest stable and pre-release versions so a
+    single PyPI request serves both code paths.
 
     Returns:
         The latest version string, or `None` on any failure.
     """
+    cache_key = "version_prerelease" if include_prereleases else "version"
+
     try:
         if CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
@@ -72,13 +78,19 @@ def get_latest_version() -> str | None:
     try:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         CACHE_FILE.write_text(
-            json.dumps({"version": latest, "checked_at": time.time()}),
+            json.dumps(
+                {
+                    "version": stable,
+                    "version_prerelease": prerelease,
+                    "checked_at": time.time(),
+                }
+            ),
             encoding="utf-8",
         )
     except Exception:
         logger.debug("Failed to write update-check cache", exc_info=True)
 
-    return latest
+    return prerelease if include_prereleases else stable
 
 
 def is_update_available() -> tuple[bool, str | None]:
@@ -94,9 +106,9 @@ def is_update_available() -> tuple[bool, str | None]:
         return False, None
 
     try:
-        if _parse_version(latest) > _parse_version(__version__):
+        if _parse_version(latest) > installed:
             return True, latest
-    except (ValueError, TypeError):
+    except InvalidVersion:
         logger.debug("Failed to compare versions", exc_info=True)
 
     return False, None

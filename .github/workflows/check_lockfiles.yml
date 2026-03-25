@@ -33,3 +33,4 @@ jobs:
 
       - name: "🔍 Check all lockfiles"
         run: make lock-check
+        working-directory: libs

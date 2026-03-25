@@ -58,6 +58,9 @@ dependencies = [
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
 
+    # Version parsing
+    "packaging>=23.0",
+
     # Utilities
     "uuid-utils>=0.10.0,<1.0.0",
     "python-dotenv>=1.0.0,<2.0.0",

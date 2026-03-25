@@ -42,7 +42,11 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.configurable_model import ConfigurableModelMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
-from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
+from deepagents_cli.local_context import (
+    LocalContextMiddleware,
+    _AsyncExecutableBackend,
+    _ExecutableBackend,
+)
 from deepagents_cli.project_utils import ProjectContext, get_server_project_context
 from deepagents_cli.subagents import list_subagents
 from deepagents_cli.unicode_security import (
@@ -749,10 +753,8 @@ def create_cli_agent(
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 
-    # Local context middleware (git info, directory tree, etc.)
-    # Uses backend.execute() so it works in both local shell and remote sandbox modes.
-    # Only enabled when the backend supports shell execution.
-    if isinstance(backend, _ExecutableBackend):
+    # Local context middleware (git info, directory tree, etc.).
+    if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )

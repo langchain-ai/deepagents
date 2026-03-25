@@ -156,6 +156,90 @@ class TestDeepAgentEndToEnd:
         final_ai_message = ai_messages[-1]
         assert "Task completed successfully!" in final_ai_message.content
 
+    def test_main_agent_streaming_metadata_includes_tags_and_config_metadata(self) -> None:
+        """Test main-agent-only streaming metadata on `messages` mode.
+
+        Verifies streamed model chunks from the main agent include:
+        1. `ls_integration`
+        2. Config `tags`
+        3. Config `metadata` entries
+        """
+        agent = create_deep_agent(
+            model=FixedGenericFakeChatModel(
+                messages=iter([AIMessage(content="MAIN_AGENT_RESPONSE")]),
+            ),
+            name="supervisor",
+        )
+
+        first_metadata: dict | None = None
+
+        for stream_mode, data in agent.stream(
+            {"messages": [HumanMessage(content="Do something directly")]},
+            stream_mode=["messages", "updates"],
+            config={
+                "configurable": {"thread_id": "test_main_stream"},
+                "tags": ["main-tag", "session-456"],
+                "metadata": {"request_id": "req-main-123", "tenant": "acme-main"},
+            },
+        ):
+            if stream_mode != "messages":
+                continue
+            _message_chunk, first_metadata = data
+            break
+
+        assert first_metadata is not None
+        assert first_metadata.get("ls_integration") == "langchain_chat_model"
+        assert first_metadata.get("tags") == ["main-tag", "session-456"]
+        assert first_metadata.get("request_id") == "req-main-123"
+        assert first_metadata.get("tenant") == "acme-main"
+
+    def test_tool_runtime_config_includes_tags_and_metadata(self) -> None:
+        """Test tool runtime config includes caller-provided tags and metadata."""
+        captured_config: dict[str, Any] | None = None
+
+        @tool
+        def foo(runtime: ToolRuntime) -> str:
+            """Capture runtime config."""
+            nonlocal captured_config
+            captured_config = runtime.config
+            return "foo-result"
+
+        agent = create_deep_agent(
+            model=FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "foo",
+                                    "args": {},
+                                    "id": "call_foo",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Done."),
+                    ]
+                )
+            ),
+            tools=[foo],
+            name="supervisor",
+        )
+
+        agent.invoke(
+            {"messages": [HumanMessage(content="Call foo")]},
+            config={
+                "configurable": {"thread_id": "test_tool_runtime_metadata"},
+                "tags": ["tool-tag", "tool-session-456"],
+            },
+        )
+
+        metadata = captured_config["metadata"]
+        assert metadata["ls_integration"] == "deepagents"
+        assert metadata["lc_agent_name"] == "supervisor"
+        assert captured_config.get("tags") == ["tool-tag", "tool-session-456"]
+
     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
         """Test deepagent with tools using a fake LLM model.
 

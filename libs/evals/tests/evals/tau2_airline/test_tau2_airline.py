@@ -36,7 +36,7 @@ from tests.evals.tau2_airline.user_sim import UserSimulator
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("tau2_airline")]
+pytestmark = [pytest.mark.eval_category("conversation")]
 
 logger = logging.getLogger(__name__)
 

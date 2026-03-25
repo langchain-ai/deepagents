@@ -26,7 +26,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_usage")]
+pytestmark = [pytest.mark.eval_category("tool_use")]
 
 # ---------------------------------------------------------------------------
 # Mock tools — lightweight stubs that return a fixed string

@@ -60,8 +60,8 @@ class AgentTrajectory:
                     name = tc.get("name")
                     args = tc.get("args")
                     lines.append(f"  - {name} {args}")
-            else:
-                text = step.action.text
+            text = step.action.text
+            if text and text.strip():
                 text_preview = text.strip().replace("\n", "\\n")
                 lines.append(f"  text: {text_preview}")
         return "\n".join(lines)
@@ -943,65 +943,6 @@ def run_agent(
 
     t.log_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)
-    t.log_outputs(result)
-
-    if not isinstance(result, Mapping):
-        msg = f"Expected invoke result to be Mapping, got {type(result)}"
-        raise TypeError(msg)
-
-    trajectory = _trajectory_from_result(result)
-    if scorer is not None:
-        _assert_expectations(trajectory, scorer)
-    return trajectory
-
-
-async def run_agent_async(
-    agent: CompiledStateGraph[Any, Any],
-    *,
-    query: str | list[AnyMessage],
-    model: BaseChatModel,
-    initial_files: dict[str, str] | None = None,
-    scorer: TrajectoryScorer | None = None,
-    thread_id: str | None = None,
-    eval_metadata: dict[str, object] | None = None,
-) -> AgentTrajectory:
-    """Run agent eval against the given query asynchronously.
-
-    Args:
-        agent: The compiled state graph to invoke.
-        query: A string prompt or list of messages.
-        model: The chat model (used for logging only).
-        initial_files: Optional initial files to seed the agent with.
-        scorer: Optional trajectory expectations to validate.
-        thread_id: Optional thread ID for the invocation.
-        eval_metadata: Optional metadata to attach to the logged inputs.
-
-    Returns:
-        The resulting `AgentTrajectory`.
-
-    Raises:
-        TypeError: If the invoke result is not a `Mapping`.
-    """
-    if isinstance(query, str):
-        invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
-    else:
-        invoke_inputs = {"messages": query}
-    if initial_files is not None:
-        invoke_inputs["files"] = {
-            path: create_file_data(content) for path, content in initial_files.items()
-        }
-
-    if thread_id is None:
-        thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-
-    logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
-    if eval_metadata is not None:
-        logged_inputs["eval_metadata"] = eval_metadata
-
-    t.log_inputs(logged_inputs)
-    result = await agent.ainvoke(invoke_inputs, config)
     t.log_outputs(result)
 
     if not isinstance(result, Mapping):

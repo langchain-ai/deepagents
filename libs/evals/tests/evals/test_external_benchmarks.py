@@ -1,3 +1,13 @@
+"""Eval tests drawn from curated external benchmarks.
+
+Runs a focused hard-set of 15 cases across three public benchmarks:
+- FRAMES: multi-hop retrieval with arithmetic/temporal reasoning
+- Nexus: deeply nested function composition (depth 4-6)
+- BFCL v3: multi-turn stateful tool calling across API domains
+
+Each benchmark's runner and scoring logic lives in external_benchmarks.py.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -16,13 +26,12 @@ from tests.evals.external_benchmarks import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("external_benchmarks")]
-
 # ---------------------------------------------------------------------------
 # Focused hard-set: 15 examples across 3 benchmarks
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("case", FRAMES_CASES, ids=[case["id"] for case in FRAMES_CASES])
 def test_frames(model: BaseChatModel, case: dict[str, Any]) -> None:
@@ -30,6 +39,7 @@ def test_frames(model: BaseChatModel, case: dict[str, Any]) -> None:
     run_frames_case(case, model)
 
 
+@pytest.mark.eval_category("tool_use")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("case", NEXUS_CASES, ids=[case["id"] for case in NEXUS_CASES])
 def test_nexus(model: BaseChatModel, case: dict[str, Any]) -> None:
@@ -37,6 +47,7 @@ def test_nexus(model: BaseChatModel, case: dict[str, Any]) -> None:
     run_nexus_case(case, model)
 
 
+@pytest.mark.eval_category("tool_use")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("case", BFCL_V3_CASES, ids=[case["id"] for case in BFCL_V3_CASES])
 def test_bfcl_v3(model: BaseChatModel, case: dict[str, Any]) -> None:

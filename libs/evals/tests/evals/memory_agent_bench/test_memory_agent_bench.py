@@ -43,7 +43,7 @@ from tests.evals.utils import run_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("memory_agent_bench")]
+pytestmark = [pytest.mark.eval_category("memory")]
 
 logger = logging.getLogger(__name__)
 

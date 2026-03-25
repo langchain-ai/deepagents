@@ -8,10 +8,10 @@ import warnings
 
 import pytest
 
+from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     BackendProtocol,
     SandboxBackendProtocol,
-    map_file_operation_error,
 )
 
 
@@ -201,16 +201,16 @@ class TestMapFileOperationError:
         ],
     )
     def test_known_exception_types(self, exc: Exception, expected: str) -> None:
-        assert map_file_operation_error(exc) == expected
+        assert _map_exception_to_standard_error(exc) == expected
 
     def test_unrecognized_returns_none(self) -> None:
         """Non-stdlib exception types return None regardless of message."""
-        assert map_file_operation_error(RuntimeError("something else")) is None
-        assert map_file_operation_error(RuntimeError("permission denied")) is None
-        assert map_file_operation_error(OSError("is a directory")) is None
+        assert _map_exception_to_standard_error(RuntimeError("something else")) is None
+        assert _map_exception_to_standard_error(RuntimeError("permission denied")) is None
+        assert _map_exception_to_standard_error(OSError("is a directory")) is None
 
     def test_value_error_maps_to_invalid_path(self) -> None:
         """All ValueError instances map to invalid_path regardless of message."""
-        assert map_file_operation_error(ValueError("unexpected encoding")) == "invalid_path"
-        assert map_file_operation_error(ValueError("invalid literal for int()")) == "invalid_path"
-        assert map_file_operation_error(ValueError("Path traversal not allowed")) == "invalid_path"
+        assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
+        assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
+        assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"

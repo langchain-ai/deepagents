@@ -5,6 +5,7 @@ import json
 import pytest
 
 from deepagents_evals.radar import (
+    ALL_CATEGORIES,
     CATEGORY_LABELS,
     EVAL_CATEGORIES,
     ModelResult,
@@ -30,7 +31,7 @@ def test_toy_data_covers_all_categories():
 
 
 def test_category_labels_cover_all_categories():
-    assert set(CATEGORY_LABELS.keys()) == set(EVAL_CATEGORIES)
+    assert set(CATEGORY_LABELS.keys()) == set(ALL_CATEGORIES)
 
 
 def test_short_model_name_strips_provider():

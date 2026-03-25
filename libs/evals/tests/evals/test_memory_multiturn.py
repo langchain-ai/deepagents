@@ -216,7 +216,7 @@ def test_implicit_preference_remembered(model: BaseChatModel, case: dict[str, An
             )
             .success(
                 file_contains(MEMORY_PATH, case["should_contain"]),
-                llm_judge(*case["criteria"]),
+                llm_judge(*case["criteria"], include_tool_calls=True),
             )
         ),
     )
@@ -243,7 +243,7 @@ def test_explicit_preference_remembered(model: BaseChatModel, case: dict[str, An
             )
             .success(
                 file_contains(MEMORY_PATH, case["should_contain"]),
-                llm_judge(*case["criteria"]),
+                llm_judge(*case["criteria"], include_tool_calls=True),
             )
         ),
     )

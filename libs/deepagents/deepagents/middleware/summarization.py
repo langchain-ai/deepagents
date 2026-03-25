@@ -1172,7 +1172,7 @@ def create_summarization_tool_middleware(
         )
         ```
     """
-    from deepagents.graph import resolve_model  # noqa: PLC0415
+    from deepagents._models import resolve_model  # noqa: PLC0415
 
     if isinstance(model, str):
         model = resolve_model(model)

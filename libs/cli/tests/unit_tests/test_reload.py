@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import Settings
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",
@@ -37,7 +37,7 @@ class TestReloadFromEnvironment:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
 
@@ -137,14 +137,16 @@ class TestReloadFromEnvironment:
     def test_calls_dotenv_load(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should call dotenv with override enabled."""
+        """Reload should anchor dotenv loading to the explicit start path."""
         settings = Settings.from_environment(start_path=tmp_path)
         mock_load = MagicMock(return_value=False)
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-test\n")
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        mock_load.assert_called_once_with(override=True)
+        mock_load.assert_called_once_with(dotenv_path=env_file, override=True)
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -179,7 +181,7 @@ class TestReloadErrorPaths:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
 
@@ -208,7 +210,9 @@ class TestReloadErrorPaths:
             msg = "No such file or directory"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("deepagents_cli.config._find_project_root", _raise_oserror)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root", _raise_oserror
+        )
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.project_root == original_root

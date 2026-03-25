@@ -136,7 +136,15 @@ runs:
       env:
         INPUT_CLI_VERSION: ${{ inputs.cli_version }}
       run: |
+        # Action requires --agent, --shell-allow-list, -n (available since 0.0.31)
+        MIN_CLI_VERSION="0.0.31"
+
         if [ -n "$INPUT_CLI_VERSION" ]; then
+          if ! printf '%s\n%s' "$MIN_CLI_VERSION" "$INPUT_CLI_VERSION" \
+               | sort -V | head -1 | grep -qx "$MIN_CLI_VERSION"; then
+            echo "::error::cli_version '${INPUT_CLI_VERSION}' is below the minimum '${MIN_CLI_VERSION}' required by this action"
+            exit 1
+          fi
           uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents --version
         else
           uvx --from deepagents-cli deepagents --version
@@ -187,7 +195,7 @@ runs:
           skill_name=$(basename "$skill_dir")
           cp -r "$skill_dir" "$SKILLS_DIR/$skill_name"
           echo "Installed skill: $skill_name"
-          ((SKILL_COUNT++))
+          ((++SKILL_COUNT))
         done < <(find "$CLONE_DIR" -name "SKILL.md" -type f)
 
         if [ "$SKILL_COUNT" -eq 0 ]; then

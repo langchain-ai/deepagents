@@ -7,7 +7,6 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
-from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -289,7 +288,7 @@ def _get_subagents_legacy(
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: list[SubAgent | CompiledSubAgent],
+    subagents: Sequence[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
 ) -> list[_SubagentSpec]:
     """Create subagent instances from specifications.
@@ -546,7 +545,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         backend: BackendProtocol | BackendFactory | None = None,
-        subagents: list[SubAgent | CompiledSubAgent] | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
         **deprecated_kwargs: Unpack[_DeprecatedKwargs],
@@ -642,9 +641,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 raise ValueError(msg)
 
             # Resolve model if string
-            model = spec["model"]
-            if isinstance(model, str):
-                model = init_chat_model(model)
+            from deepagents._models import resolve_model  # noqa: PLC0415
+
+            model = resolve_model(spec["model"])
 
             # Use middleware as provided (caller is responsible for building full stack)
             middleware: list[AgentMiddleware] = list(spec.get("middleware", []))

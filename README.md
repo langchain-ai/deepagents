@@ -73,6 +73,8 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 
 ## Deep Agents CLI
 
+A pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM. One install command and you're up and running.
+
 <p align="center">
   <img src="libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
 </p>
@@ -81,7 +83,14 @@ MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/
 curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 ```
 
-Web search, remote sandboxes, persistent memory, human-in-the-loop approval, and more. See the [CLI README](libs/cli/) for the full feature set.
+**Highlights:**
+
+- **Interactive TUI** — rich terminal interface with streaming responses
+- **Web search** — ground responses in live information
+- **Headless mode** — run non-interactively for scripting and CI
+- Plus all SDK features out of the box — remote sandboxes, persistent memory, custom skills, and human-in-the-loop approval
+
+See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview) for the full feature set.
 
 ## LangGraph Native
 
@@ -92,7 +101,7 @@ Web search, remote sandboxes, persistent memory, human-in-the-loop approval, and
 ### Why should I use this?
 
 - **100% open source** — MIT licensed, fully extensible
-- **Provider agnostic** — Works with any Large Language Model model that supports tool calling, including both frontier and open models
+- **Provider agnostic** — Works with any Large Language Model that supports tool calling, including both frontier and open models
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
 - **Get started in seconds** — `uv add deepagents` and you have a working agent

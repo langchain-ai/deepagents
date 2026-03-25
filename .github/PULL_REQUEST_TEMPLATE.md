@@ -1,8 +1,11 @@
-(Replace this entire block of text)
+Fixes #
+
+<!-- Replace everything above this line with a 1-2 sentence description of your change. Keep the "Fixes #xx" keyword and update the issue number. -->
+
+Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
 
 > **All contributions must be in English.** See the [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy).
 
-Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
 If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!
 
 Thank you for contributing to Deep Agents! Follow these steps to have your pull request considered as ready for review.
@@ -13,7 +16,7 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
     - fix(sdk): resolve flag parsing error
     - feat(cli): add multi-tenant support
     - test(acp): update API usage tests
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml#L15-L26
+  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml
 
 2. PR description:
 

@@ -1,0 +1,115 @@
+{
+  "org": "langchain-ai",
+  "trustedThreshold": 5,
+  "labelColor": "b76e79",
+  "sizeThresholds": [
+    {
+      "label": "size: XS",
+      "max": 50
+    },
+    {
+      "label": "size: S",
+      "max": 200
+    },
+    {
+      "label": "size: M",
+      "max": 500
+    },
+    {
+      "label": "size: L",
+      "max": 1000
+    },
+    {
+      "label": "size: XL"
+    }
+  ],
+  "excludedFiles": [
+    "uv.lock"
+  ],
+  "excludedPaths": [
+    "docs/"
+  ],
+  "typeToLabel": {
+    "feat": "feature",
+    "fix": "fix",
+    "docs": "documentation",
+    "hotfix": "hotfix",
+    "style": "linting",
+    "refactor": "refactor",
+    "perf": "performance",
+    "test": "tests",
+    "build": "infra",
+    "ci": "infra",
+    "chore": "infra",
+    "revert": "revert",
+    "release": "release",
+    "breaking": "breaking"
+  },
+  "scopeToLabel": {
+    "acp": "acp",
+    "ci": "infra",
+    "cli": "cli",
+    "cli-gha": "github_actions",
+    "daytona": "daytona",
+    "deepagents": "deepagents",
+    "deepagents-cli": "cli",
+    "deps": "dependencies",
+    "docs": "documentation",
+    "evals": "evals",
+    "examples": "examples",
+    "harbor": "evals",
+    "infra": "infra",
+    "quickjs": "quickjs",
+    "sdk": "deepagents"
+  },
+  "fileRules": [
+    {
+      "label": "deepagents",
+      "prefix": "libs/deepagents/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cli",
+      "prefix": "libs/cli/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "acp",
+      "prefix": "libs/acp/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "evals",
+      "prefix": "libs/evals/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cli",
+      "exact": "action.yml"
+    },
+    {
+      "label": "github_actions",
+      "exact": "action.yml"
+    },
+    {
+      "label": "github_actions",
+      "prefix": ".github/workflows/"
+    },
+    {
+      "label": "github_actions",
+      "prefix": ".github/actions/"
+    },
+    {
+      "label": "dependencies",
+      "suffix": "pyproject.toml"
+    },
+    {
+      "label": "dependencies",
+      "exact": "uv.lock"
+    },
+    {
+      "label": "dependencies",
+      "pattern": "(?:^|/)requirements[^/]*\\.txt$"
+    }
+  ]
+}

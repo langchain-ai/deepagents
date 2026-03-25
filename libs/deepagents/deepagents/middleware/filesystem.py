@@ -2,8 +2,9 @@
 # ruff: noqa: E501
 
 import asyncio
-import base64
 import concurrent.futures
+import mimetypes
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, cast
@@ -19,10 +20,9 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import ContentBlock, create_image_block
+from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
@@ -30,11 +30,18 @@ from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
+    FileData as FileData,  # Re-export for backwards compatibility
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
+    check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
@@ -48,16 +55,6 @@ GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
-IMAGE_MEDIA_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
-
-
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
 READ_FILE_TRUNCATION_MSG = (
@@ -72,19 +69,6 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
-
-
-class FileData(TypedDict):
-    """Data structure for storing file contents with metadata."""
-
-    content: list[str]
-    """Lines of the file."""
-
-    created_at: str
-    """ISO 8601 timestamp of file creation."""
-
-    modified_at: str
-    """ISO 8601 timestamp of last modification."""
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -246,21 +230,21 @@ FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Tool Usage and File Reading
-
-Follow the tool docs for the available tools. In particular, for filesystem tools, use pagination (offset/limit) when reading large files.
-
 ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
 
 - ls: list files in a directory (requires absolute path)
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files"""
+- grep: search for text within files
+
+## Large Tool Results
+
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`."""
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
@@ -532,7 +516,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.ls_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -547,7 +544,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als(validated_path)
+            if isinstance(ls_result, LsResult):
+                if ls_result.error:
+                    return f"Error: {ls_result.error}"
+                infos = ls_result.entries or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.als_info()` is deprecated. "
+                    "Return an `LsResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = ls_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -564,6 +574,64 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
+        def _truncate(content: str, file_path: str, limit: int) -> str:
+            lines = content.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                content = "".join(lines)
+
+            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                content = content[:max_content_length] + truncation_msg
+
+            return content
+
+        def _handle_read_result(
+            read_result: ReadResult | str,
+            validated_path: str,
+            tool_call_id: str | None,
+            offset: int,
+            limit: int,
+        ) -> ToolMessage | str:
+            if isinstance(read_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.read()` is deprecated. "
+                    "Return a `ReadResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Legacy backends already format with line numbers
+                return _truncate(read_result, validated_path, limit)
+
+            if read_result.error:
+                return f"Error: {read_result.error}"
+
+            if read_result.file_data is None:
+                return f"Error: no data returned for '{validated_path}'"
+
+            file_type = _get_file_type(validated_path)
+            content = read_result.file_data["content"]
+
+            if file_type != "text":
+                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+                return ToolMessage(
+                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
+                )
+
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return empty_msg
+
+            content = format_content_with_line_numbers(content, start_line=offset + 1)
+            # We apply truncation again after formatting content as continuation lines
+            # can increase line count
+            return _truncate(content, validated_path, limit)
+
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
@@ -577,41 +645,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = resolved_backend.download_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
-
-            result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -626,41 +661,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            ext = Path(validated_path).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                responses = await resolved_backend.adownload_files([validated_path])
-                if responses and responses[0].content is not None:
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
-                    return ToolMessage(
-                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
-                        name="read_file",
-                        tool_call_id=runtime.tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": validated_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                if responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                return "Error reading image: unknown error"
-
-            result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-
-            lines = result.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                result = "".join(lines)
-
-            # Check if result exceeds token threshold and truncate if necessary
-            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
-                # Calculate truncation message length to ensure final result stays under threshold
-                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
-                result = result[:max_content_length]
-                result += truncation_msg
-
-            return result
+            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(
             name="read_file",
@@ -811,7 +813,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
         )
 
-    def _create_glob_tool(self) -> BaseTool:
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -827,11 +829,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                future = executor.submit(resolved_backend.glob, pattern, path=validated_path)
                 try:
-                    infos = future.result(timeout=GLOB_TIMEOUT)
+                    glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -848,12 +863,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             try:
-                infos = await asyncio.wait_for(
-                    resolved_backend.aglob_info(pattern, path=validated_path),
+                glob_result = await asyncio.wait_for(
+                    resolved_backend.aglob(pattern, path=validated_path),
                     timeout=GLOB_TIMEOUT,
                 )
             except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if isinstance(glob_result, GlobResult):
+                if glob_result.error:
+                    return f"Error: {glob_result.error}"
+                infos = glob_result.matches or []
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
+                    "Return a `GlobResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                infos = glob_result
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -881,10 +909,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.grep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         async def async_grep(
@@ -899,10 +947,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            if isinstance(grep_result, GrepResult):
+                if grep_result.error:
+                    return grep_result.error
+                matches = grep_result.matches or []
+            elif isinstance(grep_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `str` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                return grep_result
+            else:
+                warnings.warn(
+                    "Returning a plain `list` from `backend.agrep_raw()` is deprecated. "
+                    "Return a `GrepResult` instead. Returning `list` will not be "
+                    "supported in a future version.",
+                    DeprecationWarning,
+                    stacklevel=1,
+                )
+                matches = grep_result
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(

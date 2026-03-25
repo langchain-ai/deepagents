@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +16,8 @@ if TYPE_CHECKING:
     import aiosqlite
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from deepagents_cli.output import OutputFormat
 
 logger = logging.getLogger(__name__)
 
@@ -232,12 +233,14 @@ def get_db_path() -> Path:
 
 
 def generate_thread_id() -> str:
-    """Generate a new 8-char hex thread ID.
+    """Generate a new thread ID as a full UUID7 string.
 
     Returns:
-        8-character hexadecimal string.
+        UUID7 string (time-ordered for natural sort by creation time).
     """
-    return uuid.uuid4().hex[:8]
+    from uuid_utils import uuid7
+
+    return str(uuid7())
 
 
 async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
@@ -276,7 +279,6 @@ async def list_threads(
         ValueError: If `sort_by` is not `"updated"` or `"created"`.
     """
     async with _connect() as conn:
-        # Return empty if table doesn't exist yet (fresh install)
         if not await _table_exists(conn, "checkpoints"):
             return []
 
@@ -406,15 +408,15 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
         return
 
     try:
-        from deepagents_cli.model_config import load_thread_columns
+        from deepagents_cli.model_config import load_thread_config
 
-        columns = load_thread_columns()
+        cfg = load_thread_config()
         threads = await list_threads(limit=thread_limit, include_message_count=False)
         if threads:
             await populate_thread_checkpoint_details(
                 threads,
-                include_message_count=columns.get("messages", False),
-                include_initial_prompt=columns.get("initial_prompt", False),
+                include_message_count=cfg.columns.get("messages", False),
+                include_initial_prompt=cfg.columns.get("initial_prompt", False),
             )
         _cache_recent_threads(None, thread_limit, threads)
     except (OSError, sqlite3.Error):
@@ -663,37 +665,127 @@ async def _populate_checkpoint_fields(
     include_message_count: bool,
     include_initial_prompt: bool,
 ) -> None:
-    """Populate checkpoint-derived thread fields with a single latest-row pass."""
+    """Populate checkpoint-derived thread fields with a batched latest-row pass."""
     serde = await _get_jsonplus_serializer()
+
+    # Phase 1: apply cache hits, collect threads that need DB fetch.
+    uncached: list[ThreadInfo] = []
     for thread in threads:
         thread_id = thread["thread_id"]
         freshness = _thread_freshness(thread)
-        needs_message_count = False
-        needs_initial_prompt = False
+        needs_count = False
+        needs_prompt = False
 
         if include_message_count:
             cached = _message_count_cache.get(thread_id)
             if cached is not None and cached[0] == freshness:
                 thread["message_count"] = cached[1]
             else:
-                needs_message_count = True
+                needs_count = True
 
         if include_initial_prompt and "initial_prompt" not in thread:
             cached_prompt = _initial_prompt_cache.get(thread_id)
             if cached_prompt is not None and cached_prompt[0] == freshness:
                 thread["initial_prompt"] = cached_prompt[1]
             else:
-                needs_initial_prompt = True
-        if not needs_message_count and not needs_initial_prompt:
-            continue
+                needs_prompt = True
 
-        summary = await _load_latest_checkpoint_summary(conn, thread_id, serde)
-        if needs_message_count:
+        if needs_count or needs_prompt:
+            uncached.append(thread)
+
+    if not uncached:
+        return
+
+    # Phase 2: batch-fetch all uncached threads.
+    uncached_ids = [t["thread_id"] for t in uncached]
+    batch_results = await _load_latest_checkpoint_summaries_batch(
+        conn, uncached_ids, serde
+    )
+
+    # Phase 3: apply results and update caches.
+    for thread in uncached:
+        thread_id = thread["thread_id"]
+        freshness = _thread_freshness(thread)
+        summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
+
+        if include_message_count and "message_count" not in thread:
             thread["message_count"] = summary.message_count
             _cache_message_count(thread_id, freshness, summary.message_count)
-        if needs_initial_prompt:
+        if include_initial_prompt and "initial_prompt" not in thread:
             thread["initial_prompt"] = summary.initial_prompt
             _cache_initial_prompt(thread_id, freshness, summary.initial_prompt)
+
+
+_SQLITE_MAX_VARIABLE_NUMBER = 500
+"""Max `?` placeholders per SQL query.
+
+SQLite limits how many `?` parameters a single query can have (default 999,
+lower on some builds). If a user accumulates hundreds of threads and the
+`/threads` modal fetches them all at once, the `IN (?, ?, ...)` clause could
+exceed that limit. We chunk to this size to stay safe.
+"""
+
+
+async def _load_latest_checkpoint_summaries_batch(
+    conn: aiosqlite.Connection,
+    thread_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, _CheckpointSummary]:
+    """Batch-load the latest checkpoint summary for multiple threads.
+
+    Uses a window function to fetch the latest checkpoint per thread, issuing
+    one query per chunk for SQLite variable-limit safety.
+
+    Args:
+        conn: Database connection.
+        thread_ids: Thread IDs to look up.
+        serde: Serializer for decoding checkpoint blobs.
+
+    Returns:
+        Dict mapping thread IDs to their checkpoint summaries.
+    """
+    if not thread_ids:
+        return {}
+
+    results: dict[str, _CheckpointSummary] = {}
+
+    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
+        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
+        placeholders = ",".join("?" * len(chunk))
+        query = f"""
+            SELECT thread_id, type, checkpoint FROM (
+                SELECT thread_id, type, checkpoint,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY thread_id ORDER BY checkpoint_id DESC
+                       ) AS rn
+                FROM checkpoints
+                WHERE thread_id IN ({placeholders})
+            ) WHERE rn = 1
+        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
+        async with conn.execute(query, chunk) as cursor:
+            rows = await cursor.fetchall()
+
+        loop = asyncio.get_running_loop()
+        for row in rows:
+            tid, type_str, checkpoint_blob = row
+            if not type_str or not checkpoint_blob:
+                results[tid] = _CheckpointSummary(message_count=0, initial_prompt=None)
+                continue
+            try:
+                data = await loop.run_in_executor(
+                    None, serde.loads_typed, (type_str, checkpoint_blob)
+                )
+                results[tid] = _summarize_checkpoint(data)
+            except Exception:
+                logger.warning(
+                    "Failed to deserialize checkpoint for thread %s; "
+                    "message count and initial prompt may be incomplete",
+                    tid,
+                    exc_info=True,
+                )
+                results[tid] = _CheckpointSummary(message_count=0, initial_prompt=None)
+
+    return results
 
 
 async def _load_latest_checkpoint_summary(
@@ -964,6 +1056,8 @@ async def list_threads_command(
     branch: str | None = None,
     verbose: bool = False,
     relative: bool | None = None,
+    *,
+    output_format: OutputFormat = "text",
 ) -> None:
     """CLI handler for `deepagents threads list`.
 
@@ -986,10 +1080,8 @@ async def list_threads_command(
         relative: Show timestamps as relative time (e.g., '5m ago').
 
             When `None`, reads from config (`~/.deepagents/config.toml`).
+        output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    from rich.table import Table
-
-    from deepagents_cli.config import COLORS, console
     from deepagents_cli.model_config import (
         load_thread_relative_time,
         load_thread_sort_order,
@@ -1018,12 +1110,24 @@ async def list_threads_command(
             threads, include_message_count=False, include_initial_prompt=True
         )
 
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json("threads list", list(threads))
+        return
+
+    from rich.markup import escape as escape_markup
+    from rich.table import Table
+
+    from deepagents_cli import theme
+    from deepagents_cli.config import console
+
     if not threads:
         filters = []
         if agent_name:
-            filters.append(f"agent '{agent_name}'")
+            filters.append(f"agent '{escape_markup(agent_name)}'")
         if branch:
-            filters.append(f"branch '{branch}'")
+            filters.append(f"branch '{escape_markup(branch)}'")
         if filters:
             console.print(
                 f"[yellow]No threads found for {' and '.join(filters)}.[/yellow]"
@@ -1035,16 +1139,15 @@ async def list_threads_command(
 
     title_parts = []
     if agent_name:
-        title_parts.append(f"agent '{agent_name}'")
+        title_parts.append(f"agent '{escape_markup(agent_name)}'")
     if branch:
-        title_parts.append(f"branch '{branch}'")
+        title_parts.append(f"branch '{escape_markup(branch)}'")
+
     title_filter = f" for {' and '.join(title_parts)}" if title_parts else ""
     sort_label = "created" if sort_by == "created" else "updated"
     title = f"Recent Threads{title_filter} (last {limit}, by {sort_label})"
 
-    table = Table(
-        title=title, show_header=True, header_style=f"bold {COLORS['primary']}"
-    )
+    table = Table(title=title, show_header=True, header_style=f"bold {theme.PRIMARY}")
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
     table.add_column("Messages", justify="right")
@@ -1090,13 +1193,29 @@ async def list_threads_command(
     console.print()
 
 
-async def delete_thread_command(thread_id: str) -> None:
-    """CLI handler for: deepagents threads delete."""
-    from deepagents_cli.config import console
+async def delete_thread_command(
+    thread_id: str, *, output_format: OutputFormat = "text"
+) -> None:
+    """CLI handler for: deepagents threads delete.
 
+    Args:
+        thread_id: ID of the thread to delete.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+    """
     deleted = await delete_thread(thread_id)
 
+    if output_format == "json":
+        from deepagents_cli.output import write_json
+
+        write_json("threads delete", {"thread_id": thread_id, "deleted": deleted})
+        return
+
+    from rich.markup import escape as escape_markup
+
+    from deepagents_cli.config import console
+
+    escaped_id = escape_markup(thread_id)
     if deleted:
-        console.print(f"[green]Thread '{thread_id}' deleted.[/green]")
+        console.print(f"[green]Thread '{escaped_id}' deleted.[/green]")
     else:
-        console.print(f"[red]Thread '{thread_id}' not found.[/red]")
+        console.print(f"[red]Thread '{escaped_id}' not found.[/red]")

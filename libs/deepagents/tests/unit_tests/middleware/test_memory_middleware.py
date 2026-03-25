@@ -48,11 +48,12 @@ def create_store_memory_item(content: str) -> dict:
         content: Memory content string
 
     Returns:
-        Dict with content (as list of lines), created_at, and modified_at
+        Dict with content as str, encoding, created_at, and modified_at
     """
     timestamp = datetime.now(UTC).isoformat()
     return {
-        "content": content.split("\n"),
+        "content": content,
+        "encoding": "utf-8",
         "created_at": timestamp,
         "modified_at": timestamp,
     }

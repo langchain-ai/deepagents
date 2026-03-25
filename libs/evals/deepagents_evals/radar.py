@@ -1,7 +1,7 @@
 """Radar chart generation for eval results.
 
 Produces per-model radar (spider) charts where each axis represents an
-eval category (e.g. file_operations, memory, hitl) and the radial position
+eval category (e.g. file_operations, memory, tool_use) and the radial position
 encodes the score (0-1 correctness).
 """
 

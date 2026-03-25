@@ -139,19 +139,22 @@ jobs:
           else
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "| \`eval_categories\` (list) | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
-
-          # Build eval_categories as a bullet list
+          # Build eval_categories — bullet list for multiple, inline for single/(all)
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
-            bullets=""
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-            for cat in "${cats[@]}"; do
-              cat=$(echo "$cat" | xargs)
-              bullets="${bullets}<li><code>${cat}</code></li>"
-            done
-            echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${#cats[@]}" -eq 1 ]; then
+              cat=$(echo "${cats[0]}" | xargs)
+              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              bullets=""
+              for cat in "${cats[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                bullets="${bullets}<li><code>${cat}</code></li>"
+              done
+              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"

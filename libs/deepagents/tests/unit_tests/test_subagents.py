@@ -612,7 +612,7 @@ class TestSubAgents:
             model=subagent_chat_model,
             tools=[capture_recursion_limit],
             name="subagent-runtime-check",
-        )
+        ).with_config({"recursion_limit": 5000})
 
         parent_agent = create_deep_agent(
             model=parent_chat_model,
@@ -630,7 +630,6 @@ class TestSubAgents:
             {"messages": [HumanMessage(content="Run the recursion limit check.")]},
             config={
                 "configurable": {"thread_id": str(uuid.uuid4())},
-                "recursion_limit": 5000,
                 "tags": ["hello"],
             },
             durability="exit",

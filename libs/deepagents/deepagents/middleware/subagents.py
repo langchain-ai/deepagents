@@ -442,20 +442,7 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        # Pregel does not inherit `recursion_limit` into subgraphs by default, so
-        # propagate the parent limit explicitly. We only patch that field here and
-        # rely on Pregel's config merge behavior to preserve the subagent's own
-        # `with_config(...)` defaults such as tags and metadata. Note that
-        # `recursion_limit` is a graph superstep limit, not a direct bound on agent
-        # steps; users who want to cap agent steps should prefer step-limiting
-        # middleware.
-        recursion_limit = runtime.config["recursion_limit"]
-        result = subagent.invoke(
-            subagent_state,
-            {
-                "recursion_limit": recursion_limit,
-            },
-        )
+        result = subagent.invoke(subagent_state)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -473,15 +460,7 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        # Match the sync path: propagate only the parent's `recursion_limit` and
-        # let Pregel merge it with the subagent's existing config.
-        recursion_limit = runtime.config["recursion_limit"]
-        result = await subagent.ainvoke(
-            subagent_state,
-            {
-                "recursion_limit": recursion_limit,
-            },
-        )
+        result = await subagent.ainvoke(subagent_state)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

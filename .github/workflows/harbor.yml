@@ -59,6 +59,7 @@ on:
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:nemotron-3-nano:30b"
+          - "ollama:nemotron-3-super"
           - "ollama:cogito-2.1:671b"
           - "ollama:devstral-2:123b"
           - "ollama:ministral-3:14b"

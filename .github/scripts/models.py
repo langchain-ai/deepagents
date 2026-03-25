@@ -137,10 +137,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set0",
-                "eval:open",
                 "eval:baseten",
                 "harbor:set0",
-                "harbor:open",
                 "harbor:baseten",
             }
         ),
@@ -309,6 +307,19 @@ REGISTRY: tuple[Model, ...] = (
     Model(
         "ollama:nemotron-3-nano:30b",
         frozenset({"eval:set2", "eval:ollama", "harbor:set2", "harbor:ollama"}),
+    ),
+    Model(
+        "ollama:nemotron-3-super",
+        frozenset(
+            {
+                "eval:set2",
+                "eval:open",
+                "eval:ollama",
+                "harbor:set2",
+                "harbor:open",
+                "harbor:ollama",
+            }
+        ),
     ),
     Model(
         "ollama:cogito-2.1:671b",

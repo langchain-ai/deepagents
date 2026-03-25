@@ -823,13 +823,14 @@ class TestSubAgents:
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
 
-    def test_lc_agent_name_and_tags_in_streaming_metadata(self) -> None:
-        """Test that lc_agent_name and tags are correctly set in streaming metadata.
+    def test_subagent_streaming_emits_messages_and_updates_from_subgraph(self) -> None:
+        """Test end-to-end subagent streaming with `subgraphs=True`.
 
         Verifies:
-        1. Parent content chunks have lc_agent_name='supervisor'
-        2. Subagent content chunks have lc_agent_name='worker'
-        3. Tags from parent config appear in subagent streaming chunks
+        1. Parent and subagent message chunks are both streamed in `messages` mode.
+        2. Parent and subagent completed messages are both streamed in `updates` mode.
+        3. Subagent message metadata includes its `lc_agent_name`, inherited tags, and config metadata.
+        4. The subagent's tool result is surfaced back through the parent tools update.
         """
         parent_content = "PARENT_RESPONSE"
         subagent_content = "SUBAGENT_RESPONSE"
@@ -851,9 +852,13 @@ class TestSubAgents:
                     ),
                     AIMessage(content=parent_content),
                 ]
-            )
+            ),
+            stream_delimiter="_",
         )
-        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content=subagent_content)]))
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content=subagent_content)]),
+            stream_delimiter="_",
+        )
 
         compiled_subagent = create_agent(model=subagent_chat_model, name="worker")
         parent_agent = create_deep_agent(
@@ -863,28 +868,54 @@ class TestSubAgents:
             subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=compiled_subagent)],
         )
 
-        saw_parent_content = saw_subagent_content = False
-        for _ns, (chunk, metadata) in parent_agent.stream(
+        saw_parent_message_chunk = False
+        saw_subagent_message_chunk = False
+        saw_subagent_update = False
+        saw_parent_tools_update = False
+        saw_parent_model_update = False
+
+        seen_agent_names: set[str | None] = set()
+
+        for ns, stream_mode, data in parent_agent.stream(
             {"messages": [HumanMessage(content="Do something")]},
-            stream_mode="messages",
+            stream_mode=["messages", "updates"],
             subgraphs=True,
             config={"configurable": {"thread_id": "test_thread"}, "tags": test_tags},
         ):
-            agent_name = metadata.get("lc_agent_name")
-            tags = metadata.get("tags", [])
+            if stream_mode == "messages":
+                message_chunk, metadata = data
+                agent_name = metadata.get("lc_agent_name")
+                seen_agent_names.add(agent_name)
+                tags = metadata.get("tags", [])
 
-            # Check parent content has correct agent name
-            if parent_content in chunk.content and not saw_parent_content:
-                assert agent_name == "supervisor", f"Parent content should have agent_name='supervisor', got '{agent_name}'"
-                saw_parent_content = True
+                if parent_content.split("_", maxsplit=1)[0] in message_chunk.content and agent_name == "supervisor":
+                    saw_parent_message_chunk = True
 
-            # Check subagent content has correct agent name and tags
-            if subagent_content in chunk.content and agent_name == "worker" and not saw_subagent_content:
-                assert all(t in tags for t in test_tags), f"Subagent chunk missing tags. Expected {test_tags}, got {tags}"
-                saw_subagent_content = True
+                if subagent_content.split("_", maxsplit=1)[0] in message_chunk.content and agent_name == "worker":
+                    assert all(t in tags for t in test_tags), f"Subagent chunk missing tags. Expected {test_tags}, got {tags}"
+                    saw_subagent_message_chunk = True
 
-        assert saw_parent_content, "Should have seen parent content with supervisor agent name"
-        assert saw_subagent_content, "Should have seen subagent content with worker agent name and tags"
+            elif stream_mode == "updates":
+                update = data
+                if "model" in update and ns and ns[-1].startswith("tools:"):
+                    subagent_message = update["model"]["messages"][-1]
+                    assert subagent_message.content == subagent_content.replace("_", "")
+                    saw_subagent_update = True
+                elif "tools" in update and ns == ():
+                    tool_message = update["tools"]["messages"][-1]
+                    assert tool_message.content == subagent_content.replace("_", "")
+                    saw_parent_tools_update = True
+                elif "model" in update and ns == ():
+                    parent_message = update["model"]["messages"][-1]
+                    if parent_message.content == parent_content.replace("_", ""):
+                        saw_parent_model_update = True
+
+        assert saw_parent_message_chunk, "Should have seen parent message chunks in the stream"
+        assert saw_subagent_message_chunk, "Should have seen subagent message chunks in the stream"
+        assert saw_subagent_update, "Should have seen a subagent model update in the stream"
+        assert saw_parent_tools_update, "Should have seen the parent tools update with the subagent result"
+        assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
+        assert seen_agent_names == {"supervisor", "worker"}
 
     def test_config_passed_to_runnable_lambda_subagent(self) -> None:
         """Test that config (including tags) is passed to a RunnableLambda subagent.

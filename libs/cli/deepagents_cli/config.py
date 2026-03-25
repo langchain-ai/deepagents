@@ -1716,7 +1716,7 @@ def _get_default_model_spec() -> str:
     raise ModelConfigError(msg)
 
 
-_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+_OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"
 """Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
 
 See https://openrouter.ai/docs/app-attribution for details.
@@ -1724,6 +1724,9 @@ See https://openrouter.ai/docs/app-attribution for details.
 
 _OPENROUTER_APP_TITLE = "Deep Agents CLI"
 """Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+_OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
+"""Default `app_categories` (maps to `X-OpenRouter-Categories`) for OpenRouter."""
 
 
 def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
@@ -1753,6 +1756,7 @@ def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
     """
     kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
     kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
+    kwargs.setdefault("app_categories", _OPENROUTER_APP_CATEGORIES)
 
 
 def _get_provider_kwargs(
@@ -1787,6 +1791,9 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
+        from deepagents._models import check_openrouter_version  # noqa: PLC2701
+
+        check_openrouter_version()
         _apply_openrouter_defaults(result)
 
     return result

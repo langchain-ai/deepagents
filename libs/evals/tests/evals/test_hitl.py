@@ -1,3 +1,12 @@
+"""Unit tests for human-in-the-loop interrupt configuration.
+
+Verifies that the agent's interrupt_on config correctly pauses execution
+for approval, respects per-tool approval/rejection settings, and
+propagates interrupt config through subagent delegation.
+
+These are SDK integration tests, not model capability evals.
+"""
+
 from __future__ import annotations
 
 import uuid

@@ -1,3 +1,13 @@
+"""Eval tests drawn from curated external benchmarks.
+
+Runs a focused hard-set of 15 cases across three public benchmarks:
+- FRAMES: multi-hop retrieval with arithmetic/temporal reasoning
+- Nexus: deeply nested function composition (depth 4-6)
+- BFCL v3: multi-turn stateful tool calling across API domains
+
+Each benchmark's runner and scoring logic lives in external_benchmarks.py.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any

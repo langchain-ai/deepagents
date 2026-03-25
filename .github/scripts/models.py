@@ -129,6 +129,19 @@ REGISTRY: tuple[Model, ...] = (
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
     Model(
+        "baseten:nvidia/Nemotron-120B-A12B",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:open",
+                "eval:baseten",
+                "harbor:set0",
+                "harbor:open",
+                "harbor:baseten",
+            }
+        ),
+    ),
+    Model(
         "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct",
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
@@ -225,7 +238,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
+        frozenset({"eval:nvidia", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(

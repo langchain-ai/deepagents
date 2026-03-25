@@ -56,6 +56,7 @@ on:
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:fireworks/deepseek-v3p2"
           - "fireworks:fireworks/deepseek-v3-0324"

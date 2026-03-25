@@ -327,6 +327,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             "metadata": {
                 "ls_integration": "deepagents",
                 "versions": {"deepagents": __version__},
+                "lc_agent_name": name,
             },
         }
     )

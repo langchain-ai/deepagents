@@ -1432,6 +1432,71 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
         return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
 
+    def _check_eviction_needed(
+        self,
+        messages: list[AnyMessage],
+    ) -> tuple[bool, bool]:
+        """Check whether any message processing is needed.
+
+        Args:
+            messages: The message list to inspect.
+
+        Returns:
+            Tuple of (has_tagged, new_eviction_needed).
+        """
+        if not self._human_message_token_limit_before_evict:
+            return False, False
+
+        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
+        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
+        new_eviction_needed = False
+        if messages and isinstance(messages[-1], HumanMessage):
+            last = messages[-1]
+            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
+                new_eviction_needed = True
+        return has_tagged, new_eviction_needed
+
+    @staticmethod
+    def _apply_eviction_and_truncate(
+        messages: list[AnyMessage],
+        write_result: WriteResult | None,
+        file_path: str | None,
+    ) -> tuple[list[AnyMessage], Command | None]:
+        """Tag a newly evicted message and truncate all tagged messages.
+
+        Args:
+            messages: The message list (may be modified if write succeeded).
+            write_result: Result of the backend write, or `None` if no new
+                eviction was attempted.
+            file_path: Path the content was written to.
+
+        Returns:
+            Tuple of (processed_messages, state_command).
+        """
+        state_command: Command | None = None
+
+        if write_result is not None and file_path is not None and not write_result.error:
+            last = messages[-1]
+            tagged = last.model_copy(
+                update={
+                    "additional_kwargs": {
+                        **last.additional_kwargs,
+                        "lc_evicted_to": file_path,
+                    }
+                }
+            )
+            state_command = Command(update={"messages": [tagged]})
+            messages = [*messages[:-1], tagged]
+
+        processed: list[AnyMessage] = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
+                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
+            else:
+                processed.append(msg)
+
+        return processed, state_command
+
     def _evict_and_truncate_messages(
         self,
         request: ModelRequest[ContextT],
@@ -1449,50 +1514,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             Tuple of (messages, command) if any processing occurred, else `None`.
         """
-        if not self._human_message_token_limit_before_evict:
-            return None
-
-        messages = request.messages
-        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
-        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
-        new_eviction_needed = False
-        if messages and isinstance(messages[-1], HumanMessage):
-            last = messages[-1]
-            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
-                new_eviction_needed = True
-
+        messages = list(request.messages)
+        has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
         if not has_tagged and not new_eviction_needed:
             return None
 
-        state_command: Command | None = None
-
+        write_result: WriteResult | None = None
+        file_path: str | None = None
         if new_eviction_needed:
-            last = messages[-1]
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_id = uuid.uuid4().hex[:12]
-            file_path = f"/large_messages/{file_id}"
-            content_str = _extract_text_from_message(last)
-            result = backend.write(file_path, content_str)
-            if not result.error:
-                tagged = last.model_copy(
-                    update={
-                        "additional_kwargs": {
-                            **last.additional_kwargs,
-                            "lc_evicted_to": file_path,
-                        }
-                    }
-                )
-                state_command = Command(update={"messages": [tagged]})
-                messages = [*messages[:-1], tagged]
+            file_path = f"/large_messages/{uuid.uuid4().hex[:12]}"
+            write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
-        processed: list[AnyMessage] = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
-                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
-            else:
-                processed.append(msg)
-
-        return processed, state_command
+        return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
     async def _aevict_and_truncate_messages(
         self,
@@ -1506,50 +1540,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             Tuple of (messages, command) if any processing occurred, else `None`.
         """
-        if not self._human_message_token_limit_before_evict:
-            return None
-
-        messages = request.messages
-        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
-        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
-        new_eviction_needed = False
-        if messages and isinstance(messages[-1], HumanMessage):
-            last = messages[-1]
-            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
-                new_eviction_needed = True
-
+        messages = list(request.messages)
+        has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
         if not has_tagged and not new_eviction_needed:
             return None
 
-        state_command: Command | None = None
-
+        write_result: WriteResult | None = None
+        file_path: str | None = None
         if new_eviction_needed:
-            last = messages[-1]
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_id = uuid.uuid4().hex[:12]
-            file_path = f"/large_messages/{file_id}"
-            content_str = _extract_text_from_message(last)
-            result = await backend.awrite(file_path, content_str)
-            if not result.error:
-                tagged = last.model_copy(
-                    update={
-                        "additional_kwargs": {
-                            **last.additional_kwargs,
-                            "lc_evicted_to": file_path,
-                        }
-                    }
-                )
-                state_command = Command(update={"messages": [tagged]})
-                messages = [*messages[:-1], tagged]
+            file_path = f"/large_messages/{uuid.uuid4().hex[:12]}"
+            write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
-        processed: list[AnyMessage] = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
-                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
-            else:
-                processed.append(msg)
-
-        return processed, state_command
+        return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.

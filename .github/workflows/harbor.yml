@@ -220,60 +220,6 @@ jobs:
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
     steps:
-      - name: "🔑 Verify sandbox credentials"
-        working-directory: .
-        run: |
-          missing=()
-
-          # LangSmith is always required (experiment tracking)
-          [ -z "$LANGSMITH_API_KEY" ] && missing+=("LANGSMITH_API_KEY")
-
-          # Sandbox provider credentials
-          case "$HARBOR_SANDBOX_ENV" in
-            docker)
-              ;; # No additional credentials needed
-            daytona)
-              [ -z "$DAYTONA_API_KEY" ] && missing+=("DAYTONA_API_KEY")
-              ;;
-            langsmith)
-              ;; # LANGSMITH_API_KEY already checked above
-            modal)
-              [ -z "$MODAL_TOKEN_ID" ] && missing+=("MODAL_TOKEN_ID")
-              [ -z "$MODAL_TOKEN_SECRET" ] && missing+=("MODAL_TOKEN_SECRET")
-              ;;
-            runloop)
-              [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
-              ;;
-            *)
-              echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
-              exit 1
-              ;;
-          esac
-
-          # Model provider key (infer from model prefix)
-          model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
-            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
-            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
-            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
-            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
-            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
-            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
-            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
-            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
-            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
-            *)
-              echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
-              ;;
-          esac
-
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
-            exit 1
-          fi
-          echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
-
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
@@ -287,84 +233,15 @@ jobs:
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
 
-      - name: "🧪 Create LangSmith experiment"
-        id: langsmith
-        run: |
-          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
-          echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
-          echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
-
-      - name: "🔇 Suppress Harbor first-run tips"
-        run: |
-          mkdir -p ~/.cache/harbor
-          echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
-
       - name: "⚓ Run Harbor"
+        id: harbor
         run: |
-          n_tasks_flag=""
-          if [ "$HARBOR_N_TASKS" != "0" ]; then
-            n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
-          fi
-          uv run harbor run \
-            --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-            --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
-            -n "$HARBOR_CONCURRENCY" \
-            $n_tasks_flag \
-            --jobs-dir jobs/terminal-bench \
-            --env "$HARBOR_SANDBOX_ENV" \
+          uv run python scripts/run_harbor.py \
             --model "$HARBOR_MODEL" \
-            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
-
-      - name: "🔍 Find latest Harbor job"
-        id: latest-job
-        run: |
-          latest_job=$(python - <<'PY'
-          from pathlib import Path
-
-          jobs_dir = Path("jobs/terminal-bench")
-          job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
-          if not job_dirs:
-              raise SystemExit("No Harbor job directory found")
-          print(job_dirs[-1])
-          PY
-          )
-          echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
-
-      - name: "⭐ Add Harbor rewards to LangSmith"
-        if: always() && steps.latest-job.outcome == 'success' && steps.langsmith.outcome == 'success'
-        env:
-          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
-        run: |
-          uv run python scripts/harbor_langsmith.py add-feedback \
-            "$HARBOR_JOB_DIR" \
-            --project-name "$LANGSMITH_EXPERIMENT_NAME"
-
-      - name: "📝 Write workflow summary"
-        if: always()
-        env:
-          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
-          LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
-        run: |
-          {
-            echo "## Harbor run"
-            echo
-            echo "- Model: $HARBOR_MODEL"
-            echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
-            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
-            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
-            if [ "$HARBOR_N_TASKS" = "0" ]; then
-              echo "- Max tasks: all"
-            else
-              echo "- Max tasks: ${HARBOR_N_TASKS}"
-            fi
-            echo "- Agent mode: ${HARBOR_AGENT_MODE}"
-            echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
-            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
-              echo "- Harbor job dir: $HARBOR_JOB_DIR"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+            --env "$HARBOR_SANDBOX_ENV" \
+            --concurrency "$HARBOR_CONCURRENCY" \
+            --n-tasks "$HARBOR_N_TASKS" \
+            --agent-mode "$HARBOR_AGENT_MODE"
 
       - name: "📤 Upload Harbor artifacts"
         if: always()

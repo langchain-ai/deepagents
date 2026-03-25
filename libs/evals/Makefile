@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-harbor evals format_unsafe radar radar-from-summary
 
 .DEFAULT_GOAL := help
 
@@ -20,31 +20,24 @@ test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)
 
 # Harbor jobs
-# -n = concurrent trials (parallel sandbox slots), NOT task count
-# -l = max tasks to run (omit for all)
-# AGENT_MODE: cli (local default) or sdk (CI default)
 AGENT_MODE ?= cli
-AGENT_KWARG = --agent-kwarg use_cli_agent=$(if $(filter cli,$(AGENT_MODE)),true,false)
+HARBOR_MODEL ?=
+HARBOR_SANDBOX_ENV ?= docker
+HARBOR_N_TASKS ?= 0
+HARBOR_CONCURRENCY ?= 1
 
 run-hello-world: ## Run hello-world job
 	@mkdir -p jobs/hello-world
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker $(AGENT_KWARG)
+	uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker --agent-kwarg use_cli_agent=$(if $(filter cli,$(AGENT_MODE)),true,false)
 
-run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal $(AGENT_KWARG)
-
-run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona $(AGENT_KWARG)
-
-run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker $(AGENT_KWARG)
-
-run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+run-harbor: ## Run full Harbor workflow (e.g. make run-harbor HARBOR_MODEL=anthropic:claude-sonnet-4-6)
+	@if [ -z "$(HARBOR_MODEL)" ]; then echo "Error: HARBOR_MODEL is required (e.g. make run-harbor HARBOR_MODEL=anthropic:claude-sonnet-4-6)" >&2; exit 1; fi
+	uv run python scripts/run_harbor.py \
+		--model $(HARBOR_MODEL) \
+		--env $(HARBOR_SANDBOX_ENV) \
+		--concurrency $(HARBOR_CONCURRENCY) \
+		--n-tasks $(HARBOR_N_TASKS) \
+		--agent-mode $(AGENT_MODE)
 
 ######################
 # CHARTS

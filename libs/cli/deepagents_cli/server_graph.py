@@ -72,6 +72,13 @@ def _build_tools(
                     no_mcp=config.no_mcp,
                     trust_project_mcp=config.trust_project_mcp,
                     project_context=project_context,
+                    # stateless=True: each tool call opens its own stdio
+                    # session.  Required here because asyncio.run() creates a
+                    # temporary event loop; any persistent session streams
+                    # created inside it are dead by the time the LangGraph
+                    # server's event loop actually invokes a tool, which
+                    # causes ClosedResourceError on every MCP tool call.
+                    stateless=True,
                 )
             )
         except FileNotFoundError:

@@ -427,6 +427,8 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
 
 async def _load_tools_from_config(
     config: dict[str, Any],
+    *,
+    stateless: bool = False,
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
@@ -435,6 +437,13 @@ async def _load_tools_from_config(
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
+        stateless: When ``True``, tools create a fresh stdio session on every
+            call instead of reusing a persistent session.  Use this when the
+            loader runs inside a temporary ``asyncio.run()`` event loop (e.g.
+            the LangGraph server subprocess) so that the session streams are
+            not tied to a loop that will be closed before any tool is invoked.
+            When ``False`` (default) a persistent session is kept alive in the
+            returned ``MCPSessionManager`` for the lifetime of the caller.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -513,12 +522,28 @@ async def _load_tools_from_config(
         all_tools: list[BaseTool] = []
         server_infos: list[MCPServerInfo] = []
         for server_name, server_config in config["mcpServers"].items():
-            session = await manager.exit_stack.enter_async_context(
-                client.session(server_name)
-            )
-            tools = await load_mcp_tools(
-                session, server_name=server_name, tool_name_prefix=True
-            )
+            if stateless:
+                # Per-call session mode: each tool invocation opens its own
+                # session.  Discovery also uses a short-lived session that is
+                # closed before this function returns.  Safe when this loader
+                # runs inside a temporary asyncio.run() loop (e.g. the
+                # LangGraph server subprocess) because no long-lived streams
+                # are left bound to that loop.
+                tools = await load_mcp_tools(
+                    None,
+                    connection=connections[server_name],
+                    server_name=server_name,
+                    tool_name_prefix=True,
+                )
+            else:
+                # Persistent-session mode (default): one session stays open
+                # for the lifetime of the returned MCPSessionManager.
+                session = await manager.exit_stack.enter_async_context(
+                    client.session(server_name)
+                )
+                tools = await load_mcp_tools(
+                    session, server_name=server_name, tool_name_prefix=True
+                )
             all_tools.extend(tools)
             server_infos.append(
                 MCPServerInfo(
@@ -579,6 +604,7 @@ async def resolve_and_load_mcp_tools(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    stateless: bool = False,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Resolve MCP config and load tools.
 
@@ -599,6 +625,11 @@ async def resolve_and_load_mcp_tools(
                 fingerprint matches, allow; otherwise filter + warn.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        stateless: Passed through to ``_load_tools_from_config``.  Set to
+            ``True`` when loading inside a temporary ``asyncio.run()`` loop
+            (e.g. the LangGraph server subprocess) so that stdio sessions are
+            created per-call rather than persisted across event-loop
+            boundaries.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
@@ -704,4 +735,4 @@ async def resolve_and_load_mcp_tools(
         msg = f"Invalid MCP server configuration: {e}"
         raise RuntimeError(msg) from e
 
-    return await _load_tools_from_config(merged)
+    return await _load_tools_from_config(merged, stateless=stateless)

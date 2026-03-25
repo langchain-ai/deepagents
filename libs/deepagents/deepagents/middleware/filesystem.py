@@ -17,13 +17,14 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.runtime import Runtime
@@ -354,6 +355,30 @@ def _build_evicted_human_content(
     if not media_blocks:
         return replacement_text
     return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
+
+
+def _build_truncated_human_message(message: HumanMessage, file_path: str) -> HumanMessage:
+    """Build a truncated HumanMessage for the model request.
+
+    Computes a preview from the full content still in state and returns a
+    lightweight replacement the model will see. Pure string computation — no
+    backend I/O.
+
+    Args:
+        message: The original HumanMessage (full content in state).
+        file_path: The backend path where the content was evicted.
+
+    Returns:
+        A new HumanMessage with truncated content and the same `id`.
+    """
+    content_str = _extract_text_from_message(message)
+    content_sample = _create_content_preview(content_str)
+    replacement_text = TOO_LARGE_HUMAN_MSG.format(
+        file_path=file_path,
+        content_sample=content_sample,
+    )
+    evicted = _build_evicted_human_content(message, replacement_text)
+    return message.model_copy(update={"content": evicted})
 
 
 def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
@@ -1136,94 +1161,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_execute,
         )
 
-    def before_agent(
-        self,
-        state: FilesystemState,
-        runtime: Runtime[ContextT],
-    ) -> dict[str, Any] | None:
-        """Evict an oversized HumanMessage to the filesystem before the agent loop.
-
-        Checks the most recent message in `state["messages"]`. If it is a
-        HumanMessage whose text content exceeds `tool_token_limit_before_evict`,
-        the full content is written to the backend and the message is replaced
-        with a truncated preview pointing to the file.
-
-        Only the last message is checked because it is the newly arrived input;
-        earlier messages were already in state from prior invocations and would
-        have been evicted then.
-
-        Because this runs in `before_agent` (once per invocation), the
-        replacement is persisted to state via the `add_messages` reducer,
-        so subsequent model steps see the already-small message.
-
-        Args:
-            state: The current agent state.
-            runtime: The runtime context.
-
-        Returns:
-            A state update replacing the oversized message, or `None`.
-        """
-        if not self._tool_token_limit_before_evict:
-            return None
-
-        messages = state["messages"]
-        if not messages:
-            return None
-
-        last = messages[-1]
-        if not isinstance(last, HumanMessage):
-            return None
-
-        backend = self._get_backend_from_runtime(state, runtime)
-        processed = self._process_large_human_message(last, backend)
-        if processed is last:
-            return None
-        return {"messages": [processed]}
-
-    async def abefore_agent(
-        self,
-        state: FilesystemState,
-        runtime: Runtime[ContextT],
-    ) -> dict[str, Any] | None:
-        """Async version of `before_agent`.
-
-        Args:
-            state: The current agent state.
-            runtime: The runtime context.
-
-        Returns:
-            A state update replacing the oversized message, or `None`.
-        """
-        if not self._tool_token_limit_before_evict:
-            return None
-
-        messages = state["messages"]
-        if not messages:
-            return None
-
-        last = messages[-1]
-        if not isinstance(last, HumanMessage):
-            return None
-
-        backend = self._get_backend_from_runtime(state, runtime)
-        processed = await self._aprocess_large_human_message(last, backend)
-        if processed is last:
-            return None
-        return {"messages": [processed]}
-
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        """Update the system prompt and filter tools based on backend capabilities.
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse:
+        """Update the system prompt, filter tools, and evict oversized HumanMessages.
+
+        In addition to the system-prompt and tool-filtering logic, this method
+        handles large HumanMessage eviction:
+
+        1. Any message already tagged with `lc_evicted_to` in
+           `additional_kwargs` is replaced with a truncated preview for the
+           model request (content in state is unchanged).
+        2. If the most recent message is an untagged HumanMessage exceeding the
+           eviction threshold, its content is written to the backend and the
+           message is tagged in state via `ExtendedModelResponse`.
 
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The model response from the handler.
+            The model response, or an `ExtendedModelResponse` with a state
+            update tagging a newly evicted message.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -1256,6 +1217,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
+
+        eviction_result = self._evict_and_truncate_messages(request)
+        if eviction_result is not None:
+            messages, state_command = eviction_result
+            request = request.override(messages=messages)
+            response = handler(request)
+            if state_command is not None:
+                return ExtendedModelResponse(model_response=response, command=state_command)
+            return response
 
         return handler(request)
 
@@ -1263,15 +1233,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse:
         """(async) Update the system prompt and filter tools based on backend capabilities.
+
+        Also evicts oversized HumanMessages to the filesystem. See
+        `wrap_model_call` for full documentation.
 
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The model response from the handler.
+            The model response from the handler, or an `ExtendedModelResponse`
+            with a state update tagging newly evicted messages.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -1304,6 +1278,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
+
+        eviction_result = await self._aevict_and_truncate_messages(request)
+        if eviction_result is not None:
+            messages, state_command = eviction_result
+            request = request.override(messages=messages)
+            response = await handler(request)
+            if state_command is not None:
+                return ExtendedModelResponse(model_response=response, command=state_command)
+            return response
 
         return await handler(request)
 
@@ -1414,96 +1397,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
         return processed_message, result.files_update
 
-    def _process_large_human_message(
-        self,
-        message: HumanMessage,
-        resolved_backend: BackendProtocol,
-    ) -> HumanMessage:
-        """Replace an oversized HumanMessage with a truncated preview and file reference.
-
-        Writes the full text to the backend and returns a slimmed-down
-        HumanMessage. If eviction is not configured or the message is below the
-        threshold, returns the original message unchanged.
-
-        Args:
-            message: The HumanMessage to potentially evict.
-            resolved_backend: The filesystem backend to write the content to.
-
-        Returns:
-            The original message if small enough, or a new HumanMessage with
-            truncated content and a file reference.
-        """
-        if not self._tool_token_limit_before_evict:
-            return message
-
-        content_str = _extract_text_from_message(message)
-
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message
-
-        file_id = uuid.uuid4().hex[:12]
-        file_path = f"/large_messages/{file_id}"
-        result = resolved_backend.write(file_path, content_str)
-        if result.error:
-            return message
-
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_HUMAN_MSG.format(
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-
-        evicted = _build_evicted_human_content(message, replacement_text)
-        return HumanMessage(
-            content=cast("str | list[str | dict]", evicted),
-            id=message.id,
-            additional_kwargs=dict(message.additional_kwargs),
-            response_metadata=dict(message.response_metadata),
-        )
-
-    async def _aprocess_large_human_message(
-        self,
-        message: HumanMessage,
-        resolved_backend: BackendProtocol,
-    ) -> HumanMessage:
-        """Async version of `_process_large_human_message`.
-
-        Args:
-            message: The HumanMessage to potentially evict.
-            resolved_backend: The filesystem backend to write the content to.
-
-        Returns:
-            The original message if small enough, or a new HumanMessage with
-            truncated content and a file reference.
-        """
-        if not self._tool_token_limit_before_evict:
-            return message
-
-        content_str = _extract_text_from_message(message)
-
-        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message
-
-        file_id = uuid.uuid4().hex[:12]
-        file_path = f"/large_messages/{file_id}"
-        result = await resolved_backend.awrite(file_path, content_str)
-        if result.error:
-            return message
-
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_HUMAN_MSG.format(
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-
-        evicted = _build_evicted_human_content(message, replacement_text)
-        return HumanMessage(
-            content=cast("str | list[str | dict]", evicted),
-            id=message.id,
-            additional_kwargs=dict(message.additional_kwargs),
-            response_metadata=dict(message.response_metadata),
-        )
-
     def _get_backend_from_runtime(
         self,
         state: AgentState[Any],
@@ -1534,6 +1427,125 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             tool_call_id=None,
         )
         return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+
+    def _evict_and_truncate_messages(
+        self,
+        request: ModelRequest[ContextT],
+    ) -> tuple[list[AnyMessage], Command | None] | None:
+        """Evict a new oversized HumanMessage and truncate all tagged messages.
+
+        Returns `None` if no messages needed processing (fast path). Otherwise
+        returns `(processed_messages, command)` where `command` is a state
+        update tagging the newly evicted message, or `None` if only
+        previously-tagged messages were truncated.
+
+        Args:
+            request: The model request being processed.
+
+        Returns:
+            Tuple of (messages, command) if any processing occurred, else `None`.
+        """
+        if not self._tool_token_limit_before_evict:
+            return None
+
+        messages = request.messages
+        threshold = NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict
+        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
+        new_eviction_needed = False
+        if messages and isinstance(messages[-1], HumanMessage):
+            last = messages[-1]
+            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
+                new_eviction_needed = True
+
+        if not has_tagged and not new_eviction_needed:
+            return None
+
+        state_command: Command | None = None
+
+        if new_eviction_needed:
+            last = messages[-1]
+            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            file_id = uuid.uuid4().hex[:12]
+            file_path = f"/large_messages/{file_id}"
+            content_str = _extract_text_from_message(last)
+            result = backend.write(file_path, content_str)
+            if not result.error:
+                tagged = last.model_copy(
+                    update={
+                        "additional_kwargs": {
+                            **last.additional_kwargs,
+                            "lc_evicted_to": file_path,
+                        }
+                    }
+                )
+                state_command = Command(update={"messages": [tagged]})
+                messages = [*messages[:-1], tagged]
+
+        processed: list[AnyMessage] = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
+                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
+            else:
+                processed.append(msg)
+
+        return processed, state_command
+
+    async def _aevict_and_truncate_messages(
+        self,
+        request: ModelRequest[ContextT],
+    ) -> tuple[list[AnyMessage], Command | None] | None:
+        """Async version of `_evict_and_truncate_messages`.
+
+        Args:
+            request: The model request being processed.
+
+        Returns:
+            Tuple of (messages, command) if any processing occurred, else `None`.
+        """
+        if not self._tool_token_limit_before_evict:
+            return None
+
+        messages = request.messages
+        threshold = NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict
+        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
+        new_eviction_needed = False
+        if messages and isinstance(messages[-1], HumanMessage):
+            last = messages[-1]
+            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
+                new_eviction_needed = True
+
+        if not has_tagged and not new_eviction_needed:
+            return None
+
+        state_command: Command | None = None
+
+        if new_eviction_needed:
+            last = messages[-1]
+            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            file_id = uuid.uuid4().hex[:12]
+            file_path = f"/large_messages/{file_id}"
+            content_str = _extract_text_from_message(last)
+            result = await backend.awrite(file_path, content_str)
+            if not result.error:
+                tagged = last.model_copy(
+                    update={
+                        "additional_kwargs": {
+                            **last.additional_kwargs,
+                            "lc_evicted_to": file_path,
+                        }
+                    }
+                )
+                state_command = Command(update={"messages": [tagged]})
+                messages = [*messages[:-1], tagged]
+
+        processed: list[AnyMessage] = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
+                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
+            else:
+                processed.append(msg)
+
+        return processed, state_command
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.

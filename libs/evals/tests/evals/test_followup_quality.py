@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from tests.evals.llm_judge import llm_judge
 from tests.evals.utils import TrajectoryScorer, run_agent
 
-pytestmark = [pytest.mark.eval_category("followup_quality")]
+pytestmark = [pytest.mark.eval_category("conversation")]
 
 # ---------------------------------------------------------------------------
 # Test cases — each describes a user request (varying in specificity) and

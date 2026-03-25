@@ -14,7 +14,7 @@ from tests.evals.utils import (
     run_agent,
 )
 
-pytestmark = [pytest.mark.eval_category("system_prompt")]
+pytestmark = [pytest.mark.eval_category("unit_test")]
 
 
 @pytest.mark.langsmith

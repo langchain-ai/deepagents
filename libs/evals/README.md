@@ -149,16 +149,16 @@ Run only specific categories locally or in CI:
 
 ```bash
 # Single category
-uv run --group test pytest tests/evals --eval-category hitl
+uv run --group test pytest tests/evals --eval-category memory
 
 # Multiple categories
-uv run --group test pytest tests/evals --eval-category memory --eval-category hitl
+uv run --group test pytest tests/evals --eval-category memory --eval-category tool_use
 ```
 
 In the GitHub Actions workflow, pass a comma-separated list via the `eval_categories` input:
 
 ```text
-eval_categories: "memory,hitl,tool_usage"
+eval_categories: "memory,tool_use,retrieval"
 ```
 
 Omit to run all categories.

@@ -17,7 +17,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("subagents")]
+pytestmark = [pytest.mark.eval_category("unit_test")]
 
 
 @tool

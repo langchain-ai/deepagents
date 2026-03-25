@@ -15,7 +15,7 @@ from langgraph.types import Command
 
 from tests.evals.utils import run_agent
 
-pytestmark = [pytest.mark.eval_category("hitl")]
+pytestmark = [pytest.mark.eval_category("unit_test")]
 
 
 @tool(description="Use this tool to get the weather")

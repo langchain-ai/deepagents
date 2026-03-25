@@ -630,16 +630,19 @@ class TestSubAgents:
             {"messages": [HumanMessage(content="Run the recursion limit check.")]},
             config={
                 "configurable": {"thread_id": str(uuid.uuid4())},
-                "recursion_limit": 2000,
+                "recursion_limit": 5000,
+                "tags": ["hello"],
             },
             durability="exit",
         )
 
-        breakpoint()
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         assert captured_config is not None
-        assert captured_config["recursion_limit"] == 2000
+        assert captured_config["recursion_limit"] == 5000
+        # Pregel merges the runtime recursion_limit patch with the subagent's own
+        # config instead of replacing it wholesale.
+        assert captured_config["tags"] == ["hello"]
         assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
 
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:

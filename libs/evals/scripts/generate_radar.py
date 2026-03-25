@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from deepagents_evals.radar import (
+    ALL_CATEGORIES,
     EVAL_CATEGORIES,
     ModelResult,
     generate_individual_radars,
@@ -123,8 +124,11 @@ def main() -> None:
         sys.exit(0)
 
     # Preserve EVAL_CATEGORIES ordering for known categories, append unknown ones.
+    # Categories in ALL_CATEGORIES but not EVAL_CATEGORIES (e.g. unit_test)
+    # are intentionally excluded from radar charts.
     ordered = [c for c in EVAL_CATEGORIES if c in all_cats]
-    ordered.extend(sorted(all_cats - set(ordered)))
+    excluded = set(ALL_CATEGORIES) - set(EVAL_CATEGORIES)
+    ordered.extend(sorted(all_cats - set(ordered) - excluded))
 
     try:
         generate_radar(

@@ -232,7 +232,6 @@ class TestDeepAgentEndToEnd:
             config={
                 "configurable": {"thread_id": "test_tool_runtime_metadata"},
                 "tags": ["tool-tag", "tool-session-456"],
-                "metadata": {"request_id": "req-tool-123", "tenant": "acme-tool"},
             },
         )
 

@@ -1,15 +1,36 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
-from deepagents_cli.config import ModelResult, settings
-from deepagents_cli.model_config import ModelConfigError, clear_caches
+from deepagents_cli.config import settings
+from deepagents_cli.model_config import ModelSpec, clear_caches
+from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
+
+
+def _make_remote_agent() -> RemoteAgent:
+    """Create a RemoteAgent pointing at a dummy URL for test scaffolding."""
+    return RemoteAgent("http://test:0")
+
+
+class _FakeModelResult:
+    """Minimal model result for `_switch_model` tests."""
+
+    def __init__(self, *, model_name: str, provider: str, context_limit: int) -> None:
+        self.model_name = model_name
+        self.provider = provider
+        self.context_limit = context_limit
+
+    def apply_to_settings(self) -> None:
+        """Mirror `ModelResult.apply_to_settings()` for test isolation."""
+        settings.model_name = self.model_name
+        settings.model_provider = self.provider
+        settings.model_context_limit = self.context_limit
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +43,46 @@ def _restore_settings() -> Iterator[None]:
     settings.model_name = original_name
     settings.model_provider = original_provider
     settings.model_context_limit = original_context_limit
+
+
+@pytest.fixture(autouse=True)
+def mock_create_model() -> Iterator[Mock]:
+    """Avoid provider package imports while preserving metadata updates."""
+    context_limits = {
+        "anthropic:claude-opus-4-5": 200_000,
+        "anthropic:claude-sonnet-4-5": 200_000,
+        "fireworks:llama-v3p1-70b": 131_072,
+        "ollama:llama3": 8_192,
+        "openai:gpt-4o": 128_000,
+    }
+
+    def fake_create_model(
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, object] | None = None,
+        profile_overrides: dict[str, object] | None = None,
+    ) -> _FakeModelResult:
+        del extra_kwargs, profile_overrides
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed is None:
+            provider = "openai"
+            model_name = model_spec
+        else:
+            provider = parsed.provider
+            model_name = parsed.model
+
+        context_limit = context_limits.get(f"{provider}:{model_name}", 65_536)
+        return _FakeModelResult(
+            model_name=model_name,
+            provider=provider,
+            context_limit=context_limit,
+        )
+
+    with patch(
+        "deepagents_cli.config.create_model",
+        side_effect=fake_create_model,
+    ) as mock:
+        yield mock
 
 
 class TestModelSwitchNoOp:
@@ -37,7 +98,7 @@ class TestModelSwitchNoOp:
         app = DeepAgentsApp()
         # Replace method with mock to track calls (hence ignore)
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()  # Enable hot-swap path
+        app._agent = _make_remote_agent()
 
         # Set current model
         settings.model_name = "claude-opus-4-5"
@@ -66,6 +127,7 @@ class TestModelSwitchNoOp:
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
         assert "Switched to" not in captured_messages[0]
+        assert app._model_switching is False
 
 
 class TestModelSwitchErrorHandling:
@@ -75,7 +137,7 @@ class TestModelSwitchErrorHandling:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         # Set a different current model
         settings.model_name = "gpt-4o"
@@ -105,198 +167,156 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
+        assert app._model_switching is False
 
-    async def test_create_model_config_error_shows_error(self) -> None:
-        """_switch_model shows error when create_model raises ModelConfigError."""
+    async def test_save_recent_model_failure_shows_warning(self) -> None:
+        """Permission error saving recent model shows error, no success message."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
-        # Set a different current model
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
 
         captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
+        original_err_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
             captured_errors.append(message)
-            original_init(self, message, **kwargs)
+            original_err_init(self, message, **kwargs)
 
-        error = ModelConfigError("Missing package for provider 'anthropic'")
+        captured_messages: list[str] = []
+        original_app_init = AppMessage.__init__
+
+        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_app_init(self, message, **kwargs)
+
         with (
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.create_model", side_effect=error),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:invalid-model")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Missing package" in captured_errors[0]
-
-    async def test_create_model_exception_shows_error(self) -> None:
-        """_switch_model shows error when create_model raises an exception."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        # Set a different current model
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        model_error = ValueError("Invalid model")
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.create_model", side_effect=model_error),
-            patch.object(ErrorMessage, "__init__", capture_init),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=False),
+            patch.object(ErrorMessage, "__init__", capture_err),
+            patch.object(AppMessage, "__init__", capture_app),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        # Should warn about save failure
         assert len(captured_errors) == 1
-        assert "Failed to create model" in captured_errors[0]
-        assert "Invalid model" in captured_errors[0]
+        assert "could not save" in captured_errors[0].lower()
+        assert "~/.deepagents/" in captured_errors[0]
 
-    async def test_agent_recreation_failure_shows_error_and_preserves_settings(
-        self,
+        # Should NOT show success message when save fails
+        assert not any("Switched to" in m for m in captured_messages)
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+
+    async def test_remote_agent_sets_model_override(self) -> None:
+        """With remote agent, sets model override for ConfigurableModelMiddleware."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.model_config.save_recent_model", return_value=True
+            ) as mock_save,
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert app._model_params_override is None
+        mock_save.assert_called_once()
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
+        assert any("Switched to" in m for m in captured_messages)
+
+    async def test_remote_agent_refreshes_model_metadata(
+        self, mock_create_model: Mock
     ) -> None:
-        """_switch_model shows error and preserves settings on agent failure."""
+        """Switching models should refresh derived settings like context size."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        # Set a different current model
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-        settings.model_context_limit = 128_000
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        mock_model = MagicMock()
-        mock_result = ModelResult(
-            model=mock_model,
-            model_name="claude-sonnet-4-5",
-            provider="anthropic",
-            context_limit=200_000,
-        )
-
-        agent_error = RuntimeError("Agent creation failed")
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch("deepagents_cli.agent.create_cli_agent", side_effect=agent_error),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Model switch failed" in captured_errors[0]
-        assert "Agent creation failed" in captured_errors[0]
-
-        # Settings are rolled back to previous values on agent creation failure
-        assert settings.model_name == "gpt-4o"
-        assert settings.model_provider == "openai"
-        assert settings.model_context_limit == 128_000
-
-    async def test_context_limit_cleared_when_new_model_has_none(self) -> None:
-        """Switching to a model without a context limit clears the old value."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
+        app._profile_override = {"max_input_tokens": 180_000}
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
         settings.model_context_limit = 128_000
-
-        mock_result = ModelResult(
-            model=MagicMock(),
-            model_name="custom-model",
-            provider="ollama",
-            context_limit=None,
-        )
-        mock_agent = MagicMock()
-        mock_backend = MagicMock()
 
         with (
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch(
-                "deepagents_cli.agent.create_cli_agent",
-                return_value=(mock_agent, mock_backend),
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
-            await app._switch_model("ollama:custom-model")
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7},
+            )
 
-        assert settings.model_context_limit is None
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
+        assert settings.model_context_limit == 200_000
+        mock_create_model.assert_called_once_with(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={"temperature": 0.7},
+            profile_overrides={"max_input_tokens": 180_000},
+        )
 
-    async def test_agent_failure_rollback_with_none_context_limit(self) -> None:
-        """Rollback restores previous context limit when new model has None."""
+    async def test_remote_agent_sets_model_params_override(self) -> None:
+        """With remote agent, extra_kwargs are stored as _model_params_override."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
-        settings.model_context_limit = 128_000
-
-        mock_result = ModelResult(
-            model=MagicMock(),
-            model_name="custom-model",
-            provider="custom",
-            context_limit=None,
-        )
 
         with (
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch(
-                "deepagents_cli.agent.create_cli_agent",
-                side_effect=RuntimeError("fail"),
-            ),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
-            await app._switch_model("custom:custom-model")
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7, "max_tokens": 1024},
+            )
 
-        assert settings.model_context_limit == 128_000
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert app._model_params_override == {
+            "temperature": 0.7,
+            "max_tokens": 1024,
+        }
 
-    async def test_no_checkpointer_saves_preference(self) -> None:
-        """_switch_model without checkpointer saves preference but doesn't hot-swap."""
+
+class TestModelSwitchConcurrencyGuard:
+    """Tests for _model_switching concurrency guard."""
+
+    async def test_concurrent_model_switch_blocked(self) -> None:
+        """Second _switch_model call is rejected while first is in-flight."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = None  # No checkpointer
-
-        # Set a different current model
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
+        app._model_switching = True
 
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
@@ -305,95 +325,32 @@ class TestModelSwitchErrorHandling:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch.object(AppMessage, "__init__", capture_init),
-        ):
+        with patch.object(AppMessage, "__init__", capture_init):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1
-        assert "Model preference set" in captured_messages[0]
-        assert "Restart" in captured_messages[0]
+        assert "already in progress" in captured_messages[0]
 
-    async def test_no_checkpointer_save_failure_shows_error(self) -> None:
-        """_switch_model without checkpointer shows error when save fails."""
+    async def test_model_switching_flag_reset_on_success(self) -> None:
+        """_model_switching resets to False after a successful switch."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = None
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
 
         with (
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
-            patch.object(ErrorMessage, "__init__", capture_init),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_errors) == 1
-        assert "Could not save model preference" in captured_errors[0]
-
-    async def test_hot_swap_save_failure_warns_in_message(self) -> None:
-        """Successful hot-swap warns when save_recent_model fails."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        captured_messages: list[str] = []
-        original_init = AppMessage.__init__
-
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
-            captured_messages.append(message)
-            original_init(self, message, **kwargs)
-
-        mock_model = MagicMock()
-        mock_result = ModelResult(
-            model=mock_model,
-            model_name="claude-sonnet-4-5",
-            provider="anthropic",
-        )
-        mock_agent = MagicMock()
-        mock_backend = MagicMock()
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch(
-                "deepagents_cli.agent.create_cli_agent",
-                return_value=(mock_agent, mock_backend),
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
-            patch.object(AppMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
-        assert len(captured_messages) == 1
-        assert "Switched to" in captured_messages[0]
-        assert "preference not saved" in captured_messages[0]
+        assert app._model_switching is False
 
 
 class TestModelSwitchConfigProvider:
@@ -406,8 +363,8 @@ class TestModelSwitchConfigProvider:
     async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:
         """Switching to a provider not in PROVIDER_API_KEY_ENV succeeds.
 
-        Previously this would error with "Unknown provider". Now it falls
-        through to credential check and create_model().
+        Previously this would error with "Unknown provider". Now it switches
+        immediately in the server-backed session.
         """
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
@@ -417,7 +374,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -429,30 +386,24 @@ api_key_env = "FIREWORKS_API_KEY"
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
-        mock_model = MagicMock()
-        mock_result = ModelResult(
-            model=mock_model,
-            model_name="llama-v3p1-70b",
-            provider="fireworks",
-        )
-        mock_agent = MagicMock()
-        mock_backend = MagicMock()
-
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.agent.create_cli_agent",
-                return_value=(mock_agent, mock_backend),
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+                "deepagents_cli.model_config.save_recent_model", return_value=True
+            ) as mock_save,
             patch.object(AppMessage, "__init__", capture_app),
         ):
             await app._switch_model("fireworks:llama-v3p1-70b")
 
+        mock_save.assert_called_once_with("fireworks:llama-v3p1-70b")
+        assert app._model_override == "fireworks:llama-v3p1-70b"
+        assert settings.model_name == "llama-v3p1-70b"
+        assert settings.model_provider == "fireworks"
         # Should succeed, not show "Unknown provider"
-        assert any("Switched to" in m for m in captured_messages)
+        assert any(
+            "Switched to fireworks:llama-v3p1-70b" in m for m in captured_messages
+        )
         assert not any("Unknown provider" in m for m in captured_messages)
 
     async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
@@ -465,7 +416,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -490,7 +441,7 @@ api_key_env = "FIREWORKS_API_KEY"
         assert "FIREWORKS_API_KEY" in captured_errors[0]
 
     async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:
-        """Ollama (no api_key_env) passes credential check."""
+        """Ollama (no api_key_env) passes credential check and switches."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
@@ -498,7 +449,7 @@ models = ["llama3"]
 """)
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -510,38 +461,30 @@ models = ["llama3"]
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
-        mock_model = MagicMock()
-        mock_result = ModelResult(
-            model=mock_model,
-            model_name="llama3",
-            provider="ollama",
-        )
-        mock_agent = MagicMock()
-        mock_backend = MagicMock()
-
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.agent.create_cli_agent",
-                return_value=(mock_agent, mock_backend),
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+                "deepagents_cli.model_config.save_recent_model", return_value=True
+            ) as mock_save,
             patch.object(AppMessage, "__init__", capture_app),
         ):
             await app._switch_model("ollama:llama3")
 
-        assert any("Switched to" in m for m in captured_messages)
+        mock_save.assert_called_once_with("ollama:llama3")
+        assert app._model_override == "ollama:llama3"
+        assert settings.model_name == "llama3"
+        assert settings.model_provider == "ollama"
+        assert any("Switched to ollama:llama3" in m for m in captured_messages)
 
 
 class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
     async def test_bare_model_name_auto_detects_provider(self) -> None:
-        """Bare model name like 'gpt-4o' auto-detects provider and succeeds."""
+        """Bare model name like 'gpt-4o' auto-detects provider and switches."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -553,38 +496,30 @@ class TestModelSwitchBareModelName:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
-        mock_model = MagicMock()
-        mock_result = ModelResult(
-            model=mock_model,
-            model_name="gpt-4o",
-            provider="openai",
-        )
-        mock_agent = MagicMock()
-        mock_backend = MagicMock()
-
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
-                "deepagents_cli.agent.create_cli_agent",
-                return_value=(mock_agent, mock_backend),
-            ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+                "deepagents_cli.model_config.save_recent_model", return_value=True
+            ) as mock_save,
             patch.object(AppMessage, "__init__", capture_init),
         ):
             await app._switch_model("gpt-4o")
 
-        assert any("Switched to" in m for m in captured_messages)
+        mock_save.assert_called_once_with("openai:gpt-4o")
+        assert app._model_override == "openai:gpt-4o"
+        assert settings.model_name == "gpt-4o"
+        assert settings.model_provider == "openai"
+        assert any("Switched to openai:gpt-4o" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
         settings.model_provider = "anthropic"
@@ -597,7 +532,7 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=False,
@@ -619,7 +554,7 @@ class TestModelSwitchBareModelName:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
+        app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
@@ -632,7 +567,7 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
@@ -644,40 +579,6 @@ class TestModelSwitchBareModelName:
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
-
-
-class TestModelSwitchAskUserPersistence:
-    """Tests for preserving ask_user enablement across model hot-swap."""
-
-    async def test_model_switch_preserves_enable_ask_user_flag(self) -> None:
-        """Rebuilt agent receives `enable_ask_user=True` when app is configured."""
-        app = DeepAgentsApp(enable_ask_user=True)
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        mock_result = ModelResult(
-            model=MagicMock(),
-            model_name="claude-sonnet-4-5",
-            provider="anthropic",
-        )
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch("deepagents_cli.app.create_model", return_value=mock_result),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch("deepagents_cli.agent.create_cli_agent") as mock_create_agent,
-        ):
-            mock_create_agent.return_value = (MagicMock(), MagicMock())
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        assert mock_create_agent.call_count == 1
-        assert mock_create_agent.call_args.kwargs["enable_ask_user"] is True
 
 
 class TestExtractModelParamsFlag:
@@ -764,79 +665,6 @@ class TestExtractModelParamsFlag:
         remaining, params = _extract_model_params_flag("--model-params '{}'")
         assert remaining == ""
         assert params == {}
-
-
-class TestModelSwitchExtraKwargs:
-    """Tests for extra_kwargs forwarding through _switch_model."""
-
-    async def test_extra_kwargs_forwarded_to_create_model(self) -> None:
-        """_switch_model passes extra_kwargs to create_model."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        mock_model = MagicMock()
-        mock_result = MagicMock(spec=ModelResult)
-        mock_result.model = mock_model
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_cli.app.create_model", return_value=mock_result
-            ) as mock_create,
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch("deepagents_cli.agent.create_cli_agent") as mock_agent,
-        ):
-            mock_agent.return_value = (MagicMock(), MagicMock())
-            await app._switch_model(
-                "anthropic:claude-sonnet-4-5",
-                extra_kwargs={"temperature": 0.7},
-            )
-
-        mock_create.assert_called_once_with(
-            "anthropic:claude-sonnet-4-5",
-            extra_kwargs={"temperature": 0.7},
-            profile_overrides=None,
-        )
-
-    async def test_no_extra_kwargs_by_default(self) -> None:
-        """_switch_model passes None extra_kwargs when not provided."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
-        app._checkpointer = MagicMock()
-
-        settings.model_name = "gpt-4o"
-        settings.model_provider = "openai"
-
-        mock_model = MagicMock()
-        mock_result = MagicMock(spec=ModelResult)
-        mock_result.model = mock_model
-
-        with (
-            patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_cli.app.create_model", return_value=mock_result
-            ) as mock_create,
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
-            patch("deepagents_cli.agent.create_cli_agent") as mock_agent,
-        ):
-            mock_agent.return_value = (MagicMock(), MagicMock())
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        mock_create.assert_called_once_with(
-            "anthropic:claude-sonnet-4-5",
-            extra_kwargs=None,
-            profile_overrides=None,
-        )
 
 
 class TestModelCommandIntegration:

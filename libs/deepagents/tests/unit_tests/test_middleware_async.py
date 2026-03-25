@@ -305,14 +305,14 @@ class TestFilesystemMiddlewareAsync:
         backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
         backend = middleware._get_backend(backend_runtime)
 
-        async def slow_aglob_info(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        async def slow_aglob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             await asyncio.sleep(2)
             return []
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "aglob_info", side_effect=slow_aglob_info),
+            patch.object(backend, "aglob", side_effect=slow_aglob),
         ):
             result = await glob_search_tool.ainvoke(
                 {

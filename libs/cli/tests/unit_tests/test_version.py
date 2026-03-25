@@ -41,8 +41,6 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-cli {__version__}" in result.stdout
-    from importlib.metadata import version as pkg_version
-
     sdk_version = pkg_version("deepagents")
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
 

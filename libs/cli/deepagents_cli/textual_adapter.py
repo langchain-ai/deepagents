@@ -8,30 +8,36 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        EditDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command, Interrupt
     from rich.console import Console
 
-    from deepagents_cli.ask_user import AskUserWidgetResult, Question
+    from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from langchain.agents.middleware.human_in_the_loop import (
-    ApproveDecision,
-    EditDecision,
-    HITLRequest,
-    RejectDecision,
-)
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
-from deepagents_cli.ask_user import AskUserRequest
-from deepagents_cli.config import settings
+from deepagents_cli._ask_user_types import AskUserRequest
+from deepagents_cli._cli_context import CLIContext  # noqa: TC001
+from deepagents_cli._debug import configure_debug_logging
+from deepagents_cli._session_stats import (
+    ModelStats as ModelStats,
+    SessionStats as SessionStats,
+    SpinnerStatus as SpinnerStatus,
+    format_token_count as format_token_count,
+)
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
@@ -46,108 +52,47 @@ from deepagents_cli.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 
-_git_branch_cache: dict[str, str | None] = {}
-"""Cache git-branch lookups by current working directory."""
-
-
-@dataclass
-class ModelStats:
-    """Token stats for a single model within a session.
-
-    Attributes:
-        request_count: Number of LLM API requests made to this model.
-        input_tokens: Cumulative input tokens sent to this model.
-        output_tokens: Cumulative output tokens received from this model.
-    """
-
-    request_count: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
+_hitl_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the HITL request validator."""
 
 
-@dataclass
-class SessionStats:
-    """Stats accumulated over a single agent turn (or full session).
+def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
+    """Return a cached `TypeAdapter(HITLRequest)`.
 
-    Attributes:
-        request_count: Total LLM API requests made (each chunk with
-            usage_metadata counts as one completed request).
-        input_tokens: Cumulative input tokens across all LLM requests.
-        output_tokens: Cumulative output tokens across all LLM requests.
-        wall_time_seconds: Wall-clock duration from stream start to end.
-        per_model: Per-model breakdown keyed by model name.
-            Populated only when `record_request` receives a non-empty
-            `model_name`. Empty dict means no named-model requests were
-            recorded; `print_usage_table` omits the model table in that case and
-            shows only the wall-time line (if applicable).
-    """
-
-    request_count: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    wall_time_seconds: float = 0.0
-    per_model: dict[str, ModelStats] = field(default_factory=dict)
-
-    def record_request(
-        self,
-        model_name: str,
-        input_toks: int,
-        output_toks: int,
-    ) -> None:
-        """Accumulate token counts for one completed LLM request.
-
-        Updates both the session totals and the per-model breakdown.
-
-        Args:
-            model_name: The model that served this request (used as the
-                per-model key). Pass an empty string to skip the per-model
-                breakdown for this request.
-            input_toks: Input tokens for this request.
-            output_toks: Output tokens for this request.
-        """
-        self.request_count += 1
-        self.input_tokens += input_toks
-        self.output_tokens += output_toks
-        if model_name:
-            entry = self.per_model.setdefault(model_name, ModelStats())
-            entry.request_count += 1
-            entry.input_tokens += input_toks
-            entry.output_tokens += output_toks
-
-    def merge(self, other: SessionStats) -> None:
-        """Merge another `SessionStats` into this one (mutates *self*).
-
-        Used to accumulate per-turn stats into a session-level total.
-
-        Args:
-            other: The stats to fold in.
-        """
-        self.request_count += other.request_count
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
-        self.wall_time_seconds += other.wall_time_seconds
-        for model, ms in other.per_model.items():
-            entry = self.per_model.setdefault(model, ModelStats())
-            entry.request_count += ms.request_count
-            entry.input_tokens += ms.input_tokens
-            entry.output_tokens += ms.output_tokens
-
-
-def format_token_count(count: int) -> str:
-    """Format a token count into a human-readable short string.
+    Avoids re-compiling the pydantic schema on every `execute_task_textual` call.
 
     Args:
-        count: Number of tokens.
+        hitl_request_type: The `HITLRequest` class (passed in because
+            it is imported locally by the caller).
 
     Returns:
-        Formatted string like `"12.5K"`, `"1.2M"`, or `"500"`.
+        Shared `TypeAdapter` instance.
     """
-    if count >= 1_000_000:  # noqa: PLR2004
-        return f"{count / 1_000_000:.1f}M"
-    if count >= 1000:  # noqa: PLR2004
-        return f"{count / 1000:.1f}K"
-    return str(count)
+    global _hitl_adapter_cache  # noqa: PLW0603
+    if _hitl_adapter_cache is None:
+        _hitl_adapter_cache = TypeAdapter(hitl_request_type)
+    return _hitl_adapter_cache
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
+    """
+    rounded = round(seconds, 1)
+    if rounded < 60:  # noqa: PLR2004
+        return f"{rounded:.1f}s"
+    minutes, secs = divmod(int(rounded), 60)
+    if minutes < 60:  # noqa: PLR2004
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
 
 
 def print_usage_table(
@@ -214,86 +159,19 @@ def print_usage_table(
         console.print(table)
     if has_time:
         console.print()
-        console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")
+        console.print(
+            f"Agent active  {_format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )
 
 
-# Type alias matching HITLResponse["decisions"] element type
-HITLDecision = ApproveDecision | EditDecision | RejectDecision
+if TYPE_CHECKING:
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
-_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 _ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
 """Validator for incoming `ask_user` interrupt payloads."""
-
-
-def _get_git_branch() -> str | None:
-    """Return the current git branch name, or None if not in a repo."""
-    import subprocess  # noqa: S404
-
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
-        return None
-    if cwd in _git_branch_cache:
-        return _git_branch_cache[cwd]
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
-
-
-def _build_stream_config(
-    thread_id: str,
-    assistant_id: str | None,
-) -> dict[str, Any]:
-    """Build the LangGraph stream config dict.
-
-    The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`)
-    and git branch in metadata when available.
-
-    Args:
-        thread_id: The CLI session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
-
-    Returns:
-        Config dict with `configurable` and `metadata` keys.
-    """
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
-    if assistant_id:
-        metadata.update(
-            {
-                "assistant_id": assistant_id,
-                "agent_name": assistant_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -350,14 +228,8 @@ class TextualUIAdapter:
     When awaited, returns a `Future` that resolves to user answers.
     """
 
-    _scroll_to_bottom: Callable[[], None] | None
-    """Callback to scroll chat to bottom."""
-
-    _set_spinner: Callable[[str | None], Awaitable[None]] | None
-    """Callback to show/hide loading spinner.
-
-    Pass `None` to hide, or a status string to show.
-    """
+    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
+    """Callback to show/hide loading spinner."""
 
     _set_active_message: Callable[[str | None], None] | None
     """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -377,8 +249,7 @@ class TextualUIAdapter:
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
-        scroll_to_bottom: Callable[[], None] | None = None,
-        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         request_ask_user: (
@@ -399,7 +270,6 @@ class TextualUIAdapter:
                 "Auto-approve all" from an approval dialog.
 
                 Used by the app to sync the status bar indicator and session state.
-            scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
             set_active_message: Callback to set the active streaming message ID.
             sync_message_content: Callback to sync final content back to the
@@ -411,7 +281,6 @@ class TextualUIAdapter:
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
-        self._scroll_to_bottom = scroll_to_bottom
         self._set_spinner = set_spinner
         self._set_active_message = set_active_message
         self._sync_message_content = sync_message_content
@@ -456,6 +325,8 @@ def _build_interrupted_ai_message(
     Returns:
         AIMessage with accumulated content and tool calls, or None if empty.
     """
+    from langchain_core.messages import AIMessage
+
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
 
@@ -479,6 +350,29 @@ def _build_interrupted_ai_message(
     )
 
 
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -487,6 +381,10 @@ async def execute_task_textual(
     adapter: TextualUIAdapter,
     backend: Any = None,  # noqa: ANN401  # Dynamic backend type
     image_tracker: MediaTracker | None = None,
+    context: CLIContext | None = None,
+    *,
+    sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -501,6 +399,13 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+        context: Optional `CLIContext` with model override and params, passed
+            to the graph via `context=`.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -509,8 +414,20 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
     """
-    # Parse file mentions and inject content if any
-    prompt_text, mentioned_files = parse_file_mentions(user_input)
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+
+    # Parse file mentions and inject content if any — offload blocking I/O
+    prompt_text, mentioned_files = await asyncio.to_thread(
+        parse_file_mentions, user_input
+    )
 
     # Max file size to embed inline (256KB, matching mistral-vibe)
     # Larger files get a reference instead - use read_file tool to view them
@@ -520,22 +437,10 @@ async def execute_task_textual(
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                file_size = file_path.stat().st_size
-                if file_size > max_embed_bytes:
-                    # File too large - include reference instead of content
-                    size_kb = file_size // 1024
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, "
-                        "use read_file tool to view)"
-                    )
-                else:
-                    content = file_path.read_text()
-                    context_parts.append(
-                        f"\n### {file_path.name}\n"
-                        f"Path: `{file_path}`\n```\n{content}\n```"
-                    )
+                part = await asyncio.to_thread(
+                    _read_mentioned_file, file_path, max_embed_bytes
+                )
+                context_parts.append(part)
             except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
                 context_parts.append(
                     f"\n### {file_path.name}\n[Error reading file: {e}]"
@@ -558,7 +463,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id)
+    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -588,9 +493,10 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {
-        "messages": [{"role": "user", "content": message_content}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -607,9 +513,11 @@ async def execute_task_textual(
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
+                context=context,
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
                     continue
 
                 namespace, current_stream_mode, data = chunk
@@ -656,7 +564,7 @@ async def execute_task_textual(
                                 else:
                                     try:
                                         validated_request = (
-                                            _HITL_REQUEST_ADAPTER.validate_python(iv)
+                                            hitl_request_adapter.validate_python(iv)
                                         )
                                         pending_interrupts[interrupt_obj.id] = (
                                             validated_request
@@ -679,12 +587,23 @@ async def execute_task_textual(
                 elif current_stream_mode == "messages":
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
                         continue
 
                     if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
+                        logger.debug(
+                            "Skipping non-2-tuple message data: type=%s",
+                            type(data).__name__,
+                        )
                         continue
 
                     message, metadata = data
+                    logger.debug(
+                        "Processing message: type=%s id=%s has_content_blocks=%s",
+                        type(message).__name__,
+                        getattr(message, "id", None),
+                        hasattr(message, "content_blocks"),
+                    )
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -695,7 +614,7 @@ async def execute_task_textual(
                         if not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_spinner:
-                                await adapter._set_spinner("Summarizing")
+                                await adapter._set_spinner("Offloading")
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -709,7 +628,7 @@ async def execute_task_textual(
                                 "Failed to mount summarization notification",
                                 exc_info=True,
                             )
-                        if adapter._set_spinner:
+                        if adapter._set_spinner and not adapter._current_tool_messages:
                             await adapter._set_spinner("Thinking")
 
                     if isinstance(message, HumanMessage):
@@ -732,14 +651,12 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow spinner after tool result
-                        if adapter._set_spinner:
-                            await adapter._set_spinner("Thinking")
-
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
-                            tool_msg = adapter._current_tool_messages[tool_id]
+                            # Pop before widget calls so the dict drains even
+                            # if set_success/set_error raises.
+                            tool_msg = adapter._current_tool_messages.pop(tool_id)
                             output_str = str(tool_content) if tool_content else ""
                             if tool_status == "success":
                                 tool_msg.set_success(output_str)
@@ -749,8 +666,19 @@ async def execute_task_textual(
                                     "tool.error",
                                     {"tool_names": [tool_msg._tool_name]},
                                 )
-                            # Clean up - remove from tracking dict after status update
-                            adapter._current_tool_messages.pop(tool_id, None)
+                        elif tool_id:
+                            logger.debug(
+                                "ToolMessage tool_call_id=%s not in "
+                                "_current_tool_messages; spinner gating "
+                                "may be stale",
+                                tool_id,
+                            )
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active).
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -777,6 +705,8 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
+                            from deepagents_cli.config import settings
+
                             active_model = settings.model_name or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
@@ -795,10 +725,20 @@ async def execute_task_textual(
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
+                        logger.debug(
+                            "Message has no content_blocks: type=%s",
+                            type(message).__name__,
+                        )
                         continue
 
                     # Process content blocks
-                    for block in message.content_blocks:
+                    blocks = message.content_blocks
+                    logger.debug(
+                        "content_blocks count=%d blocks=%s",
+                        len(blocks),
+                        repr(blocks)[:500],
+                    )
+                    for block in blocks:
                         block_type = block.get("type")
 
                         if block_type == "text":
@@ -831,12 +771,6 @@ async def execute_task_textual(
                                 # streaming (uses MarkdownStream internally for
                                 # better performance)
                                 await current_msg.append_content(text)
-
-                                # Sticky scroll: scroll to bottom only if user is
-                                # near bottom. This lets users scroll away and
-                                # stay where they are
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
@@ -912,6 +846,12 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                                 assistant_message_by_namespace.pop(ns_key, None)
 
+                            logger.debug(
+                                "Tool call buffer: name=%s id=%s args=%s",
+                                buffer_name,
+                                buffer_id,
+                                repr(parsed_args)[:200],
+                            )
                             if (
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
@@ -926,13 +866,14 @@ async def execute_task_textual(
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
+                                logger.debug(
+                                    "Mounting ToolCallMessage: %s(%s)",
+                                    buffer_name,
+                                    repr(parsed_args)[:200],
+                                )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-
-                                # Sticky scroll after tool call is shown
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -959,7 +900,7 @@ async def execute_task_textual(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
-                if adapter._set_spinner:
+                if adapter._set_spinner and not adapter._current_tool_messages:
                     await adapter._set_spinner("Thinking")
 
             # Flush any remaining text from all namespaces
@@ -1221,7 +1162,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 
@@ -1269,7 +1210,7 @@ async def execute_task_textual(
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-        # Hide spinner (may still show "Summarizing" if interrupted mid-summary)
+        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
         if adapter._set_spinner:
             await adapter._set_spinner(None)
 

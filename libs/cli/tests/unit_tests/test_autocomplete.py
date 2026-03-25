@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.widgets.autocomplete import (
     MAX_SUGGESTIONS,
-    SLASH_COMMANDS,
     CompletionController,
     FuzzyFileController,
     MultiCompletionManager,
@@ -263,11 +263,11 @@ class TestSlashCommandController:
 
     def test_substring_name_match(self, controller, mock_view):
         """Substring of command name (not prefix) surfaces the command."""
-        controller.on_text_changed("/omp", 4)
+        controller.on_text_changed("/flo", 4)
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert any("/compact" in s[0] for s in suggestions)
+        assert any("/offload" in s[0] for s in suggestions)
 
     def test_true_fuzzy_match_via_misspelling(self, controller, mock_view):
         """Misspelled command surfaces via SequenceMatcher ratio."""
@@ -315,14 +315,14 @@ class TestScoreCommand:
         assert self.score("hel", "/help", "Show help") == 200
 
     def test_substring_name_returns_150(self):
-        assert self.score("omp", "/compact", "Summarize conversation") == 150
+        assert self.score("omp", "/compact", "Offload conversation") == 150
 
     def test_substring_desc_word_boundary_returns_110(self):
         assert self.score("exit", "/quit", "Exit app") == 110
 
     def test_substring_desc_mid_word_returns_90(self):
-        desc = "Summarize conversation to reduce context usage"
-        assert self.score("ex", "/compact", desc) == 90
+        desc = "Free up context window space by offloading older messages"
+        assert self.score("ex", "/offload", desc) == 90
 
     def test_no_match_returns_zero(self):
         assert self.score("zzzzz", "/help", "Show help") == 0
@@ -351,11 +351,11 @@ class TestScoreCommand:
     def test_tiers_ordering(self):
         """Prefix > substring-name > keyword > substring-desc > fuzzy."""
         prefix = self.score("hel", "/help", "Show help")
-        substr_name = self.score("omp", "/compact", "Summarize conversation")
+        substr_name = self.score("omp", "/compact", "Offload conversation")
         keyword = self.score("cont", "/threads", "Browse threads", "continue")
         desc_boundary = self.score("exit", "/quit", "Exit app")
-        compact_desc = "Summarize conversation to reduce context usage"
-        desc_mid = self.score("ex", "/compact", compact_desc)
+        offload_desc = "Free up context window space by offloading older messages"
+        desc_mid = self.score("ex", "/offload", offload_desc)
         fuzzy = self.score("hlep", "/help", "Show help")
         assert prefix > substr_name > keyword > desc_boundary > desc_mid > fuzzy > 0
 
@@ -475,3 +475,51 @@ class TestMultiCompletionManager:
         manager.reset()
         manager.reset()
         assert manager._active is None
+
+
+class TestSlashCommandControllerUpdateCommands:
+    """Tests for SlashCommandController.update_commands()."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    def test_update_replaces_commands(self, mock_view: MagicMock) -> None:
+        """update_commands() replaces the internal commands list."""
+        initial = [("/help", "Show help", "")]
+        controller = SlashCommandController(initial, mock_view)
+
+        new_commands = [
+            ("/help", "Show help", ""),
+            ("/skill:web-research", "Research topics", "web-research"),
+        ]
+        controller.update_commands(new_commands)
+
+        # Typing /skill: should now show the skill command
+        controller.on_text_changed("/skill:", 7)
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/skill:web-research" in s[0] for s in suggestions)
+
+    def test_update_resets_suggestions(self, mock_view: MagicMock) -> None:
+        """update_commands() clears any active suggestions."""
+        commands = [("/help", "Show help", "")]
+        controller = SlashCommandController(commands, mock_view)
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.update_commands([("/quit", "Exit", "")])
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_skill_commands_fuzzy_match(self, mock_view: MagicMock) -> None:
+        """Skill commands match via hidden keywords."""
+        commands = [
+            ("/help", "Show help", ""),
+            ("/skill:code-review", "Review code changes", "code-review"),
+        ]
+        controller = SlashCommandController(commands, mock_view)
+        controller.on_text_changed("/code", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/skill:code-review" in s[0] for s in suggestions)

@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Markdown, Static
+
+from deepagents_cli import theme
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -15,15 +18,6 @@ _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
-
-
-def _escape_markup(text: str) -> str:
-    """Escape Rich markup characters in text.
-
-    Returns:
-        Escaped text safe for Rich rendering.
-    """
-    return text.replace("[", r"\[").replace("]", r"\]")
 
 
 class ToolApprovalWidget(Vertical):
@@ -116,7 +110,14 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
         # File path header with stats
         stats_str = self._format_stats(additions, deletions)
-        yield Static(f"[bold cyan]File:[/bold cyan] {file_path}  {stats_str}")
+        yield Static(
+            Content.assemble(
+                Content.from_markup(
+                    "[bold cyan]File:[/bold cyan] $path  ", path=file_path
+                ),
+                stats_str,
+            )
+        )
         yield Static("")
 
         if not diff_lines and not old_string and not new_string:
@@ -153,18 +154,23 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         return additions, deletions
 
     @staticmethod
-    def _format_stats(additions: int, deletions: int) -> str:
-        """Format stats as colored string.
+    def _format_stats(additions: int, deletions: int) -> Content:
+        """Format addition/deletion stats as styled Content.
 
         Returns:
-            Rich-formatted string showing additions and deletions.
+            Styled Content showing additions and deletions.
         """
-        parts = []
+        colors = theme.get_theme_colors()
+        parts: list[str | tuple[str, str] | Content] = []
         if additions:
-            parts.append(f"[green]+{additions}[/green]")
+            if parts:
+                parts.append(" ")
+            parts.append((f"+{additions}", colors.success))
         if deletions:
-            parts.append(f"[red]-{deletions}[/red]")
-        return " ".join(parts)
+            if parts:
+                parts.append(" ")
+            parts.append((f"-{deletions}", colors.error))
+        return Content.assemble(*parts) if parts else Content("")
 
     def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
         """Render unified diff lines without returning stats.
@@ -177,7 +183,9 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         for line in diff_lines:
             if lines_shown >= _MAX_DIFF_LINES:
                 yield Static(
-                    f"[dim]... ({len(diff_lines) - lines_shown} more lines)[/dim]"
+                    Content.styled(
+                        f"... ({len(diff_lines) - lines_shown} more lines)", "dim"
+                    )
                 )
                 break
 
@@ -195,13 +203,14 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Yields:
             Static widgets showing removed and added content with styling.
         """
+        colors = theme.get_theme_colors()
         if old_string:
-            yield Static("[bold red]Removing:[/bold red]")
+            yield Static(Content.styled("Removing:", f"bold {colors.error}"))
             yield from self._render_string_lines(old_string, is_addition=False)
             yield Static("")
 
         if new_string:
-            yield Static("[bold green]Adding:[/bold green]")
+            yield Static(Content.styled("Adding:", f"bold {colors.success}"))
             yield from self._render_string_lines(new_string, is_addition=True)
 
     @staticmethod
@@ -211,14 +220,20 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         Returns:
             Static widget with styled diff line, or None for empty/skipped lines.
         """
-        content = _escape_markup(line[1:] if len(line) > 1 else "")
+        raw = line[1:] if len(line) > 1 else ""
 
         if line.startswith("-"):
-            return Static(f"[on #4a2020][#ff8787]- {content}[/#ff8787][/on #4a2020]")
+            return Static(
+                Content.from_markup("- $text", text=raw), classes="diff-removed"
+            )
         if line.startswith("+"):
-            return Static(f"[on #1e4620][#8ce99a]+ {content}[/#8ce99a][/on #1e4620]")
+            return Static(
+                Content.from_markup("+ $text", text=raw), classes="diff-added"
+            )
         if line.startswith(" "):
-            return Static(f"[#aaaaaa]  {content}[/#aaaaaa]")
+            return Static(
+                Content.from_markup("  $text", text=raw), classes="diff-context"
+            )
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -231,15 +246,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             Static widgets for each line with addition or deletion styling.
         """
         lines = text.split("\n")
-        style = "[on #1e4620][#8ce99a]+" if is_addition else "[on #4a2020][#ff8787]-"
-        end_style = (
-            "[/#8ce99a][/on #1e4620]" if is_addition else "[/#ff8787][/on #4a2020]"
-        )
+        sign = "+" if is_addition else "-"
+        cls = "diff-added" if is_addition else "diff-removed"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            escaped = _escape_markup(line)
-            yield Static(f"{style} {escaped}{end_style}")
+            yield Static(Content.from_markup(f"{sign} $text", text=line), classes=cls)
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
-            yield Static(f"[dim]... ({remaining} more lines)[/dim]")
+            yield Static(Content.styled(f"... ({remaining} more lines)", "dim"))

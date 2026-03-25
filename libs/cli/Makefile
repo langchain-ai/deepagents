@@ -13,11 +13,13 @@ UV_FROZEN = true
 TEST_FILE ?= tests/unit_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
+COV_ARGS ?= --cov=deepagents_cli --cov-report=term-missing
+PYTEST_EXTRA ?=
+
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(TEST_FILE) \
-		--cov=deepagents_cli \
-		--cov-report=term-missing
+	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
+		$(COV_ARGS)
 
 coverage: ## Run unit tests with coverage
 	uv run --group test pytest --cov \

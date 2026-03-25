@@ -80,7 +80,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -221,12 +221,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else (StateBackend)
     normalized_artifacts = artifacts.rstrip("/") if artifacts and artifacts != "/" else artifacts
-    large_tool_results_path_prefix = (
-        f"{normalized_artifacts}/large_tool_results" if normalized_artifacts else "/large_tool_results"
-    )
-    conversation_history_path_prefix = (
-        f"{normalized_artifacts}/conversation_history" if normalized_artifacts else "/conversation_history"
-    )
+    large_tool_results_path_prefix = f"{normalized_artifacts}/large_tool_results" if normalized_artifacts else "/large_tool_results"
+    conversation_history_path_prefix = f"{normalized_artifacts}/conversation_history" if normalized_artifacts else "/conversation_history"
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -324,7 +320,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             create_summarization_middleware(
                 model,
                 backend,
-                history_path_prefix=history_path_prefix,
+                history_path_prefix=conversation_history_path_prefix,
             ),
             PatchToolCallsMiddleware(),
         ]

@@ -1341,9 +1341,7 @@ class TestDeepAgentStructure:
         agent = create_deep_agent(artifacts="/artifacts")
         assert_all_deepagent_qualities(agent)
 
-        filesystem_middleware = FilesystemMiddleware(
-            large_tool_results_path_prefix="/artifacts/large_tool_results"
-        )
+        filesystem_middleware = FilesystemMiddleware(large_tool_results_path_prefix="/artifacts/large_tool_results")
         summarization_middleware = create_summarization_middleware(
             GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
             StateBackend,

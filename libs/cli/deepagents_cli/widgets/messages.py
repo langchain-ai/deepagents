@@ -25,6 +25,7 @@ from deepagents_cli.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_cli.formatting import format_duration
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets._links import open_style_link
@@ -911,7 +912,7 @@ class ToolCallMessage(Vertical):
         elapsed = ""
         if self._start_time is not None:
             elapsed_secs = int(time() - self._start_time)
-            elapsed = f" ({elapsed_secs}s)"
+            elapsed = f" ({format_duration(elapsed_secs)})"
 
         text = f"{frame} Running...{elapsed}"
         self._status_widget.update(

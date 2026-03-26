@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_cli.config import get_glyphs
+from deepagents_cli.formatting import format_duration
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -134,7 +135,7 @@ class LoadingWidget(Static):
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)
-            self._hint_widget.update(f"({elapsed}s, esc to interrupt)")
+            self._hint_widget.update(f"({format_duration(elapsed)}, esc to interrupt)")
 
     def set_status(self, status: str) -> None:
         """Update the status text.
@@ -159,7 +160,9 @@ class LoadingWidget(Static):
         if self._status_widget:
             self._status_widget.update(f" {status}... ")
         if self._hint_widget:
-            self._hint_widget.update(f"(paused at {self._paused_elapsed}s)")
+            self._hint_widget.update(
+                f"(paused at {format_duration(self._paused_elapsed)})"
+            )
         if self._spinner_widget:
             self._spinner_widget.update(Content.styled(get_glyphs().pause, "dim"))
 

@@ -256,10 +256,8 @@ REGISTRY: tuple[Model, ...] = (
         "ollama:glm-5",
         frozenset(
             {
-                "eval:set1",
                 "eval:set2",
                 "eval:ollama",
-                "harbor:set1",
                 "harbor:set2",
                 "harbor:ollama",
             }
@@ -269,10 +267,8 @@ REGISTRY: tuple[Model, ...] = (
         "ollama:minimax-m2.5",
         frozenset(
             {
-                "eval:set1",
                 "eval:set2",
                 "eval:ollama",
-                "harbor:set1",
                 "harbor:set2",
                 "harbor:ollama",
             }

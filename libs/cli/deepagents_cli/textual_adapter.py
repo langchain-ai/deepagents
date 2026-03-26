@@ -385,6 +385,7 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -406,6 +407,12 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        turn_stats: Pre-created `SessionStats` to accumulate into.
+
+            When the caller holds a reference to the same object, stats are
+            available even if this coroutine is cancelled before it can return.
+
+            If `None`, a new instance is created internally.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -469,7 +476,8 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    turn_stats = SessionStats()
+    if turn_stats is None:
+        turn_stats = SessionStats()
     start_time = time.monotonic()
 
     # Show spinner

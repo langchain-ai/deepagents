@@ -91,7 +91,7 @@ logger = logging.getLogger(__name__)
 
 
 class CompactConversationSchema(BaseModel):
-    pass
+    """Input schema for the `compact_conversation` tool."""
 
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`

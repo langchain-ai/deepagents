@@ -122,10 +122,14 @@ class FilesystemState(AgentState):
 
 
 class LsSchema(BaseModel):
+    """Input schema for the `ls` tool."""
+
     path: str = Field(description="Absolute path to the directory to list. Must be absolute, not relative.")
 
 
 class ReadFileSchema(BaseModel):
+    """Input schema for the `read_file` tool."""
+
     file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
@@ -138,11 +142,15 @@ class ReadFileSchema(BaseModel):
 
 
 class WriteFileSchema(BaseModel):
+    """Input schema for the `write_file` tool."""
+
     file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
 class EditFileSchema(BaseModel):
+    """Input schema for the `edit_file` tool."""
+
     file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
     old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
     new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
@@ -153,11 +161,15 @@ class EditFileSchema(BaseModel):
 
 
 class GlobSchema(BaseModel):
+    """Input schema for the `glob` tool."""
+
     pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
     path: str = Field(default="/", description="Base directory to search from. Defaults to root '/'.")
 
 
 class GrepSchema(BaseModel):
+    """Input schema for the `grep` tool."""
+
     pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
     glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
@@ -168,6 +180,8 @@ class GrepSchema(BaseModel):
 
 
 class ExecuteSchema(BaseModel):
+    """Input schema for the `execute` tool."""
+
     command: str = Field(description="Shell command to execute in the sandbox environment.")
     timeout: int | None = Field(
         default=None,

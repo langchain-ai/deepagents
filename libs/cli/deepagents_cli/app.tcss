@@ -107,11 +107,6 @@ Screen {
     height: auto;
 }
 
-.approval-file-path {
-    color: $primary;
-    text-style: bold;
-}
-
 .approval-description {
     color: $text-muted;
 }

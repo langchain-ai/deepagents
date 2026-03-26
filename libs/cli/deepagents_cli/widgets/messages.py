@@ -149,7 +149,7 @@ class UserMessage(_TimestampClickMixin, Static):
     UserMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
         background: transparent;
         border-left: wide $primary;
     }
@@ -236,7 +236,7 @@ class QueuedUserMessage(Static):
     QueuedUserMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
@@ -320,9 +320,9 @@ class SkillMessage(Vertical):
     SkillMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
         background: transparent;
-        border-left: wide #a78bfa;
+        border-left: wide $skill;
     }
 
     SkillMessage .skill-header {
@@ -330,7 +330,7 @@ class SkillMessage(Vertical):
     }
 
     SkillMessage .skill-description {
-        color: #6b7280;
+        color: $text-muted;
         margin-left: 3;
     }
 
@@ -348,7 +348,7 @@ class SkillMessage(Vertical):
 
     SkillMessage .skill-hint {
         margin-left: 3;
-        color: #6b7280;
+        color: $text-muted;
     }
 
     SkillMessage.-expanded #skill-md {
@@ -356,7 +356,7 @@ class SkillMessage(Vertical):
     }
 
     SkillMessage:hover {
-        border-left: wide #c4b5fd;
+        border-left: wide $skill-hover;
     }
     """
 
@@ -402,16 +402,17 @@ class SkillMessage(Vertical):
         Yields:
             Widgets for header, description, args, and collapsible body.
         """
+        colors = theme.get_theme_colors()
         source_tag = f" [{self._source}]" if self._source else ""
         yield _SkillToggle(
-            Content.from_markup(
-                "[bold #a78bfa]$label[/bold #a78bfa]",
-                label=f"/skill:{self._skill_name}{source_tag}",
+            Content.styled(
+                f"/ skill:{self._skill_name}{source_tag}",
+                f"bold {colors.skill}",
             ),
             classes="skill-header",
         )
         if self._description:
-            yield Static(
+            yield _SkillToggle(
                 Content.styled(self._description, "dim"),
                 classes="skill-description",
             )
@@ -429,7 +430,8 @@ class SkillMessage(Vertical):
     def on_mount(self) -> None:
         """Cache widget references, render initial state."""
         if is_ascii_mode():
-            self.styles.border_left = ("ascii", "#a78bfa")
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.skill)
 
         self._md_widget = self.query_one("#skill-md", Static)
         self._hint_widget = self.query_one("#skill-hint", _SkillToggle)
@@ -547,7 +549,7 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     AssistantMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
     }
 
     AssistantMessage Markdown {
@@ -663,12 +665,12 @@ class ToolCallMessage(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide $panel;
+        border-left: wide $tool;
     }
 
     ToolCallMessage .tool-header {
         height: auto;
-        color: $warning;
+        color: $tool;
         text-style: bold;
     }
 
@@ -715,7 +717,7 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage:hover {
-        border-left: wide $secondary;
+        border-left: wide $tool-hover;
     }
     """
     """Left border tracks tool lifecycle; hover brightens for interactivity."""
@@ -1532,7 +1534,7 @@ class DiffMessage(_TimestampClickMixin, Static):
     DiffMessage {
         height: auto;
         padding: 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         background: $surface;
         border: solid $primary;
     }
@@ -1604,7 +1606,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
     ErrorMessage {
         height: auto;
         padding: 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         background: $error-muted;
         color: white;
         border-left: wide $error;
@@ -1655,7 +1657,7 @@ class AppMessage(Static):
     AppMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
     }
@@ -1690,7 +1692,7 @@ class SummarizationMessage(AppMessage):
     SummarizationMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         color: $primary;
         background: $surface;
         border-left: wide $primary;

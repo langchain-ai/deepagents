@@ -414,6 +414,15 @@ class FilesystemBackend(BackendProtocol):
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
+            # Normalize line endings in old_string/new_string to match the
+            # text-mode read above. Python universal newlines (the default
+            # when newline=None) converts \r\n and bare \r to \n on read.
+            # Callers that obtained content via binary-mode reads (e.g.
+            # download_files) may pass strings with \r\n or \r that would
+            # fail to match the \n-only content.
+            old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+            new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
+
             result = perform_string_replacement(content, old_string, new_string, replace_all)
 
             if isinstance(result, str):

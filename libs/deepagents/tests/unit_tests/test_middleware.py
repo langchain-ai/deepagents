@@ -1208,8 +1208,6 @@ class TestFilesystemMiddleware:
                     file_data={
                         "content": "<base64_data>",
                         "encoding": "base64",
-                        "created_at": "",
-                        "modified_at": "",
                     }
                 )
 

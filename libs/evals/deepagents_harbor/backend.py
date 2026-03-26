@@ -10,6 +10,7 @@ from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -21,7 +22,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import check_empty_content, create_file_data
+from deepagents.backends.utils import check_empty_content
 from harbor.environments.base import BaseEnvironment
 
 _SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
@@ -179,9 +180,9 @@ awk -v offset={offset} -v limit={limit} '
 
         empty_msg = check_empty_content(content)
         if empty_msg:
-            return ReadResult(file_data=create_file_data(empty_msg))
+            return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
-        return ReadResult(file_data=create_file_data(content))
+        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
 
     def read(
         self,

@@ -302,7 +302,9 @@ class SkillMessage(Vertical):
     Shows skill name, source badge, description, and user args as a compact
     header. The full SKILL.md body (frontmatter stripped) is hidden behind a
     preview/expand toggle (click or Ctrl+O).  The expanded view renders
-    markdown via Textual's `Markdown` widget.
+    markdown via Rich's `Markdown` inside a single `Static` widget to avoid
+    the deep DOM tree that Textual's `Markdown` widget creates (which makes
+    click-driven toggles expensive due to hit-testing and reflow).
     """
 
     DEFAULT_CSS = """
@@ -381,7 +383,7 @@ class SkillMessage(Vertical):
         self._args = args
         self._expanded: bool = False
         self._preview_widget: Static | None = None
-        self._md_widget: Markdown | None = None
+        self._md_widget: Static | None = None
         self._hint_widget: Static | None = None
         self._deferred_expanded: bool = False
         self._md_rendered: bool = False
@@ -392,8 +394,6 @@ class SkillMessage(Vertical):
         Yields:
             Widgets for header, description, args, and collapsible body.
         """
-        from textual.widgets import Markdown as MdWidget
-
         source_tag = f" [{self._source}]" if self._source else ""
         yield Static(
             Content.from_markup(
@@ -416,18 +416,18 @@ class SkillMessage(Vertical):
                 classes="skill-args",
             )
         yield Static("", classes="skill-body-preview", id="skill-preview")
-        yield MdWidget("", id="skill-md")
+        # Single Static widget instead of Textual Markdown — avoids the deep
+        # DOM tree that makes click-to-toggle expensive (hit-test + reflow).
+        yield Static("", id="skill-md")
         yield Static("", classes="skill-hint", id="skill-hint")
 
     def on_mount(self) -> None:
         """Cache widget references and set initial display state."""
-        from textual.widgets import Markdown as MdWidget
-
         if is_ascii_mode():
             self.styles.border_left = ("ascii", "#a78bfa")
 
         self._preview_widget = self.query_one("#skill-preview", Static)
-        self._md_widget = self.query_one("#skill-md", MdWidget)
+        self._md_widget = self.query_one("#skill-md", Static)
         self._hint_widget = self.query_one("#skill-hint", Static)
 
         self._preview_widget.display = False
@@ -456,11 +456,24 @@ class SkillMessage(Vertical):
         else:
             _show_timestamp_toast(self)
 
+    def _render_markdown(self, body: str) -> None:
+        """Render markdown body into the Static widget via Rich.
+
+        Args:
+            body: Raw markdown text.
+        """
+        if self._md_rendered or not self._md_widget:
+            return
+        from rich.markdown import Markdown as RichMarkdown
+
+        self._md_widget.update(RichMarkdown(body))
+        self._md_rendered = True
+
     def _update_body_display(self) -> None:
         """Update the body display based on expanded state.
 
-        Renders the markdown body at most once; subsequent toggles only flip
-        widget visibility to avoid the cost of re-parsing and re-highlighting.
+        Renders the markdown body at most once via Rich; subsequent toggles
+        only flip widget visibility.
         """
         if not self._preview_widget or not self._md_widget or not self._hint_widget:
             return
@@ -477,9 +490,7 @@ class SkillMessage(Vertical):
 
         if self._expanded:
             self._preview_widget.display = False
-            if not self._md_rendered:
-                self._md_widget.update(body)
-                self._md_rendered = True
+            self._render_markdown(body)
             self._md_widget.display = True
             self._hint_widget.update(
                 Content.styled("click or Ctrl+O to collapse", "dim italic")
@@ -504,9 +515,7 @@ class SkillMessage(Vertical):
             self._hint_widget.display = True
         else:
             self._preview_widget.display = False
-            if not self._md_rendered:
-                self._md_widget.update(body)
-                self._md_rendered = True
+            self._render_markdown(body)
             self._md_widget.display = True
             self._hint_widget.display = False
 

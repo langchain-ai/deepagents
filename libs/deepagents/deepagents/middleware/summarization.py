@@ -152,6 +152,16 @@ class SummarizationState(AgentState):
     """Private field storing the most recent summarization event."""
 
 
+SummarizationToolRuntime = ToolRuntime[object, SummarizationState]
+"""Tool runtime for summarization tools.
+
+The summarization tool reads and updates `SummarizationState` while receiving
+injected runtime context from LangChain. Using `object` for the context type
+keeps caller-provided context values unconstrained during validation and
+serialization, which avoids warnings for valid non-`None` context.
+"""
+
+
 class SummarizationDefaults(TypedDict):
     """Default settings computed from model profile."""
 
@@ -1220,7 +1230,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self._summarization = summarization
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _resolve_backend(self, runtime: SummarizationToolRuntime) -> BackendProtocol:
         """Resolve backend from instance or factory using a `ToolRuntime`.
 
         Args:
@@ -1231,7 +1241,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         backend = self._summarization._backend
         if callable(backend):
-            return backend(runtime)  # ty: ignore[call-top-callable]
+            return cast("Callable[[SummarizationToolRuntime], BackendProtocol]", backend)(runtime)
         return backend
 
     def _create_compact_tool(self) -> BaseTool:
@@ -1244,10 +1254,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         mw = self
 
-        def sync_compact(runtime: ToolRuntime) -> Command:
+        def sync_compact(runtime: SummarizationToolRuntime) -> Command:
             return mw._run_compact(runtime)
 
-        async def async_compact(runtime: ToolRuntime) -> Command:
+        async def async_compact(runtime: SummarizationToolRuntime) -> Command:
             return await mw._arun_compact(runtime)
 
         return StructuredTool.from_function(
@@ -1264,7 +1274,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     def _build_compact_result(
         self,
-        runtime: ToolRuntime,
+        runtime: SummarizationToolRuntime,
         to_summarize: list[AnyMessage],
         summary: str,
         file_path: str | None,
@@ -1394,7 +1404,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
                     return True
         return False
 
-    def _run_compact(self, runtime: ToolRuntime) -> Command:
+    def _run_compact(self, runtime: SummarizationToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.
 
         Args:
@@ -1428,7 +1438,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
-    async def _arun_compact(self, runtime: ToolRuntime) -> Command:
+    async def _arun_compact(self, runtime: SummarizationToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
 
         Args:

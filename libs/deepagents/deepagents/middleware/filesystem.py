@@ -120,6 +120,20 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
+FilesystemToolRuntime = ToolRuntime[object, FilesystemState]
+"""Tool runtime for filesystem tools.
+
+The filesystem tools do not inspect or depend on the agent context, but LangChain
+validates and serializes injected runtime arguments through the generated
+`args_schema`. Using `ToolRuntime[None, FilesystemState]` causes Pydantic to warn
+when the agent is invoked with a non-`None` context, because the injected runtime
+contains the caller-provided context value at execution time.
+
+`object` keeps the runtime context unconstrained for validation/serialization while
+preserving the concrete filesystem state type these tools depend on.
+"""
+
+
 LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
 
 This is useful for exploring the filesystem and finding the right file to read or edit.
@@ -572,7 +586,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
 
         def sync_ls(
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
         ) -> str:
             """Synchronous wrapper for ls tool."""
@@ -600,7 +614,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return str(result)
 
         async def async_ls(
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
         ) -> str:
             """Asynchronous wrapper for ls tool."""
@@ -699,7 +713,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
@@ -715,7 +729,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
@@ -743,7 +757,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_write_file(
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
         ) -> Command | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -772,7 +786,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_write_file(
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
         ) -> Command | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -813,7 +827,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
             old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
             new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
         ) -> Command | str:
@@ -844,7 +858,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
             old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
             new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
         ) -> Command | str:
@@ -884,7 +898,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def sync_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
         ) -> str:
             """Synchronous wrapper for glob tool."""
@@ -918,7 +932,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def async_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
         ) -> str:
             """Asynchronous wrapper for glob tool."""
@@ -964,7 +978,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def sync_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
             output_mode: Annotated[
@@ -1002,7 +1016,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
             output_mode: Annotated[
@@ -1051,7 +1065,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             timeout: Annotated[
                 int | None,
                 "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
@@ -1105,7 +1119,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
-            runtime: ToolRuntime[None, FilesystemState],
+            runtime: FilesystemToolRuntime,
             # ASYNC109 - timeout is a semantic parameter forwarded to the
             # backend's implementation, not an asyncio.timeout() contract.
             timeout: Annotated[  # noqa: ASYNC109

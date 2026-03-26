@@ -6,7 +6,7 @@ from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -110,6 +110,14 @@ class CompiledSubAgent(TypedDict):
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+
+SubAgentToolRuntime = ToolRuntime[object, AgentState]
+"""Tool runtime for subagent tools.
+
+The task tool accepts arbitrary agent context and forwards the current state to
+subagents, so the runtime needs an unconstrained context type while still
+advertising that it is an injected tool argument.
+"""
 
 # State keys that are excluded when passing state to subagents and when returning
 # updates from subagents.
@@ -418,7 +426,11 @@ def _build_task_tool(  # noqa: C901
             }
         )
 
-    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+    def _validate_and_prepare_state(
+        subagent_type: str,
+        description: str,
+        runtime: SubAgentToolRuntime,
+    ) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
@@ -432,7 +444,7 @@ def _build_task_tool(  # noqa: C901
             "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
         ],
         subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
-        runtime: ToolRuntime,
+        runtime: SubAgentToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -450,7 +462,7 @@ def _build_task_tool(  # noqa: C901
             "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
         ],
         subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
-        runtime: ToolRuntime,
+        runtime: SubAgentToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])

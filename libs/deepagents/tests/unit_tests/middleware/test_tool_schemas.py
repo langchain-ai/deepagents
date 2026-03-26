@@ -1,9 +1,32 @@
 """Unit tests for tool schema validation."""
 
+import warnings
+
+from langchain.tools import ToolRuntime
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
 
 from deepagents.backends.state import StateBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware, AsyncSubAgentState
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgentMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationState, SummarizationToolMiddleware
+
+
+def _assert_model_dump_has_no_warnings(
+    tool: StructuredTool,
+    payload: dict[str, object],
+    runtime: ToolRuntime,
+) -> None:
+    """Assert a tool args model can dump injected runtime without warnings."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validated = tool.args_schema.model_validate({**payload, "runtime": runtime})
+        validated.model_dump()
+
+    assert caught == []
 
 
 class TestFilesystemToolSchemas:
@@ -82,3 +105,104 @@ class TestFilesystemToolSchemas:
                 f"Sync schema: {sync_schema}\n"
                 f"Async schema: {async_schema}"
             )
+
+    def test_runtime_schema_accepts_non_none_context_without_serialization_warning(self) -> None:
+        """Verify injected runtime context does not warn during args schema serialization."""
+        backend = StateBackend(None)  # type: ignore[arg-type]
+        middleware = FilesystemMiddleware(backend=backend)
+        tool = next(tool for tool in middleware.tools if tool.name == "ls")
+
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[]),
+            context={"foo": "bar"},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tool_call_id="tool-call-1",
+            store=None,
+        )
+
+        _assert_model_dump_has_no_warnings(tool, {"path": "/"}, runtime)
+
+
+class TestOtherMiddlewareToolSchemas:
+    """Test runtime schema serialization for non-filesystem middleware tools."""
+
+    def test_subagent_task_runtime_schema_accepts_non_none_context_without_warning(self) -> None:
+        """Verify task tool runtime serialization accepts arbitrary context."""
+        compiled_subagent: CompiledSubAgent = {
+            "name": "general",
+            "description": "General purpose subagent",
+            "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+        }
+        middleware = SubAgentMiddleware(
+            backend=StateBackend,
+            subagents=[compiled_subagent],
+        )
+        tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={"messages": []},
+            context={"foo": "bar"},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tool_call_id="tool-call-1",
+            store=None,
+        )
+
+        _assert_model_dump_has_no_warnings(
+            tool,
+            {
+                "description": "Do the task",
+                "subagent_type": "general",
+            },
+            runtime,
+        )
+
+    def test_async_subagent_runtime_schema_accepts_non_none_context_without_warning(self) -> None:
+        """Verify async subagent tool runtime serialization accepts arbitrary context."""
+        async_subagents: list[AsyncSubAgent] = [
+            {
+                "name": "general",
+                "description": "General purpose async subagent",
+                "graph_id": "graph-id",
+                "url": "https://example.com",
+            }
+        ]
+        middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents)
+        tool = next(tool for tool in middleware.tools if tool.name == "start_async_task")
+        runtime = ToolRuntime(
+            state=AsyncSubAgentState(messages=[]),
+            context={"foo": "bar"},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tool_call_id="tool-call-1",
+            store=None,
+        )
+
+        _assert_model_dump_has_no_warnings(
+            tool,
+            {
+                "description": "Do the task",
+                "subagent_type": "general",
+            },
+            runtime,
+        )
+
+    def test_summarization_runtime_schema_accepts_non_none_context_without_warning(self) -> None:
+        """Verify compact tool runtime serialization accepts arbitrary context."""
+        summarization = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="summary")])),
+            backend=StateBackend,
+            trigger=("messages", 10),
+        )
+        middleware = SummarizationToolMiddleware(summarization)
+        tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state=SummarizationState(messages=[]),
+            context={"foo": "bar"},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tool_call_id="tool-call-1",
+            store=None,
+        )
+
+        _assert_model_dump_has_no_warnings(tool, {}, runtime)

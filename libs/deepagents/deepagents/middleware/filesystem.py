@@ -23,6 +23,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
@@ -112,6 +113,18 @@ class FilesystemState(AgentState):
 
     files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
     """Files in the filesystem."""
+
+
+class ReadFileSchema(BaseModel):
+    file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
+    offset: int = Field(
+        default=DEFAULT_READ_OFFSET,
+        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+    )
+    limit: int = Field(
+        default=DEFAULT_READ_LIMIT,
+        description="Maximum number of lines to read. Use for pagination of large files.",
+    )
 
 
 LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
@@ -666,6 +679,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_read_file,
             coroutine=async_read_file,
+            infer_schema=False,
+            args_schema=ReadFileSchema,
         )
 
     def _create_write_file_tool(self) -> BaseTool:

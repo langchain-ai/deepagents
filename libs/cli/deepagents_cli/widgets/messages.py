@@ -11,8 +11,11 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
+from textual import on
 from textual.containers import Vertical
 from textual.content import Content
+from textual.events import Click
+from textual.reactive import var
 from textual.widgets import Static
 
 from deepagents_cli import theme
@@ -29,7 +32,6 @@ from deepagents_cli.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click
     from textual.timer import Timer
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -296,15 +298,22 @@ def _strip_frontmatter(text: str) -> str:
     return stripped[after:].lstrip("\n")
 
 
+class _SkillToggle(Static):
+    """Clickable header/hint area for toggling skill body expansion."""
+
+
 class SkillMessage(Vertical):
     """Widget displaying a skill invocation with collapsible body.
 
     Shows skill name, source badge, description, and user args as a compact
     header. The full SKILL.md body (frontmatter stripped) is hidden behind a
     preview/expand toggle (click or Ctrl+O).  The expanded view renders
-    markdown via Rich's `Markdown` inside a single `Static` widget to avoid
-    the deep DOM tree that Textual's `Markdown` widget creates (which makes
-    click-driven toggles expensive due to hit-testing and reflow).
+    markdown via Rich's `Markdown` inside a single `Static` widget.
+
+    Visibility is driven by a CSS class (`-expanded`) toggled via a Textual
+    reactive `var`. Click handlers are scoped to the header and hint widgets
+    (`_SkillToggle`) so clicks never hit the content body, avoiding expensive
+    DOM hit-testing.
     """
 
     DEFAULT_CSS = """
@@ -330,21 +339,20 @@ class SkillMessage(Vertical):
         margin-top: 0;
     }
 
-    SkillMessage .skill-body-preview {
-        margin-left: 3;
-        margin-top: 0;
-        color: #6b7280;
-    }
-
     SkillMessage #skill-md {
         margin-left: 3;
         margin-top: 0;
         padding: 0;
+        display: none;
     }
 
     SkillMessage .skill-hint {
         margin-left: 3;
         color: #6b7280;
+    }
+
+    SkillMessage.-expanded #skill-md {
+        display: block;
     }
 
     SkillMessage:hover {
@@ -354,6 +362,8 @@ class SkillMessage(Vertical):
 
     _PREVIEW_LINES = 4
     _PREVIEW_CHARS = 300
+
+    _expanded: var[bool] = var(False, toggle_class="-expanded")
 
     def __init__(
         self,
@@ -381,10 +391,8 @@ class SkillMessage(Vertical):
         self._body = body
         self._stripped_body = _strip_frontmatter(body)
         self._args = args
-        self._expanded: bool = False
-        self._preview_widget: Static | None = None
         self._md_widget: Static | None = None
-        self._hint_widget: Static | None = None
+        self._hint_widget: _SkillToggle | None = None
         self._deferred_expanded: bool = False
         self._md_rendered: bool = False
 
@@ -395,7 +403,7 @@ class SkillMessage(Vertical):
             Widgets for header, description, args, and collapsible body.
         """
         source_tag = f" [{self._source}]" if self._source else ""
-        yield Static(
+        yield _SkillToggle(
             Content.from_markup(
                 "[bold #a78bfa]$label[/bold #a78bfa]",
                 label=f"/skill:{self._skill_name}{source_tag}",
@@ -415,52 +423,58 @@ class SkillMessage(Vertical):
                 ),
                 classes="skill-args",
             )
-        yield Static("", classes="skill-body-preview", id="skill-preview")
-        # Single Static widget instead of Textual Markdown — avoids the deep
-        # DOM tree that makes click-to-toggle expensive (hit-test + reflow).
         yield Static("", id="skill-md")
-        yield Static("", classes="skill-hint", id="skill-hint")
+        yield _SkillToggle("", classes="skill-hint", id="skill-hint")
 
     def on_mount(self) -> None:
-        """Cache widget references and set initial display state."""
+        """Cache widget references, render initial state."""
         if is_ascii_mode():
             self.styles.border_left = ("ascii", "#a78bfa")
 
-        self._preview_widget = self.query_one("#skill-preview", Static)
         self._md_widget = self.query_one("#skill-md", Static)
-        self._hint_widget = self.query_one("#skill-hint", Static)
+        self._hint_widget = self.query_one("#skill-hint", _SkillToggle)
 
-        self._preview_widget.display = False
-        self._md_widget.display = False
-        self._hint_widget.display = False
+        body = self._stripped_body.strip()
+        if body:
+            self._prepare_body(body)
 
         if self._deferred_expanded:
             self._expanded = self._deferred_expanded
             self._deferred_expanded = False
 
-        if self._stripped_body.strip():
-            self._update_body_display()
-
-    def toggle_body(self) -> None:
-        """Toggle between preview and full body display."""
-        if not self._stripped_body.strip():
-            return
-        self._expanded = not self._expanded
-        self._update_body_display()
-
-    def on_click(self, event: Click) -> None:
-        """Toggle body expansion, or show timestamp if no body."""
-        event.stop()
-        if self._stripped_body.strip():
-            self.toggle_body()
-        else:
-            _show_timestamp_toast(self)
-
-    def _render_markdown(self, body: str) -> None:
-        """Render markdown body into the Static widget via Rich.
+    def _prepare_body(self, body: str) -> None:
+        """Set initial hint text. Full body render is deferred to first expand.
 
         Args:
-            body: Raw markdown text.
+            body: Stripped markdown body text.
+        """
+        lines = body.split("\n")
+        total_lines = len(lines)
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
+        )
+
+        if needs_truncation:
+            remaining = total_lines - self._PREVIEW_LINES
+            ellipsis = get_glyphs().ellipsis
+            if self._hint_widget:
+                self._hint_widget.update(
+                    Content.styled(
+                        f"{ellipsis} {remaining} more lines"
+                        " — click or Ctrl+O to expand",
+                        "dim",
+                    )
+                )
+        else:
+            # Short body — show fully rendered, no preview needed.
+            self._ensure_md_rendered(body)
+            self._expanded = True
+
+    def _ensure_md_rendered(self, body: str) -> None:
+        """Render markdown into the Static widget on first call, then no-op.
+
+        Args:
+            body: Stripped markdown body text.
         """
         if self._md_rendered or not self._md_widget:
             return
@@ -469,17 +483,22 @@ class SkillMessage(Vertical):
         self._md_widget.update(RichMarkdown(body))
         self._md_rendered = True
 
-    def _update_body_display(self) -> None:
-        """Update the body display based on expanded state.
-
-        Renders the markdown body at most once via Rich; subsequent toggles
-        only flip widget visibility.
-        """
-        if not self._preview_widget or not self._md_widget or not self._hint_widget:
+    def toggle_body(self) -> None:
+        """Toggle between preview and full body display."""
+        if not self._stripped_body.strip():
             return
+        self._expanded = not self._expanded
 
+    def watch__expanded(self, expanded: bool) -> None:
+        """Lazy-render markdown on first expand; update hint text."""
         body = self._stripped_body.strip()
         if not body:
+            return
+
+        if expanded:
+            self._ensure_md_rendered(body)
+
+        if not self._hint_widget:
             return
 
         lines = body.split("\n")
@@ -488,22 +507,16 @@ class SkillMessage(Vertical):
             total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
         )
 
-        if self._expanded:
-            self._preview_widget.display = False
-            self._render_markdown(body)
-            self._md_widget.display = True
+        if not needs_truncation:
+            # Short body — always fully visible, no hint needed.
+            self._hint_widget.display = False
+            return
+
+        if expanded:
             self._hint_widget.update(
                 Content.styled("click or Ctrl+O to collapse", "dim italic")
             )
-            self._hint_widget.display = True
-        elif needs_truncation:
-            self._md_widget.display = False
-            preview_lines = lines[: self._PREVIEW_LINES]
-            preview = "\n".join(preview_lines)
-            if len(preview) > self._PREVIEW_CHARS:
-                preview = preview[: self._PREVIEW_CHARS]
-            self._preview_widget.update(Content.styled(preview, "dim"))
-            self._preview_widget.display = True
+        else:
             remaining = total_lines - self._PREVIEW_LINES
             ellipsis = get_glyphs().ellipsis
             self._hint_widget.update(
@@ -512,12 +525,15 @@ class SkillMessage(Vertical):
                     "dim",
                 )
             )
-            self._hint_widget.display = True
+
+    @on(Click, "_SkillToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        """Toggle expansion when header or hint is clicked."""
+        event.stop()
+        if self._stripped_body.strip():
+            self.toggle_body()
         else:
-            self._preview_widget.display = False
-            self._render_markdown(body)
-            self._md_widget.display = True
-            self._hint_widget.display = False
+            _show_timestamp_toast(self)
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):

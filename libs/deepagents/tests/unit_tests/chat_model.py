@@ -70,6 +70,7 @@ class GenericFakeChatModel(BaseChatModel):
     """
 
     call_history: list[Any] = []  # noqa: RUF012  # Test-only model class
+    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = []
 
     stream_delimiter: str | None = None
     """Delimiter for chunking content during streaming.
@@ -91,6 +92,8 @@ class GenericFakeChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
+        # Please note that this code isn't thread safe!
+        self.tools = tools
         return self
 
     @override
@@ -110,6 +113,7 @@ class GenericFakeChatModel(BaseChatModel):
                     "run_manager": run_manager,
                     **kwargs,
                 },
+                "tools": self.tools,
             }
         )
 

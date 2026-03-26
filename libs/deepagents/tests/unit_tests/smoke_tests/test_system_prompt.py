@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.backends.utils import create_file_data
@@ -27,6 +30,11 @@ def _assert_snapshot(snapshot_path: Path, actual: str, *, update_snapshots: bool
 
     expected = snapshot_path.read_text()
     assert actual == expected
+
+
+def _tools_as_openai_snapshot(tools: list[Any]) -> str:
+    formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+    return json.dumps(formatted_tools, indent=2, sort_keys=True) + "\n"
 
 
 def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snapshots: bool) -> None:
@@ -60,6 +68,13 @@ def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_s
 
     history = model.call_history
     assert len(history) >= 1
+
+    tools_snapshot_path = snapshots_dir / "system_prompt_without_execute_tools.json"
+    _assert_snapshot(
+        tools_snapshot_path,
+        _tools_as_openai_snapshot(history[0]["tools"]),
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]

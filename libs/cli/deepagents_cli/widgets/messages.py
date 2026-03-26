@@ -690,6 +690,12 @@ class ToolCallMessage(Vertical):
         text-style: bold;
     }
 
+    ToolCallMessage .tool-task-desc {
+        color: $text-muted;
+        margin-left: 3;
+        text-style: italic;
+    }
+
     ToolCallMessage .tool-args {
         color: $text-muted;
         margin-left: 3;
@@ -783,8 +789,19 @@ class ToolCallMessage(Vertical):
         """
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(tool_label, markup=False, classes="tool-header")
+        # Task: dedicated description line (dim, truncated)
+        if self._tool_name == "task":
+            desc = self._args.get("description", "")
+            if desc:
+                max_len = 120
+                suffix = "..." if len(desc) > max_len else ""
+                truncated = desc[:max_len].rstrip() + suffix
+                yield Static(
+                    Content.styled(truncated, "dim"),
+                    classes="tool-task-desc",
+                )
         # Only show args for tools where header doesn't capture the key info
-        if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
+        elif self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
             if args:
                 args_str = ", ".join(

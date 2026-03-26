@@ -243,10 +243,9 @@ def test_format_task_description():
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify main components." in description
     warning = get_glyphs().warning
-    assert (
-        f"{warning}  Subagent will have access to file operations and shell commands"
-        in description
-    )
+    msg = "Subagent will have access to file operations and shell commands"
+    assert f"{warning} {msg} {warning}" in description
+    assert description.index(warning) < description.index("Task Instructions:")
 
 
 def test_format_task_description_truncates_long_description():

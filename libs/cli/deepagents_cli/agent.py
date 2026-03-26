@@ -552,11 +552,10 @@ def _format_task_description(
     warning_msg = "Subagent will have access to file operations and shell commands"
     return (
         f"Subagent Type: {subagent_type}\n\n"
+        f"{glyphs.warning} {warning_msg} {glyphs.warning}\n\n"
         f"Task Instructions:\n"
         f"{separator}\n"
-        f"{description_preview}\n"
-        f"{separator}\n\n"
-        f"{glyphs.warning}  {warning_msg}"
+        f"{description_preview}"
     )
 
 

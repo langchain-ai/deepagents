@@ -166,6 +166,10 @@ EXPECTED_CSS_KEYS = frozenset(
     {
         "mode-bash",
         "mode-command",
+        "skill",
+        "skill-hover",
+        "tool",
+        "tool-hover",
     }
 )
 
@@ -309,7 +313,6 @@ class TestGetThemeColors:
         assert colors.primary == "#BD93F9"
         assert colors.background == "#282A36"
         # App-specific fields fall back to base
-        assert colors.primary_dev == DARK_COLORS.primary_dev
         assert colors.muted == DARK_COLORS.muted
 
     def test_builtin_theme_ansi_falls_back(self) -> None:

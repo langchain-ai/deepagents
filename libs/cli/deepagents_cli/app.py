@@ -765,8 +765,8 @@ class DeepAgentsApp(App):
 
         Most styling uses Textual's built-in variables (`$primary`,
         `$text-muted`, `$error-muted`, etc.).  This override injects the
-        few app-specific variables (`$mode-bash`, `$mode-command`) that
-        have no Textual equivalent.
+        app-specific variables (`$mode-bash`, `$mode-command`, `$skill`,
+        `$skill-hover`, `$tool`, `$tool-hover`) that have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.

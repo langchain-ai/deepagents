@@ -59,7 +59,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--eval-category",
         action="append",
         default=[],
-        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category hitl",
+        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
     )
     parser.addoption(
         "--openrouter-provider",

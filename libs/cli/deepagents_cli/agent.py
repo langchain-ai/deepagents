@@ -454,12 +454,10 @@ def _format_write_file_description(
     """
     args = tool_call["args"]
     file_path = args.get("file_path", "unknown")
-    content = args.get("content", "")
 
     action = "Overwrite" if Path(file_path).exists() else "Create"
-    line_count = len(content.splitlines())
 
-    return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
+    return f"Action: {action} file"
 
 
 def _format_edit_file_description(
@@ -471,11 +469,10 @@ def _format_edit_file_description(
         Formatted description string for the edit_file tool call.
     """
     args = tool_call["args"]
-    file_path = args.get("file_path", "unknown")
     replace_all = bool(args.get("replace_all", False))
 
     scope = "all occurrences" if replace_all else "single occurrence"
-    return f"File: {file_path}\nAction: Replace text ({scope})"
+    return f"Action: Replace text ({scope})"
 
 
 def _format_web_search_description(

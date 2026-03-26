@@ -408,7 +408,6 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
-        self._app_has_focus = True
         # Buffer quote-prefixed high-frequency key bursts from terminals that
         # emulate paste via rapid key events instead of dispatching a paste
         # event.
@@ -421,12 +420,10 @@ class ChatTextArea(TextArea):
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
 
-        When has_focus=False (e.g., agent is running), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            has_focus: Whether the app input should be focused.
         """
-        self._app_has_focus = has_focus
         self._backslash_pending_time = None
-        self.cursor_blink = has_focus
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
 
@@ -1686,10 +1683,10 @@ class ChatInput(Vertical):
                     self._completion_manager.reset()
 
     def set_cursor_active(self, *, active: bool) -> None:
-        """Set whether the cursor should be actively blinking.
+        """Toggle input focus state (e.g., unfocus while agent is working).
 
-        When active=False (e.g., agent is working), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            active: Whether the input should be focused and accepting input.
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)

@@ -5,8 +5,8 @@ Single source of truth for color values used in Python code (Rich markup,
 Textual CSS variables: built-in variables
 (`$primary`, `$background`, `$text-muted`, `$error-muted`, etc.) are set via
 `register_theme()` in `DeepAgentsApp.__init__`, while the few app-specific
-variables (`$mode-bash`, `$mode-command`) are backed by these constants via
-`App.get_theme_variable_defaults()`.
+variables (`$mode-bash`, `$mode-command`, `$skill`, `$skill-hover`, `$tool`,
+`$tool-hover`) are backed by these constants via `App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
@@ -67,9 +67,6 @@ LC_AMBER = "#EB8B46"
 LC_PINK = "#F7768E"
 """Error / destructive actions."""
 
-LC_ORANGE = "#FF9E64"
-"""Dev install indicator / warm accent."""
-
 LC_MUTED = "#545C7E"
 """Muted / secondary text."""
 
@@ -81,6 +78,18 @@ LC_PINK_BG = "#2A1F32"
 
 LC_PANEL = "#25283B"
 """Panel — differentiated section background (above surface)."""
+
+LC_SKILL = "#A78BFA"
+"""Skill invocation accent — border and header text."""
+
+LC_SKILL_HOVER = "#C4B5FD"
+"""Skill invocation hover — lighter variant for interactive feedback."""
+
+LC_TOOL = LC_AMBER
+"""Tool call accent — border and header text."""
+
+LC_TOOL_HOVER = "#FFCB91"
+"""Tool call hover — lighter variant for interactive feedback."""
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +125,6 @@ LC_LIGHT_AMBER = "#B45309"
 LC_LIGHT_PINK = "#BE185D"
 """Error / destructive (darkened for light bg contrast)."""
 
-LC_LIGHT_ORANGE = "#C2410C"
-"""Dev install indicator (darkened for light bg contrast)."""
-
 LC_LIGHT_MUTED = "#6B7280"
 """Muted / secondary text on light backgrounds."""
 
@@ -130,6 +136,18 @@ LC_LIGHT_PINK_BG = "#FEE2E2"
 
 LC_LIGHT_PANEL = "#E0E1E6"
 """Panel for light theme — differentiated section background."""
+
+LC_LIGHT_SKILL = "#7C3AED"
+"""Skill invocation accent (darkened for light bg contrast)."""
+
+LC_LIGHT_SKILL_HOVER = "#6D28D9"
+"""Skill invocation hover (darkened for light bg contrast)."""
+
+LC_LIGHT_TOOL = LC_LIGHT_AMBER
+"""Tool call accent (darkened for light bg contrast)."""
+
+LC_LIGHT_TOOL_HOVER = "#78350F"
+"""Tool call hover (darkened for light bg contrast)."""
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +243,6 @@ class ThemeColors:
     primary: str
     """Accent for headings, borders, links, and active elements."""
 
-    primary_dev: str
-    """Accent used when running from an editable (dev) install."""
-
     secondary: str
     """Secondary accent for badges, labels, and decorative highlights."""
 
@@ -254,6 +269,18 @@ class ThemeColors:
 
     mode_command: str
     """Command mode indicator — borders, prompts, and message prefixes."""
+
+    skill: str
+    """Skill invocation accent — border and header text."""
+
+    skill_hover: str
+    """Skill invocation hover — contrasting variant for interactive feedback."""
+
+    tool: str
+    """Tool call accent — border and header text."""
+
+    tool_hover: str
+    """Tool call hover — contrasting variant for interactive feedback."""
 
     foreground: str
     """Primary body text."""
@@ -307,7 +334,6 @@ class ThemeColors:
 
 DARK_COLORS = ThemeColors(
     primary=LC_BLUE,
-    primary_dev=LC_ORANGE,
     secondary=LC_PURPLE,
     accent=LC_GREEN,
     panel=LC_PANEL,
@@ -317,6 +343,10 @@ DARK_COLORS = ThemeColors(
     muted=LC_MUTED,
     mode_bash=LC_PINK,
     mode_command=LC_PURPLE,
+    skill=LC_SKILL,
+    skill_hover=LC_SKILL_HOVER,
+    tool=LC_TOOL,
+    tool_hover=LC_TOOL_HOVER,
     foreground=LC_BODY,
     background=LC_DARK,
     surface=LC_CARD,
@@ -325,7 +355,6 @@ DARK_COLORS = ThemeColors(
 
 LIGHT_COLORS = ThemeColors(
     primary=LC_LIGHT_BLUE,
-    primary_dev=LC_LIGHT_ORANGE,
     secondary=LC_LIGHT_PURPLE,
     accent=LC_LIGHT_GREEN,
     panel=LC_LIGHT_PANEL,
@@ -335,6 +364,10 @@ LIGHT_COLORS = ThemeColors(
     muted=LC_LIGHT_MUTED,
     mode_bash=LC_LIGHT_PINK,
     mode_command=LC_LIGHT_PURPLE,
+    skill=LC_LIGHT_SKILL,
+    skill_hover=LC_LIGHT_SKILL_HOVER,
+    tool=LC_LIGHT_TOOL,
+    tool_hover=LC_LIGHT_TOOL_HOVER,
     foreground=LC_LIGHT_BODY,
     background=LC_LIGHT_BG,
     surface=LC_LIGHT_SURFACE,
@@ -636,6 +669,10 @@ def get_css_variable_defaults(
     return {
         "mode-bash": c.mode_bash,
         "mode-command": c.mode_command,
+        "skill": c.skill,
+        "skill-hover": c.skill_hover,
+        "tool": c.tool,
+        "tool-hover": c.tool_hover,
     }
 
 
@@ -659,8 +696,8 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     """Construct `ThemeColors` from the app's active Textual theme.
 
     Reads standard properties (primary, secondary, etc.) from the resolved
-    theme so Python-side styling matches CSS.  `muted` and `primary_dev` fall
-    back to the dark/light base unconditionally (no Textual equivalent).
+    theme so Python-side styling matches CSS.  `muted` falls back to the
+    dark/light base unconditionally (no Textual equivalent).
     `mode_bash` is derived from the theme's `error` color, and `mode_command`
     from `secondary`, falling back to the base palette when non-hex.
 
@@ -678,14 +715,22 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     base = DARK_COLORS if dark else LIGHT_COLORS
 
     def _hex_or(val: str | None, fallback: str) -> str:
-        """Return *val* if it is a valid 7-char hex color, else *fallback*."""
+        """Return `val` if it is a valid `#RRGGBB` hex color, else `fallback`.
+
+        Args:
+            val: Color string from the active Textual theme (may be `None` or
+                a non-hex name like `ansi_blue`).
+            fallback: Guaranteed-hex value from our base palette.
+
+        Returns:
+            `val` if it matches `#RRGGBB`, otherwise `fallback`.
+        """
         if val is not None and _HEX_RE.match(val):
             return val
         return fallback
 
     return ThemeColors(
         primary=_hex_or(ct.primary, base.primary),
-        primary_dev=base.primary_dev,
         secondary=_hex_or(ct.secondary, base.secondary),
         accent=_hex_or(ct.accent, base.accent),
         panel=_hex_or(ct.panel, base.panel),
@@ -695,6 +740,14 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
         muted=base.muted,
         mode_bash=_hex_or(ct.error, base.mode_bash),
         mode_command=_hex_or(ct.secondary, base.mode_command),
+        # No Textual equivalent — always use base palette.
+        skill=base.skill,
+        skill_hover=base.skill_hover,
+        # Derived from Textual's warning color (shared amber hue).
+        tool=_hex_or(ct.warning, base.tool),
+        # No Textual equivalent — always base palette (may diverge from
+        # tool in custom themes that override warning).
+        tool_hover=base.tool_hover,
         foreground=_hex_or(ct.foreground, base.foreground),
         background=_hex_or(ct.background, base.background),
         surface=_hex_or(ct.surface, base.surface),

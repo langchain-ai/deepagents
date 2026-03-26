@@ -1265,6 +1265,40 @@ class TestDeepAgentEndToEnd:
         )
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test invalid read_file arguments still produce a ToolMessage."""
+        backend = backend_factory(tmp_path)
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"foo": "/missing.txt", "does_not_exist": True},
+                                "id": "call_invalid_read",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Handled the invalid read_file call."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model, backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Try reading a file with invalid args")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        tool_message = tool_messages[0]
+        assert tool_message.tool_call_id == "call_invalid_read"
+        assert tool_message.status == "error"
+        assert "Error invoking tool 'read_file' with kwargs " in tool_message.content
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
         backend = backend_factory(tmp_path)

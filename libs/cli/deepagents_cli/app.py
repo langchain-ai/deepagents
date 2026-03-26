@@ -938,6 +938,14 @@ class DeepAgentsApp(App):
             group="startup-import-prewarm",
         )
 
+        # Prewarm model discovery and profile caches unconditionally so
+        # /model opens instantly even before the agent/server is ready.
+        self.run_worker(
+            self._prewarm_model_caches,
+            exclusive=True,
+            group="startup-model-prewarm",
+        )
+
         # Optional tool warnings in a thread (shutil.which is sync I/O)
         self.run_worker(
             self._check_optional_tools_background,
@@ -1138,11 +1146,6 @@ class DeepAgentsApp(App):
             self._prewarm_threads_cache,
             exclusive=True,
             group="startup-thread-prewarm",
-        )
-        self.run_worker(
-            self._prewarm_model_caches,
-            exclusive=True,
-            group="startup-model-prewarm",
         )
 
     async def _resolve_resume_thread(self) -> None:
@@ -1458,7 +1461,7 @@ class DeepAgentsApp(App):
                 get_model_profiles, cli_override=self._profile_override
             )
         except Exception:
-            logger.debug("Could not prewarm model caches", exc_info=True)
+            logger.warning("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer version and optionally auto-update."""

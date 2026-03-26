@@ -70,7 +70,7 @@ class GenericFakeChatModel(BaseChatModel):
     """
 
     call_history: list[Any] = []  # noqa: RUF012  # Test-only model class
-    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = []
+    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = ()
 
     stream_delimiter: str | None = None
     """Delimiter for chunking content during streaming.

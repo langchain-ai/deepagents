@@ -55,9 +55,8 @@ def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {new_file}" in description
     assert "Action: Create file" in description
-    assert "Lines: 2" in description
+    assert "File:" not in description
 
 
 def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -> None:
@@ -81,9 +80,8 @@ def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {existing_file}" in description
     assert "Action: Overwrite file" in description
-    assert "Lines: 3" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_single_occurrence():
@@ -106,8 +104,8 @@ def test_format_edit_file_description_single_occurrence():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (single occurrence)" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_all_occurrences():
@@ -130,8 +128,8 @@ def test_format_edit_file_description_all_occurrences():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (all occurrences)" in description
+    assert "File:" not in description
 
 
 def test_format_web_search_description():

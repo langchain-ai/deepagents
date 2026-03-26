@@ -602,3 +602,59 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+def test_symlink_read(tmp_path: Path):
+    """Symlinked files should be readable without OSError."""
+    target = tmp_path / "real.md"
+    target.write_text("# Real content")
+    link = tmp_path / "AGENTS.md"
+    link.symlink_to(target)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(link))
+    assert isinstance(result, ReadResult)
+    assert result.file_data is not None
+    assert "Real content" in result.file_data["content"]
+
+
+def test_symlink_download(tmp_path: Path):
+    """download_files should follow symlinks without OSError."""
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("# Symlink target")
+    link = tmp_path / "AGENTS.md"
+    link.symlink_to(target)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    responses = be.download_files([str(link)])
+    assert len(responses) == 1
+    assert responses[0].error is None
+    assert responses[0].content == b"# Symlink target"
+
+
+def test_symlink_edit(tmp_path: Path):
+    """Editing through a symlink should work."""
+    target = tmp_path / "real.txt"
+    target.write_text("old value")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.edit(str(link), "old", "new", replace_all=False)
+    assert isinstance(result, EditResult)
+    assert result.error is None
+    assert target.read_text() == "new value"
+
+
+def test_symlink_virtual_mode(tmp_path: Path):
+    """Symlinks should work in virtual mode too."""
+    target = tmp_path / "real.md"
+    target.write_text("virtual symlink content")
+    link = tmp_path / "link.md"
+    link.symlink_to(target)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.read("/link.md")
+    assert isinstance(result, ReadResult)
+    assert result.file_data is not None
+    assert "virtual symlink content" in result.file_data["content"]

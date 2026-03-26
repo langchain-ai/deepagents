@@ -174,7 +174,7 @@ class FilesystemBackend(BackendProtocol):
 
         path = Path(key)
         if path.is_absolute():
-            return path
+            return path.resolve()
         return (self.cwd / path).resolve()
 
     def _to_virtual_path(self, path: Path) -> str:

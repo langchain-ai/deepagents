@@ -78,3 +78,4 @@ class TestFilesystemMiddlewareInit:
         assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION.rstrip()
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
+

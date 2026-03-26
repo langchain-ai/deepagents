@@ -299,7 +299,11 @@ def _strip_frontmatter(text: str) -> str:
 
 
 class _SkillToggle(Static):
-    """Clickable header/hint area for toggling skill body expansion."""
+    """Clickable header/hint area for toggling skill body expansion.
+
+    Referenced by name in `SkillMessage._on_toggle_click`'s `@on(Click)`
+    CSS selector — rename with care.
+    """
 
 
 class SkillMessage(Vertical):
@@ -312,8 +316,8 @@ class SkillMessage(Vertical):
 
     Visibility is driven by a CSS class (`-expanded`) toggled via a Textual
     reactive `var`. Click handlers are scoped to the header and hint widgets
-    (`_SkillToggle`) so clicks never hit the content body, avoiding expensive
-    DOM hit-testing.
+    (`_SkillToggle`) so clicks on the rendered markdown body do not trigger
+    expansion toggles (preserving text selection, for instance).
     """
 
     DEFAULT_CSS = """
@@ -428,7 +432,12 @@ class SkillMessage(Vertical):
         yield _SkillToggle("", classes="skill-hint", id="skill-hint")
 
     def on_mount(self) -> None:
-        """Cache widget references, render initial state."""
+        """Cache widget references, render initial state.
+
+        Ordering matters: widget refs must be cached before `_prepare_body`
+        or `_deferred_expanded` assignment, because either may set
+        `_expanded` which fires `watch__expanded` synchronously.
+        """
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.skill)
@@ -480,9 +489,16 @@ class SkillMessage(Vertical):
         """
         if self._md_rendered or not self._md_widget:
             return
-        from rich.markdown import Markdown as RichMarkdown
+        try:
+            from rich.markdown import Markdown as RichMarkdown
 
-        self._md_widget.update(RichMarkdown(body))
+            self._md_widget.update(RichMarkdown(body))
+        except Exception:
+            logger.warning(
+                "Failed to render skill body as markdown; falling back to plain text",
+                exc_info=True,
+            )
+            self._md_widget.update(body)
         self._md_rendered = True
 
     def toggle_body(self) -> None:

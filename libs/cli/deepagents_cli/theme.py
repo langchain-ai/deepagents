@@ -5,8 +5,8 @@ Single source of truth for color values used in Python code (Rich markup,
 Textual CSS variables: built-in variables
 (`$primary`, `$background`, `$text-muted`, `$error-muted`, etc.) are set via
 `register_theme()` in `DeepAgentsApp.__init__`, while the few app-specific
-variables (`$mode-bash`, `$mode-command`) are backed by these constants via
-`App.get_theme_variable_defaults()`.
+variables (`$mode-bash`, `$mode-command`, `$skill`, `$skill-hover`, `$tool`,
+`$tool-hover`) are backed by these constants via `App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
@@ -274,13 +274,13 @@ class ThemeColors:
     """Skill invocation accent — border and header text."""
 
     skill_hover: str
-    """Skill invocation hover — lighter variant for interactive feedback."""
+    """Skill invocation hover — contrasting variant for interactive feedback."""
 
     tool: str
     """Tool call accent — border and header text."""
 
     tool_hover: str
-    """Tool call hover — lighter variant for interactive feedback."""
+    """Tool call hover — contrasting variant for interactive feedback."""
 
     foreground: str
     """Primary body text."""
@@ -715,16 +715,11 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     base = DARK_COLORS if dark else LIGHT_COLORS
 
     def _hex_or(val: str | None, fallback: str) -> str:
-        """Use the Textual theme value when it is a hex color, else fall back.
-
-        Textual built-in themes (e.g. ANSI) may return non-hex color names
-        like `ansi_blue` that our `ThemeColors` dataclass rejects. This helper
-        detects those and substitutes the base-palette fallback so every field
-        is always a valid `#RRGGBB` string.
+        """Return `val` if it is a valid `#RRGGBB` hex color, else `fallback`.
 
         Args:
-            val: Color string from the active Textual theme (may be None or a
-                non-hex name like `ansi_blue`).
+            val: Color string from the active Textual theme (may be `None` or
+                a non-hex name like `ansi_blue`).
             fallback: Guaranteed-hex value from our base palette.
 
         Returns:
@@ -748,8 +743,10 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
         # No Textual equivalent — always use base palette.
         skill=base.skill,
         skill_hover=base.skill_hover,
-        # Derived from warning (same semantic color).
+        # Derived from Textual's warning color (shared amber hue).
         tool=_hex_or(ct.warning, base.tool),
+        # No Textual equivalent — always base palette (may diverge from
+        # tool in custom themes that override warning).
         tool_hover=base.tool_hover,
         foreground=_hex_or(ct.foreground, base.foreground),
         background=_hex_or(ct.background, base.background),

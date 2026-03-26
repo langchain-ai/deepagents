@@ -188,7 +188,7 @@ class WelcomeBanner(Static):
         )
 
         if not ansi and _is_editable_install():
-            # Only color the version number in dev orange; art stays primary.
+            # Highlight local-install version tag with tool accent; art stays primary.
             dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
             version_tag = f"v{__version__} (local)"
             idx = banner.rfind(version_tag)

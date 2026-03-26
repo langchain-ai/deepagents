@@ -22,6 +22,7 @@ from typing import Final
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -33,7 +34,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import _get_file_type, create_file_data
+from deepagents.backends.utils import _get_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -366,8 +367,8 @@ except PermissionError:
             return ReadResult(error=f"File '{file_path}': {data['error']}")
 
         return ReadResult(
-            file_data=create_file_data(
-                data["content"],
+            file_data=FileData(
+                content=data["content"],
                 encoding=data.get("encoding", "utf-8"),
             )
         )

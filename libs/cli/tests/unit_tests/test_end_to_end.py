@@ -242,7 +242,7 @@ class TestDeepAgentsCLIEndToEnd:
             assert agent_response.generations[0].message.content == "response"
 
             # Verify conversation history was offloaded to backend
-            assert _ls_entries(backend, "/conversation_history/")
+            assert _ls_entries(backend, "/artifacts/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

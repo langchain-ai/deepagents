@@ -907,7 +907,6 @@ def create_cli_agent(
         interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
     artifacts_path_prefix = "/artifacts"
-    large_tool_results_path_prefix = f"{artifacts_path_prefix}/large_tool_results"
     conversation_history_path_prefix = f"{artifacts_path_prefix}/conversation_history"
 
     # Set up composite backend with routing
@@ -926,8 +925,8 @@ def create_cli_agent(
         composite_backend = CompositeBackend(
             default=backend,
             routes={
-                "/large_tool_results/": large_results_backend,
-                "/conversation_history/": conversation_history_backend,
+                f"{artifacts_path_prefix}/large_tool_results/": large_results_backend,
+                f"{artifacts_path_prefix}/conversation_history/": conversation_history_backend,  # noqa: E501
             },
         )
     else:

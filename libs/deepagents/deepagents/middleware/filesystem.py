@@ -115,6 +115,10 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
+class LsSchema(BaseModel):
+    path: str = Field(description="Absolute path to the directory to list. Must be absolute, not relative.")
+
+
 class ReadFileSchema(BaseModel):
     file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
     offset: int = Field(
@@ -124,6 +128,44 @@ class ReadFileSchema(BaseModel):
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
         description="Maximum number of lines to read. Use for pagination of large files.",
+    )
+
+
+class WriteFileSchema(BaseModel):
+    file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+    content: str = Field(description="The text content to write to the file. This parameter is required.")
+
+
+class EditFileSchema(BaseModel):
+    file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+    old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
+    new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
+    replace_all: bool = Field(
+        default=False,
+        description="If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
+    )
+
+
+class GlobSchema(BaseModel):
+    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    path: str = Field(default="/", description="Base directory to search from. Defaults to root '/'.")
+
+
+class GrepSchema(BaseModel):
+    pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+    path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
+    glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    output_mode: Literal["files_with_matches", "content", "count"] = Field(
+        default="files_with_matches",
+        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+    )
+
+
+class ExecuteSchema(BaseModel):
+    command: str = Field(description="Shell command to execute in the sandbox environment.")
+    timeout: int | None = Field(
+        default=None,
+        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
     )
 
 
@@ -577,6 +619,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_ls,
             coroutine=async_ls,
+            infer_schema=False,
+            args_schema=LsSchema,
         )
 
     def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
@@ -750,6 +794,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_write_file,
             coroutine=async_write_file,
+            infer_schema=False,
+            args_schema=WriteFileSchema,
         )
 
     def _create_edit_file_tool(self) -> BaseTool:
@@ -823,6 +869,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_edit_file,
             coroutine=async_edit_file,
+            infer_schema=False,
+            args_schema=EditFileSchema,
         )
 
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901
@@ -903,6 +951,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_glob,
             coroutine=async_glob,
+            infer_schema=False,
+            args_schema=GlobSchema,
         )
 
     def _create_grep_tool(self) -> BaseTool:
@@ -990,6 +1040,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_grep,
             coroutine=async_grep,
+            infer_schema=False,
+            args_schema=GrepSchema,
         )
 
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
@@ -1110,6 +1162,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_execute,
             coroutine=async_execute,
+            infer_schema=False,
+            args_schema=ExecuteSchema,
         )
 
     def wrap_model_call(

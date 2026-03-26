@@ -1400,6 +1400,19 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm third-party imports", exc_info=True)
 
+        # Markdown rendering stack — ~170 ms cold (textual._markdown pulls in
+        # markdown_it, pygments, linkify_it — 438 modules).  Hit on first
+        # SkillMessage compose() and first code-fence highlight.  Warming
+        # here makes the first expand/Ctrl+O instant.
+        import markdown_it  # noqa: F401
+        from pygments.lexers import get_lexer_by_name as _get_lexer
+        from textual.widgets import Markdown  # noqa: F401
+
+        # Instantiate the Python lexer to populate Pygments' internal
+        # lexer cache (~12 ms cold).  Python is the most common fence
+        # language in skill bodies.
+        _get_lexer("python")
+
         # Widgets deferred from app.py module level — a failure here indicates
         # a packaging or code bug (same as the block above), so we let
         # exceptions propagate.

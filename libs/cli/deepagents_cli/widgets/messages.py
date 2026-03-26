@@ -384,6 +384,7 @@ class SkillMessage(Vertical):
         self._md_widget: Markdown | None = None
         self._hint_widget: Static | None = None
         self._deferred_expanded: bool = False
+        self._md_rendered: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the skill message layout.
@@ -456,7 +457,11 @@ class SkillMessage(Vertical):
             _show_timestamp_toast(self)
 
     def _update_body_display(self) -> None:
-        """Update the body display based on expanded state."""
+        """Update the body display based on expanded state.
+
+        Renders the markdown body at most once; subsequent toggles only flip
+        widget visibility to avoid the cost of re-parsing and re-highlighting.
+        """
         if not self._preview_widget or not self._md_widget or not self._hint_widget:
             return
 
@@ -472,7 +477,9 @@ class SkillMessage(Vertical):
 
         if self._expanded:
             self._preview_widget.display = False
-            self._md_widget.update(body)
+            if not self._md_rendered:
+                self._md_widget.update(body)
+                self._md_rendered = True
             self._md_widget.display = True
             self._hint_widget.update(
                 Content.styled("click or Ctrl+O to collapse", "dim italic")
@@ -497,7 +504,9 @@ class SkillMessage(Vertical):
             self._hint_widget.display = True
         else:
             self._preview_widget.display = False
-            self._md_widget.update(body)
+            if not self._md_rendered:
+                self._md_widget.update(body)
+                self._md_rendered = True
             self._md_widget.display = True
             self._hint_widget.display = False
 

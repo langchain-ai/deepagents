@@ -219,7 +219,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{url}")'
 
     elif tool_name == "task":
-        # Task: show subagent type badge (description gets its own line in the widget)
+        # Task: show subagent type badge
         agent_type = tool_args.get("subagent_type", "")
         if agent_type:
             agent_type = _sanitize_display_value(agent_type, max_length=40)

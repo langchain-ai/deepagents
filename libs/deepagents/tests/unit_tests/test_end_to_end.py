@@ -1365,14 +1365,14 @@ class TestLargeHumanMessageEviction:
         assert msg.content == large_content
         evicted_to = msg.additional_kwargs.get("lc_evicted_to")
         assert evicted_to is not None
-        assert evicted_to.startswith("/large_messages/")
+        assert evicted_to.startswith("/conversation_history/")
 
         assert len(fake_model.call_history) == 1
         model_messages = fake_model.call_history[0]["messages"]
         model_human = [m for m in model_messages if isinstance(m, HumanMessage)]
         assert len(model_human) == 1
         assert len(model_human[0].content) < len(large_content)
-        assert "/large_messages/" in model_human[0].content
+        assert "/conversation_history/" in model_human[0].content
 
     def test_multi_turn_eviction(self) -> None:
         """Tagged messages are truncated on subsequent turns.

@@ -20,7 +20,7 @@ def test_open_style_link_opens_browser_and_stops_event() -> None:
     event = _event_with_link("https://example.com")
 
     with patch("deepagents_cli.widgets._links.webbrowser.open") as mock_open:
-        open_style_link(event)
+        open_style_link(event)  # type: ignore[arg-type]
 
     mock_open.assert_called_once_with("https://example.com")
     event.stop.assert_called_once()
@@ -32,7 +32,7 @@ def test_open_style_link_blocks_suspicious_url_with_markup_disabled() -> None:
     event = _event_with_link("https://example.com/\u200b[admin]")
 
     with patch("deepagents_cli.widgets._links.webbrowser.open") as mock_open:
-        open_style_link(event)
+        open_style_link(event)  # type: ignore[arg-type]
 
     mock_open.assert_not_called()
     event.stop.assert_not_called()

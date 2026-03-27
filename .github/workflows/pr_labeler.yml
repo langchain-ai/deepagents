@@ -27,7 +27,8 @@ name: "🏷️ PR Labeler"
 
 on:
   # Safe since we only check out the base branch, not the PR's code.
-  # Never check out the PR's head in a pull_request_target job.
+  # NEVER CHECK OUT UNTRUSTED CODE FROM A PR's HEAD IN A pull_request_target JOB.
+  # Doing so would allow attackers to execute arbitrary code in the context of your repository.
   pull_request_target:
     types: [opened, synchronize, reopened, edited]
 
@@ -76,7 +77,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const author = context.payload.sender.login;
             const { isExternal } = await h.checkMembership(
@@ -155,7 +156,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const pr = context.payload.pull_request;
             if (!pr) return;
@@ -248,7 +249,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const pr = context.payload.pull_request;
             await h.applyTierLabel(pr.number, pr.user.login);
@@ -263,7 +264,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo);
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const prNumber = context.payload.pull_request.number;
             await h.ensureLabel('external');

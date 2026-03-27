@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, call
 import dotenv as _dotenv_module
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import Settings
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
@@ -45,7 +45,7 @@ class TestReloadFromEnvironment:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
         # Point global dotenv to a nonexistent path so it's never loaded
@@ -155,7 +155,7 @@ class TestReloadFromEnvironment:
         mock_load = MagicMock(return_value=False)
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
@@ -176,7 +176,7 @@ class TestReloadFromEnvironment:
         project_env.write_text("ANTHROPIC_API_KEY=sk-project\n")
 
         mock_load = MagicMock(return_value=True)
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 
@@ -207,7 +207,7 @@ class TestReloadFromEnvironment:
         project_env.write_text("OPENAI_API_KEY=sk-fallback\n")
 
         mock_load = MagicMock(return_value=True)
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.config"):
             settings.reload_from_environment(start_path=tmp_path)
@@ -233,7 +233,7 @@ class TestReloadFromEnvironment:
 
         # Use real dotenv (not the stub) to test actual precedence
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _real_load_dotenv,
         )
         monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
@@ -259,7 +259,7 @@ class TestReloadFromEnvironment:
         project_env.write_text("TEST_BOOT_KEY=project-value\n")
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _real_load_dotenv,
         )
         monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
@@ -282,7 +282,7 @@ class TestReloadFromEnvironment:
         monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _real_load_dotenv,
         )
         monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
@@ -327,7 +327,7 @@ class TestReloadFromEnvironment:
                 raise OSError(msg)
             return True
 
-        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", _fail_on_global)
+        monkeypatch.setattr("dotenv.load_dotenv", _fail_on_global)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.config"):
             settings.reload_from_environment(start_path=tmp_path)
@@ -370,7 +370,7 @@ class TestReloadErrorPaths:
             return False
 
         monkeypatch.setattr(
-            "deepagents_cli.config.dotenv.load_dotenv",
+            "dotenv.load_dotenv",
             _fake_load_dotenv,
         )
         monkeypatch.setattr(
@@ -403,7 +403,9 @@ class TestReloadErrorPaths:
             msg = "No such file or directory"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("deepagents_cli.config._find_project_root", _raise_oserror)
+        monkeypatch.setattr(
+            "deepagents_cli.project_utils.find_project_root", _raise_oserror
+        )
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.project_root == original_root

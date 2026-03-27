@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.output import OutputFormat
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    COLORS,
     config,
     console,
     get_default_coding_instructions,
@@ -44,7 +44,11 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.configurable_model import ConfigurableModelMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
-from deepagents_cli.local_context import LocalContextMiddleware, _ExecutableBackend
+from deepagents_cli.local_context import (
+    LocalContextMiddleware,
+    _AsyncExecutableBackend,
+    _ExecutableBackend,
+)
 from deepagents_cli.project_utils import ProjectContext, get_server_project_context
 from deepagents_cli.subagents import list_subagents
 from deepagents_cli.unicode_security import (
@@ -151,7 +155,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         console.print(
             "[dim]Agents will be created in ~/.deepagents/ "
             "when you first use them.[/dim]",
-            style=COLORS["dim"],
+            style=theme.MUTED,
         )
         return
 
@@ -175,7 +179,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
     from rich.markup import escape as escape_markup
 
-    console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
+    console.print("\n[bold]Available Agents:[/bold]\n", style=theme.PRIMARY)
 
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
@@ -188,21 +192,21 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
             if agent_md.exists():
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=COLORS["primary"],
+                    style=theme.PRIMARY,
                 )
                 console.print(
                     f"    {escape_markup(str(agent_path))}",
-                    style=COLORS["dim"],
+                    style=theme.MUTED,
                 )
             else:
                 console.print(
                     f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
                     " [dim](incomplete)[/dim]",
-                    style=COLORS["tool"],
+                    style=theme.WARNING,
                 )
                 console.print(
                     f"    {escape_markup(str(agent_path))}",
-                    style=COLORS["dim"],
+                    style=theme.MUTED,
                 )
 
     console.print()
@@ -212,6 +216,7 @@ def reset_agent(
     agent_name: str,
     source_agent: str | None = None,
     *,
+    dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
     """Reset an agent to default or copy from another agent.
@@ -219,7 +224,11 @@ def reset_agent(
     Args:
         agent_name: Name of the agent to reset.
         source_agent: Copy AGENTS.md from this agent instead of default.
+        dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the source agent is not found.
     """
     agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
@@ -231,9 +240,10 @@ def reset_agent(
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no AGENTS.md"
+                "or has no AGENTS.md\n"
+                "  Available agents: deepagents agents list"
             )
-            return
+            raise SystemExit(1)
 
         source_content = source_md.read_text()
         action_desc = f"contents of agent '{source_agent}'"
@@ -241,11 +251,30 @@ def reset_agent(
         source_content = get_default_coding_instructions()
         action_desc = "default"
 
+    if dry_run:
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "reset",
+                {
+                    "agent": agent_name,
+                    "reset_to": source_agent or "default",
+                    "path": str(agent_dir),
+                    "dry_run": True,
+                },
+            )
+            return
+        exists = "remove and recreate" if agent_dir.exists() else "create"
+        console.print(f"Would {exists} {agent_dir} with {action_desc} prompt.")
+        console.print("No changes made.", style=theme.MUTED)
+        return
+
     if agent_dir.exists():
         shutil.rmtree(agent_dir)
         if output_format != "json":
             console.print(
-                f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"]
+                f"Removed existing agent directory: {agent_dir}", style=theme.WARNING
             )
 
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -267,9 +296,42 @@ def reset_agent(
 
     console.print(
         f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
-        style=COLORS["primary"],
+        style=theme.PRIMARY,
     )
-    console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
+    console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
+
+
+MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
+"""Matches the `### Model Identity` section in the system prompt, up to the
+next heading or end of string."""
+
+
+def build_model_identity_section(
+    name: str | None,
+    provider: str | None = None,
+    context_limit: int | None = None,
+) -> str:
+    """Build the `### Model Identity` section for the system prompt.
+
+    Args:
+        name: Model identifier (e.g. `claude-opus-4-6`).
+        provider: Provider identifier (e.g. `anthropic`).
+        context_limit: Max input tokens from the model profile.
+
+    Returns:
+        The section text including the heading and trailing newline,
+        or an empty string if `name` is falsy.
+    """
+    if not name:
+        return ""
+    section = f"### Model Identity\n\nYou are running as model `{name}`"
+    if provider:
+        section += f" (provider: {provider})"
+    section += ".\n"
+    if context_limit:
+        section += f"Your context window is {context_limit:,} tokens.\n"
+    section += "\n"
+    return section
 
 
 def get_system_prompt(
@@ -288,7 +350,7 @@ def get_system_prompt(
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider
-            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+            (`'agentcore'`, `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
 
             If `None`, agent is operating in local mode.
         interactive: When `False`, the prompt is tailored for headless
@@ -346,20 +408,11 @@ def get_system_prompt(
             "available. Never run commands that block waiting for stdin."
         )
 
-    # Build model identity section
-    model_identity_section = ""
-    if settings.model_name:
-        model_identity_section = (
-            f"### Model Identity\n\nYou are running as model `{settings.model_name}`"
-        )
-        if settings.model_provider:
-            model_identity_section += f" (provider: {settings.model_provider})"
-        model_identity_section += ".\n"
-        if settings.model_context_limit:
-            model_identity_section += (
-                f"Your context window is {settings.model_context_limit:,} tokens.\n"
-            )
-        model_identity_section += "\n"
+    model_identity_section = build_model_identity_section(
+        settings.model_name,
+        provider=settings.model_provider,
+        context_limit=settings.model_context_limit,
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -372,7 +425,13 @@ def get_system_prompt(
             f"**Important:**\n"
             f"- The CLI is running locally on the user's machine, but you execute "
             f"code remotely\n"
-            f"- Use `{working_dir}` as your working directory for all operations\n\n"
+            f"- Use `{working_dir}` as your working directory for all operations\n"
+            f"- **You do NOT have access to the user's local filesystem.** Paths "
+            f"like `/Users/...`, `/home/<local-user>/...`, `C:\\...`, etc. do not "
+            f"exist in this sandbox. Never reference or attempt to read/write local "
+            f"paths — all files must be within the sandbox at `{working_dir}`\n"
+            f"- When delegating to subagents, ensure they also use sandbox paths "
+            f"(`{working_dir}/...`), not local paths\n\n"
         )
     else:
         if cwd is not None:
@@ -426,12 +485,10 @@ def _format_write_file_description(
     """
     args = tool_call["args"]
     file_path = args.get("file_path", "unknown")
-    content = args.get("content", "")
 
     action = "Overwrite" if Path(file_path).exists() else "Create"
-    line_count = len(content.splitlines())
 
-    return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
+    return f"Action: {action} file"
 
 
 def _format_edit_file_description(
@@ -443,11 +500,10 @@ def _format_edit_file_description(
         Formatted description string for the edit_file tool call.
     """
     args = tool_call["args"]
-    file_path = args.get("file_path", "unknown")
     replace_all = bool(args.get("replace_all", False))
 
     scope = "all occurrences" if replace_all else "single occurrence"
-    return f"File: {file_path}\nAction: Replace text ({scope})"
+    return f"Action: Replace text ({scope})"
 
 
 def _format_web_search_description(
@@ -527,11 +583,10 @@ def _format_task_description(
     warning_msg = "Subagent will have access to file operations and shell commands"
     return (
         f"Subagent Type: {subagent_type}\n\n"
+        f"{glyphs.warning} {warning_msg} {glyphs.warning}\n\n"
         f"Task Instructions:\n"
         f"{separator}\n"
-        f"{description_preview}\n"
-        f"{separator}\n\n"
-        f"{glyphs.warning}  {warning_msg}"
+        f"{description_preview}"
     )
 
 
@@ -648,6 +703,7 @@ def create_cli_agent(
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
@@ -671,7 +727,7 @@ def create_cli_agent(
 
             If `None`, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider
-            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+            (`'agentcore'`, `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 
@@ -686,6 +742,10 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
+            clarifying questions.
+
+            Disabled in non-interactive mode.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
@@ -771,9 +831,10 @@ def create_cli_agent(
     agent_middleware.append(ConfigurableModelMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
-    from deepagents_cli.ask_user import AskUserMiddleware
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
 
-    agent_middleware.append(AskUserMiddleware())
+        agent_middleware.append(AskUserMiddleware())
 
     # Add memory middleware
     if enable_memory:
@@ -797,12 +858,21 @@ def create_cli_agent(
         # Lowest to highest precedence:
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
+        # -> user .claude (experimental) -> project .claude (experimental)
         sources = [str(settings.get_built_in_skills_dir())]
         sources.extend([str(skills_dir), str(user_agent_skills_dir)])
         if project_skills_dir:
             sources.append(str(project_skills_dir))
         if project_agent_skills_dir:
             sources.append(str(project_agent_skills_dir))
+
+        # Experimental: Claude Code skill directories
+        user_claude_skills_dir = settings.get_user_claude_skills_dir()
+        if user_claude_skills_dir.exists():
+            sources.append(str(user_claude_skills_dir))
+        project_claude_skills_dir = settings.get_project_claude_skills_dir()
+        if project_claude_skills_dir:
+            sources.append(str(project_claude_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(
@@ -839,10 +909,8 @@ def create_cli_agent(
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 
-    # Local context middleware (git info, directory tree, etc.)
-    # Uses backend.execute() so it works in both local shell and remote sandbox modes.
-    # Only enabled when the backend supports shell execution.
-    if isinstance(backend, _ExecutableBackend):
+    # Local context middleware (git info, directory tree, etc.).
+    if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )
@@ -899,23 +967,18 @@ def create_cli_agent(
     )
 
     # Create the agent
-    #
-    # TODO: revert to direct keyword arguments once the CLI pins SDK >=0.5.0.
-    # We use **kwargs here because `async_subagents` was added in SDK 0.5.0 but
-    # the CLI still pins 0.4.x. Passing an unknown kwarg — even as None — raises
-    # TypeError, so we must omit it from the dict entirely when unused.
-    agent_kwargs: dict[str, Any] = {
-        "model": model,
-        "system_prompt": system_prompt,
-        "tools": tools,
-        "backend": composite_backend,
-        "middleware": agent_middleware,
-        "interrupt_on": interrupt_on,
-        "checkpointer": checkpointer,
-        "subagents": custom_subagents or None,
-    }
-    if async_subagents:
-        agent_kwargs["async_subagents"] = async_subagents
-
-    agent = create_deep_agent(**agent_kwargs).with_config(config)
+    all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
+        *custom_subagents,
+        *(async_subagents or []),
+    ]
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        backend=composite_backend,
+        middleware=agent_middleware,
+        interrupt_on=interrupt_on,
+        checkpointer=checkpointer,
+        subagents=all_subagents or None,
+    ).with_config(config)
     return agent, composite_backend

@@ -56,9 +56,9 @@ jobs:
           RUN_SANDBOX_TESTS: "true"
         run: |
           if [ "${{ inputs.coverage }}" = "false" ]; then
-            make test COV_ARGS=
+            make test COV_ARGS= PYTEST_EXTRA=-q
           else
-            make test
+            make test PYTEST_EXTRA=-q
           fi
 
       - name: "🧹 Verify Clean Working Directory"

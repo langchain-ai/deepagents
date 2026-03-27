@@ -35,7 +35,8 @@ class TestLoadHooks:
 
     def test_missing_config_file(self, tmp_path):
         """Returns empty list when config file does not exist."""
-        with patch.object(hooks_mod, "_HOOKS_PATH", tmp_path / "nonexistent.json"):
+        # tmp_path exists but has no hooks.json
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []
@@ -43,30 +44,27 @@ class TestLoadHooks:
     def test_valid_config(self, tmp_path):
         """Parses hooks array from well-formed config."""
         config = {"hooks": [{"command": ["echo", "hi"], "events": ["session.start"]}]}
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text(json.dumps(config))
+        (tmp_path / "hooks.json").write_text(json.dumps(config))
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == config["hooks"]
 
     def test_malformed_json(self, tmp_path):
         """Returns empty list and logs warning on invalid JSON."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text("{not json!!")
+        (tmp_path / "hooks.json").write_text("{not json!!")
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []
 
     def test_missing_hooks_key(self, tmp_path):
         """Returns empty list when 'hooks' key is absent."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text(json.dumps({"other": "data"}))
+        (tmp_path / "hooks.json").write_text(json.dumps({"other": "data"}))
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []
@@ -77,7 +75,7 @@ class TestLoadHooks:
         cfg_path = tmp_path / "hooks.json"
         cfg_path.write_text(json.dumps(config))
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             first = hooks_mod._load_hooks()
             # Overwrite file — cached result should still be returned.
             cfg_path.write_text(json.dumps({"hooks": []}))
@@ -88,11 +86,10 @@ class TestLoadHooks:
 
     def test_os_error(self, tmp_path):
         """Returns empty list on OS-level read failure."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text("{}")
+        (tmp_path / "hooks.json").write_text("{}")
 
         with (
-            patch.object(hooks_mod, "_HOOKS_PATH", cfg_path),
+            patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path),
             patch("pathlib.Path.read_text", side_effect=OSError("permission denied")),
         ):
             result = hooks_mod._load_hooks()
@@ -101,30 +98,27 @@ class TestLoadHooks:
 
     def test_non_dict_json(self, tmp_path):
         """Returns empty list when config root is not a JSON object."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text(json.dumps([1, 2, 3]))
+        (tmp_path / "hooks.json").write_text(json.dumps([1, 2, 3]))
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []
 
     def test_non_list_hooks_value(self, tmp_path):
         """Returns empty list when 'hooks' value is not a list."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text(json.dumps({"hooks": "not-a-list"}))
+        (tmp_path / "hooks.json").write_text(json.dumps({"hooks": "not-a-list"}))
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []
 
     def test_null_json(self, tmp_path):
         """Returns empty list when config is JSON null."""
-        cfg_path = tmp_path / "hooks.json"
-        cfg_path.write_text("null")
+        (tmp_path / "hooks.json").write_text("null")
 
-        with patch.object(hooks_mod, "_HOOKS_PATH", cfg_path):
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", tmp_path):
             result = hooks_mod._load_hooks()
 
         assert result == []

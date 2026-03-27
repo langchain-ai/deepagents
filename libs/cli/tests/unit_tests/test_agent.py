@@ -55,9 +55,8 @@ def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {new_file}" in description
     assert "Action: Create file" in description
-    assert "Lines: 2" in description
+    assert "File:" not in description
 
 
 def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -> None:
@@ -81,9 +80,8 @@ def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {existing_file}" in description
     assert "Action: Overwrite file" in description
-    assert "Lines: 3" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_single_occurrence():
@@ -106,8 +104,8 @@ def test_format_edit_file_description_single_occurrence():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (single occurrence)" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_all_occurrences():
@@ -130,8 +128,8 @@ def test_format_edit_file_description_all_occurrences():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (all occurrences)" in description
+    assert "File:" not in description
 
 
 def test_format_web_search_description():
@@ -245,10 +243,9 @@ def test_format_task_description():
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify main components." in description
     warning = get_glyphs().warning
-    assert (
-        f"{warning}  Subagent will have access to file operations and shell commands"
-        in description
-    )
+    msg = "Subagent will have access to file operations and shell commands"
+    assert f"{warning} {msg} {warning}" in description
+    assert description.index(warning) < description.index("Task Instructions:")
 
 
 def test_format_task_description_truncates_long_description():
@@ -502,6 +499,49 @@ class TestGetSystemPromptCwdOSError:
             prompt = get_system_prompt("test-agent")
 
         assert "Current Working Directory" in prompt
+
+
+class TestGetSystemPromptSandbox:
+    """Tests for sandbox-specific system prompt content."""
+
+    def test_sandbox_includes_no_local_filesystem_warning(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "do NOT have access to the user's local filesystem" in prompt
+
+    def test_sandbox_includes_working_dir_constraint(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "/workspace" in prompt
+        assert "remote Linux sandbox" in prompt
+
+    def test_sandbox_warns_about_subagent_paths(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="daytona")
+
+        assert "subagents" in prompt
+        assert "/home/daytona" in prompt
+
+    def test_local_mode_omits_sandbox_warnings(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "do NOT have access to the user's local filesystem" not in prompt
+        assert "remote Linux sandbox" not in prompt
 
 
 class TestGetSystemPromptPlaceholderValidation:
@@ -839,6 +879,10 @@ class TestCreateCliAgentSkillsSources:
         project_agent_skills_dir = tmp_path / "project-agent-skills"
         project_agent_skills_dir.mkdir()
         built_in_dir = Settings.get_built_in_skills_dir()
+        user_claude_skills_dir = tmp_path / "user-claude-skills"
+        user_claude_skills_dir.mkdir()
+        project_claude_skills_dir = tmp_path / "project-claude-skills"
+        project_claude_skills_dir.mkdir()
 
         mock_settings = Mock()
         mock_settings.ensure_agent_dir.return_value = agent_dir
@@ -849,6 +893,10 @@ class TestCreateCliAgentSkillsSources:
             project_agent_skills_dir
         )
         mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_claude_skills_dir.return_value = user_claude_skills_dir
+        mock_settings.get_project_claude_skills_dir.return_value = (
+            project_claude_skills_dir
+        )
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -897,6 +945,8 @@ class TestCreateCliAgentSkillsSources:
             str(user_agent_skills_dir),
             str(project_skills_dir),
             str(project_agent_skills_dir),
+            str(tmp_path / "user-claude-skills"),
+            str(tmp_path / "project-claude-skills"),
         ]
 
 
@@ -1375,6 +1425,77 @@ class TestMiddlewareStackConformance:
             )
 
 
+class TestEnableAskUser:
+    """Verify enable_ask_user controls AskUserMiddleware inclusion."""
+
+    def _capture_middleware(
+        self, tmp_path: Path, *, enable_ask_user: bool
+    ) -> list[Any]:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir(exist_ok=True)
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir(exist_ok=True)
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured: list[list[Any]] = []
+
+        def capture(**kwargs: Any) -> Mock:
+            captured.append(kwargs.get("middleware", []))
+            agent = Mock()
+            agent.with_config.return_value = agent
+            return agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                side_effect=capture,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_ask_user=enable_ask_user,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        return captured[0]
+
+    def test_ask_user_included_when_enabled(self, tmp_path: Path) -> None:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert any(isinstance(mw, AskUserMiddleware) for mw in middleware)
+
+    def test_ask_user_excluded_when_disabled(self, tmp_path: Path) -> None:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
+        assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
+
+
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
         result = load_async_subagents(tmp_path / "nonexistent.toml")
@@ -1447,35 +1568,6 @@ class TestLoadAsyncSubagents:
         config.write_text("this is not valid toml [[[")
         result = load_async_subagents(config)
         assert result == []
-
-
-class TestCreateDeepAgentKwargsWorkaround:
-    """Remind us to remove the **kwargs workaround once the SDK pin allows it.
-
-    `create_cli_agent` builds a dict and calls `create_deep_agent(**kwargs)`
-    instead of using direct keyword arguments because the pinned SDK (0.4.x)
-    doesn't accept `async_subagents`. Once the pin is bumped to >=0.5.0 the
-    workaround should be reverted to direct kwargs for readability and type
-    safety.
-    """
-
-    def test_revert_kwargs_workaround_when_sdk_pin_is_bumped(self) -> None:
-        import tomllib
-
-        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
-
-        deps = data["project"]["dependencies"]
-        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
-        pinned_version = sdk_pin.split("==")[1]
-        major, minor = (int(x) for x in pinned_version.split(".")[:2])
-
-        assert (major, minor) < (0, 5), (
-            f"SDK pin is now {pinned_version} (>=0.5.0). "
-            "Revert the **kwargs workaround in create_cli_agent() back to "
-            "direct keyword arguments and delete this test."
-        )
 
 
 class TestLsEntriesShim:

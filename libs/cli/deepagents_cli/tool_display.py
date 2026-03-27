@@ -2,16 +2,14 @@
 
 This module handles rendering tool calls and tool messages for the TUI.
 
-Imported at runtime (not at CLI startup), so it can safely depend
-on heavier modules like `backends`.
+Imported at module level by `textual_adapter` (itself deferred from the startup
+path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies.
 """
 
 import json
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
-
-from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
 from deepagents_cli.config import MAX_ARG_LENGTH, get_glyphs
 from deepagents_cli.unicode_security import strip_dangerous_unicode
@@ -179,6 +177,8 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if "command" in tool_args:
             command = _sanitize_display_value(tool_args["command"], max_length=120)
             timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
+            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
+
             if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
@@ -219,10 +219,12 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{url}")'
 
     elif tool_name == "task":
-        # Task: show the task description
-        if "description" in tool_args:
-            desc = _sanitize_display_value(tool_args["description"], max_length=100)
-            return f'{prefix} {tool_name}("{desc}")'
+        # Task: show subagent type badge
+        agent_type = tool_args.get("subagent_type", "")
+        if agent_type:
+            agent_type = _sanitize_display_value(agent_type, max_length=40)
+            return f"{prefix} {tool_name} [{agent_type}]"
+        return f"{prefix} {tool_name}"
 
     elif tool_name == "ask_user":
         if "questions" in tool_args and isinstance(tool_args["questions"], list):
@@ -277,7 +279,8 @@ def _format_content_block(block: dict) -> str:
         mime = block.get("mime_type", "file")
         return f"[File: {mime}, ~{size_kb}KB]"
     try:
-        return json.dumps(block)
+        # Preserve non-ASCII characters (CJK, emoji, etc.) instead of \uXXXX escapes
+        return json.dumps(block, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(block)
 
@@ -299,7 +302,8 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                 parts.append(_format_content_block(item))
             else:
                 try:
-                    parts.append(json.dumps(item))
+                    # Preserve non-ASCII characters (CJK, emoji, etc.)
+                    parts.append(json.dumps(item, ensure_ascii=False))
                 except (TypeError, ValueError):
                     parts.append(str(item))
         return "\n".join(parts)

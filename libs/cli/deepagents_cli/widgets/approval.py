@@ -16,11 +16,11 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
-    CharsetMode,
-    _detect_charset_mode,
     get_glyphs,
+    is_ascii_mode,
 )
 from deepagents_cli.unicode_security import (
     check_url_safety,
@@ -174,13 +174,11 @@ class ApprovalMenu(Container):
 
         if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
             display = Content.from_markup(
-                "[bold #f59e0b]$cmd[/bold #f59e0b] [dim](press 'e' to expand)[/dim]",
+                "[bold]$cmd[/bold] [dim](press 'e' to expand)[/dim]",
                 cmd=command_display,
             )
         else:
-            display = Content.from_markup(
-                "[bold #f59e0b]$cmd[/bold #f59e0b]", cmd=command_display
-            )
+            display = Content.from_markup("[bold]$cmd[/bold]", cmd=command_display)
 
         if not issues:
             return display
@@ -276,8 +274,9 @@ class ApprovalMenu(Container):
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
-            self.styles.border = ("ascii", "yellow")
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.warning)
 
         if not self._is_minimal:
             await self._update_tool_info()

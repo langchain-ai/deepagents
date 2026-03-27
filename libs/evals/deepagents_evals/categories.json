@@ -1,0 +1,28 @@
+{
+  "categories": [
+    "file_operations",
+    "retrieval",
+    "tool_use",
+    "memory",
+    "conversation",
+    "summarization",
+    "unit_test"
+  ],
+  "radar_categories": [
+    "file_operations",
+    "retrieval",
+    "tool_use",
+    "memory",
+    "conversation",
+    "summarization"
+  ],
+  "labels": {
+    "file_operations": "File Ops",
+    "retrieval": "Retrieval",
+    "tool_use": "Tool Use",
+    "memory": "Memory",
+    "conversation": "Conversation",
+    "summarization": "Summarization",
+    "unit_test": "Unit Test"
+  }
+}

@@ -202,7 +202,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=("/conversation_history/test-thread.md", None)),
             patch.object(mw._summarization, "_create_summary", return_value="Summary of the conversation."),
         ):
             result = mw._run_compact(runtime)
@@ -242,7 +242,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
@@ -266,7 +266,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=("/conversation_history/test-thread.md", None)),
             patch.object(mw._summarization, "_acreate_summary", return_value="Summary of the conversation."),
         ):
             result = await mw._arun_compact(runtime)
@@ -289,7 +289,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/t.md"),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=("/conversation_history/t.md", None)),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
@@ -311,7 +311,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
@@ -337,7 +337,7 @@ class TestOffloadFailure:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
@@ -365,7 +365,7 @@ class TestCompactErrorHandling:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
             patch.object(mw._summarization, "_create_summary", side_effect=RuntimeError("model unavailable")),
         ):
             result = mw._run_compact(runtime)
@@ -391,7 +391,7 @@ class TestCompactErrorHandling:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=(None, None)),
             patch.object(
                 mw._summarization,
                 "_acreate_summary",
@@ -581,7 +581,7 @@ class TestIsEligibleForCompaction:
             patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
             patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
         ):
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
@@ -603,7 +603,7 @@ class TestIsEligibleForCompaction:
             patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
             patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
-            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=(None, None)),
         ):
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update

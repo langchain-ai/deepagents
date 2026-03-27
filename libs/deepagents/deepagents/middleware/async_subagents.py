@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
 from langchain.tools import ToolRuntime  # noqa: TC002
@@ -20,6 +20,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
+from pydantic import BaseModel, Field
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -122,6 +123,41 @@ class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
     async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+
+
+class StartAsyncTaskSchema(BaseModel):
+    """Input schema for the `start_async_task` tool."""
+
+    description: str = Field(description="A detailed description of the task for the async subagent to perform.")
+    subagent_type: str = Field(description="The type of async subagent to use. Must be one of the available types listed in the tool description.")
+
+
+class CheckAsyncTaskSchema(BaseModel):
+    """Input schema for the `check_async_task` tool."""
+
+    task_id: str = Field(description="The exact task_id string returned by start_async_task. Pass it verbatim.")
+
+
+class UpdateAsyncTaskSchema(BaseModel):
+    """Input schema for the `update_async_task` tool."""
+
+    task_id: str = Field(description="The exact task_id string returned by start_async_task. Pass it verbatim.")
+    message: str = Field(description="Follow-up instructions or context to send to the subagent.")
+
+
+class CancelAsyncTaskSchema(BaseModel):
+    """Input schema for the `cancel_async_task` tool."""
+
+    task_id: str = Field(description="The exact task_id string returned by start_async_task. Pass it verbatim.")
+
+
+class ListAsyncTasksSchema(BaseModel):
+    """Input schema for the `list_async_tasks` tool."""
+
+    status_filter: Literal["running", "success", "error", "cancelled", "all"] | None = Field(
+        default=None,
+        description="Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
+    )
 
 
 ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent on a remote LangGraph server. The subagent runs in the background and returns a task ID immediately.
@@ -236,8 +272,8 @@ def _build_start_tool(
     """Build the `start_async_task` tool."""
 
     def start_async_task(
-        description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
-        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
+        description: str,
+        subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
@@ -276,8 +312,8 @@ def _build_start_tool(
         )
 
     async def astart_async_task(
-        description: Annotated[str, "A detailed description of the task for the async subagent to perform."],
-        subagent_type: Annotated[str, "The type of async subagent to use. Must be one of the available types listed in the tool description."],
+        description: str,
+        subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         error = _validate_agent_type(agent_map, subagent_type)
@@ -320,6 +356,8 @@ def _build_start_tool(
         func=start_async_task,
         coroutine=astart_async_task,
         description=tool_description,
+        infer_schema=False,
+        args_schema=StartAsyncTaskSchema,
     )
 
 
@@ -393,7 +431,7 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
     """Build the `check_async_task` tool."""
 
     def check_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
+        task_id: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         task = _resolve_tracked_task(task_id, runtime)
@@ -418,7 +456,7 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         return _build_check_command(result, task, runtime.tool_call_id)
 
     async def acheck_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
+        task_id: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         task = _resolve_tracked_task(task_id, runtime)
@@ -447,6 +485,8 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         func=check_async_task,
         coroutine=acheck_async_task,
         description="Check the status of an async subagent task. Returns the current status and, if complete, the result.",
+        infer_schema=False,
+        args_schema=CheckAsyncTaskSchema,
     )
 
 
@@ -463,8 +503,8 @@ def _build_update_tool(
     """
 
     def update_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
-        message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
+        task_id: str,
+        message: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -502,8 +542,8 @@ def _build_update_tool(
         )
 
     async def aupdate_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
-        message: Annotated[str, "Follow-up instructions or context to send to the subagent."],
+        task_id: str,
+        message: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -549,6 +589,8 @@ def _build_update_tool(
             "a new one on the same thread, so the subagent sees the full conversation history plus "
             "your new message. The task_id remains the same."
         ),
+        infer_schema=False,
+        args_schema=UpdateAsyncTaskSchema,
     )
 
 
@@ -558,7 +600,7 @@ def _build_cancel_tool(
     """Build the `cancel_async_task` tool."""
 
     def cancel_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
+        task_id: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -590,7 +632,7 @@ def _build_cancel_tool(
         )
 
     async def acancel_async_task(
-        task_id: Annotated[str, "The exact task_id string returned by start_async_task. Pass it verbatim."],
+        task_id: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         tracked = _resolve_tracked_task(task_id, runtime)
@@ -626,6 +668,8 @@ def _build_cancel_tool(
         func=cancel_async_task,
         coroutine=acancel_async_task,
         description="Cancel a running async subagent task. Use this to stop a task that is no longer needed.",
+        infer_schema=False,
+        args_schema=CancelAsyncTaskSchema,
     )
 
 
@@ -704,10 +748,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     def list_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Annotated[
-            str | None,
-            "Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
-        ] = None,
+        status_filter: Literal["running", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -739,10 +780,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     async def alist_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Annotated[
-            str | None,
-            "Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
-        ] = None,
+        status_filter: Literal["running", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -782,6 +820,8 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "(e.g. 'running', 'success', 'error', 'cancelled'). "
             "Use `check_async_task` to get the full result of a specific completed task."
         ),
+        infer_schema=False,
+        args_schema=ListAsyncTasksSchema,
     )
 
 

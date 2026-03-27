@@ -123,6 +123,21 @@ class TestHasProviderCredentials:
         with patch.dict("os.environ", {}, clear=True):
             assert has_provider_credentials("anthropic") is False
 
+    def test_databricks_returns_true_when_token_set(self):
+        """Returns True when DATABRICKS_TOKEN is set."""
+        with patch.dict("os.environ", {"DATABRICKS_TOKEN": "dapi-test"}):
+            assert has_provider_credentials("databricks") is True
+
+    def test_databricks_returns_false_when_token_not_set(self, tmp_path):
+        """Returns False when DATABRICKS_TOKEN is not set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert has_provider_credentials("databricks") is False
+
 
 class TestThreadColumnPersistence:
     """Tests for thread selector column visibility persistence."""
@@ -411,6 +426,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["azure_openai"] == "AZURE_OPENAI_API_KEY"
         assert PROVIDER_API_KEY_ENV["baseten"] == "BASETEN_API_KEY"
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
+        assert PROVIDER_API_KEY_ENV["databricks"] == "DATABRICKS_TOKEN"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"

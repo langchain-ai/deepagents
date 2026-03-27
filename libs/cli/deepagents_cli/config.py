@@ -1669,6 +1669,9 @@ def detect_provider(model_name: str) -> str | None:
     if model_lower.startswith(("nemotron", "nvidia/")):
         return "nvidia"
 
+    if model_lower.startswith("databricks-"):
+        return "databricks"
+
     return None
 
 
@@ -1759,6 +1762,162 @@ def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
     kwargs.setdefault("app_categories", _OPENROUTER_APP_CATEGORIES)
 
 
+class _ChatOpenAIDatabricks:
+    """Lazy wrapper — the real class is built on first access.
+
+    We defer the ``ChatOpenAI`` import so that ``import deepagents_cli.config``
+    does not pull in ``langchain_openai`` (which is slow and not always needed).
+    """
+
+    _cls: type | None = None
+
+    @classmethod
+    def get_class(cls) -> type:
+        if cls._cls is None:
+            from langchain_openai import ChatOpenAI as _Base
+
+            class ChatOpenAIDatabricks(_Base):
+                """ChatOpenAI subclass that strips parameters unsupported by Databricks.
+
+                Databricks Foundation Model APIs are OpenAI-compatible but reject
+                ``strict`` in tool definitions, ``parallel_tool_calls``, and
+                ``tool_choice="any"``.  This subclass filters those parameters so
+                the deepagents agent framework can bind tools without errors.
+                """
+
+                def bind_tools(  # type: ignore[override]
+                    self,
+                    tools: Any,
+                    *,
+                    tool_choice: Any = None,
+                    strict: bool | None = None,
+                    parallel_tool_calls: bool | None = None,
+                    **kwargs: Any,
+                ) -> Any:
+                    # Convert "any" → "required" (equivalent, but Databricks supports it)
+                    if isinstance(tool_choice, str) and tool_choice == "any":
+                        tool_choice = "required"
+                    # Always pass strict=None and parallel_tool_calls=None
+                    return super().bind_tools(
+                        tools,
+                        tool_choice=tool_choice,
+                        strict=None,
+                        parallel_tool_calls=None,
+                        **kwargs,
+                    )
+
+                def _get_request_payload(
+                    self,
+                    input_: Any,
+                    *,
+                    stop: list[str] | None = None,
+                    **kwargs: Any,
+                ) -> dict:
+                    payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+                    # Strip parallel_tool_calls from the body
+                    payload.pop("parallel_tool_calls", None)
+                    # Clean up tool definitions for Databricks compatibility
+                    for tool in payload.get("tools", []):
+                        if isinstance(tool, dict):
+                            func = tool.get("function")
+                            if isinstance(func, dict):
+                                func.pop("strict", None)
+                                # Databricks rejects additionalProperties=true
+                                # in JSON schemas — strip it recursively.
+                                params = func.get("parameters")
+                                if isinstance(params, dict):
+                                    _strip_additional_properties(params)
+                    return payload
+
+            def _strip_additional_properties(schema: dict) -> None:
+                """Remove ``additionalProperties`` from a JSON schema recursively.
+
+                Databricks Foundation Model APIs require
+                ``additionalProperties`` to be ``false`` or absent.
+                LangChain tool conversion often sets it to ``true``.
+                """
+                schema.pop("additionalProperties", None)
+                for prop in schema.get("properties", {}).values():
+                    if isinstance(prop, dict):
+                        _strip_additional_properties(prop)
+                # Handle anyOf / allOf / oneOf / items
+                for key in ("anyOf", "allOf", "oneOf"):
+                    for item in schema.get(key, []):
+                        if isinstance(item, dict):
+                            _strip_additional_properties(item)
+                items = schema.get("items")
+                if isinstance(items, dict):
+                    _strip_additional_properties(items)
+
+            cls._cls = ChatOpenAIDatabricks
+        return cls._cls
+
+
+def _resolve_databricks_credentials(kwargs: dict[str, Any]) -> None:
+    """Resolve Databricks host and token and configure as an OpenAI-compatible provider.
+
+    ``ChatDatabricks`` lazily creates an OpenAI client via the
+    ``databricks-sdk``, which performs synchronous host-metadata
+    resolution (``/.well-known/databricks-config``).  Inside the
+    LangGraph dev server's async event loop this blocking call either
+    fails or maps the direct ``dbc-*`` URL to a "friendly" organization
+    URL (``*.cloud.databricks.com?o=...``) where the query parameter
+    corrupts API paths, producing a 404.
+
+    Since Databricks Model Serving endpoints are OpenAI-compatible, we
+    bypass ``ChatDatabricks`` entirely and configure ``ChatOpenAI`` with
+    the resolved ``base_url`` and ``api_key``.  This avoids all SDK
+    host resolution and works reliably in both sync and async contexts.
+
+    We read ``.databrickscfg`` directly (via ``configparser``) instead
+    of the SDK's ``Config`` class, because the SDK also performs the
+    problematic host-metadata resolution that rewrites the direct URL.
+    """
+    # Always read .databrickscfg first.  Do NOT trust os.environ for
+    # DATABRICKS_HOST because the databricks-sdk can silently rewrite
+    # the env var to a "friendly" organization URL that corrupts API paths.
+    host: str | None = None
+    token: str | None = None
+
+    try:
+        import configparser
+        from pathlib import Path
+
+        cfg_path = Path.home() / ".databrickscfg"
+        if cfg_path.exists():
+            parser = configparser.ConfigParser()
+            parser.read(cfg_path)
+            profile = os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")
+            if profile == "DEFAULT" or parser.has_section(profile):
+                host = parser.get(profile, "host", fallback=None)
+                token = parser.get(profile, "token", fallback=None)
+    except Exception:  # noqa: BLE001 — config may be absent/malformed
+        pass
+
+    # Fall back to env vars only if .databrickscfg didn't provide them.
+    host = host or os.environ.get("DATABRICKS_HOST")
+    token = token or os.environ.get("DATABRICKS_TOKEN")
+
+    if host:
+        base = host.rstrip("/")
+        kwargs["base_url"] = f"{base}/serving-endpoints"
+        os.environ["DATABRICKS_HOST"] = host
+    if token:
+        kwargs["api_key"] = token
+        os.environ["DATABRICKS_TOKEN"] = token
+
+    # Signal to create_model() that this should use the openai provider.
+    kwargs["_databricks_use_openai"] = True
+
+    if not host:
+        logger.warning(
+            "DATABRICKS_HOST is not set and could not be resolved from "
+            ".databrickscfg or the Databricks SDK auth chain. "
+            "Set DATABRICKS_HOST to your workspace URL "
+            "(e.g., https://my-workspace.cloud.databricks.com)."
+        )
+
+
 def _get_provider_kwargs(
     provider: str, *, model_name: str | None = None
 ) -> dict[str, Any]:
@@ -1795,6 +1954,19 @@ def _get_provider_kwargs(
 
         check_openrouter_version()
         _apply_openrouter_defaults(result)
+
+    if provider == "databricks":
+        # The databricks-sdk performs synchronous host-metadata resolution when
+        # constructing the OpenAI client.  Inside the LangGraph dev server (which
+        # runs an async event loop) this blocking call fails, causing the SDK to
+        # fall back to a malformed URL that returns 404.
+        #
+        # To avoid this, we eagerly resolve the host and token from any available
+        # source (env vars, .databrickscfg profiles, databricks-sdk auth chain)
+        # and inject them into the kwargs so that ``ChatDatabricks`` receives
+        # explicit credentials and never triggers the async-incompatible
+        # resolution path.
+        _resolve_databricks_credentials(result)
 
     return result
 
@@ -1893,6 +2065,7 @@ def _create_model_via_init(
 
         package_map = {
             "anthropic": "langchain-anthropic",
+            "databricks": "databricks-langchain",
             "openai": "langchain-openai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",
@@ -2082,16 +2255,26 @@ def create_model(
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 
-    # Check if this provider uses a custom BaseChatModel class
+    # Databricks: instantiate our ChatOpenAIDatabricks subclass which
+    # strips parameters unsupported by Databricks Foundation Model APIs
+    # (strict, parallel_tool_calls, tool_choice="any").
+    is_databricks = kwargs.pop("_databricks_use_openai", False)
+
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
+    if is_databricks:
+        DatabricksCls = _ChatOpenAIDatabricks.get_class()
+        model = DatabricksCls(model=model_name, **kwargs)
+    elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
 
-    resolved_provider = provider or getattr(model, "_model_provider", provider)
+    resolved_provider = (
+        "databricks" if is_databricks
+        else provider or getattr(model, "_model_provider", provider)
+    )
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

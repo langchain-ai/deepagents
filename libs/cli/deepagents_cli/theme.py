@@ -13,9 +13,11 @@ Code that needs custom CSS variable values should call
 up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
 
 Users can define custom themes in `~/.deepagents/config.toml` under
-`[themes.<name>]` sections. Each section must include `label` (str) and `dark`
-(bool); color fields are optional and fall back to the built-in dark/light
-palette based on the `dark` flag. See `_load_user_themes()` for details.
+`[themes.<name>]` sections. Each new theme section must include `label` (str);
+`dark` (bool) defaults to `False` if omitted (set to `True` for dark themes).
+Color fields are optional and fall back to the built-in dark/light palette based
+on the `dark` flag. Sections whose name matches a built-in theme override its
+colors without replacing it. See `_load_user_themes()` for details.
 """
 
 from __future__ import annotations
@@ -474,9 +476,11 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
 
 
 _BUILTIN_NAMES: frozenset[str] = frozenset(_builtin_themes())
-"""Names reserved for built-in themes — user themes cannot shadow these.
+"""Names of built-in themes.
 
-Derived from `_builtin_themes()` to stay in sync automatically.
+User `[themes.<name>]` sections matching a built-in name override its colors
+rather than creating a new theme. Derived from `_builtin_themes()` to stay in
+sync automatically.
 """
 
 
@@ -487,29 +491,43 @@ def _load_user_themes(
 ) -> None:
     """Load user-defined themes from `config.toml` into `builtins` (mutated).
 
-    Each `[themes.<name>]` section must have:
+    **New themes** — each `[themes.<name>]` section (where `<name>` is not a
+    built-in) must have:
 
     - `label` (str) — human-readable name shown in the theme picker.
-    - `dark` (bool) — whether this is a dark-mode variant.
+    - `dark` (bool, optional) — whether this is a dark-mode variant.
 
-    All `ThemeColors` fields are optional; omitted fields fall back to the
-    built-in dark or light palette based on the `dark` flag.
+        Defaults to `False` (light).
 
-    Invalid themes (bad hex, missing required keys, name collision with
-    built-ins) are logged as warnings and skipped — they never crash startup.
+    **Built-in overrides** — if `<name>` matches a built-in theme, only color
+    fields are read; `label` and `dark` are inherited from the built-in.
+
+    All `ThemeColors` fields are optional. For new themes, omitted fields
+    fall back to the built-in dark or light palette based on the `dark` flag.
+
+    For built-in overrides, omitted fields retain the existing built-in colors.
+
+    Invalid themes (bad hex, missing required keys) are logged as warnings
+    and skipped — they never crash startup.
 
     Example `config.toml` snippet:
 
     ```toml
+    # New custom theme
     [themes.my-solarized]
     label = "My Solarized"
     dark = true
     primary = "#268BD2"
     warning = "#B58900"
+
+    # Override built-in theme colors
+    [themes.langchain]
+    primary = "#FF5500"
     ```
 
     Args:
-        builtins: Mutable dict to append user themes into.
+        builtins: Mutable dict to update (new themes are added, built-in
+            overrides replace existing entries).
         config_path: Override for the config file path (testing).
     """
     if config_path is None:
@@ -539,36 +557,15 @@ def _load_user_themes(
     if not isinstance(themes_section, dict) or not themes_section:
         return
 
+    valid_color_names = {f.name for f in fields(ThemeColors)}
+    reserved = {"label", "dark"}
+
     for name, section in themes_section.items():
         if not isinstance(section, dict):
             logger.warning("Ignoring non-table [themes.%s]", name)
             continue
 
-        if name in _BUILTIN_NAMES:
-            logger.warning(
-                "User theme '%s' shadows a built-in theme and will be ignored",
-                name,
-            )
-            continue
-
-        label = section.get("label")
-        dark = section.get("dark")
-        if not isinstance(label, str) or not label.strip():
-            logger.warning(
-                "User theme '%s' missing required 'label' (str); skipping",
-                name,
-            )
-            continue
-        if not isinstance(dark, bool):
-            logger.warning(
-                "User theme '%s' missing required 'dark' (bool); skipping",
-                name,
-            )
-            continue
-
-        base = DARK_COLORS if dark else LIGHT_COLORS
-        valid_color_names = {f.name for f in fields(ThemeColors)}
-        reserved = {"label", "dark"}
+        # --- Parse color overrides (shared by built-in overrides & new themes)
         color_overrides: dict[str, str] = {}
         for k, v in section.items():
             if k in reserved:
@@ -590,6 +587,55 @@ def _load_user_themes(
                     k,
                 )
 
+        # --- Built-in override: merge color tweaks into the existing entry
+        if name in _BUILTIN_NAMES:
+            existing = builtins.get(name)
+            if existing is None:
+                logger.warning(
+                    "Built-in theme '%s' not in builtins dict; skipping override",
+                    name,
+                )
+                continue
+            if not color_overrides:
+                continue
+            try:
+                colors = ThemeColors.merged(existing.colors, color_overrides)
+            except ValueError as exc:
+                logger.warning(
+                    "Built-in theme '%s' color override invalid: %s; skipping",
+                    name,
+                    exc,
+                )
+                continue
+            builtins[name] = ThemeEntry(
+                label=existing.label,
+                dark=existing.dark,
+                colors=colors,
+                custom=existing.custom,
+            )
+            continue
+
+        # --- New custom theme: label required, dark defaults to False (light)
+        label = section.get("label")
+        if not isinstance(label, str) or not label.strip():
+            logger.warning(
+                "User theme '%s' missing required 'label' (str); skipping",
+                name,
+            )
+            continue
+
+        dark = section.get("dark", False)
+        if not isinstance(dark, bool):
+            logger.warning(
+                "User theme '%s': 'dark' must be true or false, got %s (%r);"
+                " defaulting to light",
+                name,
+                type(dark).__name__,
+                dark,
+            )
+            dark = False
+
+        base = DARK_COLORS if dark else LIGHT_COLORS
         try:
             colors = ThemeColors.merged(base, color_overrides)
         except ValueError as exc:

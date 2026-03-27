@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to run. Set definitions: .github/scripts/models.py. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
         required: false
         default: ""
         type: choice

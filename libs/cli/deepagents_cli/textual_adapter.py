@@ -39,6 +39,7 @@ from deepagents_cli._session_stats import (
 )
 from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.formatting import format_duration
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
 from deepagents_cli.media_utils import create_multimodal_content
@@ -74,25 +75,6 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     if _hitl_adapter_cache is None:
         _hitl_adapter_cache = TypeAdapter(hitl_request_type)
     return _hitl_adapter_cache
-
-
-def _format_duration(seconds: float) -> str:
-    """Format a duration in seconds into a human-readable string.
-
-    Args:
-        seconds: Duration in seconds.
-
-    Returns:
-        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
-    """
-    rounded = round(seconds, 1)
-    if rounded < 60:  # noqa: PLR2004
-        return f"{rounded:.1f}s"
-    minutes, secs = divmod(int(rounded), 60)
-    if minutes < 60:  # noqa: PLR2004
-        return f"{minutes}m {secs}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m {secs}s"
 
 
 def print_usage_table(
@@ -160,7 +142,7 @@ def print_usage_table(
     if has_time:
         console.print()
         console.print(
-            f"Agent active  {_format_duration(wall_time)}",
+            f"Agent active  {format_duration(wall_time)}",
             style="dim",
             highlight=False,
         )
@@ -385,6 +367,7 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -406,6 +389,12 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        turn_stats: Pre-created `SessionStats` to accumulate into.
+
+            When the caller holds a reference to the same object, stats are
+            available even if this coroutine is cancelled before it can return.
+
+            If `None`, a new instance is created internally.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -469,7 +458,8 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    turn_stats = SessionStats()
+    if turn_stats is None:
+        turn_stats = SessionStats()
     start_time = time.monotonic()
 
     # Show spinner

@@ -85,6 +85,14 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         model: The agent's chat model (from --model CLI option).
         task_id: The tau2 task ID to run.
     """
+    # Immediately override @pytest.mark.langsmith auto-capture so the dataset
+    # example records clean metadata even if run_multi_turn() raises.
+    _clean_inputs = {
+        "task_id": task_id,
+        "model": str(getattr(model, "model", None) or getattr(model, "model_name", "")),
+    }
+    t.log_inputs(_clean_inputs)
+
     task = load_task(task_id)
     policy = load_policy()
 
@@ -121,6 +129,10 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         tool_call_log=tool_log,
         max_turns=30,
     )
+
+    # Override per-turn t.log_inputs() calls from run_agent() inside
+    # run_multi_turn() with clean test-level metadata.
+    t.log_inputs(_clean_inputs)
 
     reward = evaluate_task(
         actual_db=db,

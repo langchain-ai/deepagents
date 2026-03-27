@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -128,10 +131,10 @@ class TestApplyServerConfig:
 class TestStartServerAndGetAgent:
     """Tests for server bootstrap wiring."""
 
-    async def test_uses_absolute_graph_and_checkpointer_refs(
+    async def test_uses_relative_graph_and_checkpointer_refs(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Generated LangGraph config should use absolute bootstrap paths."""
+        """Generated LangGraph config should use relative paths (Windows compat)."""
         project_root = tmp_path / "project"
         project_root.mkdir()
         monkeypatch.chdir(project_root)
@@ -169,16 +172,25 @@ class TestStartServerAndGetAgent:
         assert manager is None
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
-        graph_path, _graph_attr = kwargs["graph_ref"].rsplit(":", 1)
-        checkpointer_path, _checkpointer_attr = kwargs["checkpointer_path"].rsplit(
-            ":",
-            1,
-        )
+        assert kwargs["graph_ref"] == "./server_graph.py:graph"
+        assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
-        assert Path(graph_path).is_absolute()
-        assert Path(checkpointer_path).is_absolute()
-        assert Path(graph_path).parent == work_dir
-        assert Path(checkpointer_path).parent == work_dir
+    def test_relative_paths_written_verbatim_to_langgraph_json(
+        self, tmp_path: Path
+    ) -> None:
+        """Relative refs must appear verbatim in the generated config."""
+        import json
+
+        from deepagents_cli.server import generate_langgraph_json
+
+        generate_langgraph_json(
+            tmp_path,
+            graph_ref="./server_graph.py:graph",
+            checkpointer_path="./checkpointer.py:create_checkpointer",
+        )
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"]["agent"] == "./server_graph.py:graph"
+        assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
 
 class TestWritePyproject:

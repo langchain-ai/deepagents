@@ -689,6 +689,16 @@ class DeepAgentsApp(App):
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this session."""
 
+        self._inflight_turn_stats: SessionStats | None = None
+        """Stats for the currently executing turn.
+
+        Held here so `exit()` can merge them synchronously before the event loop
+        tears down (e.g. `Ctrl+D` during a pending tool call).
+        """
+
+        self._inflight_turn_start: float = 0.0
+        """Monotonic timestamp when the current turn started."""
+
         self._pending_messages: deque[QueuedMessage] = deque()
         """User message queue for sequential processing."""
 
@@ -755,8 +765,8 @@ class DeepAgentsApp(App):
 
         Most styling uses Textual's built-in variables (`$primary`,
         `$text-muted`, `$error-muted`, etc.).  This override injects the
-        few app-specific variables (`$mode-bash`, `$mode-command`) that
-        have no Textual equivalent.
+        app-specific variables (`$mode-bash`, `$mode-command`, `$skill`,
+        `$skill-hover`, `$tool`, `$tool-hover`) that have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.
@@ -926,6 +936,14 @@ class DeepAgentsApp(App):
             asyncio.to_thread(self._prewarm_deferred_imports),
             exclusive=True,
             group="startup-import-prewarm",
+        )
+
+        # Prewarm model discovery and profile caches unconditionally so
+        # /model opens instantly even before the agent/server is ready.
+        self.run_worker(
+            self._prewarm_model_caches,
+            exclusive=True,
+            group="startup-model-prewarm",
         )
 
         # Optional tool warnings in a thread (shutil.which is sync I/O)
@@ -1128,11 +1146,6 @@ class DeepAgentsApp(App):
             self._prewarm_threads_cache,
             exclusive=True,
             group="startup-thread-prewarm",
-        )
-        self.run_worker(
-            self._prewarm_model_caches,
-            exclusive=True,
-            group="startup-model-prewarm",
         )
 
     async def _resolve_resume_thread(self) -> None:
@@ -1400,6 +1413,19 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm third-party imports", exc_info=True)
 
+        # Markdown rendering stack — ~170 ms cold (textual._markdown pulls in
+        # markdown_it, pygments, linkify_it — 438 modules).  Hit on first
+        # SkillMessage compose() and first code-fence highlight.  Warming
+        # here makes the first expand/Ctrl+O instant.
+        import markdown_it  # noqa: F401
+        from pygments.lexers import get_lexer_by_name as _get_lexer
+        from textual.widgets import Markdown  # noqa: F401
+
+        # Instantiate the Python lexer to populate Pygments' internal
+        # lexer cache (~12 ms cold).  Python is the most common fence
+        # language in skill bodies.
+        _get_lexer("python")
+
         # Widgets deferred from app.py module level — a failure here indicates
         # a packaging or code bug (same as the block above), so we let
         # exceptions propagate.
@@ -1435,7 +1461,7 @@ class DeepAgentsApp(App):
                 get_model_profiles, cli_override=self._profile_override
             )
         except Exception:
-            logger.debug("Could not prewarm model caches", exc_info=True)
+            logger.warning("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer version and optionally auto-update."""
@@ -3153,9 +3179,14 @@ class DeepAgentsApp(App):
             return
         from deepagents_cli.textual_adapter import execute_task_textual
 
-        turn_stats: SessionStats | None = None
+        # Create the stats object up-front and store on the app so
+        # exit() can merge it synchronously if the worker is cancelled
+        # before this method can return (e.g. Ctrl+D during HITL).
+        turn_stats = SessionStats()
+        self._inflight_turn_stats = turn_stats
+        self._inflight_turn_start = time.monotonic()
         try:
-            turn_stats = await execute_task_textual(
+            await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -3169,6 +3200,7 @@ class DeepAgentsApp(App):
                     model=self._model_override,
                     model_params=self._model_params_override or {},
                 ),
+                turn_stats=turn_stats,
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -3183,12 +3215,15 @@ class DeepAgentsApp(App):
                     "Could not mount error message (app closing?)", exc_info=True
                 )
         finally:
-            # Clean up loading widget and agent state
+            # Merge turn stats before cleanup — _cleanup_agent_task may raise
+            # during teardown (widget removal on a torn-down DOM), and stats
+            # should ideally be captured regardless.
+            # exit() clears _inflight_turn_stats when it merges, so
+            # checking for None prevents double-counting.
+            if self._inflight_turn_stats is not None:
+                self._session_stats.merge(turn_stats)
+                self._inflight_turn_stats = None
             await self._cleanup_agent_task()
-
-        # Accumulate stats across all turns; printed once at session end
-        if isinstance(turn_stats, SessionStats):
-            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -4025,11 +4060,25 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # Merge in-flight turn stats before any cleanup that might raise.
+        # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
+        # call), the worker's finally block will see _inflight_turn_stats is
+        # already None and skip the merge.
+        inflight = self._inflight_turn_stats
+        if inflight is not None:
+            self._inflight_turn_stats = None
+            if not inflight.wall_time_seconds:
+                inflight.wall_time_seconds = (
+                    time.monotonic() - self._inflight_turn_start
+                )
+            self._session_stats.merge(inflight)
+
         # Discard queued messages so _cleanup_agent_task won't try to
         # process them after the event loop is torn down, and cancel
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
         self._discard_queue()
+
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:

@@ -154,10 +154,10 @@ class FileData(TypedDict):
     encoding: str
     """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
 
-    created_at: str
+    created_at: NotRequired[str]
     """ISO 8601 timestamp of file creation."""
 
-    modified_at: str
+    modified_at: NotRequired[str]
     """ISO 8601 timestamp of last modification."""
 
 

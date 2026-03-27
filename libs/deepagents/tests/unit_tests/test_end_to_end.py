@@ -15,6 +15,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import FilesystemBackend
@@ -24,6 +25,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
 
@@ -1263,6 +1265,40 @@ class TestDeepAgentEndToEnd:
         )
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test invalid read_file arguments still produce a ToolMessage."""
+        backend = backend_factory(tmp_path)
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"foo": "/missing.txt", "does_not_exist": True},
+                                "id": "call_invalid_read",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Handled the invalid read_file call."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model, backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Try reading a file with invalid args")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        tool_message = tool_messages[0]
+        assert tool_message.tool_call_id == "call_invalid_read"
+        assert tool_message.status == "error"
+        assert "Error invoking tool 'read_file' with kwargs " in tool_message.content
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
         backend = backend_factory(tmp_path)
@@ -1334,3 +1370,95 @@ class TestDeepAgentStructure:
         assert_all_deepagent_qualities(agent)
         assert "sample_tool" in agent.nodes["tools"].bound._tools_by_name
         assert "sample_input" in agent.stream_channels
+
+
+class TestLargeHumanMessageEviction:
+    """Test that oversized HumanMessages are evicted to the filesystem."""
+
+    def test_large_human_message_evicted_before_model_call(self) -> None:
+        """An oversized HumanMessage is evicted and tagged with ``lc_evicted_to``.
+
+        The agent receives a HumanMessage (no id) whose text content exceeds
+        the eviction threshold. The filesystem middleware's ``wrap_model_call``
+        should write the full content to the backend and tag the message in
+        state via ``lc_evicted_to``, while preserving the original content.
+        The model should see a truncated preview, not the full content.
+        """
+        threshold = 50_000
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+
+        fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Got it.")]))
+
+        agent = create_deep_agent(model=fake_model)
+        result = agent.invoke({"messages": [HumanMessage(content=large_content)]})
+
+        human_messages = [msg for msg in result["messages"] if isinstance(msg, HumanMessage)]
+        assert len(human_messages) == 1
+        msg = human_messages[0]
+
+        assert msg.content == large_content
+        evicted_to = msg.additional_kwargs.get("lc_evicted_to")
+        assert evicted_to is not None
+        assert evicted_to.startswith("/conversation_history/")
+
+        assert len(fake_model.call_history) == 1
+        model_messages = fake_model.call_history[0]["messages"]
+        model_human = [m for m in model_messages if isinstance(m, HumanMessage)]
+        assert len(model_human) == 1
+        assert len(model_human[0].content) < len(large_content)
+        assert "/conversation_history/" in model_human[0].content
+
+    def test_multi_turn_eviction(self) -> None:
+        """Tagged messages are truncated on subsequent turns.
+
+        Simulates a multi-turn conversation with two oversized HumanMessages
+        separated by a normal-sized message. On each model call, all
+        previously-tagged messages should be truncated in the model request.
+        """
+        threshold = 50_000
+        large_content_1 = "a" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+        large_content_2 = "b" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+        short_content = "short message"
+
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="Response 1"),
+                    AIMessage(content="Response 2"),
+                    AIMessage(content="Response 3"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+
+        config = {"configurable": {"thread_id": "test-eviction"}}
+        _ = agent.invoke({"messages": [HumanMessage(content=large_content_1)]}, config)
+        _ = agent.invoke({"messages": [HumanMessage(content=short_content)]}, config)
+        result_3 = agent.invoke({"messages": [HumanMessage(content=large_content_2)]}, config)
+
+        assert len(fake_model.call_history) == 3
+
+        call_1_messages = fake_model.call_history[0]["messages"]
+        call_1_human = [m for m in call_1_messages if isinstance(m, HumanMessage)]
+        assert len(call_1_human) == 1
+        assert len(call_1_human[0].content) < len(large_content_1)
+
+        call_2_messages = fake_model.call_history[1]["messages"]
+        call_2_human = [m for m in call_2_messages if isinstance(m, HumanMessage)]
+        assert len(call_2_human) == 2
+        assert len(call_2_human[0].content) < len(large_content_1)
+        assert call_2_human[1].content == short_content
+
+        call_3_messages = fake_model.call_history[2]["messages"]
+        call_3_human = [m for m in call_3_messages if isinstance(m, HumanMessage)]
+        assert len(call_3_human) == 3
+        assert len(call_3_human[0].content) < len(large_content_1)
+        assert call_3_human[1].content == short_content
+        assert len(call_3_human[2].content) < len(large_content_2)
+
+        final_human = [m for m in result_3["messages"] if isinstance(m, HumanMessage)]
+        tagged = [m for m in final_human if m.additional_kwargs.get("lc_evicted_to")]
+        assert len(tagged) == 2
+        for m in tagged:
+            assert m.content in (large_content_1, large_content_2)

@@ -224,10 +224,8 @@ class StoreBackend(BackendProtocol):
             store_item: The store Item containing file data.
 
         Returns:
-            FileData dict with content, encoding, created_at, and modified_at fields.
-
-        Raises:
-            ValueError: If required fields are missing or have incorrect types.
+            FileData dict with content and encoding. Includes created_at and
+            modified_at when present in the store item.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
@@ -248,18 +246,15 @@ class StoreBackend(BackendProtocol):
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise TypeError(msg)
 
-        if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
-            msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        if "modified_at" not in store_item.value or not isinstance(store_item.value["modified_at"], str):
-            msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        return {
-            "content": content,
-            "encoding": store_item.value.get("encoding", "utf-8"),
-            "created_at": store_item.value["created_at"],
-            "modified_at": store_item.value["modified_at"],
-        }
+        result = FileData(
+            content=content,
+            encoding=store_item.value.get("encoding", "utf-8"),
+        )
+        if "created_at" in store_item.value and isinstance(store_item.value["created_at"], str):
+            result["created_at"] = store_item.value["created_at"]
+        if "modified_at" in store_item.value and isinstance(store_item.value["modified_at"], str):
+            result["modified_at"] = store_item.value["modified_at"]
+        return result
 
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
@@ -271,16 +266,20 @@ class StoreBackend(BackendProtocol):
             file_data: The FileData to convert.
 
         Returns:
-            Dictionary with content, encoding, created_at, and modified_at fields.
+            Dictionary with content and encoding. Includes created_at and
+            modified_at when present in the FileData.
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
-        return {
+        result: dict[str, Any] = {
             "content": file_data["content"],
             "encoding": file_data["encoding"],
-            "created_at": file_data["created_at"],
-            "modified_at": file_data["modified_at"],
         }
+        if "created_at" in file_data:
+            result["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            result["modified_at"] = file_data["modified_at"]
+        return result
 
     def _search_store_paginated(
         self,
@@ -424,14 +423,15 @@ class StoreBackend(BackendProtocol):
         sliced = slice_read_response(file_data, offset, limit)
         if isinstance(sliced, ReadResult):
             return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
         )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     async def aread(
         self,
@@ -461,14 +461,15 @@ class StoreBackend(BackendProtocol):
         sliced = slice_read_response(file_data, offset, limit)
         if isinstance(sliced, ReadResult):
             return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
         )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     def write(
         self,

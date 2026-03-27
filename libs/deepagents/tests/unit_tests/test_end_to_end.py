@@ -25,6 +25,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -1462,3 +1463,80 @@ class TestLargeHumanMessageEviction:
         assert len(tagged) == 2
         for m in tagged:
             assert m.content in (large_content_1, large_content_2)
+
+
+class TestCompactConversationTool:
+    """Test that the compact_conversation tool triggers summarization."""
+
+    def test_compact_conversation_tool_invocation(self) -> None:
+        """Agent invokes compact_conversation and conversation is compacted.
+
+        Uses ``create_summarization_tool_middleware`` with a fake model that
+        has a profile so fraction-based defaults are used. Input messages
+        carry ``usage_metadata`` and ``response_metadata`` so the eligibility
+        gate passes. The summarization model (same fake instance) returns a
+        summary, and the agent model emits the tool call then a final response.
+        """
+        summary_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="summary of earlier conversation")]))
+        summary_model.profile = {"max_input_tokens": 200_000}
+
+        provider = summary_model._get_ls_params()["ls_provider"]
+
+        agent_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "compact_conversation",
+                                "args": {},
+                                "id": "call_compact",
+                                "type": "tool_call",
+                            }
+                        ],
+                        usage_metadata={"input_tokens": 150_000, "output_tokens": 100, "total_tokens": 150_100},
+                        response_metadata={"model_provider": provider},
+                    ),
+                    AIMessage(content="Done, conversation compacted."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=agent_model,
+            middleware=[
+                create_summarization_tool_middleware(summary_model, StateBackend),
+            ],
+            checkpointer=InMemorySaver(),
+        )
+
+        text_10k = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        text_50k = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+
+        input_messages: list = [
+            HumanMessage(content=text_10k),
+            AIMessage(
+                content=text_50k,
+                usage_metadata={"input_tokens": 60_000, "output_tokens": 30_000, "total_tokens": 90_000},
+                response_metadata={"model_provider": provider},
+            ),
+            HumanMessage(content=text_10k),
+            AIMessage(
+                content=text_50k,
+                usage_metadata={"input_tokens": 120_000, "output_tokens": 30_000, "total_tokens": 150_000},
+                response_metadata={"model_provider": provider},
+            ),
+            HumanMessage(content="please compact"),
+        ]
+
+        config = {"configurable": {"thread_id": "compact-tool-test"}}
+        result = agent.invoke({"messages": input_messages}, config)
+
+        assert result["messages"][-1].content == "Done, conversation compacted."
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        compact_msgs = [m for m in tool_messages if m.tool_call_id == "call_compact"]
+        assert len(compact_msgs) == 1
+        assert "compacted" in compact_msgs[0].content.lower() or "summarized" in compact_msgs[0].content.lower()
+        assert "conversation that has been summarized" in agent_model.call_history[1]["messages"][1].content

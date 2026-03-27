@@ -216,6 +216,7 @@ def reset_agent(
     agent_name: str,
     source_agent: str | None = None,
     *,
+    dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
     """Reset an agent to default or copy from another agent.
@@ -223,7 +224,11 @@ def reset_agent(
     Args:
         agent_name: Name of the agent to reset.
         source_agent: Copy AGENTS.md from this agent instead of default.
+        dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the source agent is not found.
     """
     agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
@@ -235,15 +240,35 @@ def reset_agent(
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no AGENTS.md"
+                "or has no AGENTS.md\n"
+                "  Available agents: deepagents agents list"
             )
-            return
+            raise SystemExit(1)
 
         source_content = source_md.read_text()
         action_desc = f"contents of agent '{source_agent}'"
     else:
         source_content = get_default_coding_instructions()
         action_desc = "default"
+
+    if dry_run:
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "reset",
+                {
+                    "agent": agent_name,
+                    "reset_to": source_agent or "default",
+                    "path": str(agent_dir),
+                    "dry_run": True,
+                },
+            )
+            return
+        exists = "remove and recreate" if agent_dir.exists() else "create"
+        console.print(f"Would {exists} {agent_dir} with {action_desc} prompt.")
+        console.print("No changes made.", style=theme.MUTED)
+        return
 
     if agent_dir.exists():
         shutil.rmtree(agent_dir)

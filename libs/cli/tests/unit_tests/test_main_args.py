@@ -269,11 +269,13 @@ def _make_args(
     *,
     non_interactive_message: str | None = None,
     initial_prompt: str | None = None,
+    stdin: bool = False,
 ) -> argparse.Namespace:
     """Create a minimal argument namespace for stdin pipe tests."""
     return argparse.Namespace(
         non_interactive_message=non_interactive_message,
         initial_prompt=initial_prompt,
+        stdin=stdin,
     )
 
 

@@ -475,11 +475,19 @@ Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
 """
 
-config: RunnableConfig = {"recursion_limit": 1000}
-"""Default LangGraph runnable config with a high recursion limit.
+config: RunnableConfig = {
+    "recursion_limit": 1000,
+    "metadata": {
+        "ls_integration": "deepagents-cli",
+    },
+}
+"""Default LangGraph runnable config.
 
 Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
 hitting the default LangGraph ceiling.
+
+Includes `ls_integration` metadata so LangSmith traces originating from the CLI
+are distinguishable from bare SDK usage.
 """
 
 _git_branch_cache: dict[str, str | None] = {}

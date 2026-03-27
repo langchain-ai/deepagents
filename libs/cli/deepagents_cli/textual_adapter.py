@@ -166,6 +166,9 @@ def _get_ask_user_adapter() -> TypeAdapter:
     if _ask_user_adapter_cache is None:
         from pydantic import TypeAdapter
 
+        from deepagents_cli._ask_user_types import ensure_field_available
+
+        ensure_field_available()
         _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
     return _ask_user_adapter_cache
 

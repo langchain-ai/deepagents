@@ -21,7 +21,17 @@ from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 
-from deepagents_cli._ask_user_types import AskUserRequest, Question
+from deepagents_cli._ask_user_types import (
+    AskUserRequest,
+    Question,
+    ensure_field_available,
+)
+
+# Inject pydantic.Field into _ask_user_types' namespace so LangChain's
+# @tool decorator can resolve the Annotated[..., Field(...)] string annotations
+# when generating the tool schema.  By this point langchain has already loaded
+# pydantic, so this is a dict lookup.
+ensure_field_available()
 
 logger = logging.getLogger(__name__)
 

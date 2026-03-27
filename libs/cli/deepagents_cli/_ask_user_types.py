@@ -3,14 +3,37 @@
 Extracted from `ask_user` so `textual_adapter` can import `AskUserRequest` at
 module level — and `app` can reference the types at type-check time — without
 pulling in the langchain middleware stack.
+
+`pydantic.Field` is deliberately imported under `TYPE_CHECKING` only.
+With `from __future__ import annotations` the `Annotated[..., Field(...)]`
+expressions are stored as strings and never evaluated at class body time.
+Call sites that need to resolve these annotations at runtime (`TypeAdapter`,
+LangChain `@tool`) must call `ensure_field_available` first to inject
+`Field` into this module's namespace.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Literal, NotRequired
 
-from pydantic import Field
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from pydantic import Field
+
+
+def ensure_field_available() -> None:
+    """Inject `pydantic.Field` into this module's globals if not already present.
+
+    This is a no-op when `Field` has already been injected.  By the time any
+    caller needs to resolve the `Annotated[..., Field(...)]` string annotations,
+    pydantic is already in `sys.modules` (loaded by LangChain or a `TypeAdapter`
+    import), so the import here is a dict lookup.
+    """
+    if "Field" not in globals():
+        from pydantic import Field
+
+        globals()["Field"] = Field
 
 
 class Choice(TypedDict):
@@ -60,10 +83,13 @@ class AskUserRequest(TypedDict):
     """Request payload sent via interrupt when asking the user questions."""
 
     type: Literal["ask_user"]
+    """Discriminator tag, always `'ask_user'`."""
 
     questions: list[Question]
+    """Questions to present to the user."""
 
     tool_call_id: str
+    """ID of the originating tool call, used to route the response back."""
 
 
 class AskUserAnswered(TypedDict):
@@ -83,5 +109,5 @@ class AskUserCancelled(TypedDict):
     """Discriminator tag, always `'cancelled'`."""
 
 
-# Discriminated union for the ask_user widget Future result.
 AskUserWidgetResult = AskUserAnswered | AskUserCancelled
+"""Discriminated union for the ask_user widget Future result."""

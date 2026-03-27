@@ -221,15 +221,25 @@ def format_path(path: str | None) -> str:
         return path
 
 
+_db_path: Path | None = None
+
+
 def get_db_path() -> Path:
     """Get path to global database.
+
+    The result is cached after the first successful call to avoid repeated
+    filesystem operations.
 
     Returns:
         Path to the SQLite database file.
     """
+    global _db_path  # noqa: PLW0603  # Module-level cache requires global statement
+    if _db_path is not None:
+        return _db_path
     db_dir = Path.home() / ".deepagents"
     db_dir.mkdir(parents=True, exist_ok=True)
-    return db_dir / "sessions.db"
+    _db_path = db_dir / "sessions.db"
+    return _db_path
 
 
 def generate_thread_id() -> str:
@@ -596,7 +606,7 @@ def _cache_recent_threads(
 
 def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
     """Return shallow-copied thread rows."""
-    return [ThreadInfo(**thread) for thread in threads]
+    return [cast("ThreadInfo", dict(thread)) for thread in threads]
 
 
 async def _count_messages_from_checkpoint(

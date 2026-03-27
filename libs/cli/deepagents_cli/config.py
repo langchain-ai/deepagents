@@ -475,8 +475,10 @@ Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
 """
 
-config: RunnableConfig = {"recursion_limit": 1000}
-"""Default LangGraph runnable config with a high recursion limit.
+config: RunnableConfig = {
+    "recursion_limit": 1000,
+}
+"""Default LangGraph runnable config.
 
 Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
 hitting the default LangGraph ceiling.
@@ -543,6 +545,9 @@ def build_stream_config(
         version would be lost.
     * Including the SDK version here ensures it survives the merge.
 
+    Includes `ls_integration` metadata so LangSmith traces originating from the CLI
+    are distinguishable from bare SDK usage.
+
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
@@ -567,7 +572,10 @@ def build_stream_config(
     with contextlib.suppress(importlib_metadata.PackageNotFoundError):
         versions["deepagents"] = importlib_metadata.version("deepagents")
 
-    metadata: dict[str, Any] = {"versions": versions}
+    metadata: dict[str, Any] = {
+        "versions": versions,
+        "ls_integration": "deepagents-cli",
+    }
     if cwd:
         metadata["cwd"] = cwd
     if assistant_id:

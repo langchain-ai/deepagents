@@ -1545,7 +1545,7 @@ def get_langsmith_project_name() -> str | None:
     `settings.deepagents_langchain_project` (from
     `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
-    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'deepagents-cli'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
@@ -1562,7 +1562,7 @@ def get_langsmith_project_name() -> str | None:
     return (
         _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
-        or "default"
+        or "deepagents-cli"
     )
 
 

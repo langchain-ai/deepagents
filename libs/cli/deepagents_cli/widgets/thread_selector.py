@@ -1725,7 +1725,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_delete_thread(self) -> None:
         """Show delete confirmation for the highlighted thread."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete:
+            return
+        if not self._filtered_threads:
+            # Nothing to delete — fall through to quit. Using exit() instead of
+            # dismiss() is intentional: dismiss() would just close the modal
+            # silently, re-swallowing ctrl+d.
+            self.app.exit()
             return
         self._confirming_delete = True
         thread = self._filtered_threads[self._selected_index]

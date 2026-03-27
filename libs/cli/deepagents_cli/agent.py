@@ -425,7 +425,13 @@ def get_system_prompt(
             f"**Important:**\n"
             f"- The CLI is running locally on the user's machine, but you execute "
             f"code remotely\n"
-            f"- Use `{working_dir}` as your working directory for all operations\n\n"
+            f"- Use `{working_dir}` as your working directory for all operations\n"
+            f"- **You do NOT have access to the user's local filesystem.** Paths "
+            f"like `/Users/...`, `/home/<local-user>/...`, `C:\\...`, etc. do not "
+            f"exist in this sandbox. Never reference or attempt to read/write local "
+            f"paths — all files must be within the sandbox at `{working_dir}`\n"
+            f"- When delegating to subagents, ensure they also use sandbox paths "
+            f"(`{working_dir}/...`), not local paths\n\n"
         )
     else:
         if cwd is not None:

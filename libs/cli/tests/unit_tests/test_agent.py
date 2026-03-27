@@ -501,6 +501,49 @@ class TestGetSystemPromptCwdOSError:
         assert "Current Working Directory" in prompt
 
 
+class TestGetSystemPromptSandbox:
+    """Tests for sandbox-specific system prompt content."""
+
+    def test_sandbox_includes_no_local_filesystem_warning(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "do NOT have access to the user's local filesystem" in prompt
+
+    def test_sandbox_includes_working_dir_constraint(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "/workspace" in prompt
+        assert "remote Linux sandbox" in prompt
+
+    def test_sandbox_warns_about_subagent_paths(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="daytona")
+
+        assert "subagents" in prompt
+        assert "/home/daytona" in prompt
+
+    def test_local_mode_omits_sandbox_warnings(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "do NOT have access to the user's local filesystem" not in prompt
+        assert "remote Linux sandbox" not in prompt
+
+
 class TestGetSystemPromptPlaceholderValidation:
     """Tests for unreplaced placeholder detection."""
 

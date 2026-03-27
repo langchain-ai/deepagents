@@ -919,7 +919,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'default' when no project name configured."""
+        """Should fall back to 'deepagents-cli' when no project name configured."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -929,7 +929,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
@@ -943,7 +943,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
 
 class TestFetchLangsmithProjectUrl:

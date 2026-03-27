@@ -606,7 +606,7 @@ def _cache_recent_threads(
 
 def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
     """Return shallow-copied thread rows."""
-    return [cast("ThreadInfo", dict(thread)) for thread in threads]
+    return [ThreadInfo(**thread) for thread in threads]
 
 
 async def _count_messages_from_checkpoint(

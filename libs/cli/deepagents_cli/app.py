@@ -910,7 +910,7 @@ class DeepAgentsApp(App):
         )
 
         # Create UI adapter unconditionally — it only holds UI callbacks and
-        # doesn't depend on the agent.  The agent is injected later at
+        # doesn't depend on the agent. The agent is injected later at
         # execute_task_textual() call time.
         from deepagents_cli.textual_adapter import TextualUIAdapter
 

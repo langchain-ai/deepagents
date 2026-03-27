@@ -49,22 +49,28 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-_GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
-"""Global user-level `.env` file (`~/.deepagents/.env`)."""
+# Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
+try:
+    _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
+except RuntimeError:
+    _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
 
 def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
-    """Load environment variables from global and project `.env` files.
+    """Load environment variables from project and global `.env` files.
 
     Loads in order:
 
-    1. `~/.deepagents/.env` — global defaults (always with `override=False`)
-    2. Project/CWD `.env` — project-specific values (uses caller's `override`)
+    1. Project/CWD `.env` — project-specific values (uses caller's `override`)
+    2. `~/.deepagents/.env` — global fallback defaults (always `override=False`)
 
-    When `override` is `True` (e.g., during `/reload`), project-level values
-    take precedence over global ones. When `override` is `False` (e.g.,
-    during bootstrap), the global file's values take precedence for keys
-    defined in both files because it is loaded first.
+    Precedence (highest to lowest):
+
+    - `override=False` (bootstrap): shell env > project `.env` > global `.env`
+    - `override=True` (`/reload`): project `.env` > shell env > global `.env`
+
+    Keys already present in the process environment (e.g., exported in a shell
+    profile) are never overwritten when `override` is `False`.
 
     Args:
         start_path: Directory to use for project `.env` discovery.
@@ -76,29 +82,39 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
     """
     loaded = False
 
-    # 1. Global defaults (~/.deepagents/.env) — never override existing vars
+    # 1. Project/CWD .env — uses caller's override setting
+    try:
+        if start_path is None:
+            loaded = dotenv.load_dotenv(override=override) or loaded
+        else:
+            dotenv_path = _find_dotenv_from_start_path(start_path)
+            if dotenv_path is not None:
+                loaded = (
+                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+                    or loaded
+                )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read project dotenv at %s; project env vars will not be loaded",
+            start_path,
+            exc_info=True,
+        )
+
+    # 2. Global fallback (~/.deepagents/.env) — never override existing vars.
+    # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
+    # window where the file can vanish between stat and open.
     try:
         if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
             dotenv_path=_GLOBAL_DOTENV_PATH, override=False
         ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
-    except OSError:
+    except (OSError, ValueError):
         logger.warning(
             "Could not read global dotenv at %s; global defaults will not be applied",
             _GLOBAL_DOTENV_PATH,
             exc_info=True,
         )
-
-    # 2. Project/CWD .env — may override global values
-    if start_path is None:
-        loaded = dotenv.load_dotenv(override=override) or loaded
-    else:
-        dotenv_path = _find_dotenv_from_start_path(start_path)
-        if dotenv_path is not None:
-            loaded = (
-                dotenv.load_dotenv(dotenv_path=dotenv_path, override=override) or loaded
-            )
 
     return loaded
 

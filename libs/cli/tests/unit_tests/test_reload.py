@@ -1,5 +1,6 @@
 """Tests for runtime config reload behavior."""
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, call
@@ -163,7 +164,7 @@ class TestReloadFromEnvironment:
     def test_loads_global_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should load `~/.deepagents/.env` before project `.env`."""
+        """Reload should load project dotenv first, then global as fallback."""
         settings = Settings.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
@@ -182,19 +183,23 @@ class TestReloadFromEnvironment:
         assert mock_load.call_count == 2
         mock_load.assert_has_calls(
             [
-                call(dotenv_path=global_env, override=False),
                 call(dotenv_path=project_env, override=True),
+                call(dotenv_path=global_env, override=False),
             ]
         )
 
     def test_global_dotenv_oserror_does_not_crash(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """OSError reading global `.env` should be swallowed gracefully."""
+        """OSError reading global `.env` should log a warning and continue."""
         settings = Settings.from_environment(start_path=tmp_path)
 
         broken = MagicMock()
-        broken.is_file.side_effect = OSError("permission denied")
+        msg = "permission denied"
+        broken.is_file.side_effect = OSError(msg)
         monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", broken)
 
         # Should not raise — project .env still loads
@@ -204,15 +209,17 @@ class TestReloadFromEnvironment:
         mock_load = MagicMock(return_value=True)
         monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
 
-        settings.reload_from_environment(start_path=tmp_path)
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.config"):
+            settings.reload_from_environment(start_path=tmp_path)
 
+        assert any("Could not read global dotenv" in r.message for r in caplog.records)
         # Only the project .env call should happen
         mock_load.assert_called_once_with(dotenv_path=project_env, override=True)
 
-    def test_global_dotenv_precedence(
+    def test_global_dotenv_precedence_on_reload(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Project `.env` should override same key from global `.env`."""
+        """With `override=True` (`/reload`), project `.env` beats global."""
         from deepagents_cli.config import _load_dotenv
 
         global_dir = tmp_path / "global"
@@ -234,8 +241,99 @@ class TestReloadFromEnvironment:
         _load_dotenv(start_path=tmp_path, override=True)
 
         assert os.environ.get("TEST_PRECEDENCE_KEY") == "project-value"
-        # Clean up
         monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
+
+    def test_global_dotenv_precedence_at_bootstrap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """With `override=False` (bootstrap), project `.env` still beats global."""
+        from deepagents_cli.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("TEST_BOOT_KEY=global-value\n")
+        monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("TEST_BOOT_KEY=project-value\n")
+
+        monkeypatch.setattr(
+            "deepagents_cli.config.dotenv.load_dotenv",
+            _real_load_dotenv,
+        )
+        monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
+
+        _load_dotenv(start_path=tmp_path, override=False)
+
+        assert os.environ.get("TEST_BOOT_KEY") == "project-value"
+        monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
+
+    def test_global_only_no_project_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Global `.env` values should apply when no project `.env` exists."""
+        from deepagents_cli.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("TEST_GLOBAL_ONLY=global-value\n")
+        monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
+
+        monkeypatch.setattr(
+            "deepagents_cli.config.dotenv.load_dotenv",
+            _real_load_dotenv,
+        )
+        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
+
+        # No .env in isolated dir; global is the only source
+        monkeypatch.setattr(
+            "deepagents_cli.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        isolated = tmp_path / "no_project_env"
+        isolated.mkdir()
+        result = _load_dotenv(start_path=isolated, override=False)
+
+        assert result is True
+        assert os.environ.get("TEST_GLOBAL_ONLY") == "global-value"
+        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
+
+    def test_global_load_dotenv_raises_oserror(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """OSError from `dotenv.load_dotenv` itself (not `is_file`) is caught."""
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("KEY=val\n")
+        monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("OPENAI_API_KEY=sk-ok\n")
+
+        call_count = 0
+
+        def _fail_on_global(*_args: object, **_kwargs: object) -> bool:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                msg = "read error"
+                raise OSError(msg)
+            return True
+
+        monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", _fail_on_global)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.config"):
+            settings.reload_from_environment(start_path=tmp_path)
+
+        assert call_count == 2
+        assert any("Could not read global dotenv" in r.message for r in caplog.records)
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

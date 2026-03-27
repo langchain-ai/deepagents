@@ -1266,8 +1266,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
-            infer_schema=False,
-            args_schema=CompactConversationSchema,
+            # infer_schema=False,  # noqa: ERA001
+            # args_schema=CompactConversationSchema,  # noqa: ERA001
         )
 
     def _build_compact_result(

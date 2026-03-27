@@ -1595,7 +1595,10 @@ def cli_main() -> None:
             # Warn about available update on exit
             try:
                 if result.update_available[0]:
-                    from deepagents_cli.update_check import upgrade_command
+                    from deepagents_cli.update_check import (
+                        is_auto_update_enabled,
+                        upgrade_command,
+                    )
 
                     latest = result.update_available[1]
                     console.print()
@@ -1605,6 +1608,10 @@ def cli_main() -> None:
                     cmd_hint = Text("Run: ", style="dim")
                     cmd_hint.append(upgrade_command(), style="cyan")
                     console.print(cmd_hint)
+                    if not is_auto_update_enabled():
+                        auto_hint = Text("Enable auto-updates: ", style="dim")
+                        auto_hint.append("/auto-update", style="cyan")
+                        console.print(auto_hint)
             except Exception:
                 logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:

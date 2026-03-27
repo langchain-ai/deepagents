@@ -1204,14 +1204,41 @@ async def list_threads_command(
 
 
 async def delete_thread_command(
-    thread_id: str, *, output_format: OutputFormat = "text"
+    thread_id: str,
+    *,
+    dry_run: bool = False,
+    output_format: OutputFormat = "text",
 ) -> None:
     """CLI handler for: deepagents threads delete.
 
     Args:
         thread_id: ID of the thread to delete.
+        dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
+    if dry_run:
+        exists = await thread_exists(thread_id)
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "threads delete",
+                {"thread_id": thread_id, "exists": exists, "dry_run": True},
+            )
+            return
+
+        from rich.markup import escape as escape_markup
+
+        from deepagents_cli.config import console
+
+        escaped_id = escape_markup(thread_id)
+        if exists:
+            console.print(f"Would delete thread '{escaped_id}'.")
+        else:
+            console.print(f"Thread '{escaped_id}' not found. Nothing to delete.")
+        console.print("No changes made.", style="dim")
+        return
+
     deleted = await delete_thread(thread_id)
 
     if output_format == "json":
@@ -1222,10 +1249,14 @@ async def delete_thread_command(
 
     from rich.markup import escape as escape_markup
 
+    from deepagents_cli import theme
     from deepagents_cli.config import console
 
     escaped_id = escape_markup(thread_id)
     if deleted:
         console.print(f"[green]Thread '{escaped_id}' deleted.[/green]")
     else:
-        console.print(f"[red]Thread '{escaped_id}' not found.[/red]")
+        console.print(
+            f"Thread '{escaped_id}' not found or already deleted.",
+            style=theme.MUTED,
+        )

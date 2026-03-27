@@ -25,7 +25,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationToolMiddleware
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -1503,17 +1503,11 @@ class TestCompactConversationTool:
             )
         )
 
-        summarization = SummarizationMiddleware(
-            model=summary_model,
-            backend=StateBackend,
-            trigger=("fraction", 0.85),
-            keep=("fraction", 0.10),
-        )
-        tool_mw = SummarizationToolMiddleware(summarization)
-
         agent = create_deep_agent(
             model=agent_model,
-            middleware=[tool_mw],
+            middleware=[
+                create_summarization_tool_middleware(summary_model, StateBackend),
+            ],
             checkpointer=InMemorySaver(),
         )
 

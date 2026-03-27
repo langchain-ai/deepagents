@@ -1153,10 +1153,10 @@ class ChatInput(Vertical):
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
         """Return whether text is a dropped-path payload for existing files."""
-        from deepagents_cli.input import parse_pasted_path_payload
-
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
+        from deepagents_cli.input import parse_pasted_path_payload
+
         return parse_pasted_path_payload(text, allow_leading_path=True) is not None
 
     def _is_dropped_path_payload(self, text: str) -> bool:

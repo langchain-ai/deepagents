@@ -1,6 +1,7 @@
 """Tests for config module including project discovery utilities."""
 
 import logging
+import os
 import time
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -1791,6 +1792,8 @@ class TestDetectProvider:
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("databricks-dbrx-instruct", "databricks"),
+            ("databricks-meta-llama-3-1-405b-instruct", "databricks"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),
@@ -1847,6 +1850,189 @@ class TestDetectProvider:
             assert detect_provider("GPT-4o") == "openai"
         finally:
             settings.anthropic_api_key = None
+
+
+class TestDatabricksCredentialResolution:
+    """Tests for Databricks credential resolution via OpenAI-compatible endpoint."""
+
+    def _write_databrickscfg(self, tmp_path, host, token, profile="DEFAULT") -> None:
+        """Write a fake .databrickscfg file."""
+        cfg_path = tmp_path / ".databrickscfg"
+        cfg_path.write_text(f"[{profile}]\nhost = {host}\ntoken = {token}\n")
+        return cfg_path
+
+    def test_warns_when_host_unresolvable(self, caplog, tmp_path):
+        """_get_provider_kwargs logs warning when host cannot be resolved."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        clear_caches()
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+            patch("pathlib.Path.home", return_value=tmp_path / "empty_home"),
+            caplog.at_level(logging.WARNING),
+        ):
+            _get_provider_kwargs("databricks")
+        assert "DATABRICKS_HOST" in caplog.text
+
+    def test_resolves_base_url_from_databrickscfg(self, tmp_path):
+        """Resolved host from .databrickscfg becomes OpenAI-style base_url."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        clear_caches()
+        self._write_databrickscfg(
+            tmp_path, "https://dbc-abc123.cloud.databricks.com/", "dapi-fake-token"
+        )
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            kwargs = _get_provider_kwargs("databricks")
+        assert kwargs["base_url"] == (
+            "https://dbc-abc123.cloud.databricks.com/serving-endpoints"
+        )
+        assert kwargs["api_key"] == "dapi-fake-token"
+        assert kwargs["_databricks_use_openai"] is True
+
+    def test_databrickscfg_takes_precedence_over_env(self, tmp_path):
+        """Config file preferred over env vars (SDK may corrupt them)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        clear_caches()
+        self._write_databrickscfg(
+            tmp_path, "https://cfg-host.cloud.databricks.com", "dapi-cfg-token"
+        )
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "DATABRICKS_HOST": "https://env-host.cloud.databricks.com",
+                    "DATABRICKS_TOKEN": "dapi-env-token",
+                },
+                clear=True,
+            ),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            kwargs = _get_provider_kwargs("databricks")
+        assert kwargs["base_url"] == (
+            "https://cfg-host.cloud.databricks.com/serving-endpoints"
+        )
+        assert kwargs["api_key"] == "dapi-cfg-token"
+
+
+class TestChatOpenAIDatabricks:
+    """Tests for the ChatOpenAIDatabricks subclass parameter filtering."""
+
+    @pytest.fixture
+    def model(self):
+        """Create a ChatOpenAIDatabricks instance with fake credentials."""
+        from deepagents_cli.config import _ChatOpenAIDatabricks
+
+        cls = _ChatOpenAIDatabricks.get_class()
+        return cls(
+            model="databricks-meta-llama-3-3-70b-instruct",
+            base_url="https://fake.cloud.databricks.com/serving-endpoints",
+            api_key="dapi-fake-token",
+        )
+
+    def test_bind_tools_strips_strict(self, model):
+        """strict=True passed to bind_tools is silently dropped."""
+        from langchain_core.tools import tool
+
+        @tool
+        def dummy(x: str) -> str:
+            """No-op tool."""
+            return x
+
+        bound = model.bind_tools([dummy], strict=True)
+        # The bound kwargs should NOT contain strict=True
+        assert bound.kwargs.get("strict") is None
+
+    def test_bind_tools_strips_parallel_tool_calls(self, model):
+        """parallel_tool_calls passed to bind_tools is silently dropped."""
+        from langchain_core.tools import tool
+
+        @tool
+        def dummy(x: str) -> str:
+            """No-op tool."""
+            return x
+
+        bound = model.bind_tools([dummy], parallel_tool_calls=False)
+        assert "parallel_tool_calls" not in bound.kwargs
+
+    def test_bind_tools_converts_any_to_required(self, model):
+        """tool_choice='any' is converted to 'required'."""
+        from langchain_core.tools import tool
+
+        @tool
+        def dummy(x: str) -> str:
+            """No-op tool."""
+            return x
+
+        bound = model.bind_tools([dummy], tool_choice="any")
+        assert bound.kwargs.get("tool_choice") == "required"
+
+    def test_payload_strips_strict_from_tools(self, model):
+        """_get_request_payload removes strict from tool definitions."""
+        from langchain_core.messages import HumanMessage
+
+        payload = model._get_request_payload(
+            [HumanMessage(content="hi")],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "test",
+                        "parameters": {},
+                        "strict": True,
+                    },
+                }
+            ],
+        )
+        for tool_def in payload.get("tools", []):
+            assert "strict" not in tool_def.get("function", {})
+
+    def test_payload_strips_additional_properties(self, model):
+        """_get_request_payload removes additionalProperties from tool schemas."""
+        from langchain_core.messages import HumanMessage
+
+        payload = model._get_request_payload(
+            [HumanMessage(content="hi")],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "test",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "string"},
+                                "nested": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                            },
+                            "additionalProperties": True,
+                        },
+                    },
+                }
+            ],
+        )
+        params = payload["tools"][0]["function"]["parameters"]
+        assert "additionalProperties" not in params
+        assert "additionalProperties" not in params["properties"]["nested"]
+
+    def test_payload_strips_parallel_tool_calls(self, model):
+        """_get_request_payload removes parallel_tool_calls from body."""
+        from langchain_core.messages import HumanMessage
+
+        payload = model._get_request_payload(
+            [HumanMessage(content="hi")],
+            parallel_tool_calls=False,
+        )
+        assert "parallel_tool_calls" not in payload
 
 
 class TestLazyModuleAttributes:

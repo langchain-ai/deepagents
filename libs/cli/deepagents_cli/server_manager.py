@@ -65,6 +65,15 @@ def _apply_server_config(config: ServerConfig) -> None:
     for suffix, value in config.to_env().items():
         _set_or_clear_server_env(suffix, value)
 
+    # Pre-resolve Databricks credentials in the CLI process so the server
+    # subprocess inherits them via os.environ.  The server's own Python
+    # environment (managed by ``langgraph dev``) may not include
+    # ``databricks-sdk``, so we resolve here where the SDK IS available.
+    if config.model and config.model.startswith("databricks:"):
+        from deepagents_cli.config import _resolve_databricks_credentials
+
+        _resolve_databricks_credentials({})
+
 
 def _capture_project_context() -> ProjectContext | None:
     """Capture the user's project context for the server subprocess.

@@ -187,6 +187,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "azure_openai": "AZURE_OPENAI_API_KEY",
     "baseten": "BASETEN_API_KEY",
     "cohere": "COHERE_API_KEY",
+    "databricks": "DATABRICKS_TOKEN",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
     "google_genai": "GOOGLE_API_KEY",

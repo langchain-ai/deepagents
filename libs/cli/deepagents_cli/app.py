@@ -1514,7 +1514,8 @@ class DeepAgentsApp(App):
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}",
+                    f"Run: {cmd}\n"
+                    f"Enable auto-updates: /auto-update",
                     severity="information",
                     timeout=15,
                     markup=False,
@@ -1600,6 +1601,42 @@ class DeepAgentsApp(App):
             logger.warning("/update command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
+            )
+
+    async def _handle_auto_update_toggle(self) -> None:
+        """Handle the `/auto-update` slash command — persist toggle immediately."""
+        try:
+            from deepagents_cli.config import _is_editable_install
+            from deepagents_cli.update_check import (
+                is_auto_update_enabled,
+                set_auto_update,
+            )
+
+            if await asyncio.to_thread(_is_editable_install):
+                self.notify(
+                    "Auto-updates are not available for editable installs.",
+                    severity="warning",
+                    timeout=5,
+                )
+                return
+
+            currently_enabled = await asyncio.to_thread(is_auto_update_enabled)
+            new_state = not currently_enabled
+            await asyncio.to_thread(set_auto_update, new_state)
+            label = "enabled" if new_state else "disabled"
+            self.notify(
+                f"Auto-updates {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
+        except Exception as exc:
+            logger.warning("/auto-update command failed", exc_info=True)
+            self.notify(
+                f"Auto-update toggle failed: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=5,
+                markup=False,
             )
 
     def on_scroll_up(self, _event: ScrollUp) -> None:
@@ -2520,7 +2557,7 @@ class DeepAgentsApp(App):
                 "/model [--model-params JSON] [--default], /reload, "
                 "/skill:<name>, /remember, /skill-creator, /theme, /tokens, "
                 "/threads, /trace, "
-                "/update, /changelog, /docs, /feedback, /help\n\n"
+                "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -2599,6 +2636,8 @@ class DeepAgentsApp(App):
             await self._handle_trace_command(command)
         elif cmd == "/update":
             await self._handle_update_command()
+        elif cmd == "/auto-update":
+            await self._handle_auto_update_toggle()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:

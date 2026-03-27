@@ -589,6 +589,8 @@ def _build_update_tool(
             "a new one on the same thread, so the subagent sees the full conversation history plus "
             "your new message. The task_id remains the same."
         ),
+        infer_schema=False,
+        args_schema=UpdateAsyncTaskSchema,
     )
 
 
@@ -818,6 +820,8 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "(e.g. 'running', 'success', 'error', 'cancelled'). "
             "Use `check_async_task` to get the full result of a specific completed task."
         ),
+        infer_schema=False,
+        args_schema=ListAsyncTasksSchema,
     )
 
 

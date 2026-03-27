@@ -35,6 +35,7 @@ FileOperationError = Literal[
     "permission_denied",
     "is_directory",
     "invalid_path",
+    "symlink_not_allowed",
 ]
 """Standardized error codes for file upload/download operations.
 
@@ -45,6 +46,7 @@ potentially fix:
 - permission_denied: Access denied for the operation
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
+- symlink_not_allowed: Path resolves to a symlink and the backend forbids following it
 """
 
 

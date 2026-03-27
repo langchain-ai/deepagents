@@ -1,6 +1,7 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import base64
+import errno
 import json
 import logging
 import os
@@ -748,14 +749,18 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
     Returns:
         A `FileOperationError` literal, or `None` if unrecognized.
     """
-    if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
-    if isinstance(exc, PermissionError):
-        return "permission_denied"
-    if isinstance(exc, IsADirectoryError):
-        return "is_directory"
-    if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return "invalid_path"
-    if isinstance(exc, ValueError):
-        return "invalid_path"
+    if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+        return "symlink_not_allowed"
+
+    type_to_error: tuple[tuple[type[Exception], FileOperationError], ...] = (
+        (FileNotFoundError, "file_not_found"),
+        (PermissionError, "permission_denied"),
+        (IsADirectoryError, "is_directory"),
+        (NotADirectoryError, "invalid_path"),
+        (FileExistsError, "invalid_path"),
+        (ValueError, "invalid_path"),
+    )
+    for exc_type, error in type_to_error:
+        if isinstance(exc, exc_type):
+            return error
     return None

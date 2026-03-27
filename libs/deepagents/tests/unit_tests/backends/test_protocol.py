@@ -4,6 +4,7 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import errno
 import warnings
 
 import pytest
@@ -198,6 +199,7 @@ class TestMapFileOperationError:
             (ValueError("invalid path segment"), "invalid_path"),
             (NotADirectoryError("not a dir"), "invalid_path"),
             (FileExistsError("exists"), "invalid_path"),
+            (OSError(errno.ELOOP, "too many symbolic links"), "symlink_not_allowed"),
         ],
     )
     def test_known_exception_types(self, exc: Exception, expected: str) -> None:

@@ -235,6 +235,27 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         memory_body = "\n\n".join(sections)
         return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)
 
+    @staticmethod
+    def _should_skip_download_error(path: str, error: str) -> bool:
+        """Return whether a memory source download error should be skipped.
+
+        Args:
+            path: Memory source path being loaded.
+            error: Backend-reported download error code or message.
+
+        Returns:
+            `True` when the memory source should be skipped instead of failing.
+        """
+        if error == "file_not_found":
+            return True
+        if error == "symlink_not_allowed":
+            logger.warning(
+                "Skipping memory source %s because symlinked AGENTS.md files are not allowed. Replace the symlink with a regular file copy.",
+                path,
+            )
+            return True
+        return False
+
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
 
@@ -259,7 +280,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         results = backend.download_files(list(self.sources))
         for path, response in zip(self.sources, results, strict=True):
             if response.error is not None:
-                if response.error == "file_not_found":
+                if self._should_skip_download_error(path, response.error):
                     continue
                 msg = f"Failed to download {path}: {response.error}"
                 raise ValueError(msg)
@@ -293,7 +314,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         results = await backend.adownload_files(list(self.sources))
         for path, response in zip(self.sources, results, strict=True):
             if response.error is not None:
-                if response.error == "file_not_found":
+                if self._should_skip_download_error(path, response.error):
                     continue
                 msg = f"Failed to download {path}: {response.error}"
                 raise ValueError(msg)

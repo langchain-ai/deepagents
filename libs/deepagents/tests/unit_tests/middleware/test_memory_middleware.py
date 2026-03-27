@@ -4,11 +4,13 @@ This module tests the memory middleware using end-to-end tests with fake chat mo
 and temporary directories with the FilesystemBackend in normal (non-virtual) mode.
 """
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
@@ -859,9 +862,21 @@ class _SpyBackend(FilesystemBackend):
         super().__init__(root_dir=root_dir, virtual_mode=False)
         self.download_files_call_count = 0
 
-    def download_files(self, paths: list[str]) -> list:
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         self.download_files_call_count += 1
         return super().download_files(paths)
+
+
+class _ErrorDownloadBackend:
+    """Backend stub for download_files error handling tests."""
+
+    def __init__(self, responses: list[FileDownloadResponse]) -> None:
+        self._responses = responses
+        self.requested_paths: list[list[str]] = []
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        self.requested_paths.append(paths)
+        return self._responses
 
 
 def test_before_agent_batches_download_into_single_call(tmp_path: Path) -> None:
@@ -904,3 +919,25 @@ def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
     assert existing_path in result["memory_contents"]
     assert missing_path not in result["memory_contents"]
     assert backend.download_files_call_count == 1
+
+
+def test_before_agent_skips_symlinked_memory_file(caplog: pytest.LogCaptureFixture) -> None:
+    """Symlinked AGENTS.md files should be skipped with a warning."""
+    symlink_path = "/linked/AGENTS.md"
+    real_path = "/real/AGENTS.md"
+    backend = _ErrorDownloadBackend(
+        [
+            FileDownloadResponse(path=symlink_path, content=None, error="symlink_not_allowed"),
+            FileDownloadResponse(path=real_path, content=b"# Real Memory\nUseful context", error=None),
+        ]
+    )
+    middleware = MemoryMiddleware(backend=backend, sources=[symlink_path, real_path])
+
+    with caplog.at_level(logging.WARNING):
+        result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["memory_contents"] == {real_path: "# Real Memory\nUseful context"}
+    assert backend.requested_paths == [[symlink_path, real_path]]
+    assert symlink_path in caplog.text
+    assert "Replace the symlink with a regular file copy" in caplog.text

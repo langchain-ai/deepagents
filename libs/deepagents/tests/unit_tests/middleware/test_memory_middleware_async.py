@@ -3,12 +3,15 @@
 This module contains async versions of memory middleware tests.
 """
 
+import logging
 from pathlib import Path
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse
 from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -372,9 +375,21 @@ class _AsyncSpyBackend(FilesystemBackend):
         super().__init__(root_dir=root_dir, virtual_mode=False)
         self.adownload_files_call_count = 0
 
-    async def adownload_files(self, paths: list[str]) -> list:
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         self.adownload_files_call_count += 1
         return self.download_files(paths)
+
+
+class _AsyncErrorDownloadBackend:
+    """Backend stub for adownload_files error handling tests."""
+
+    def __init__(self, responses: list[FileDownloadResponse]) -> None:
+        self._responses = responses
+        self.requested_paths: list[list[str]] = []
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        self.requested_paths.append(paths)
+        return self._responses
 
 
 async def test_abefore_agent_batches_download_into_single_call(tmp_path: Path) -> None:
@@ -399,3 +414,27 @@ async def test_abefore_agent_batches_download_into_single_call(tmp_path: Path) -
     assert result is not None
     assert len(result["memory_contents"]) == 3
     assert backend.adownload_files_call_count == 1
+
+
+async def test_abefore_agent_skips_symlinked_memory_file(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Async memory loading should skip symlinked AGENTS.md files with a warning."""
+    symlink_path = "/linked/AGENTS.md"
+    real_path = "/real/AGENTS.md"
+    backend = _AsyncErrorDownloadBackend(
+        [
+            FileDownloadResponse(path=symlink_path, content=None, error="symlink_not_allowed"),
+            FileDownloadResponse(path=real_path, content=b"# Real Memory\nUseful context", error=None),
+        ]
+    )
+    middleware = MemoryMiddleware(backend=backend, sources=[symlink_path, real_path])
+
+    with caplog.at_level(logging.WARNING):
+        result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["memory_contents"] == {real_path: "# Real Memory\nUseful context"}
+    assert backend.requested_paths == [[symlink_path, real_path]]
+    assert symlink_path in caplog.text
+    assert "Replace the symlink with a regular file copy" in caplog.text

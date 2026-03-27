@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from langgraph_sdk.schema import Run
 
 
-class AsyncSubAgent(TypedDict):
+class RemoteSubAgent(TypedDict):
     """Specification for an async subagent running on a remote LangGraph server.
 
     Async subagents connect to LangGraph deployments via the LangGraph SDK.
@@ -65,6 +65,9 @@ class AsyncSubAgent(TypedDict):
 
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
+
+    execution: Literal["inline", "background", "chosen by my master"]
+    """Determine whether the agent is sync / async etc"""
 
 
 class AsyncTask(TypedDict):

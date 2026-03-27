@@ -411,6 +411,9 @@ def _create(
         project: If True, create in project skills directory.
             If False, create in user skills directory.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the skill name is invalid or the directory cannot be created.
     """
     from deepagents_cli.config import Settings, console, get_glyphs
 
@@ -424,7 +427,7 @@ def _create(
             "Examples: web-research, code-review, data-analysis[/dim]",
             style=theme.MUTED,
         )
-        return
+        raise SystemExit(1)
 
     # Determine target directory
     settings = Settings.from_environment()
@@ -436,13 +439,13 @@ def _create(
                 "in the project root.[/dim]",
                 style=theme.MUTED,
             )
-            return
+            raise SystemExit(1)
         skills_dir = settings.ensure_project_skills_dir()
         if skills_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Could not create project skills directory."
             )
-            return
+            raise SystemExit(1)
     else:
         skills_dir = settings.ensure_user_skills_dir(agent)
 
@@ -452,12 +455,25 @@ def _create(
     is_valid_path, path_error = _validate_skill_path(skill_dir, skills_dir)
     if not is_valid_path:
         console.print(f"[bold red]Error:[/bold red] {path_error}")
-        return
+        raise SystemExit(1)
 
     if skill_dir.exists():
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "skills create",
+                {
+                    "name": skill_name,
+                    "path": str(skill_dir),
+                    "project": project,
+                    "already_existed": True,
+                },
+            )
+            return
         console.print(
-            f"[bold red]Error:[/bold red] Skill '{skill_name}' "
-            f"already exists at {skill_dir}"
+            f"Skill '{skill_name}' already exists at {skill_dir}",
+            style=theme.MUTED,
         )
         return
 
@@ -520,6 +536,9 @@ def _info(
         project: If True, only search in project skills.
             If False, search in both user and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the skill is not found or not in a project directory.
     """
     from rich.markup import escape as escape_markup
 
@@ -536,7 +555,7 @@ def _info(
     if project:
         if not project_skills_dir:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            return
+            raise SystemExit(1)
         skills = list_skills(
             user_skills_dir=None,
             project_skills_dir=project_skills_dir,
@@ -560,7 +579,7 @@ def _info(
         console.print("\n[dim]Available skills:[/dim]", style=theme.MUTED)
         for s in skills:
             console.print(f"  - {s['name']}", style=theme.MUTED)
-        return
+        raise SystemExit(1)
 
     if output_format == "json":
         from deepagents_cli.output import write_json
@@ -645,6 +664,7 @@ def _delete(
     agent: str = "agent",
     project: bool = False,
     force: bool = False,
+    dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
     """Delete a skill directory after validation and optional user confirmation.
@@ -660,6 +680,7 @@ def _delete(
 
             If `False`, search in both user and project skills.
         force: If `True`, skip confirmation prompt.
+        dry_run: If `True`, print what would be removed without deleting.
         output_format: Output format — `'text'` (Rich) or `'json'`.
 
     Raises:
@@ -674,7 +695,7 @@ def _delete(
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
-        return
+        raise SystemExit(1)
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -686,7 +707,7 @@ def _delete(
     if project:
         if not project_skills_dir:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
-            return
+            raise SystemExit(1)
         skills = list_skills(
             user_skills_dir=None,
             project_skills_dir=project_skills_dir,
@@ -710,7 +731,7 @@ def _delete(
         for s in skills:
             source_tag = "[project]" if s["source"] == "project" else "[user]"
             console.print(f"  - {s['name']} {source_tag}", style=theme.MUTED)
-        return
+        raise SystemExit(1)
 
     skill_path = Path(skill["path"])
     skill_dir = skill_path.parent
@@ -722,10 +743,29 @@ def _delete(
             "[bold red]Error:[/bold red] Cannot determine base skills directory. "
             "Refusing to delete."
         )
-        return
+        raise SystemExit(1)
     is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
     if not is_valid_path:
         console.print(f"[bold red]Error:[/bold red] {path_error}")
+        raise SystemExit(1)
+
+    if dry_run:
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "skills delete",
+                {
+                    "name": skill_name,
+                    "path": str(skill_dir),
+                    "dry_run": True,
+                },
+            )
+            return
+        console.print(
+            f"Would delete skill '{skill_name}' at {skill_dir}",
+        )
+        console.print("No changes made.", style=theme.MUTED)
         return
 
     # Display confirmation summary (text mode only)
@@ -975,6 +1015,11 @@ def setup_skills_parser(
         action="store_true",
         help="Skip confirmation prompt",
     )
+    delete_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
+    )
     return skills_parser
 
 
@@ -983,6 +1028,9 @@ def execute_skills_command(args: argparse.Namespace) -> None:
 
     Args:
         args: Parsed command line arguments with skills_command attribute
+
+    Raises:
+        SystemExit: If the agent name is invalid.
     """
     from deepagents_cli.config import console
 
@@ -998,7 +1046,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
                 "hyphens, and underscores.[/dim]",
                 style=theme.MUTED,
             )
-            return
+            raise SystemExit(1)
 
     output_format = getattr(args, "output_format", "text")
 
@@ -1026,6 +1074,7 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             agent=args.agent,
             project=args.project,
             force=args.force,
+            dry_run=args.dry_run,
             output_format=output_format,
         )
     else:

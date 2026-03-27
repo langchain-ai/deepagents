@@ -1,7 +1,7 @@
 """Radar chart generation for eval results.
 
 Produces per-model radar (spider) charts where each axis represents an
-eval category (e.g. file_operations, memory, hitl) and the radial position
+eval category (e.g. file_operations, memory, tool_use) and the radial position
 encodes the score (0-1 correctness).
 """
 
@@ -31,10 +31,15 @@ except (json.JSONDecodeError, KeyError) as exc:
     msg = f"Failed to parse {_CATEGORIES_JSON}: {exc}"
     raise ValueError(msg) from exc
 
-EVAL_CATEGORIES: list[str] = _categories_raw["categories"]
-"""Canonical eval category names.
+ALL_CATEGORIES: list[str] = _categories_raw["categories"]
+"""All eval category names, including unit tests that don't appear on radar charts."""
+
+EVAL_CATEGORIES: list[str] = _categories_raw.get("radar_categories", _categories_raw["categories"])
+"""Radar-eligible eval category names.
 
 Order determines axis placement on the radar chart (clockwise from top).
+Categories like ``unit_test`` that verify SDK plumbing rather than model
+capability are excluded from this list.
 """
 
 CATEGORY_LABELS: dict[str, str] = _categories_raw["labels"]
@@ -277,68 +282,44 @@ def toy_data() -> list[ModelResult]:
             model="anthropic:claude-sonnet-4-6",
             scores={
                 "file_operations": 0.92,
-                "skills": 0.88,
-                "hitl": 0.95,
+                "retrieval": 0.76,
+                "tool_use": 0.85,
                 "memory": 0.83,
+                "conversation": 0.80,
                 "summarization": 0.90,
-                "subagents": 0.78,
-                "system_prompt": 0.97,
-                "tool_usage": 0.85,
-                "followup_quality": 0.91,
-                "external_benchmarks": 0.76,
-                "tau2_airline": 0.70,
-                "memory_agent_bench": 0.82,
             },
         ),
         ModelResult(
             model="openai:gpt-4.1",
             scores={
                 "file_operations": 0.88,
-                "skills": 0.82,
-                "hitl": 0.80,
+                "retrieval": 0.72,
+                "tool_use": 0.86,
                 "memory": 0.79,
+                "conversation": 0.75,
                 "summarization": 0.85,
-                "subagents": 0.75,
-                "system_prompt": 0.90,
-                "tool_usage": 0.88,
-                "followup_quality": 0.85,
-                "external_benchmarks": 0.72,
-                "tau2_airline": 0.65,
-                "memory_agent_bench": 0.78,
             },
         ),
         ModelResult(
             model="google_genai:gemini-2.5-pro",
             scores={
                 "file_operations": 0.85,
-                "skills": 0.78,
-                "hitl": 0.72,
+                "retrieval": 0.68,
+                "tool_use": 0.80,
                 "memory": 0.80,
+                "conversation": 0.70,
                 "summarization": 0.88,
-                "subagents": 0.70,
-                "system_prompt": 0.85,
-                "tool_usage": 0.82,
-                "followup_quality": 0.80,
-                "external_benchmarks": 0.68,
-                "tau2_airline": 0.60,
-                "memory_agent_bench": 0.75,
             },
         ),
         ModelResult(
             model="anthropic:claude-opus-4-6",
             scores={
                 "file_operations": 0.95,
-                "skills": 0.92,
-                "hitl": 0.93,
+                "retrieval": 0.81,
+                "tool_use": 0.90,
                 "memory": 0.90,
+                "conversation": 0.85,
                 "summarization": 0.94,
-                "subagents": 0.85,
-                "system_prompt": 0.98,
-                "tool_usage": 0.91,
-                "followup_quality": 0.94,
-                "external_benchmarks": 0.81,
-                "tau2_airline": 0.75,
-                "memory_agent_bench": 0.88,
             },
         ),
     ]

@@ -1,3 +1,13 @@
+"""Eval tests for memory recall and persistence.
+
+Tests whether the agent can load context from seeded memory files,
+use that context to guide behavior (naming conventions, code style),
+handle missing memory files gracefully, and correctly distinguish
+durable preferences from transient information.
+
+Written internally for the deepagents eval suite.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

@@ -97,6 +97,11 @@ def main() -> int:
         help="Name for the experiment (auto-generated if not provided)",
     )
     experiment_parser.add_argument(
+        "--model",
+        type=str,
+        help="Model identifier used as suffix in auto-generated experiment names (e.g. 'anthropic:claude-sonnet-4-6')",
+    )
+    experiment_parser.add_argument(
         "--metadata",
         type=str,
         default="{}",
@@ -154,6 +159,7 @@ def main() -> int:
         name = create_experiment(
             dataset_name=args.dataset_name,
             experiment_name=args.name,
+            model=args.model,
             metadata={str(key): str(value) for key, value in metadata.items()},
         )
         print(name)

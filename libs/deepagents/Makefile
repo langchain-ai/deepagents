@@ -41,7 +41,7 @@ test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
 
 benchmark: ## Run benchmark tests
-	uv run --group test pytest ./tests -m benchmark
+	uv run --group test pytest ./tests/benchmarks -m benchmark
 
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .

@@ -475,8 +475,10 @@ Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
 """
 
-config: RunnableConfig = {"recursion_limit": 1000}
-"""Default LangGraph runnable config with a high recursion limit.
+config: RunnableConfig = {
+    "recursion_limit": 1000,
+}
+"""Default LangGraph runnable config.
 
 Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
 hitting the default LangGraph ceiling.
@@ -543,6 +545,9 @@ def build_stream_config(
         version would be lost.
     * Including the SDK version here ensures it survives the merge.
 
+    Includes `ls_integration` metadata so LangSmith traces originating from the CLI
+    are distinguishable from bare SDK usage.
+
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
@@ -567,7 +572,10 @@ def build_stream_config(
     with contextlib.suppress(importlib_metadata.PackageNotFoundError):
         versions["deepagents"] = importlib_metadata.version("deepagents")
 
-    metadata: dict[str, Any] = {"versions": versions}
+    metadata: dict[str, Any] = {
+        "versions": versions,
+        "ls_integration": "deepagents-cli",
+    }
     if cwd:
         metadata["cwd"] = cwd
     if assistant_id:
@@ -1716,7 +1724,7 @@ def _get_default_model_spec() -> str:
     raise ModelConfigError(msg)
 
 
-_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+_OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"
 """Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
 
 See https://openrouter.ai/docs/app-attribution for details.
@@ -1724,6 +1732,9 @@ See https://openrouter.ai/docs/app-attribution for details.
 
 _OPENROUTER_APP_TITLE = "Deep Agents CLI"
 """Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+_OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
+"""Default `app_categories` (maps to `X-OpenRouter-Categories`) for OpenRouter."""
 
 
 def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
@@ -1753,6 +1764,7 @@ def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
     """
     kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
     kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
+    kwargs.setdefault("app_categories", _OPENROUTER_APP_CATEGORIES)
 
 
 def _get_provider_kwargs(
@@ -1787,6 +1799,9 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
+        from deepagents._models import check_openrouter_version  # noqa: PLC2701
+
+        check_openrouter_version()
         _apply_openrouter_defaults(result)
 
     return result

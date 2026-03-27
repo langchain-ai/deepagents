@@ -48,32 +48,6 @@ potentially fix:
 """
 
 
-def map_file_operation_error(exc: Exception) -> FileOperationError | None:
-    """Map a caught exception to a standardized `FileOperationError` code.
-
-    Classification is based on exception type only (stdlib hierarchy).
-    Returns `None` for any exception that cannot be classified by type,
-    letting callers decide whether to re-raise or fall back to `str(exc)`.
-
-    Args:
-        exc: The exception to classify.
-
-    Returns:
-        A `FileOperationError` literal, or `None` if unrecognized.
-    """
-    if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
-    if isinstance(exc, PermissionError):
-        return "permission_denied"
-    if isinstance(exc, IsADirectoryError):
-        return "is_directory"
-    if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return "invalid_path"
-    if isinstance(exc, ValueError):
-        return "invalid_path"
-    return None
-
-
 @dataclass
 class FileDownloadResponse:
     """Result of a single file download operation.
@@ -180,10 +154,10 @@ class FileData(TypedDict):
     encoding: str
     """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
 
-    created_at: str
+    created_at: NotRequired[str]
     """ISO 8601 timestamp of file creation."""
 
-    modified_at: str
+    modified_at: NotRequired[str]
     """ISO 8601 timestamp of last modification."""
 
 
@@ -354,14 +328,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             starting at line 1. Lines longer than 2000 characters are truncated.
 
             Returns an error string if the file doesn't exist or can't be read.
-
-        !!! note
-
-            - Use pagination (offset/limit) for large files to avoid context overflow
-            - First scan: `read(path, limit=100)` to see file structure
-            - Read more: `read(path, offset=100, limit=200)` for next section
-            - ALWAYS read a file before editing it
-            - If file exists but is empty, you'll receive a system reminder warning
         """
         raise NotImplementedError
 

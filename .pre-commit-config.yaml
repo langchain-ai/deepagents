@@ -49,7 +49,7 @@ repos:
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: make lock-check
+        entry: make -C libs lock-check
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
         pass_filenames: false
       - id: extras-sync

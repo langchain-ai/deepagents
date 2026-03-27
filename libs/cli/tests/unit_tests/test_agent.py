@@ -55,9 +55,8 @@ def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {new_file}" in description
     assert "Action: Create file" in description
-    assert "Lines: 2" in description
+    assert "File:" not in description
 
 
 def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -> None:
@@ -81,9 +80,8 @@ def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert f"File: {existing_file}" in description
     assert "Action: Overwrite file" in description
-    assert "Lines: 3" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_single_occurrence():
@@ -106,8 +104,8 @@ def test_format_edit_file_description_single_occurrence():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (single occurrence)" in description
+    assert "File:" not in description
 
 
 def test_format_edit_file_description_all_occurrences():
@@ -130,8 +128,8 @@ def test_format_edit_file_description_all_occurrences():
         tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
     )
 
-    assert "File: /path/to/file.py" in description
     assert "Action: Replace text (all occurrences)" in description
+    assert "File:" not in description
 
 
 def test_format_web_search_description():
@@ -245,10 +243,9 @@ def test_format_task_description():
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify main components." in description
     warning = get_glyphs().warning
-    assert (
-        f"{warning}  Subagent will have access to file operations and shell commands"
-        in description
-    )
+    msg = "Subagent will have access to file operations and shell commands"
+    assert f"{warning} {msg} {warning}" in description
+    assert description.index(warning) < description.index("Task Instructions:")
 
 
 def test_format_task_description_truncates_long_description():
@@ -502,6 +499,49 @@ class TestGetSystemPromptCwdOSError:
             prompt = get_system_prompt("test-agent")
 
         assert "Current Working Directory" in prompt
+
+
+class TestGetSystemPromptSandbox:
+    """Tests for sandbox-specific system prompt content."""
+
+    def test_sandbox_includes_no_local_filesystem_warning(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "do NOT have access to the user's local filesystem" in prompt
+
+    def test_sandbox_includes_working_dir_constraint(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "/workspace" in prompt
+        assert "remote Linux sandbox" in prompt
+
+    def test_sandbox_warns_about_subagent_paths(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="daytona")
+
+        assert "subagents" in prompt
+        assert "/home/daytona" in prompt
+
+    def test_local_mode_omits_sandbox_warnings(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "do NOT have access to the user's local filesystem" not in prompt
+        assert "remote Linux sandbox" not in prompt
 
 
 class TestGetSystemPromptPlaceholderValidation:

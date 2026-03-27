@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -259,9 +259,7 @@ jobs:
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
     needs: changes
-    # TODO: re-enable once CodSpeed integration is ready
-    #if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    if: false
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_benchmark.yml
     with:
       working-directory: "libs/deepagents"

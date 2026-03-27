@@ -216,6 +216,7 @@ def reset_agent(
     agent_name: str,
     source_agent: str | None = None,
     *,
+    dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
     """Reset an agent to default or copy from another agent.
@@ -223,7 +224,11 @@ def reset_agent(
     Args:
         agent_name: Name of the agent to reset.
         source_agent: Copy AGENTS.md from this agent instead of default.
+        dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the source agent is not found.
     """
     agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
@@ -235,15 +240,35 @@ def reset_agent(
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no AGENTS.md"
+                "or has no AGENTS.md\n"
+                "  Available agents: deepagents agents list"
             )
-            return
+            raise SystemExit(1)
 
         source_content = source_md.read_text()
         action_desc = f"contents of agent '{source_agent}'"
     else:
         source_content = get_default_coding_instructions()
         action_desc = "default"
+
+    if dry_run:
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "reset",
+                {
+                    "agent": agent_name,
+                    "reset_to": source_agent or "default",
+                    "path": str(agent_dir),
+                    "dry_run": True,
+                },
+            )
+            return
+        exists = "remove and recreate" if agent_dir.exists() else "create"
+        console.print(f"Would {exists} {agent_dir} with {action_desc} prompt.")
+        console.print("No changes made.", style=theme.MUTED)
+        return
 
     if agent_dir.exists():
         shutil.rmtree(agent_dir)
@@ -400,7 +425,13 @@ def get_system_prompt(
             f"**Important:**\n"
             f"- The CLI is running locally on the user's machine, but you execute "
             f"code remotely\n"
-            f"- Use `{working_dir}` as your working directory for all operations\n\n"
+            f"- Use `{working_dir}` as your working directory for all operations\n"
+            f"- **You do NOT have access to the user's local filesystem.** Paths "
+            f"like `/Users/...`, `/home/<local-user>/...`, `C:\\...`, etc. do not "
+            f"exist in this sandbox. Never reference or attempt to read/write local "
+            f"paths — all files must be within the sandbox at `{working_dir}`\n"
+            f"- When delegating to subagents, ensure they also use sandbox paths "
+            f"(`{working_dir}/...`), not local paths\n\n"
         )
     else:
         if cwd is not None:
@@ -454,12 +485,10 @@ def _format_write_file_description(
     """
     args = tool_call["args"]
     file_path = args.get("file_path", "unknown")
-    content = args.get("content", "")
 
     action = "Overwrite" if Path(file_path).exists() else "Create"
-    line_count = len(content.splitlines())
 
-    return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
+    return f"Action: {action} file"
 
 
 def _format_edit_file_description(
@@ -471,11 +500,10 @@ def _format_edit_file_description(
         Formatted description string for the edit_file tool call.
     """
     args = tool_call["args"]
-    file_path = args.get("file_path", "unknown")
     replace_all = bool(args.get("replace_all", False))
 
     scope = "all occurrences" if replace_all else "single occurrence"
-    return f"File: {file_path}\nAction: Replace text ({scope})"
+    return f"Action: Replace text ({scope})"
 
 
 def _format_web_search_description(
@@ -555,11 +583,10 @@ def _format_task_description(
     warning_msg = "Subagent will have access to file operations and shell commands"
     return (
         f"Subagent Type: {subagent_type}\n\n"
+        f"{glyphs.warning} {warning_msg} {glyphs.warning}\n\n"
         f"Task Instructions:\n"
         f"{separator}\n"
-        f"{description_preview}\n"
-        f"{separator}\n\n"
-        f"{glyphs.warning}  {warning_msg}"
+        f"{description_preview}"
     )
 
 

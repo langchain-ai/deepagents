@@ -103,11 +103,13 @@ def _scaffold_workspace(work_dir: Path) -> None:
     _write_checkpointer(work_dir)
     _write_pyproject(work_dir)
 
-    checkpointer_path = work_dir / "checkpointer.py"
+    # Relative paths resolve against the subprocess cwd, which
+    # ServerProcess.start() sets to work_dir (server.py). Using absolute paths
+    # here breaks Windows because importlib treats backslash paths as module names.
     generate_langgraph_json(
         work_dir,
-        graph_ref=f"{server_graph_dst.resolve()}:graph",
-        checkpointer_path=f"{checkpointer_path.resolve()}:create_checkpointer",
+        graph_ref="./server_graph.py:graph",
+        checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 
 

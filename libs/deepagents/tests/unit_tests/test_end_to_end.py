@@ -1401,6 +1401,10 @@ class TestLargeHumanMessageEviction:
         assert evicted_to is not None
         assert evicted_to.startswith("/conversation_history/")
 
+        files = result.get("files", {})
+        assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+        assert files[evicted_to]["content"] == large_content
+
         assert len(fake_model.call_history) == 1
         model_messages = fake_model.call_history[0]["messages"]
         model_human = [m for m in model_messages if isinstance(m, HumanMessage)]
@@ -1462,3 +1466,9 @@ class TestLargeHumanMessageEviction:
         assert len(tagged) == 2
         for m in tagged:
             assert m.content in (large_content_1, large_content_2)
+
+        files = result_3.get("files", {})
+        for m in tagged:
+            evicted_to = m.additional_kwargs["lc_evicted_to"]
+            assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+            assert files[evicted_to]["content"] == m.content

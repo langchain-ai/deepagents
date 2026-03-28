@@ -1938,7 +1938,7 @@ class TestLazyModuleAttributes:
     def test_ensure_bootstrap_langsmith_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_ensure_bootstrap copies DEEPAGENTS_LANGSMITH_PROJECT."""
+        """_ensure_bootstrap copies DEEPAGENTS_CLI_LANGSMITH_PROJECT."""
         import deepagents_cli.config as config_mod
         from deepagents_cli.config import _ensure_bootstrap
 
@@ -1947,7 +1947,7 @@ class TestLazyModuleAttributes:
         config_mod._bootstrap_done = False
 
         try:
-            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "my-agent-project")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "my-agent-project")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
 
             with (
@@ -1980,7 +1980,7 @@ class TestLazyModuleAttributes:
 
         try:
             monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
-            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "agent-project")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "agent-project")
 
             with (
                 patch("deepagents_cli.config._load_dotenv"),

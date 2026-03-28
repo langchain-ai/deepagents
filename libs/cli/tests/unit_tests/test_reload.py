@@ -27,9 +27,8 @@ _RELOAD_ENV_KEYS = (
     "DEEPAGENTS_CLI_TAVILY_API_KEY",
     "GOOGLE_CLOUD_PROJECT",
     "DEEPAGENTS_CLI_GOOGLE_CLOUD_PROJECT",
-    "DEEPAGENTS_LANGSMITH_PROJECT",
-    "DEEPAGENTS_CLI_DEEPAGENTS_LANGSMITH_PROJECT",
-    "DEEPAGENTS_SHELL_ALLOW_LIST",
+    "DEEPAGENTS_CLI_LANGSMITH_PROJECT",
+    "DEEPAGENTS_CLI_SHELL_ALLOW_LIST",
 )
 
 
@@ -144,11 +143,11 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should update parsed shell allow-list values."""
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls,cat")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "ls,cat")
         settings = Settings.from_environment(start_path=tmp_path)
         assert settings.shell_allow_list == ["ls", "cat"]
 
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls,grep")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "ls,grep")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.shell_allow_list == ["ls", "grep"]
@@ -356,7 +355,7 @@ class TestReloadFromEnvironment:
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-new")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "ls")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert len(changes) == 3
@@ -418,11 +417,11 @@ class TestReloadErrorPaths:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Malformed shell allow-list should fall back to previous value."""
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls,cat")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "ls,cat")
         settings = Settings.from_environment(start_path=tmp_path)
         assert settings.shell_allow_list == ["ls", "cat"]
 
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "all,ls")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "all,ls")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.shell_allow_list == ["ls", "cat"]
@@ -452,12 +451,12 @@ class TestReloadErrorPaths:
     ) -> None:
         """Settings should remain consistent when one field fails to reload."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-original")
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "ls")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "ls")
         settings = Settings.from_environment(start_path=tmp_path)
 
         # Change API key (succeeds) + break shell allow-list (falls back)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-updated")
-        monkeypatch.setenv("DEEPAGENTS_SHELL_ALLOW_LIST", "all,ls")
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHELL_ALLOW_LIST", "all,ls")
         changes = settings.reload_from_environment(start_path=tmp_path)
 
         assert settings.openai_api_key == "sk-updated"

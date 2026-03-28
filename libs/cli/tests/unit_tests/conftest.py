@@ -50,7 +50,7 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LANGSMITH_TRACING",
         "LANGCHAIN_TRACING_V2",
         "LANGSMITH_PROJECT",
-        "DEEPAGENTS_LANGSMITH_PROJECT",
+        "DEEPAGENTS_CLI_LANGSMITH_PROJECT",
     ):
         monkeypatch.delenv(key, raising=False)
 

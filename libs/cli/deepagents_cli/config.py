@@ -177,7 +177,9 @@ def _ensure_bootstrap() -> None:
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
             # time, so we override it here and preserve the user's original
             # value for shell commands.
-            deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+            from deepagents_cli._env_vars import LANGSMITH_PROJECT
+
+            deepagents_project = os.environ.get(LANGSMITH_PROJECT)
             if deepagents_project:
                 os.environ["LANGSMITH_PROJECT"] = deepagents_project
         except Exception:
@@ -764,11 +766,11 @@ def _parse_extra_skills_dirs(
     in user-specified locations without being rejected by the path
     containment check.
 
-    The env var (`DEEPAGENTS_EXTRA_SKILLS_DIRS`, colon-separated) takes
+    The env var (`DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS`, colon-separated) takes
     precedence: when set, `config.toml` values are ignored.
 
     Args:
-        env_raw: Value of `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated), or
+        env_raw: Value of `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` (colon-separated), or
             `None` if unset.
         config_toml_dirs: List of path strings from
             `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
@@ -855,7 +857,7 @@ class Settings:
     locations without being rejected by the containment check
     in `load_skill_content`.
 
-    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    Set via `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` env var (colon-separated) or
     `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
     """
 
@@ -881,14 +883,20 @@ class Settings:
         google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
-        # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
+        # DEEPAGENTS_CLI_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
         # When accessed via the module-level `settings` singleton,
         # _ensure_bootstrap() has already run and may have overridden
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
-        deepagents_langchain_project = resolve_env_var("DEEPAGENTS_LANGSMITH_PROJECT")
+        from deepagents_cli._env_vars import (
+            EXTRA_SKILLS_DIRS,
+            LANGSMITH_PROJECT,
+            SHELL_ALLOW_LIST,
+        )
+
+        deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
@@ -898,15 +906,15 @@ class Settings:
 
         # Parse shell command allow-list from environment
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
-        # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
-        shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+
+        shell_allow_list_str = os.environ.get(SHELL_ALLOW_LIST)
         shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
 
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
         # add new skill discovery locations.
         extra_skills_dirs = _parse_extra_skills_dirs(
-            os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+            os.environ.get(EXTRA_SKILLS_DIRS),
             _read_config_toml_skills_dirs(),
         )
 
@@ -975,14 +983,18 @@ class Settings:
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
+        from deepagents_cli._env_vars import (
+            EXTRA_SKILLS_DIRS,
+            LANGSMITH_PROJECT,
+            SHELL_ALLOW_LIST,
+        )
+
         try:
-            shell_allow_list = parse_shell_allow_list(
-                os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
-            )
+            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
         except ValueError:
             logger.warning(
-                "Invalid DEEPAGENTS_SHELL_ALLOW_LIST during reload; "
-                "keeping previous value"
+                "Invalid %s during reload; keeping previous value",
+                SHELL_ALLOW_LIST,
             )
             shell_allow_list = previous["shell_allow_list"]
 
@@ -1005,13 +1017,11 @@ class Settings:
             "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
             "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
             "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
-            "deepagents_langchain_project": resolve_env_var(
-                "DEEPAGENTS_LANGSMITH_PROJECT"
-            ),
+            "deepagents_langchain_project": resolve_env_var(LANGSMITH_PROJECT),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": _parse_extra_skills_dirs(
-                os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+                os.environ.get(EXTRA_SKILLS_DIRS),
                 _read_config_toml_skills_dirs(),
             ),
         }
@@ -1317,7 +1327,7 @@ class Settings:
     def get_extra_skills_dirs(self) -> list[Path]:
         """Get user-configured extra skill directories.
 
-        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        Set via `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` (colon-separated paths) or
         `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
         Returns:
@@ -1546,17 +1556,19 @@ def get_langsmith_project_name() -> str | None:
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
     `settings.deepagents_langchain_project` (from
-    `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
+    `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
-    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'deepagents-cli'`.
+    to match `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `'deepagents-cli'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
-    langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+    from deepagents_cli.model_config import resolve_env_var
+
+    langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
         "LANGCHAIN_API_KEY"
     )
-    langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
+    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
         "LANGCHAIN_TRACING_V2"
     )
     if not (langsmith_key and langsmith_tracing):

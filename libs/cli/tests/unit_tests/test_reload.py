@@ -165,13 +165,13 @@ class TestReloadFromEnvironment:
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        # Project .env is the second call (global loads first).
-        mock_load.assert_any_call(dotenv_path=env_file, override=True)
+        # Project .env loads first (before global) with override=False.
+        mock_load.assert_any_call(dotenv_path=env_file, override=False)
 
     def test_loads_global_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should load global dotenv first, then project."""
+        """Reload should load project dotenv first, then global."""
         settings = Settings.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
@@ -190,8 +190,8 @@ class TestReloadFromEnvironment:
         assert mock_load.call_count == 2
         mock_load.assert_has_calls(
             [
-                call(dotenv_path=global_env, override=True),
-                call(dotenv_path=project_env, override=True),
+                call(dotenv_path=project_env, override=False),
+                call(dotenv_path=global_env, override=False),
             ]
         )
 
@@ -220,8 +220,8 @@ class TestReloadFromEnvironment:
             settings.reload_from_environment(start_path=tmp_path)
 
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
-        # Only the project .env call should happen
-        mock_load.assert_called_once_with(dotenv_path=project_env, override=True)
+        # Project .env loads first; global failed via is_file OSError
+        mock_load.assert_called_once_with(dotenv_path=project_env, override=False)
 
     def test_project_dotenv_beats_global(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -250,10 +250,37 @@ class TestReloadFromEnvironment:
         assert os.environ.get("TEST_PRECEDENCE_KEY") == "project-value"
         monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
 
-    def test_global_dotenv_beats_shell_env(
+    def test_shell_env_beats_project_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Global `~/.deepagents/.env` should override shell-exported vars."""
+        """Shell-exported vars should beat project `.env`."""
+        from deepagents_cli.config import _load_dotenv
+
+        # No global dotenv
+        monkeypatch.setattr(
+            "deepagents_cli.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("TEST_SHELL_PROJECT_KEY=project-value\n")
+
+        monkeypatch.setenv("TEST_SHELL_PROJECT_KEY", "shell-value")
+
+        monkeypatch.setattr(
+            "dotenv.load_dotenv",
+            _real_load_dotenv,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert os.environ.get("TEST_SHELL_PROJECT_KEY") == "shell-value"
+        monkeypatch.delenv("TEST_SHELL_PROJECT_KEY", raising=False)
+
+    def test_shell_env_beats_global_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Shell-exported vars should beat global `~/.deepagents/.env`."""
         from deepagents_cli.config import _load_dotenv
 
         global_dir = tmp_path / "global"
@@ -277,7 +304,7 @@ class TestReloadFromEnvironment:
 
         _load_dotenv(start_path=tmp_path)
 
-        assert os.environ.get("TEST_BOOT_KEY") == "global-value"
+        assert os.environ.get("TEST_BOOT_KEY") == "shell-value"
         monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
 
     def test_global_only_no_project_dotenv(
@@ -333,8 +360,8 @@ class TestReloadFromEnvironment:
         def _fail_on_global(*_args: object, **_kwargs: object) -> bool:
             nonlocal call_count
             call_count += 1
-            # Global loads first now; fail on first call
-            if call_count == 1:
+            # Project loads first; global is the second call
+            if call_count == 2:
                 msg = "read error"
                 raise OSError(msg)
             return True

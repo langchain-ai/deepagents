@@ -78,20 +78,26 @@ except RuntimeError:
 
 
 def _load_dotenv(*, start_path: Path | None = None) -> bool:
-    """Load environment variables from global and project `.env` files.
+    """Load environment variables from project and global `.env` files.
 
-    Loads in order (last write wins):
+    Loads in order (first write wins, `override=False`):
 
-    1. `~/.deepagents/.env` — global user defaults
-    2. Project/CWD `.env` — project-specific overrides
+    1. Project/CWD `.env` — project-specific values
+    2. `~/.deepagents/.env` — global user defaults
 
-    Both layers use `override=True` so that dotenv files always beat
-    shell-exported variables (e.g., from `$ZDOTDIR/.env`). Because project loads
-    second, the effective precedence is:
+    Both layers use `override=False` (the python-dotenv default) so that
+    shell-exported variables always take precedence over dotenv files.
+    Because project loads first, the effective precedence is:
 
     ```text
-    project `.env` > global `.env` > shell env (incl. inline `VAR=x`)
+    shell env (incl. inline `VAR=x`)  >  project `.env`  >  global `.env`
     ```
+
+    !!! note
+
+        To scope credentials to the CLI without colliding with identically-named
+        shell exports, use the `DEEPAGENTS_CLI_` env-var prefix
+        via `resolve_env_var`.
 
     Args:
         start_path: Directory to use for project `.env` discovery.
@@ -103,13 +109,33 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     loaded = False
 
-    # 1. Global (~/.deepagents/.env) — override shell env so the user's
-    # explicit dotenv config always wins over shell profile exports.
+    # 1. Project/CWD .env — loads first so project values are set before the
+    # global file, which can only fill in vars not already present.
+    dotenv_path: Path | str | None = None
+    try:
+        if start_path is None:
+            loaded = dotenv.load_dotenv(override=False) or loaded
+        else:
+            dotenv_path = _find_dotenv_from_start_path(start_path)
+            if dotenv_path is not None:
+                loaded = (
+                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=False)
+                    or loaded
+                )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read project dotenv at %s; project env vars will not be loaded",
+            dotenv_path or start_path or "cwd",
+            exc_info=True,
+        )
+
+    # 2. Global (~/.deepagents/.env) — fills in any vars not already set by
+    # the shell or the project dotenv.
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
         if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
-            dotenv_path=_GLOBAL_DOTENV_PATH, override=True
+            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
         ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
@@ -117,23 +143,6 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
         logger.warning(
             "Could not read global dotenv at %s; global defaults will not be applied",
             _GLOBAL_DOTENV_PATH,
-            exc_info=True,
-        )
-
-    # 2. Project/CWD .env — loads second so project values win over global.
-    try:
-        if start_path is None:
-            loaded = dotenv.load_dotenv(override=True) or loaded
-        else:
-            dotenv_path = _find_dotenv_from_start_path(start_path)
-            if dotenv_path is not None:
-                loaded = (
-                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=True) or loaded
-                )
-    except (OSError, ValueError):
-        logger.warning(
-            "Could not read project dotenv at %s; project env vars will not be loaded",
-            start_path,
             exc_info=True,
         )
 

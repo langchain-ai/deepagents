@@ -988,6 +988,13 @@ class Settings:
         (`user_langchain_project`) are intentionally preserved -- they are
         not in `reloadable_fields` and are never touched by this method.
 
+        !!! note
+
+            `.env` files are loaded with `override=False`, so shell-exported
+            variables always take precedence.  To override a shell-exported key
+            from `.env`, use the `DEEPAGENTS_CLI_` prefix (e.g.
+            `DEEPAGENTS_CLI_OPENAI_API_KEY`).
+
         Args:
             start_path: Directory to start project detection from (defaults to cwd).
 
@@ -1916,9 +1923,9 @@ def _get_provider_kwargs(
         api_key_env = PROVIDER_API_KEY_ENV.get(provider)
         if api_key_env:
             logger.debug(
-                "No api_key_env in config.toml for '%s'; using hardcoded env var %s",
+                "No api_key_env in config.toml for '%s';"
+                " using hardcoded provider env var",
                 provider,
-                api_key_env,
             )
     if api_key_env:
         api_key = resolve_env_var(api_key_env)

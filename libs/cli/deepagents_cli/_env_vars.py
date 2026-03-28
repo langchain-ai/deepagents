@@ -6,10 +6,9 @@ be defined here as a module-level constant.  A drift-detection test
 like `"DEEPAGENTS_CLI_FOO"` appears in source code instead of a constant
 imported from this module.
 
-Import the short-name constants (e.g. `AUTO_UPDATE`, `DEBUG`) and pass
-them to `os.environ.get()` / `resolve_env_var()` instead of using raw
-string literals.  If the env var is ever renamed, only the value here
-changes -- no code-wide grep required.
+Import the short-name constants (e.g. `AUTO_UPDATE`, `DEBUG`) and pass them
+to `os.environ.get()` instead of using raw string literals. If the env var is
+ever renamed, only the value here changes.
 
 !!! note
 

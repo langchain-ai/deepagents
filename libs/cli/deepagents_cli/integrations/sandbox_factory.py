@@ -481,7 +481,18 @@ class _ModalProvider(SandboxProvider):
         token_id = resolve_env_var("MODAL_TOKEN_ID")
         token_secret = resolve_env_var("MODAL_TOKEN_SECRET")
         if token_id and token_secret:
-            self._client = self._modal.Client.from_credentials(token_id, token_secret)
+            try:
+                self._client = self._modal.Client.from_credentials(
+                    token_id, token_secret
+                )
+            except Exception as exc:
+                msg = (
+                    "Failed to authenticate with Modal using "
+                    "MODAL_TOKEN_ID / MODAL_TOKEN_SECRET "
+                    "(or the DEEPAGENTS_CLI_-prefixed equivalents). "
+                    "Verify your credentials are valid."
+                )
+                raise ValueError(msg) from exc
         elif token_id or token_secret:
             logger.warning(
                 "Only one of MODAL_TOKEN_ID / MODAL_TOKEN_SECRET is set; "

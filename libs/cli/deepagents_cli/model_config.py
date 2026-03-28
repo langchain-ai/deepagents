@@ -32,12 +32,12 @@ def resolve_env_var(name: str) -> str | None:
     """Look up an env var with `DEEPAGENTS_CLI_` prefix override.
 
     Checks `DEEPAGENTS_CLI_{name}` first, then falls back to `{name}`.
-    Empty strings are normalized to `None`.
 
     If the prefixed variable is *present* in the environment (even as an empty
     string), the canonical variable is never consulted. This lets users
-    set `DEEPAGENTS_CLI_X=""` to explicitly disable a key that is
-    set canonically.
+    set `DEEPAGENTS_CLI_X=""` to shadow a canonically-set key -- the function
+    will return `None` (since empty strings are normalized to `None`),
+    effectively suppressing the canonical value.
 
     If `name` already carries the prefix, the double-prefixed lookup is skipped
     to avoid nonsensical `DEEPAGENTS_CLI_DEEPAGENTS_CLI_*` reads
@@ -53,7 +53,16 @@ def resolve_env_var(name: str) -> str | None:
     if not name.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{name}"
         if prefixed in os.environ:
-            return os.environ[prefixed] or None
+            val = os.environ[prefixed]
+            if not val and os.environ.get(name):
+                logger.debug(
+                    "%s is set but empty, blocking non-empty %s. "
+                    "Unset %s to use the canonical variable.",
+                    prefixed,
+                    name,
+                    prefixed,
+                )
+            return val or None
     return os.environ.get(name) or None
 
 

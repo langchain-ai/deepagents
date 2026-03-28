@@ -270,7 +270,7 @@
 #### T4: Unsafe msgpack Deserialization in LangGraph Checkpointer
 
 - **Flow**: DF9 (checkpointer → agent state)
-- **Description**: Previously tracked as Dependabot alert #96. Confirmed fixed and closed upstream — see Investigated and Dismissed section.
+- **Description**: Unsafe msgpack deserialization previously identified in an upstream dependency. Confirmed fixed and closed upstream — see Investigated and Dismissed section.
 
 #### T5: DoS via Oversized Skill File
 
@@ -345,7 +345,7 @@
 
 | ID | Original Threat | Investigation | Evidence | Conclusion |
 |----|----------------|---------------|----------|------------|
-| D1 | Unsafe msgpack deserialization in LangGraph checkpointer (Dependabot #96) | Verified alert status — confirmed fixed and closed upstream. | Dependabot alert #96 state: `fixed`/`closed`. Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe deserialization. Not an active risk. Moved T4 status to Disproven. |
+| D1 | Unsafe msgpack deserialization in LangGraph checkpointer | Verified fix status — confirmed fixed and closed upstream. | Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe deserialization. Not an active risk. Moved T4 status to Disproven. |
 | D2 | YAML code execution in skill frontmatter parsing | Traced `middleware/skills.py:_parse_skill_metadata` — uses `yaml.safe_load()` exclusively. | `middleware/skills.py:_parse_skill_metadata` line 285 | `yaml.safe_load()` prevents arbitrary Python code execution during YAML parsing. Not exploitable. Note: parsed string values can still carry prompt injection payloads (covered by T1). |
 | D3 | BaseSandbox shell injection via file operation commands | Traced `backends/sandbox.py` — `_GLOB_COMMAND_TEMPLATE`, `_WRITE_CHECK_TEMPLATE`, and edit operations use base64-encoded parameters decoded inside Python scripts, not string interpolation into shell. | `backends/sandbox.py:_GLOB_COMMAND_TEMPLATE` — `base64.b64decode('{path_b64}').decode('utf-8')` pattern | Base64 encoding avoids shell metacharacter injection. User-controlled paths are encoded before interpolation into command templates. Not exploitable via shell injection. |
 

@@ -875,6 +875,8 @@ class TestGetLangsmithProjectName:
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGSMITH_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_API_KEY": "",
             "LANGSMITH_TRACING": "true",
         }
         with patch.dict("os.environ", env, clear=False):
@@ -886,6 +888,8 @@ class TestGetLangsmithProjectName:
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "",
             "LANGCHAIN_TRACING_V2": "",
+            "DEEPAGENTS_CLI_LANGSMITH_TRACING": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_TRACING_V2": "",
         }
         with patch.dict("os.environ", env, clear=False):
             assert get_langsmith_project_name() is None

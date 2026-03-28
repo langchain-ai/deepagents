@@ -190,6 +190,24 @@ def _ensure_bootstrap() -> None:
             deepagents_project = os.environ.get(LANGSMITH_PROJECT)
             if deepagents_project:
                 os.environ["LANGSMITH_PROJECT"] = deepagents_project
+
+            # Propagate prefixed LangSmith env vars to canonical names.
+            # The CLI resolves prefixed vars via resolve_env_var(), but the
+            # LangSmith SDK reads os.environ directly and has no knowledge
+            # of the DEEPAGENTS_CLI_ prefix. Setting canonical vars here
+            # bridges that gap. Only set vars not already present.
+            from deepagents_cli.model_config import _ENV_PREFIX
+
+            for canonical in (
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "LANGSMITH_TRACING",
+                "LANGCHAIN_TRACING_V2",
+            ):
+                if canonical not in os.environ:
+                    val = os.environ.get(f"{_ENV_PREFIX}{canonical}")
+                    if val:
+                        os.environ[canonical] = val
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
@@ -1634,7 +1652,14 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     def _lookup_url() -> None:
         nonlocal result, lookup_error
         try:
-            project = Client().read_project(project_name=project_name)
+            from deepagents_cli.model_config import resolve_env_var
+
+            # Explicit api_key because Client() reads os.environ directly
+            # and doesn't know about the DEEPAGENTS_CLI_ prefix.
+            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
+                "LANGCHAIN_API_KEY"
+            )
+            project = Client(api_key=api_key).read_project(project_name=project_name)
             result = project.url or None
         except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
             lookup_error = exc

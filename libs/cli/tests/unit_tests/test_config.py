@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_cli import model_config
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
@@ -110,8 +111,8 @@ class TestProjectContext:
         user_cwd.mkdir()
 
         env = {
-            "DA_SERVER_CWD": str(user_cwd),
-            "DA_SERVER_PROJECT_ROOT": str(project_root),
+            f"{SERVER_ENV_PREFIX}CWD": str(user_cwd),
+            f"{SERVER_ENV_PREFIX}PROJECT_ROOT": str(project_root),
         }
         context = get_server_project_context(env)
 

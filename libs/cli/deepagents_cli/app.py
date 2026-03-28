@@ -2501,17 +2501,19 @@ class DeepAgentsApp(App):
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
 
-        Shows a hint if no conversation has been started yet or if LangSmith
-        tracing is not configured. Otherwise, opens the thread URL in the
-        default browser and displays a clickable link.
+        Resolves the URL and opens the browser immediately regardless of busy
+        state. When the app is busy, chat output (user echo + clickable link)
+        is deferred until the current task finishes. Error conditions (no
+        session, URL failure, tracing not configured) render immediately
+        regardless of busy state.
 
         Args:
             command: The raw command text (displayed as user message).
         """
         from deepagents_cli.config import build_langsmith_thread_url
 
-        await self._mount_message(UserMessage(command))
         if not self._session_state:
+            await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage("No active session."))
             return
         thread_id = self._session_state.thread_id
@@ -2519,11 +2521,13 @@ class DeepAgentsApp(App):
             url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
         except Exception:
             logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage("Failed to resolve LangSmith thread URL.")
             )
             return
         if not url:
+            await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
@@ -2531,10 +2535,39 @@ class DeepAgentsApp(App):
                 )
             )
             return
-        try:
-            webbrowser.open(url)
-        except Exception:
-            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+        asyncio.get_running_loop().run_in_executor(None, _open_browser)
+
+        # Defer chat output while a turn is in progress — rendering the user
+        # echo + link immediately would splice it into the middle of the
+        # streaming assistant response
+        if self._agent_running or self._shell_running:
+            queued_widget = QueuedUserMessage(command)
+            self._queued_widgets.append(queued_widget)
+            await self._mount_message(queued_widget)
+
+            async def _mount_output() -> None:
+                if queued_widget in self._queued_widgets:
+                    self._queued_widgets.remove(queued_widget)
+                with suppress(Exception):
+                    await queued_widget.remove()
+                await self._mount_message(UserMessage(command))
+                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
+                await self._mount_message(AppMessage(link))
+
+            # Append directly — no dedup; each /trace invocation gets its own output.
+            self._deferred_actions.append(
+                DeferredAction(kind="chat_output", execute=_mount_output)
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
         link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 

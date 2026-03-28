@@ -1295,13 +1295,62 @@ class TestTraceCommand:
                 patch(
                     "deepagents_cli.app.webbrowser.open",
                     side_effect=webbrowser.Error("no browser"),
+                ) as mock_open,
+                patch("deepagents_cli.app.logger") as mock_logger,
+            ):
+                await app._handle_trace_command("/trace")
+                # Give the executor thread time to run and fail
+                await pilot.pause()
+                await asyncio.sleep(0.1)
+
+            # Browser was attempted
+            mock_open.assert_called_once()
+            # Exception was logged, not silently dropped
+            mock_logger.debug.assert_called()
+            calls = mock_logger.debug.call_args_list
+            assert any("Could not open browser" in str(c) for c in calls)
+            # Link still rendered despite browser failure
+            app_msgs = app.query(AppMessage)
+            assert any(
+                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
+                for w in app_msgs
+            )
+
+    async def test_trace_defers_output_when_busy(self) -> None:
+        """Should defer chat output when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent_running = True
+
+            with (
+                patch(
+                    "deepagents_cli.config.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
+                patch("deepagents_cli.app.webbrowser.open"),
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
 
+            # A QueuedUserMessage should be mounted as a placeholder
+            queued = app.query(QueuedUserMessage)
+            assert len(queued) == 1
+
+            # A deferred action should be queued
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "chat_output"
+
+            # Execute the deferred action (simulates drain after agent finishes)
+            await action.execute()
+            await pilot.pause()
+
+            # Queued widget replaced by real UserMessage + AppMessage with link
+            assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
+            assert any(
                 "https://smith.langchain.com/t/test-thread-123" in str(w._content)
                 for w in app_msgs
             )

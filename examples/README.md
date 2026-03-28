@@ -19,6 +19,8 @@
 | [text-to-sql-agent](text-to-sql-agent/) | Natural language to SQL agent with planning, skill-based workflows, and the Chinook demo database |
 | [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
+| [parallel_subagents](parallel_subagents/) | Parallel subagent coordination — delegate independent research to multiple specialist agents and synthesize results |
+| [custom_middleware](custom_middleware/) | Custom middleware integration — tool call logging, dynamic session context injection, and guardrail hooks |
 
 Each example has its own README with setup instructions.
 

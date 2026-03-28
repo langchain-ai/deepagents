@@ -1,0 +1,22 @@
+[project]
+name = "custom-middleware-example"
+version = "0.1.0"
+description = "Custom middleware example for deepagents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.4.12",
+    "langchain-anthropic>=1.4.0",
+    "python-dotenv>=1.0.0",
+    "langgraph-cli[inmem]>=0.1.55",
+]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/custom_middleware"
+
+[build-system]
+requires = ["setuptools>=73.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

@@ -2503,7 +2503,9 @@ class DeepAgentsApp(App):
 
         Resolves the URL and opens the browser immediately regardless of busy
         state. When the app is busy, chat output (user echo + clickable link)
-        is deferred until the current task finishes.
+        is deferred until the current task finishes. Error conditions (no
+        session, URL failure, tracing not configured) render immediately
+        regardless of busy state.
 
         Args:
             command: The raw command text (displayed as user message).
@@ -2534,7 +2536,13 @@ class DeepAgentsApp(App):
             )
             return
 
-        asyncio.get_running_loop().run_in_executor(None, webbrowser.open, url)
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+        asyncio.get_running_loop().run_in_executor(None, _open_browser)
 
         # Defer chat output while a turn is in progress — rendering the user
         # echo + link immediately would splice it into the middle of the
@@ -2553,6 +2561,7 @@ class DeepAgentsApp(App):
                 link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
                 await self._mount_message(AppMessage(link))
 
+            # Append directly — no dedup; each /trace invocation gets its own output.
             self._deferred_actions.append(
                 DeferredAction(kind="chat_output", execute=_mount_output)
             )

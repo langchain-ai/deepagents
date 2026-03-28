@@ -113,6 +113,62 @@ class ShellAllowListMiddleware(AgentMiddleware):
             raise TypeError(msg)
         self._allow_list = list(allow_list)
 
+    def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
+        """Return an error tool message when a shell command is not allowed.
+
+        Args:
+            request: The tool call request being processed.
+
+        Returns:
+            An error `ToolMessage` when the shell command should be rejected,
+            otherwise `None`.
+        """
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
+
+        tool_name = request.tool_call["name"]
+        if tool_name not in SHELL_TOOL_NAMES:
+            return None
+
+        args = request.tool_call.get("args") or {}
+        command = args.get("command", "")
+        if is_shell_command_allowed(command, self._allow_list):
+            logger.debug("Shell command allowed: %r", command)
+            return None
+
+        logger.warning("Shell command rejected by allow-list: %r", command)
+        allowed_str = ", ".join(self._allow_list)
+        return LCToolMessage(
+            content=(
+                f"Shell command rejected: `{command}` is not in the allow-list. "
+                f"Allowed commands: {allowed_str}. "
+                f"Please use an allowed command or try another approach."
+            ),
+            name=tool_name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Reject disallowed shell commands; pass everything else through.
+
+        Args:
+            request: The tool call request being processed.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The tool execution result, or an error `ToolMessage` for rejected
+            shell commands.
+        """
+        if (rejection := self._validate_tool_call(request)) is not None:
+            return rejection
+        return handler(request)
+
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -128,33 +184,9 @@ class ShellAllowListMiddleware(AgentMiddleware):
             The tool execution result, or an error `ToolMessage` for rejected
             shell commands.
         """
-        from langchain_core.messages import ToolMessage as LCToolMessage
-
-        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
-
-        tool_name = request.tool_call["name"]
-        if tool_name not in SHELL_TOOL_NAMES:
-            return await handler(request)
-
-        args = request.tool_call.get("args") or {}
-        command = args.get("command", "")
-        if is_shell_command_allowed(command, self._allow_list):
-            logger.debug("Shell command allowed: %r", command)
-            return await handler(request)
-
-        # Reject: return an error ToolMessage without executing
-        logger.warning("Shell command rejected by allow-list: %r", command)
-        allowed_str = ", ".join(self._allow_list)
-        return LCToolMessage(
-            content=(
-                f"Shell command rejected: `{command}` is not in the allow-list. "
-                f"Allowed commands: {allowed_str}. "
-                f"Please use an allowed command or try another approach."
-            ),
-            name=tool_name,
-            tool_call_id=request.tool_call["id"],
-            status="error",
-        )
+        if (rejection := self._validate_tool_call(request)) is not None:
+            return rejection
+        return await handler(request)
 
 
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
@@ -904,6 +936,15 @@ def create_cli_agent(
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
+    restrictive_shell_allow_list: list[str] | None = None
+    if (
+        interrupt_shell_only
+        and not auto_approve
+        and settings.shell_allow_list
+        and not isinstance(settings.shell_allow_list, _ShellAllowAll)
+    ):
+        restrictive_shell_allow_list = list(settings.shell_allow_list)
+
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
@@ -922,7 +963,29 @@ def create_cli_agent(
         }
         if subagent_meta["model"]:
             subagent["model"] = subagent_meta["model"]
+        if restrictive_shell_allow_list is not None:
+            subagent["middleware"] = [
+                ShellAllowListMiddleware(restrictive_shell_allow_list)
+            ]
         custom_subagents.append(subagent)
+
+    if restrictive_shell_allow_list is not None:
+        from deepagents.middleware.subagents import (
+            GENERAL_PURPOSE_SUBAGENT,
+            SubAgent as RuntimeSubAgent,
+        )
+
+        if not any(
+            subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
+            for subagent in custom_subagents
+        ):
+            general_purpose_subagent: RuntimeSubAgent = {
+                "name": GENERAL_PURPOSE_SUBAGENT["name"],
+                "description": GENERAL_PURPOSE_SUBAGENT["description"],
+                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
+            }
+            custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
     agent_middleware = []
@@ -1015,13 +1078,8 @@ def create_cli_agent(
 
     # Add shell allow-list middleware when interrupt_shell_only is active.
     shell_middleware_added = False
-    if (
-        interrupt_shell_only
-        and not auto_approve
-        and settings.shell_allow_list
-        and not isinstance(settings.shell_allow_list, _ShellAllowAll)
-    ):
-        agent_middleware.append(ShellAllowListMiddleware(settings.shell_allow_list))
+    if restrictive_shell_allow_list is not None:
+        agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         shell_middleware_added = True
 
     # Get or use custom system prompt

@@ -46,34 +46,50 @@
     "breaking": "breaking"
   },
   "scopeToLabel": {
-    "deepagents": "deepagents",
-    "sdk": "deepagents",
-    "deepagents-cli": "cli",
-    "cli": "cli",
-    "harbor": "harbor",
     "acp": "acp",
-    "docs": "documentation",
-    "infra": "infra",
+    "ci": "infra",
+    "cli": "cli",
+    "cli-gha": "github_actions",
+    "daytona": "daytona",
+    "deepagents": "deepagents",
+    "deepagents-cli": "cli",
     "deps": "dependencies",
+    "docs": "documentation",
+    "evals": "evals",
     "examples": "examples",
-    "daytona": "daytona"
+    "harbor": "evals",
+    "infra": "infra",
+    "quickjs": "quickjs",
+    "sdk": "deepagents"
   },
   "fileRules": [
     {
       "label": "deepagents",
-      "prefix": "libs/deepagents/"
+      "prefix": "libs/deepagents/",
+      "skipExcludedFiles": true
     },
     {
       "label": "cli",
-      "prefix": "libs/cli/"
+      "prefix": "libs/cli/",
+      "skipExcludedFiles": true
     },
     {
       "label": "acp",
-      "prefix": "libs/acp/"
+      "prefix": "libs/acp/",
+      "skipExcludedFiles": true
     },
     {
-      "label": "harbor",
-      "prefix": "libs/harbor/"
+      "label": "evals",
+      "prefix": "libs/evals/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cli",
+      "exact": "action.yml"
+    },
+    {
+      "label": "github_actions",
+      "exact": "action.yml"
     },
     {
       "label": "github_actions",

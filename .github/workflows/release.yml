@@ -25,7 +25,7 @@ on:
           - deepagents
           - deepagents-cli
           - deepagents-acp
-          - deepagents-harbor
+          - deepagents-evals
           - langchain-daytona
           - langchain-modal
           - langchain-quickjs
@@ -35,7 +35,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-main branch (danger!) - Only use for hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for backports and hotfixes"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean
@@ -75,8 +75,8 @@ jobs:
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
               ;;
-            deepagents-harbor)
-              echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
+            deepagents-evals)
+              echo "working-dir=libs/evals" >> $GITHUB_OUTPUT
               ;;
             langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
@@ -92,7 +92,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
               exit 1
               ;;
           esac
@@ -427,7 +427,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish to test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -589,7 +589,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true

@@ -173,13 +173,7 @@ class TestRunTextualCliAsyncMcp:
     """
 
     async def test_passes_server_and_mcp_kwargs_to_textual_app(self) -> None:
-        """Interactive TUI should receive server_kwargs and mcp_preload_kwargs."""
-        model_result = SimpleNamespace(
-            model=object(),
-            provider="openai",
-            model_name="gpt-5",
-            apply_to_settings=MagicMock(),
-        )
+        """TUI should receive server, mcp_preload, and model kwargs."""
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
 
@@ -188,37 +182,34 @@ class TestRunTextualCliAsyncMcp:
             await asyncio.sleep(0)
             return app_result
 
-        with (
-            patch("deepagents_cli.config.console"),
-            patch("deepagents_cli.config.create_model", return_value=model_result),
-            patch("deepagents_cli.model_config.save_recent_model"),
-            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
-        ):
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
             result = await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
+                model_name="openai:gpt-4o",
             )
 
         assert result == app_result
-        model_result.apply_to_settings.assert_called_once_with()
 
         # Server kwargs forwarded for deferred startup inside the TUI
         assert captured_kwargs["server_kwargs"] is not None
         assert captured_kwargs["server_kwargs"]["assistant_id"] == "agent"
         assert captured_kwargs["server_kwargs"]["interactive"] is True
+        # auto_approve must NOT be in server_kwargs — the interactive server
+        # must always compile with full HITL interrupts so Shift+Tab works.
+        assert "auto_approve" not in captured_kwargs["server_kwargs"]
 
         # MCP preload kwargs forwarded (no_mcp=False by default)
         assert captured_kwargs["mcp_preload_kwargs"] is not None
         assert captured_kwargs["mcp_preload_kwargs"]["no_mcp"] is False
 
+        # Model kwargs forwarded for deferred create_model() inside the TUI
+        assert captured_kwargs["model_kwargs"] is not None
+        assert captured_kwargs["model_kwargs"]["model_spec"] == "openai:gpt-4o"
+        assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
+
     async def test_no_mcp_kwargs_when_disabled(self) -> None:
         """mcp_preload_kwargs should be None when no_mcp=True."""
-        model_result = SimpleNamespace(
-            model=object(),
-            provider="openai",
-            model_name="gpt-5",
-            apply_to_settings=MagicMock(),
-        )
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
 
@@ -227,15 +218,11 @@ class TestRunTextualCliAsyncMcp:
             await asyncio.sleep(0)
             return app_result
 
-        with (
-            patch("deepagents_cli.config.console"),
-            patch("deepagents_cli.config.create_model", return_value=model_result),
-            patch("deepagents_cli.model_config.save_recent_model"),
-            patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub),
-        ):
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
             await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
+                model_name="openai:gpt-4o",
                 no_mcp=True,
             )
 
@@ -614,3 +601,38 @@ class TestFormatToolWarnings:
         """Unknown tools get a generic message."""
         assert format_tool_warning_tui("foo") == "foo is not installed."
         assert format_tool_warning_cli("foo") == "foo is not installed."
+
+
+class TestRunTextualCliAsyncModelConfigError:
+    """Verify ModelConfigError is caught cleanly before launching the TUI."""
+
+    async def test_returns_error_code_on_no_credentials(self) -> None:
+        """ModelConfigError from _get_default_model_spec gives return code 1."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=ModelConfigError("No credentials configured"),
+            ),
+            patch("deepagents_cli.config._get_console") as mock_console_fn,
+        ):
+            mock_console = MagicMock()
+            mock_console_fn.return_value = mock_console
+
+            result = await run_textual_cli_async("agent")
+
+        assert result.return_code == 1
+        assert result.thread_id is None
+
+    async def test_no_error_when_model_name_provided(self) -> None:
+        """Explicit model_name bypasses _get_default_model_spec."""
+        app_result = AppResult(return_code=0, thread_id="t-1")
+
+        async def _stub(**_kwargs: Any) -> AppResult:  # noqa: RUF029  # must be async for run_textual_app signature
+            return app_result
+
+        with patch("deepagents_cli.app.run_textual_app", new=_stub):
+            result = await run_textual_cli_async("agent", model_name="openai:gpt-4o")
+
+        assert result.return_code == 0

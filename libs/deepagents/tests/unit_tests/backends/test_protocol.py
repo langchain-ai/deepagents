@@ -8,7 +8,11 @@ import warnings
 
 import pytest
 
-from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
+from deepagents.backends.filesystem import _map_exception_to_standard_error
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    SandboxBackendProtocol,
+)
 
 
 class BareBackend(BackendProtocol):
@@ -179,3 +183,34 @@ class TestLegacySubclassOverrideRouting:
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")
+
+
+class TestMapFileOperationError:
+    """map_file_operation_error classifies exceptions into FileOperationError codes."""
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (FileNotFoundError("gone"), "file_not_found"),
+            (PermissionError("denied"), "permission_denied"),
+            (IsADirectoryError("dir"), "is_directory"),
+            (ValueError("path traversal detected"), "invalid_path"),
+            (ValueError("invalid path segment"), "invalid_path"),
+            (NotADirectoryError("not a dir"), "invalid_path"),
+            (FileExistsError("exists"), "invalid_path"),
+        ],
+    )
+    def test_known_exception_types(self, exc: Exception, expected: str) -> None:
+        assert _map_exception_to_standard_error(exc) == expected
+
+    def test_unrecognized_returns_none(self) -> None:
+        """Non-stdlib exception types return None regardless of message."""
+        assert _map_exception_to_standard_error(RuntimeError("something else")) is None
+        assert _map_exception_to_standard_error(RuntimeError("permission denied")) is None
+        assert _map_exception_to_standard_error(OSError("is a directory")) is None
+
+    def test_value_error_maps_to_invalid_path(self) -> None:
+        """All ValueError instances map to invalid_path regardless of message."""
+        assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
+        assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
+        assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"

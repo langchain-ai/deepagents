@@ -14,7 +14,7 @@ deepagents/
 │   ├── deepagents/  # SDK
 │   ├── cli/         # CLI tool
 │   ├── acp/         # Agent Context Protocol support
-│   ├── harbor/      # Evaluation/benchmark framework
+│   ├── evals/       # Evaluation suite and Harbor integration
 │   └── partners/    # Integration packages
 │       └── daytona/
 │       └── ...
@@ -85,7 +85,7 @@ Suggest PR titles that follow Conventional Commits format. Refer to .github/work
 ```txt
 feat(sdk): add new chat completion feature
 fix(cli): resolve type hinting issue
-chore(harbor): update infrastructure dependencies
+chore(evals): update infrastructure dependencies
 ```
 
 - Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`code`) for inline code references in docstrings and comments.
@@ -224,6 +224,8 @@ IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for 
 
 **Decision rule:** if the value could ever come from outside the codebase (user input, tool output, API responses, file contents), use `from_markup` with `$var`. If it's a hardcoded string, glyph, or computed int, `styled` is fine.
 
+**`App.notify()` defaults to `markup=True`:** Textual's `App.notify(message)` parses the message string as Rich markup by default. Any dynamic content (exception messages, file paths, user input, command strings) containing brackets `[]`, ANSI escape codes, or `=` will cause a `MarkupError` crash in Textual's Toast renderer. Always pass `markup=False` when the message contains f-string interpolated variables. Hardcoded string literals are safe with the default.
+
 **Rich `console.print()` and number highlighting:**
 
 `console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
@@ -245,6 +247,10 @@ The CLI must stay fast to launch. Never import heavy packages (e.g., `deepagents
 - Keep top-level imports in `main.py` and other entry-point modules minimal.
 - Defer heavy imports to the point where they are actually needed (inside functions/methods).
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
+- Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
+- When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
+- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
 **CLI help screen:**
 
@@ -256,7 +262,9 @@ When adding a user-facing CLI feature (new slash command, keybinding, workflow),
 
 **Slash commands:**
 
-Slash commands are defined in `SLASH_COMMANDS` in `libs/cli/deepagents_cli/widgets/autocomplete.py` as `(name, description, hidden_keywords)` tuples. Hidden keywords are space-separated terms that participate in fuzzy matching but are never displayed. To add an alias for an existing command, append it to the `hidden_keywords` string — do not create a duplicate command entry. For example, `/threads` has `sessions` as a hidden keyword so typing "sessions" surfaces it.
+Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `libs/cli/deepagents_cli/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
+
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
 
 **Adding a new model provider:**
 
@@ -281,6 +289,12 @@ Model discovery, credential checking, and UI integration are automatic once `PRO
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+
+### Evals (`libs/evals/`)
+
+**Vendored data files:**
+
+`libs/evals/tests/evals/tau2_airline/data/` contains vendored data from the upstream [tau-bench](https://github.com/sierra-research/tau-bench) project. These files must stay byte-identical to upstream. Pre-commit hooks (`end-of-file-fixer`, `trailing-whitespace`, `fix-smartquotes`, `fix-spaces`) are excluded from this directory in `.pre-commit-config.yaml`. Do not remove those exclusions or reformat files in this directory.
 
 ## Additional resources
 

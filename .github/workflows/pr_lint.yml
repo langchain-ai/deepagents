@@ -27,7 +27,7 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (optional):
-#   deepagents, sdk, deepagents-cli, cli, harbor, acp, examples, infra, deps
+#   deepagents, sdk, deepagents-cli, cli, cli-gha, harbor, evals, acp, examples, infra, ci, deps
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -85,17 +85,20 @@ jobs:
             release
             hotfix
           scopes: |
-            deepagents
-            sdk
-            deepagents-cli
-            cli
-            harbor
             acp
-            examples
-            infra
-            deps
+            ci
+            cli
+            cli-gha
             daytona
+            deepagents
+            deepagents-cli
+            deps
+            evals
+            examples
+            harbor
+            infra
             quickjs
+            sdk
           requireScope: false
           disallowScopes: |
             release

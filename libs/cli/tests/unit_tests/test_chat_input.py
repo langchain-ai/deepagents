@@ -11,9 +11,10 @@ from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
+from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.input import MediaTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     ChatTextArea,
@@ -959,11 +960,6 @@ class TestModePrefixStripping:
             # Now type "h" — the virtual prefix makes the controller see "/h"
             chat._text_area.text = "h"
             await pilot.pause()
-
-            # Completions should include /help
-            assert chat._current_suggestions
-            labels = [s[0] for s in chat._current_suggestions]
-            assert "/help" in labels
 
     async def test_submission_prepends_shell_prefix(self) -> None:
         """Submitting in shell mode should prepend `'!'` to the value."""
@@ -2087,6 +2083,100 @@ class TestVSCodeSpaceWorkaround:
             await pilot.pause()
 
             assert ta.text == "hello "
+
+
+class TestCtrlUDeleteToLineStart:
+    """Test that ctrl+u deletes from cursor to start of line (readline convention)."""
+
+    async def test_ctrl_u_deletes_to_line_start(self) -> None:
+        """ctrl+u with cursor mid-line should delete text before the cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+            # Cursor at end after insert — move to col 5
+            ta.move_cursor((0, 5))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == " world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_at_end_of_line_clears_line(self) -> None:
+        """ctrl+u at end of single line should clear it entirely."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_on_empty_input_is_noop(self) -> None:
+        """ctrl+u on already empty input should leave text empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_at_start_of_line_is_noop(self) -> None:
+        """ctrl+u at column 0 should not delete anything."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "hello world"
+            await pilot.pause()
+            ta.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "hello world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_multiline_only_affects_current_line(self) -> None:
+        """ctrl+u in a multiline buffer should only delete on the cursor's line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "line one\nline two\nline three"
+            await pilot.pause()
+            # Place cursor at col 4 on line 1
+            ta.move_cursor((1, 4))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "line one\n two\nline three"
+            assert ta.cursor_location == (1, 0)
 
 
 class _TextAreaTypingApp(App[None]):

@@ -101,7 +101,7 @@ The release-please workflow (`.github/workflows/release-please.yml`) detects a C
 
 ### Lockfile Updates
 
-When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. An up-to-date lockfile is necessary for the cli since it depends on the SDK, and `libs/harbor` depends on the CLI.
+When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. An up-to-date lockfile is necessary for the cli since it depends on the SDK, and `libs/evals` depends on the CLI.
 
 ### Release Pipeline
 
@@ -139,6 +139,72 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the standard release-please flow for the CLI. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
+
+## Alpha / Pre-release Versions
+
+Alpha releases let you publish a test version to PyPI before the GA release. Users must opt in (`pip install deepagents-cli==0.0.35a1` or `--pre`); plain `pip install deepagents-cli` skips pre-releases.
+
+### Why not use release-please for pre-releases?
+
+release-please is SemVer-only internally. Its `prerelease` versioning strategy produces versions like `0.0.35-alpha.1`, which is **not valid [PEP 440](https://peps.python.org/pep-0440/)**. Python/PyPI requires `0.0.35a1` (no hyphen, no dot). The Python file updaters write the SemVer string verbatim and their regexes cannot round-trip PEP 440 versions, so bumping version files on `main` to a PEP 440 pre-release would break subsequent release-please runs.
+
+### How to publish an alpha
+
+Alpha releases use a **throwaway branch** + manual dispatch. This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
+
+1. **Create a branch from `main`:**
+
+   ```bash
+   git checkout main && git pull
+   git checkout -b username/alpha/cli-<VERSION>
+   ```
+
+   Replace the username in the branch name with your GitHub username.
+
+2. **Bump the version** in both files to a [PEP 440 pre-release](https://peps.python.org/pep-0440/#pre-releases) (e.g., `0.0.35a1`):
+
+   - `libs/cli/pyproject.toml` — `version = "0.0.35a1"`
+   - `libs/cli/deepagents_cli/_version.py` — `__version__ = "0.0.35a1"`
+
+3. **Commit and push:**
+
+   ```bash
+   git add libs/cli/pyproject.toml libs/cli/deepagents_cli/_version.py
+   git commit -m "hotfix(cli): alpha release <VERSION>"
+   git push -u origin alpha/cli-<VERSION>
+   ```
+
+4. **Trigger the release workflow:**
+
+   - Go to **Actions** > **Package Release** > **Run workflow**
+   - Branch: `alpha/cli-<VERSION>`
+   - Package: `deepagents-cli`
+   - Enable `dangerous-nonmain-release` ✓
+   - Leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+
+5. **Clean up** — delete the branch after the workflow succeeds:
+
+   ```bash
+   git checkout main
+   git branch -D alpha/cli-<VERSION>
+   git push origin --delete alpha/cli-<VERSION>
+   ```
+
+### Promoting an alpha to GA
+
+After validating the alpha, merge the pending release PR (e.g., `release(deepagents-cli): 0.0.35`) as normal — release-please handles the GA version, changelog, and tag. No extra steps needed; PyPI treats `0.0.35a1` and `0.0.35` as distinct versions and `pip install deepagents-cli` automatically prefers the GA release.
+
+If no release PR exists yet (e.g., no releasable commits since the last GA), you can force one with a `Release-As` commit footer:
+
+```bash
+git commit --allow-empty -m "feat(cli): release 0.0.35" -m "Release-As: 0.0.35"
+```
+
+### Multiple alpha iterations
+
+Increment the PEP 440 pre-release number on each iteration: `0.0.35a1`, `0.0.35a2`, `0.0.35a3`, etc. Each iteration follows the same branch + manual dispatch flow above.
+
+For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
 
 ## Troubleshooting
 

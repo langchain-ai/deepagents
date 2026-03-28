@@ -96,33 +96,6 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    ("/help", "Show help", ""),
-    ("/changelog", "Open changelog in browser", ""),
-    ("/clear", "Clear chat and start new thread", "reset"),
-    ("/docs", "Open documentation in browser", ""),
-    ("/editor", "Open prompt in external editor ($EDITOR)", ""),
-    ("/feedback", "Submit a bug report or feature request", ""),
-    ("/mcp", "Show active MCP servers and tools", "servers"),
-    ("/model", "Switch or configure model (--model-params, --default)", ""),
-    (
-        "/offload",
-        "Free up context window space by offloading older messages",
-        "compact",
-    ),
-    ("/quit", "Exit app", "close leave"),
-    ("/reload", "Reload config from environment variables and .env", "refresh"),
-    ("/remember", "Update memory and skills from conversation", ""),
-    ("/tokens", "Token usage", "cost"),
-    ("/threads", "Browse and resume previous threads", "continue history sessions"),
-    ("/trace", "Open current thread in LangSmith", ""),
-    ("/version", "Show version", ""),
-]
-"""Built-in slash commands: (name, description, hidden_keywords).
-
-Hidden keywords are space-separated terms that participate in fuzzy matching
-but are never displayed to the user.
-"""
 
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
@@ -152,6 +125,18 @@ class SlashCommandController:
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
+
+    def update_commands(self, commands: list[tuple[str, str, str]]) -> None:
+        """Replace the commands list and reset suggestions.
+
+        Used to merge dynamically discovered skill commands with
+        the static command registry at runtime.
+
+        Args:
+            commands: New list of `(command, description, hidden_keywords)` tuples.
+        """
+        self._commands = commands
+        self.reset()
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface

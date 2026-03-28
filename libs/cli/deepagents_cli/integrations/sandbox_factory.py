@@ -240,7 +240,8 @@ class _LangSmithProvider(SandboxProvider):
         if not self._api_key:
             msg = (
                 "No LangSmith sandbox API key found. Set "
-                "LANGSMITH_SANDBOX_API_KEY or LANGSMITH_API_KEY."
+                "LANGSMITH_SANDBOX_API_KEY or LANGSMITH_API_KEY "
+                "(or the DEEPAGENTS_CLI_-prefixed equivalents)."
             )
             raise ValueError(msg)
         self._client: SandboxClient = SandboxClient(api_key=self._api_key)
@@ -394,7 +395,10 @@ class _DaytonaProvider(SandboxProvider):
 
         api_key = resolve_env_var("DAYTONA_API_KEY")
         if not api_key:
-            msg = "DAYTONA_API_KEY environment variable not set"
+            msg = (
+                "No Daytona API key found. Set DAYTONA_API_KEY "
+                "or DEEPAGENTS_CLI_DAYTONA_API_KEY."
+            )
             raise ValueError(msg)
         self._client = daytona_module.Daytona(
             daytona_module.DaytonaConfig(
@@ -478,14 +482,23 @@ class _ModalProvider(SandboxProvider):
         token_secret = resolve_env_var("MODAL_TOKEN_SECRET")
         if token_id and token_secret:
             self._client = self._modal.Client.from_credentials(token_id, token_secret)
+        elif token_id or token_secret:
+            logger.warning(
+                "Only one of MODAL_TOKEN_ID / MODAL_TOKEN_SECRET is set; "
+                "both are required for explicit credential auth. "
+                "Falling back to default Modal authentication.",
+            )
+            self._client = None
         else:
             self._client = None
 
-        self._app = self._modal.App.lookup(
-            name="deepagents-sandbox",
-            create_if_missing=True,
-            client=self._client,
-        )
+        lookup_kwargs: dict[str, Any] = {
+            "name": "deepagents-sandbox",
+            "create_if_missing": True,
+        }
+        if self._client is not None:
+            lookup_kwargs["client"] = self._client
+        self._app = self._modal.App.lookup(**lookup_kwargs)
 
     def get_or_create(
         self,
@@ -513,15 +526,19 @@ class _ModalProvider(SandboxProvider):
             package="langchain-modal",
         )
 
+        client_kwargs: dict[str, Any] = {}
+        if self._client is not None:
+            client_kwargs["client"] = self._client
+
         if sandbox_id:
             sandbox = self._modal.Sandbox.from_id(
                 sandbox_id=sandbox_id,
                 app=self._app,
-                client=self._client,
+                **client_kwargs,
             )
         else:
             sandbox = self._modal.Sandbox.create(
-                app=self._app, workdir="/workspace", client=self._client
+                app=self._app, workdir="/workspace", **client_kwargs
             )
             last_exc: Exception | None = None
             for _ in range(timeout // 2):
@@ -546,9 +563,10 @@ class _ModalProvider(SandboxProvider):
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Terminate a Modal sandbox by id."""
-        sandbox = self._modal.Sandbox.from_id(
-            sandbox_id=sandbox_id, app=self._app, client=self._client
-        )
+        del_kwargs: dict[str, Any] = {"sandbox_id": sandbox_id, "app": self._app}
+        if self._client is not None:
+            del_kwargs["client"] = self._client
+        sandbox = self._modal.Sandbox.from_id(**del_kwargs)
         sandbox.terminate()
 
 
@@ -566,7 +584,10 @@ class _RunloopProvider(SandboxProvider):
 
         api_key = resolve_env_var("RUNLOOP_API_KEY")
         if not api_key:
-            msg = "RUNLOOP_API_KEY environment variable not set"
+            msg = (
+                "No Runloop API key found. Set RUNLOOP_API_KEY "
+                "or DEEPAGENTS_CLI_RUNLOOP_API_KEY."
+            )
             raise ValueError(msg)
         self._client = runloop_module.Runloop(bearer_token=api_key)
 

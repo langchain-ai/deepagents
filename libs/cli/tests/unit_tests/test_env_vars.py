@@ -72,7 +72,7 @@ class TestEnvVarRegistryDrift:
         )
 
     def test_no_stale_registry_entries(self) -> None:
-        """Every constant in `_env_vars` must appear in `_env_vars.py`."""
+        """Every registered value must be parseable from `_env_vars.py` source."""
         registered = _registered_values()
         in_registry_file = set(_ENV_VAR_RE.findall(_REGISTRY_FILE.read_text()))
         stale = registered - in_registry_file

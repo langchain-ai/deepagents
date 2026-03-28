@@ -48,7 +48,7 @@ def resolve_env_var(name: str) -> str | None:
             `ANTHROPIC_API_KEY`).
 
     Returns:
-        The resolved value, or `None` if neither form is set or both are empty.
+        The resolved value, or `None` when absent or empty.
     """
     if not name.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{name}"

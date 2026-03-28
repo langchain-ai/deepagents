@@ -95,8 +95,9 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     !!! note
 
-        To scope credentials to the CLI without colliding with identically-named
-        shell exports, use the `DEEPAGENTS_CLI_` env-var prefix.
+        To scope credentials to the CLI without colliding with
+        identically-named shell exports, use the `DEEPAGENTS_CLI_` env-var
+        prefix (see `resolve_env_var` in `deepagents_cli.model_config`).
 
     Args:
         start_path: Directory to use for project `.env` discovery.
@@ -195,7 +196,7 @@ def _ensure_bootstrap() -> None:
             # The CLI resolves prefixed vars via resolve_env_var(), but the
             # LangSmith SDK reads os.environ directly and has no knowledge
             # of the DEEPAGENTS_CLI_ prefix. Setting canonical vars here
-            # bridges that gap. Only set vars not already present.
+            # bridges that gap.
             from deepagents_cli.model_config import _ENV_PREFIX
 
             for canonical in (
@@ -204,10 +205,23 @@ def _ensure_bootstrap() -> None:
                 "LANGSMITH_TRACING",
                 "LANGCHAIN_TRACING_V2",
             ):
+                prefixed = f"{_ENV_PREFIX}{canonical}"
+                if prefixed not in os.environ:
+                    continue
+                prefixed_val = os.environ[prefixed]
                 if canonical not in os.environ:
-                    val = os.environ.get(f"{_ENV_PREFIX}{canonical}")
-                    if val:
-                        os.environ[canonical] = val
+                    # Propagate (including empty string for explicit disable).
+                    os.environ[canonical] = prefixed_val
+                elif os.environ[canonical] != prefixed_val:
+                    logger.warning(
+                        "Both %s and %s are set with different values; "
+                        "the LangSmith SDK will use %s while the CLI "
+                        "prefers %s. Unset one to avoid confusion.",
+                        canonical,
+                        prefixed,
+                        canonical,
+                        prefixed,
+                    )
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
@@ -898,7 +912,6 @@ class Settings:
             Settings instance with detected configuration
         """
         # Detect API keys (normalize empty strings to None).
-        # resolve_env_var checks DEEPAGENTS_CLI_{name} first, then {name}.
         from deepagents_cli.model_config import resolve_env_var
 
         openai_key = resolve_env_var("OPENAI_API_KEY")
@@ -1893,7 +1906,15 @@ def _get_provider_kwargs(
         result["base_url"] = base_url
     from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
 
-    api_key_env = config.get_api_key_env(provider) or PROVIDER_API_KEY_ENV.get(provider)
+    api_key_env = config.get_api_key_env(provider)
+    if not api_key_env:
+        api_key_env = PROVIDER_API_KEY_ENV.get(provider)
+        if api_key_env:
+            logger.debug(
+                "No api_key_env in config.toml for '%s'; using hardcoded env var %s",
+                provider,
+                api_key_env,
+            )
     if api_key_env:
         api_key = resolve_env_var(api_key_env)
         if api_key:

@@ -2004,6 +2004,107 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls
 
+    def test_bootstrap_propagates_prefixed_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prefixed LangSmith vars are copied to canonical names at bootstrap."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_does_not_overwrite_canonical_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Canonical LangSmith vars are preserved when already set."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_override")
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Canonical value preserved — propagation does not overwrite.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_original"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_propagates_empty_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty prefixed var propagates to canonical (explicit disable)."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "")
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Empty string propagated — lets user explicitly disable tracing.
+            assert os.environ["LANGSMITH_TRACING"] == ""
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
 
 class TestFindDotenvFromStartPath:
     """Tests for _find_dotenv_from_start_path."""

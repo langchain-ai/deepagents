@@ -1,6 +1,6 @@
 # Threat Model: deepagents-cli
 
-> Generated: 2026-03-28 | Commit: e859077f | Scope: libs/cli only | Visibility: Open Source | Mode: deep
+> Generated: 2026-03-28 | Commit: e859077f | Scope: libs/cli only
 
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.
 

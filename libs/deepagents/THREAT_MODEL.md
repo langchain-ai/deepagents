@@ -1,6 +1,6 @@
 # Threat Model: deepagents (SDK library)
 
-> Generated: 2026-03-28 | Commit: e859077f | Scope: `libs/deepagents/deepagents/` — SDK library only (not CLI) | Visibility: Open Source | Mode: deep
+> Generated: 2026-03-28 | Commit: e859077f | Scope: `libs/deepagents/deepagents/` — SDK library only (not CLI)
 
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.
 
@@ -346,7 +346,7 @@
 | ID | Original Threat | Investigation | Evidence | Conclusion |
 |----|----------------|---------------|----------|------------|
 | D1 | Unsafe msgpack deserialization in LangGraph checkpointer | Verified fix status — confirmed fixed and closed upstream. | Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe deserialization. Not an active risk. Moved T4 status to Disproven. |
-| D2 | YAML code execution in skill frontmatter parsing | Traced `middleware/skills.py:_parse_skill_metadata` — uses `yaml.safe_load()` exclusively. | `middleware/skills.py:_parse_skill_metadata` line 285 | `yaml.safe_load()` prevents arbitrary Python code execution during YAML parsing. Not exploitable. Note: parsed string values can still carry prompt injection payloads (covered by T1). |
+| D2 | YAML code execution in skill frontmatter parsing | Traced `middleware/skills.py:_parse_skill_metadata` — uses `yaml.safe_load()` exclusively. | `middleware/skills.py:_parse_skill_metadata` | `yaml.safe_load()` prevents arbitrary Python code execution during YAML parsing. Not exploitable. Note: parsed string values can still carry prompt injection payloads (covered by T1). |
 | D3 | BaseSandbox shell injection via file operation commands | Traced `backends/sandbox.py` — `_GLOB_COMMAND_TEMPLATE`, `_WRITE_CHECK_TEMPLATE`, and edit operations use base64-encoded parameters decoded inside Python scripts, not string interpolation into shell. | `backends/sandbox.py:_GLOB_COMMAND_TEMPLATE` — `base64.b64decode('{path_b64}').decode('utf-8')` pattern | Base64 encoding avoids shell metacharacter injection. User-controlled paths are encoded before interpolation into command templates. Not exploitable via shell injection. |
 
 ---

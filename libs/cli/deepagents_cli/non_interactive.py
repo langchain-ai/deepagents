@@ -859,10 +859,9 @@ async def run_non_interactive(
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
         )
-        # When shell is enabled with a restrictive allow-list, only gate
-        # shell execution — non-shell tools are always auto-approved in
-        # non-interactive mode, so interrupting on them just fragments
-        # LangSmith traces without adding value.
+        # Currently, non-shell tools have no HITL handler in non-interactive
+        # mode, so interrupting on them just fragments LangSmith traces
+        # without adding value. Gate only shell execution via middleware.
         use_auto_approve = not enable_shell or shell_is_unrestricted
         use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
 

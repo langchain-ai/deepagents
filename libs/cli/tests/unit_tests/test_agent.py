@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
@@ -1615,8 +1616,17 @@ class TestShellAllowListMiddleware:
         handler.assert_awaited_once_with(request)
         assert result == "ok"
 
-    async def test_allows_approved_shell_command(self) -> None:
-        """Shell commands in the allow-list pass through."""
+    @pytest.mark.parametrize(
+        ("tool_name", "command"),
+        [
+            pytest.param("execute", "ls -la", id="execute-tool"),
+            pytest.param("bash", "cat README.md", id="bash-tool"),
+        ],
+    )
+    async def test_allows_approved_shell_command(
+        self, tool_name: str, command: str
+    ) -> None:
+        """Shell commands in the allow-list pass through for all SHELL_TOOL_NAMES."""
         from unittest.mock import AsyncMock
 
         from deepagents_cli.agent import ShellAllowListMiddleware
@@ -1624,8 +1634,8 @@ class TestShellAllowListMiddleware:
         middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
         request = Mock()
         request.tool_call = {
-            "name": "execute",
-            "args": {"command": "ls -la"},
+            "name": tool_name,
+            "args": {"command": command},
             "id": "tc2",
         }
         handler = AsyncMock(return_value="output")
@@ -1677,6 +1687,42 @@ class TestShellAllowListMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
 
+    async def test_rejects_empty_command_string(self) -> None:
+        """Shell tool call with empty command string is rejected."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": {"command": ""}, "id": "tc5"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
+    async def test_handles_none_args(self) -> None:
+        """Shell tool call with args=None is rejected, not an exception."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": None, "id": "tc6"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
     def test_rejects_empty_allow_list(self) -> None:
         """Constructor rejects empty allow-list."""
         import pytest
@@ -1695,3 +1741,128 @@ class TestShellAllowListMiddleware:
 
         with pytest.raises(TypeError, match="SHELL_ALLOW_ALL"):
             ShellAllowListMiddleware(allow_list=SHELL_ALLOW_ALL)
+
+
+class TestCreateCliAgentShellMiddlewareWiring:
+    """Verify `create_cli_agent` wires `ShellAllowListMiddleware` correctly."""
+
+    def test_interrupt_shell_only_adds_middleware_and_disables_interrupts(
+        self, tmp_path: Path
+    ) -> None:
+        """Middleware is added and `interrupt_on={}` with interrupt_shell_only."""
+        import pytest
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        assert kwargs["interrupt_on"] == {}
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert ShellAllowListMiddleware in middleware_types
+
+    def test_interrupt_shell_only_skipped_when_auto_approve(
+        self, tmp_path: Path
+    ) -> None:
+        """When `auto_approve=True`, `interrupt_shell_only` has no effect."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                auto_approve=True,
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        assert kwargs["interrupt_on"] == {}
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert ShellAllowListMiddleware not in middleware_types

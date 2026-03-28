@@ -41,6 +41,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_cli import theme
 from deepagents_cli.config import (
+    _ShellAllowAll,
     config,
     console,
     get_default_coding_instructions,
@@ -135,7 +136,8 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if tool_name not in SHELL_TOOL_NAMES:
             return await handler(request)
 
-        command = request.tool_call.get("args", {}).get("command", "")
+        args = request.tool_call.get("args") or {}
+        command = args.get("command", "")
         if is_shell_command_allowed(command, self._allow_list):
             logger.debug("Shell command allowed: %r", command)
             return await handler(request)
@@ -832,9 +834,12 @@ def create_cli_agent(
         interrupt_shell_only: If `True`, all HITL interrupts are disabled;
             shell commands are validated inline by `ShellAllowListMiddleware`
             against the configured allow-list instead.
+
             Used in non-interactive mode with a restrictive shell allow-list
             to avoid splitting traces into multiple LangSmith runs.
-            Ignored when `auto_approve` is `True`.
+
+            Has no effect when `auto_approve` is `True` (interrupts are already
+            disabled) or when `shell_allow_list` is `SHELL_ALLOW_ALL`.
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -1008,11 +1013,14 @@ def create_cli_agent(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )
 
-    # Shell allow-list middleware — validates and enforces the shell allow-list
-    # inline (no interrupts), keeping the entire agent run in a single
-    # LangSmith trace.
+    # Add shell allow-list middleware when interrupt_shell_only is active.
     shell_middleware_added = False
-    if interrupt_shell_only and settings.shell_allow_list:
+    if (
+        interrupt_shell_only
+        and not auto_approve
+        and settings.shell_allow_list
+        and not isinstance(settings.shell_allow_list, _ShellAllowAll)
+    ):
         agent_middleware.append(ShellAllowListMiddleware(settings.shell_allow_list))
         shell_middleware_added = True
 
@@ -1027,7 +1035,7 @@ def create_cli_agent(
 
     # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve or shell_middleware_added:  # noqa: SIM108  # comment block is clearer than ternary
+    if auto_approve or shell_middleware_added:  # noqa: SIM108  # if-else clearer than ternary for dual-path config
         # No HITL interrupts — tools run automatically.
         # When shell_middleware_added is True, shell validation is handled by
         # ShellAllowListMiddleware (added above) which rejects disallowed

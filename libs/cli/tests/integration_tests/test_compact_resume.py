@@ -80,7 +80,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
     # Keep config and the global sessions DB fully test-local.
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.setenv("DEEPAGENTS_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("DEEPAGENTS_CLI_NO_UPDATE_CHECK", "1")
     monkeypatch.chdir(project_dir)
 
     _write_model_config(home_dir)

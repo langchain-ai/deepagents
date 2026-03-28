@@ -443,7 +443,7 @@ class TestSetAutoUpdate:
         ):
             import os
 
-            os.environ.pop("DEEPAGENTS_AUTO_UPDATE", None)
+            os.environ.pop("DEEPAGENTS_CLI_AUTO_UPDATE", None)
             assert is_auto_update_enabled() is True
 
 
@@ -463,14 +463,14 @@ class TestIsAutoUpdateEnabled:
         ):
             import os
 
-            os.environ.pop("DEEPAGENTS_AUTO_UPDATE", None)
+            os.environ.pop("DEEPAGENTS_CLI_AUTO_UPDATE", None)
             assert is_auto_update_enabled() is False
 
     def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
-        """DEEPAGENTS_AUTO_UPDATE=1 enables auto-update."""
+        """DEEPAGENTS_CLI_AUTO_UPDATE=1 enables auto-update."""
         with (
             patch("deepagents_cli.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {"DEEPAGENTS_AUTO_UPDATE": "1"}),
+            patch.dict("os.environ", {"DEEPAGENTS_CLI_AUTO_UPDATE": "1"}),
         ):
             assert is_auto_update_enabled() is True
 

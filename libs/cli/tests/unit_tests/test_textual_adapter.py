@@ -238,6 +238,18 @@ class TestBuildStreamConfig:
 
         assert config["metadata"]["versions"]["deepagents-cli"] == __version__
 
+    def test_user_id_included_when_set(self) -> None:
+        """DEEPAGENTS_CLI_USER_ID should appear in metadata when set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": "mason"}):
+            config = build_stream_config("t-uid", assistant_id=None)
+        assert config["metadata"]["user_id"] == "mason"
+
+    def test_user_id_absent_when_unset(self) -> None:
+        """user_id should be absent from metadata when env var is not set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": ""}):
+            config = build_stream_config("t-nouid", assistant_id=None)
+        assert "user_id" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""

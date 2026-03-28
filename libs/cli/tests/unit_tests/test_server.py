@@ -145,7 +145,8 @@ class TestWaitForServerHealthy:
 
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL", 0),
+            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
+            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
             pytest.raises(RuntimeError, match="did not become healthy"),
         ):
             await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
@@ -161,7 +162,8 @@ class TestWaitForServerHealthy:
 
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL", 0),
+            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
+            patch("deepagents_cli.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
             pytest.raises(RuntimeError, match="last status: 503"),
         ):
             await wait_for_server_healthy("http://localhost:2024", timeout=0.01)

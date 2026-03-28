@@ -712,9 +712,11 @@ async def run_textual_cli_async(
     try:
         resolved_spec = model_name or _get_default_model_spec()
     except ModelConfigError as e:
+        from rich.markup import escape
+
         from deepagents_cli.config import console
 
-        console.print(f"[bold red]Error:[/bold red] {e}", highlight=False)
+        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
     parsed = ModelSpec.try_parse(resolved_spec)
@@ -981,8 +983,12 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
     except (OSError, ValueError) as exc:
-        msg = f"Failed to read piped input: {exc}"
-        console.print(f"[bold red]Error:[/bold red] {msg}")
+        from rich.markup import escape
+
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to read piped input: "
+            f"{escape(str(exc))}"
+        )
         sys.exit(1)
 
     if len(stdin_text) > max_stdin_bytes:
@@ -1148,7 +1154,7 @@ def cli_main() -> None:
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
-    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # This ensures agent traces use DEEPAGENTS_CLI_LANGSMITH_PROJECT while
     # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
@@ -1475,7 +1481,9 @@ def cli_main() -> None:
                 try:
                     verify_sandbox_deps(args.sandbox)
                 except ImportError as exc:
-                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    from rich.markup import escape
+
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
             # Non-interactive mode - execute single task and exit
@@ -1527,7 +1535,9 @@ def cli_main() -> None:
                 try:
                     verify_sandbox_deps(args.sandbox)
                 except ImportError as exc:
-                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    from rich.markup import escape
+
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
             # Check project MCP trust before launching TUI

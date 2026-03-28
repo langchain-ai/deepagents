@@ -173,10 +173,12 @@ def load_skill_content(
             "Skill path %s is outside all allowed roots, refusing to read",
             skill_path,
         )
+        from deepagents_cli._env_vars import EXTRA_SKILLS_DIRS
+
         msg = (
             f"Skill path {skill_path} resolves outside all allowed skill "
             "directories. If this is a symlink, add the target directory to "
-            "DEEPAGENTS_EXTRA_SKILLS_DIRS or [skills].extra_allowed_dirs "
+            f"{EXTRA_SKILLS_DIRS} or [skills].extra_allowed_dirs "
             "in ~/.deepagents/config.toml."
         )
         raise PermissionError(msg)

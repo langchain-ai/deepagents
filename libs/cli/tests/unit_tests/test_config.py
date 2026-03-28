@@ -1251,12 +1251,13 @@ api_key_env = "FIREWORKS_API_KEY"
         assert kwargs == {}
 
     def test_unconfigured_providers_return_empty(self) -> None:
-        """Providers without config return empty kwargs."""
-        kwargs = _get_provider_kwargs("anthropic")
-        assert kwargs == {}
+        """Providers without config or env credentials return empty kwargs."""
+        with patch.dict("os.environ", {}, clear=True):
+            kwargs = _get_provider_kwargs("anthropic")
+            assert kwargs == {}
 
-        kwargs = _get_provider_kwargs("google_genai")
-        assert kwargs == {}
+            kwargs = _get_provider_kwargs("google_genai")
+            assert kwargs == {}
 
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""

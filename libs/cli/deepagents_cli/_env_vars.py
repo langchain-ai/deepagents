@@ -49,3 +49,6 @@ NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
+
+USER_ID = "DEEPAGENTS_CLI_USER_ID"
+"""Attach a user identifier to LangSmith trace metadata."""

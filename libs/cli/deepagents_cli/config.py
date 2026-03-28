@@ -667,6 +667,11 @@ def build_stream_config(
         "versions": versions,
         "ls_integration": "deepagents-cli",
     }
+    from deepagents_cli._env_vars import USER_ID
+
+    user_id = os.environ.get(USER_ID)
+    if user_id:
+        metadata["user_id"] = user_id
     if cwd:
         metadata["cwd"] = cwd
     if assistant_id:

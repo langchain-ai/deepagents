@@ -731,12 +731,15 @@ async def run_textual_cli_async(
         "profile_overrides": profile_override,
     }
 
-    # Build kwargs for deferred server startup (runs inside the TUI)
+    # Build kwargs for deferred server startup (runs inside the TUI).
+    # Never pass auto_approve to the server — the interactive server must
+    # always configure full HITL interrupts so that Shift+Tab can toggle
+    # approval mode mid-session. The -y flag is handled client-side via
+    # session_state.auto_approve in textual_adapter.py.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name,
         "model_params": model_params,
-        "auto_approve": auto_approve,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,

@@ -30,21 +30,21 @@ if TYPE_CHECKING:
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
-from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
 
 
 def _set_or_clear_server_env(name: str, value: str | None) -> None:
-    """Set or clear a `DA_SERVER_*` environment variable.
+    """Set or clear a `DEEPAGENTS_CLI_SERVER_*` environment variable.
 
     Args:
-        name: Suffix after `DA_SERVER_`.
+        name: Suffix after `DEEPAGENTS_CLI_SERVER_`.
         value: String value to set, or `None` to clear the variable.
     """
-    key = f"{_ENV_PREFIX}{name}"
+    key = f"{SERVER_ENV_PREFIX}{name}"
     if value is None:
         os.environ.pop(key, None)
     else:
@@ -52,7 +52,7 @@ def _set_or_clear_server_env(name: str, value: str | None) -> None:
 
 
 def _apply_server_config(config: ServerConfig) -> None:
-    """Write a `ServerConfig` to `DA_SERVER_*` env vars.
+    """Write a `ServerConfig` to `DEEPAGENTS_CLI_SERVER_*` env vars.
 
     Uses `ServerConfig.to_env()` so that the set of variables and their
     serialization format are defined in one place (the `ServerConfig` dataclass)
@@ -116,10 +116,9 @@ def _scaffold_workspace(work_dir: Path) -> None:
 def _write_checkpointer(work_dir: Path) -> None:
     """Write a checkpointer module that reads its DB path from the environment.
 
-    The generated module reads `DA_SERVER_DB_PATH` at runtime so the path is
-    never baked into generated source. This avoids fragile code-generation via
-    f-string interpolation and is consistent with the `DA_SERVER_*` env-var
-    communication pattern used elsewhere.
+    The generated module reads the DB path env var at runtime so the path
+    is never baked into generated source. This is consistent with the
+    `DEEPAGENTS_CLI_SERVER_*` env-var communication pattern used elsewhere.
 
     Args:
         work_dir: Server working directory.
@@ -127,9 +126,10 @@ def _write_checkpointer(work_dir: Path) -> None:
     from deepagents_cli.sessions import get_db_path
 
     # Set the env var that the generated module will read at import time.
-    os.environ[f"{_ENV_PREFIX}DB_PATH"] = str(get_db_path())
+    os.environ[f"{SERVER_ENV_PREFIX}DB_PATH"] = str(get_db_path())
 
-    content = '''\
+    db_path_var = f"{SERVER_ENV_PREFIX}DB_PATH"
+    content = f'''\
 """Persistent SQLite checkpointer for the LangGraph dev server."""
 
 import os
@@ -140,17 +140,17 @@ from contextlib import asynccontextmanager
 async def create_checkpointer():
     """Yield an AsyncSqliteSaver connected to the CLI sessions DB.
 
-    The database path is read from the `DA_SERVER_DB_PATH` env var
+    The database path is read from the `{db_path_var}` env var
     (set by the CLI before server startup) rather than hard-coded, so
     the checkpointer module works without code generation.
     """
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    db_path = os.environ.get("DA_SERVER_DB_PATH")
+    db_path = os.environ.get("{db_path_var}")
     if not db_path:
         raise RuntimeError(
-            "DA_SERVER_DB_PATH not set. The CLI must set this env var before "
-            "server startup."
+            "{db_path_var} not set. The CLI must set this "
+            "env var before server startup."
         )
     async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
         yield saver

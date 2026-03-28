@@ -46,6 +46,9 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
+"""Environment variable prefix used to pass CLI config to the server subprocess."""
+
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
 

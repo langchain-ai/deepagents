@@ -93,9 +93,9 @@ def _build_tools(
 def make_graph() -> Any:  # noqa: ANN401
     """Create the CLI agent graph from environment-based configuration.
 
-    Reads `DA_SERVER_*` env vars via `ServerConfig.from_env()` (the inverse of
-    `ServerConfig.to_env()` used by the CLI process), resolves a model,
-    assembles tools, and compiles the agent graph.
+    Reads `DEEPAGENTS_CLI_SERVER_*` env vars via `ServerConfig.from_env()`
+    (the inverse of `ServerConfig.to_env()` used by the CLI process), resolves a
+    model, assembles tools, and compiles the agent graph.
 
     Returns:
         Compiled LangGraph agent graph.

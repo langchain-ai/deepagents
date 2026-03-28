@@ -483,7 +483,7 @@ class ServerProcess:
 
         Args:
             **overrides: Key/value env var pairs
-                (e.g., `DA_SERVER_MODEL="anthropic:claude-sonnet-4-6"`).
+                (e.g., `DEEPAGENTS_CLI_SERVER_MODEL="anthropic:claude-sonnet-4-6"`).
         """
         self._env_overrides.update(overrides)
 

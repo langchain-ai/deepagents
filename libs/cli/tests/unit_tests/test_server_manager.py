@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 
 import pytest
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
-from deepagents_cli._server_constants import ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 from deepagents_cli.server_manager import (
     _apply_server_config,
@@ -52,7 +52,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored == original
@@ -64,7 +64,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored == original
@@ -76,7 +76,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored.trust_project_mcp is None
@@ -116,15 +116,15 @@ class TestApplyServerConfig:
 
         with patch.dict(os.environ, {}, clear=False):
             for suffix in ("MCP_CONFIG_PATH", "CWD", "PROJECT_ROOT"):
-                monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+                monkeypatch.delenv(f"{SERVER_ENV_PREFIX}{suffix}", raising=False)
 
             _apply_server_config(config)
 
-            assert os.environ[f"{ENV_PREFIX}MCP_CONFIG_PATH"] == str(
+            assert os.environ[f"{SERVER_ENV_PREFIX}MCP_CONFIG_PATH"] == str(
                 (user_cwd / "configs" / "mcp.json").resolve()
             )
-            assert os.environ[f"{ENV_PREFIX}CWD"] == str(user_cwd.resolve())
-            assert os.environ[f"{ENV_PREFIX}PROJECT_ROOT"] == str(
+            assert os.environ[f"{SERVER_ENV_PREFIX}CWD"] == str(user_cwd.resolve())
+            assert os.environ[f"{SERVER_ENV_PREFIX}PROJECT_ROOT"] == str(
                 project_root.resolve()
             )
 

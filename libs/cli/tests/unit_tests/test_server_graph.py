@@ -121,6 +121,7 @@ class TestServerGraph:
             interactive=True,
             auto_approve=False,
             interrupt_shell_only=False,
+            shell_allow_list=None,
             enable_ask_user=False,
             enable_memory=True,
             enable_skills=True,

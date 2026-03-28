@@ -864,6 +864,13 @@ async def run_non_interactive(
         # without adding value. Gate only shell execution via middleware.
         use_auto_approve = not enable_shell or shell_is_unrestricted
         use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        # Extract the concrete allow-list to forward to the server subprocess.
+        # settings.shell_allow_list is already validated at this point.
+        restrictive_allow_list: list[str] | None = (
+            list(settings.shell_allow_list)
+            if use_interrupt_shell_only and settings.shell_allow_list
+            else None
+        )
 
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
@@ -874,6 +881,7 @@ async def run_non_interactive(
             model_params=model_params,
             auto_approve=use_auto_approve,
             interrupt_shell_only=use_interrupt_shell_only,
+            shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,

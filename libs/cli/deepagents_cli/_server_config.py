@@ -116,6 +116,7 @@ class ServerConfig:
     system_prompt: str | None = None
     auto_approve: bool = False
     interrupt_shell_only: bool = False
+    shell_allow_list: list[str] | None = None
     interactive: bool = True
     enable_shell: bool = True
     enable_ask_user: bool = False
@@ -159,6 +160,11 @@ class ServerConfig:
             "SYSTEM_PROMPT": self.system_prompt,
             "AUTO_APPROVE": str(self.auto_approve).lower(),
             "INTERRUPT_SHELL_ONLY": str(self.interrupt_shell_only).lower(),
+            "SHELL_ALLOW_LIST": (
+                ",".join(self.shell_allow_list)
+                if self.shell_allow_list is not None
+                else None
+            ),
             "INTERACTIVE": str(self.interactive).lower(),
             "ENABLE_SHELL": str(self.enable_shell).lower(),
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
@@ -195,6 +201,9 @@ class ServerConfig:
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
             interrupt_shell_only=_read_env_bool("INTERRUPT_SHELL_ONLY"),
+            shell_allow_list=(
+                raw.split(",") if (raw := _read_env_str("SHELL_ALLOW_LIST")) else None
+            ),
             interactive=_read_env_bool("INTERACTIVE", default=True),
             enable_shell=_read_env_bool("ENABLE_SHELL", default=True),
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
@@ -224,6 +233,7 @@ class ServerConfig:
         assistant_id: str,
         auto_approve: bool,
         interrupt_shell_only: bool = False,
+        shell_allow_list: list[str] | None = None,
         sandbox_type: str = "none",
         sandbox_id: str | None,
         sandbox_setup: str | None,
@@ -248,6 +258,8 @@ class ServerConfig:
             auto_approve: Auto-approve all tools.
             interrupt_shell_only: Validate shell commands via middleware instead
                 of HITL.
+            shell_allow_list: Restrictive shell allow-list to forward to the
+                server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
             sandbox_setup: Path to setup script for the sandbox.
@@ -269,6 +281,7 @@ class ServerConfig:
             assistant_id=assistant_id,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
+            shell_allow_list=shell_allow_list,
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,

@@ -195,6 +195,7 @@ async def start_server_and_get_agent(
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
@@ -215,6 +216,7 @@ async def start_server_and_get_agent(
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
+        shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.
@@ -244,6 +246,7 @@ async def start_server_and_get_agent(
         assistant_id=assistant_id,
         auto_approve=auto_approve,
         interrupt_shell_only=interrupt_shell_only,
+        shell_allow_list=shell_allow_list,
         sandbox_type=sandbox_type,
         sandbox_id=sandbox_id,
         sandbox_setup=sandbox_setup,
@@ -289,6 +292,7 @@ async def server_session(
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
@@ -312,6 +316,7 @@ async def server_session(
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
         interrupt_shell_only: Validate shell commands via middleware instead of HITL.
+        shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.
@@ -336,6 +341,7 @@ async def server_session(
             model_params=model_params,
             auto_approve=auto_approve,
             interrupt_shell_only=interrupt_shell_only,
+            shell_allow_list=shell_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,

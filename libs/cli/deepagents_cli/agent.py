@@ -824,6 +824,7 @@ def create_cli_agent(
     interactive: bool = True,
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -872,6 +873,10 @@ def create_cli_agent(
 
             Has no effect when `auto_approve` is `True` (interrupts are already
             disabled) or when `shell_allow_list` is `SHELL_ALLOW_ALL`.
+        shell_allow_list: Explicit restrictive shell allow-list forwarded from
+            the CLI process. When provided (and `interrupt_shell_only` is
+            `True`), used directly instead of reading `settings.shell_allow_list`
+            (which may not be set in the server subprocess environment).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -937,13 +942,17 @@ def create_cli_agent(
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
     restrictive_shell_allow_list: list[str] | None = None
-    if (
-        interrupt_shell_only
-        and not auto_approve
-        and settings.shell_allow_list
-        and not isinstance(settings.shell_allow_list, _ShellAllowAll)
-    ):
-        restrictive_shell_allow_list = list(settings.shell_allow_list)
+    if interrupt_shell_only and not auto_approve:
+        # Prefer the explicitly forwarded allow-list (set by the CLI process
+        # and passed through ServerConfig).  Fall back to settings only for
+        # direct callers (e.g. benchmarking frameworks) that don't go through
+        # the server subprocess path.
+        if shell_allow_list:
+            restrictive_shell_allow_list = list(shell_allow_list)
+        elif settings.shell_allow_list and not isinstance(
+            settings.shell_allow_list, _ShellAllowAll
+        ):
+            restrictive_shell_allow_list = list(settings.shell_allow_list)
 
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (

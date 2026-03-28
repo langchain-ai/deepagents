@@ -953,6 +953,11 @@ def create_cli_agent(
             settings.shell_allow_list, _ShellAllowAll
         ):
             restrictive_shell_allow_list = list(settings.shell_allow_list)
+        else:
+            logger.warning(
+                "interrupt_shell_only=True but no restrictive shell allow-list "
+                "available; falling back to standard HITL interrupts"
+            )
 
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (

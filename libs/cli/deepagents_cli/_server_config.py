@@ -134,9 +134,16 @@ class ServerConfig:
     trust_project_mcp: bool | None = None
 
     def __post_init__(self) -> None:
-        """Normalize fields that have canonical representations."""
+        """Normalize fields and validate invariants.
+
+        Raises:
+            ValueError: If `shell_allow_list` is an empty list.
+        """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
+        if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
+            msg = "shell_allow_list must be None or non-empty"
+            raise ValueError(msg)
 
     # ------------------------------------------------------------------
     # Serialization
@@ -204,8 +211,11 @@ class ServerConfig:
             auto_approve=_read_env_bool("AUTO_APPROVE"),
             interrupt_shell_only=_read_env_bool("INTERRUPT_SHELL_ONLY"),
             shell_allow_list=(
-                raw.split(",") if (raw := _read_env_str("SHELL_ALLOW_LIST")) else None
-            ),
+                [cmd.strip() for cmd in raw.split(",") if cmd.strip()]
+                if (raw := _read_env_str("SHELL_ALLOW_LIST"))
+                else None
+            )
+            or None,
             interactive=_read_env_bool("INTERACTIVE", default=True),
             enable_shell=_read_env_bool("ENABLE_SHELL", default=True),
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),

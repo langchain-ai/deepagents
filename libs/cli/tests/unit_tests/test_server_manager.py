@@ -34,6 +34,7 @@ class TestServerConfigRoundTrip:
             system_prompt="Be helpful",
             auto_approve=True,
             interrupt_shell_only=True,
+            shell_allow_list=["ls", "cat", "grep"],
             interactive=False,
             enable_shell=False,
             enable_ask_user=True,

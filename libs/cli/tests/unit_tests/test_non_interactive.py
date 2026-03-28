@@ -800,24 +800,32 @@ class TestShellAllowListDecisionLogic:
     """Tests for shell allow-list → auto_approve / interrupt_shell_only."""
 
     @pytest.mark.parametrize(
-        ("shell_allow_list", "expected_auto", "expected_shell_only"),
+        (
+            "shell_allow_list",
+            "expected_auto",
+            "expected_shell_only",
+            "expected_allow_list",
+        ),
         [
             pytest.param(
                 None,
                 True,
                 False,
+                None,
                 id="no-allow-list-auto-approves",
             ),
             pytest.param(
                 ["ls", "cat"],
                 False,
                 True,
+                ["ls", "cat"],
                 id="restrictive-list-interrupts-shell-only",
             ),
             pytest.param(
                 SHELL_ALLOW_ALL,
                 True,
                 False,
+                None,
                 id="allow-all-auto-approves",
             ),
         ],
@@ -827,6 +835,7 @@ class TestShellAllowListDecisionLogic:
         shell_allow_list: list[str] | None,
         expected_auto: bool,
         expected_shell_only: bool,
+        expected_allow_list: list[str] | None,
     ) -> None:
         """Verify start_server_and_get_agent receives correct flags."""
         mock_agent = MagicMock()
@@ -868,6 +877,7 @@ class TestShellAllowListDecisionLogic:
         _, kwargs = mock_start_server.call_args
         assert kwargs["auto_approve"] is expected_auto
         assert kwargs["interrupt_shell_only"] is expected_shell_only
+        assert kwargs["shell_allow_list"] == expected_allow_list
 
 
 class TestNonInteractivePrompt:

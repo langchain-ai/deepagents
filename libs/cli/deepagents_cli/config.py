@@ -96,8 +96,7 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
     !!! note
 
         To scope credentials to the CLI without colliding with identically-named
-        shell exports, use the `DEEPAGENTS_CLI_` env-var prefix
-        via `resolve_env_var`.
+        shell exports, use the `DEEPAGENTS_CLI_` env-var prefix.
 
     Args:
         start_path: Directory to use for project `.env` discovery.

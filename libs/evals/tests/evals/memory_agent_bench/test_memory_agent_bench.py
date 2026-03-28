@@ -43,7 +43,7 @@ from tests.evals.utils import run_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("memory_agent_bench")]
+pytestmark = [pytest.mark.eval_category("memory")]
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,32 @@ def _log_feedback(*, key: str, value: object) -> None:
     """Log feedback to LangSmith when available, silently no-op otherwise."""
     with contextlib.suppress(ValueError, Exception):
         t.log_feedback(key=key, value=value)
+
+
+def _log_clean_inputs(model: BaseChatModel, config: DatasetConfig) -> None:
+    """Override auto-captured inputs with clean metadata.
+
+    Must be called before any `pytest.skip()` to prevent
+    `@pytest.mark.langsmith` from serializing the raw `BaseChatModel`
+    fixture as the dataset example inputs.
+
+    Args:
+        model: The chat model under evaluation.
+        config: Dataset configuration for the current benchmark run.
+    """
+    with contextlib.suppress(Exception):
+        t.log_inputs(
+            {
+                "config": {
+                    "split": config.split,
+                    "source": config.source,
+                    "chunk_size": config.chunk_size,
+                    "max_samples": config.max_samples,
+                    "max_questions": config.max_questions,
+                },
+                "model": str(getattr(model, "model", None) or getattr(model, "model_name", "")),
+            }
+        )
 
 
 def _require_memory_agent_bench_dependencies() -> None:
@@ -233,6 +259,7 @@ def test_conflict_resolution(model: BaseChatModel, config: DatasetConfig) -> Non
     when facts change or contradict previous statements. Includes both
     single-hop (direct update) and multi-hop (derived update) scenarios.
     """
+    _log_clean_inputs(model, config)
     _require_memory_agent_bench_dependencies()
     samples = load_benchmark_data(
         config.split,
@@ -261,6 +288,7 @@ def test_time_learning(model: BaseChatModel, config: DatasetConfig) -> None:
     Tests the agent's ability to learn new rules, patterns, or classification
     schemes from the context chunks and apply them to unseen examples.
     """
+    _log_clean_inputs(model, config)
     _require_memory_agent_bench_dependencies()
     samples = load_benchmark_data(
         config.split,
@@ -289,6 +317,7 @@ def test_memory_agent_bench_ci(model: BaseChatModel, config: DatasetConfig) -> N
     Includes the smallest Conflict Resolution configs (single-hop and
     multi-hop at 6k) and one Test-Time Learning config to keep cost low.
     """
+    _log_clean_inputs(model, config)
     _require_memory_agent_bench_dependencies()
     samples = load_benchmark_data(
         config.split,

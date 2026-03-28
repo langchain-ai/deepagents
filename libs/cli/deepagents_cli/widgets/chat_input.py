@@ -17,9 +17,9 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
+from deepagents_cli import theme
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import (
-    COLORS,
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
@@ -90,6 +90,7 @@ class CompletionOption(Static):
 
     CompletionOption.completion-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -407,7 +408,6 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
-        self._app_has_focus = True
         # Buffer quote-prefixed high-frequency key bursts from terminals that
         # emulate paste via rapid key events instead of dispatching a paste
         # event.
@@ -420,12 +420,10 @@ class ChatTextArea(TextArea):
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
 
-        When has_focus=False (e.g., agent is running), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            has_focus: Whether the app input should be focused.
         """
-        self._app_has_focus = has_focus
         self._backslash_pending_time = None
-        self.cursor_blink = has_focus
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
 
@@ -820,11 +818,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell {
-        border: solid __MODE_SHELL__;
+        border: solid $mode-bash;
     }
 
     ChatInput.mode-command {
-        border: solid __MODE_CMD__;
+        border: solid $mode-command;
     }
 
     ChatInput .input-row {
@@ -841,11 +839,11 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell .input-prompt {
-        color: __MODE_SHELL__;
+        color: $mode-bash;
     }
 
     ChatInput.mode-command .input-prompt {
-        color: __MODE_CMD__;
+        color: $mode-command;
     }
 
     ChatInput ChatTextArea {
@@ -861,9 +859,8 @@ class ChatInput(Vertical):
     ChatInput ChatTextArea:focus {
         border: none;
     }
-    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
-    )
+    """
+    """Border and prompt glyph change color per mode for immediate visual feedback."""
 
     class Submitted(Message):
         """Message sent when input is submitted."""
@@ -914,6 +911,7 @@ class ChatInput(Vertical):
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
         self._completion_view: _CompletionViewAdapter | None = None
+        self._slash_controller: SlashCommandController | None = None
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not
@@ -961,7 +959,8 @@ class ChatInput(Vertical):
     def on_mount(self) -> None:
         """Initialize components after mount."""
         if is_ascii_mode():
-            self.styles.border = ("ascii", "cyan")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.primary)
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
@@ -972,9 +971,12 @@ class ChatInput(Vertical):
         self._file_controller = FuzzyFileController(
             self._completion_view, cwd=self._cwd
         )
+        self._slash_controller = SlashCommandController(
+            SLASH_COMMANDS, self._completion_view
+        )
         self._completion_manager = MultiCompletionManager(
             [
-                SlashCommandController(SLASH_COMMANDS, self._completion_view),
+                self._slash_controller,
                 self._file_controller,
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
@@ -985,6 +987,23 @@ class ChatInput(Vertical):
             exit_on_error=False,
         )
         self._text_area.focus()
+
+    def update_slash_commands(self, commands: list[tuple[str, str, str]]) -> None:
+        """Update the slash command controller's command list.
+
+        Called by the app after discovering skills to merge static
+        commands with dynamic `/skill:` entries.
+
+        Args:
+            commands: Full list of `(command, description, hidden_keywords)` tuples.
+        """
+        if self._slash_controller:
+            self._slash_controller.update_commands(commands)
+        else:
+            logger.warning(
+                "Cannot update slash commands: controller not initialized "
+                "(widget not yet mounted)"
+            )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
@@ -1134,10 +1153,10 @@ class ChatInput(Vertical):
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
         """Return whether text is a dropped-path payload for existing files."""
-        from deepagents_cli.input import parse_pasted_path_payload
-
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
+        from deepagents_cli.input import parse_pasted_path_payload
+
         return parse_pasted_path_payload(text, allow_leading_path=True) is not None
 
     def _is_dropped_path_payload(self, text: str) -> bool:
@@ -1460,7 +1479,7 @@ class ChatInput(Vertical):
                 except OSError as exc:
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
-                self.app.notify(msg, severity="warning", timeout=5)
+                self.app.notify(msg, severity="warning", timeout=5, markup=False)
 
             # Not a supported media file, keep as path
             logger.debug("Could not load media from dropped path: %s", path)
@@ -1664,10 +1683,10 @@ class ChatInput(Vertical):
                     self._completion_manager.reset()
 
     def set_cursor_active(self, *, active: bool) -> None:
-        """Set whether the cursor should be actively blinking.
+        """Toggle input focus state (e.g., unfocus while agent is working).
 
-        When active=False (e.g., agent is working), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            active: Whether the input should be focused and accepting input.
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)

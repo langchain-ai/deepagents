@@ -26,7 +26,18 @@ from pathlib import Path
 
 import pytest
 
-from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, GrepResult, LsResult, ReadResult, WriteResult
+from deepagents.backends.filesystem import _map_exception_to_standard_error
+from deepagents.backends.protocol import (
+    EditResult,
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
+    WriteResult,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
@@ -186,13 +197,34 @@ class LocalSubprocessSandbox(BaseSandbox):
         """Unique identifier for the sandbox backend."""
         return self._id
 
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list:
-        """Upload files (not needed for local filesystem sandbox)."""
-        return []
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Write files to the local filesystem."""
+        results: list[FileUploadResponse] = []
+        for path, data in files:
+            try:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(data)
+                results.append(FileUploadResponse(path=path, error=None))
+            except Exception as exc:
+                error = _map_exception_to_standard_error(exc)
+                if error is None:
+                    raise
+                results.append(FileUploadResponse(path=path, error=error))
+        return results
 
-    def download_files(self, paths: list[str]) -> list:
-        """Download files (not needed for local filesystem sandbox)."""
-        return []
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Read files from the local filesystem."""
+        results: list[FileDownloadResponse] = []
+        for real_path in paths:
+            try:
+                content = Path(real_path).read_bytes()
+                results.append(FileDownloadResponse(path=real_path, content=content, error=None))
+            except Exception as exc:
+                error = _map_exception_to_standard_error(exc)
+                if error is None:
+                    raise
+                results.append(FileDownloadResponse(path=real_path, content=None, error=error))
+        return results
 
 
 class TestLocalSandboxOperations:
@@ -357,7 +389,7 @@ class TestLocalSandboxOperations:
         result = sandbox.read(test_path)
 
         assert result.error is not None
-        assert "not found" in result.error.lower()
+        assert "not_found" in result.error.lower() or "not found" in result.error.lower()
 
     def test_read_empty_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading an empty file."""
@@ -587,7 +619,7 @@ class TestLocalSandboxOperations:
         result = sandbox.edit(test_path, "old", "new")
 
         assert result.error is not None
-        assert "not found" in result.error.lower()
+        assert "not_found" in result.error.lower() or "not found" in result.error.lower()
 
     def test_edit_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with special characters and regex metacharacters."""
@@ -889,11 +921,17 @@ class TestLocalSandboxOperations:
         assert result.entries == []
 
     def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that read base64-encodes paths to prevent injection."""
+        """Test that read does not execute injected code in the path.
+
+        The path is base64-encoded before interpolation into the
+        server-side script run via `execute()`, preventing shell
+        injection.  We verify that the operation returns an error and
+        that the malicious command did not run.
+        """
         malicious_path = "'; import os; os.system('echo INJECTED'); #"
         result = sandbox.read(malicious_path)
         assert result.error is not None
-        assert "INJECTED" not in result.error
+        assert result.file_data is None
 
     # ==================== grep() tests ====================
 

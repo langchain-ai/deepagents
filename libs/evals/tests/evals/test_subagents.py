@@ -1,3 +1,11 @@
+"""Unit tests for subagent delegation via the task tool.
+
+Verifies that the agent can delegate to named subagents and the
+general-purpose subagent via the task tool.
+
+These are SDK integration tests, not model capability evals.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -17,7 +25,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("subagents")]
+pytestmark = [pytest.mark.eval_category("unit_test")]
 
 
 @tool

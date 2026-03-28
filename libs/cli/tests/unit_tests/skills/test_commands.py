@@ -952,7 +952,9 @@ class TestDeleteSkill:
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("nonexistent-skill", agent="agent", project=False, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("nonexistent-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "not found" in joined.lower()
@@ -1085,7 +1087,9 @@ class TestDeleteSkill:
             ):
                 mock_settings_cls.from_environment.return_value = mock_settings
                 mock_console.print = capture_print
-                _delete(invalid_name, agent="agent", project=False, force=True)
+                with pytest.raises(SystemExit) as exc_info:
+                    _delete(invalid_name, agent="agent", project=False, force=True)
+                assert exc_info.value.code == 1
 
             joined = "\n".join(output)
             assert "invalid skill name" in joined.lower(), (
@@ -1129,7 +1133,9 @@ class TestDeleteSkill:
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("any-skill", agent="agent", project=True, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("any-skill", agent="agent", project=True, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "not in a project directory" in joined.lower()
@@ -1240,7 +1246,9 @@ class TestDeleteSkill:
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("orphan-skill", agent="agent", project=False, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("orphan-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "cannot determine" in joined.lower() or "refusing" in joined.lower()
@@ -1306,6 +1314,7 @@ class TestDeleteArgparsing:
             agent="agent",
             project=False,
             force=True,
+            dry_run=False,
         )
 
         output: list[str] = []
@@ -1319,7 +1328,9 @@ class TestDeleteArgparsing:
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            execute_skills_command(args)
+            with pytest.raises(SystemExit) as exc_info:
+                execute_skills_command(args)
+            assert exc_info.value.code == 1
 
         # Should have dispatched to _delete and shown "not found"
         # rather than falling through to show_skills_help()

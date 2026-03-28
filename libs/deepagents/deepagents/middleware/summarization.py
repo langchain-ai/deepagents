@@ -71,6 +71,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents.middleware._utils import append_to_system_message
@@ -87,6 +88,11 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class CompactConversationSchema(BaseModel):
+    """Input schema for the `compact_conversation` tool."""
+
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
@@ -1260,6 +1266,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+            # infer_schema=False,  # noqa: ERA001
+            # args_schema=CompactConversationSchema,  # noqa: ERA001
         )
 
     def _build_compact_result(

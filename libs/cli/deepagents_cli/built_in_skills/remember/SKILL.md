@@ -1,7 +1,11 @@
-# ruff: noqa: E501  # Long prompt strings
-"""Prompt constants for slash commands."""
+---
+name: remember
+description: "Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings."
+license: MIT
+compatibility: designed for deepagents-cli
+---
 
-REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
+Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
 
 ## Step 1: Identify Best Practices and Key Learnings
 
@@ -112,4 +116,3 @@ Use `edit_file` to update existing files or `write_file` to create new ones.
 List what you captured and where you stored it:
 - Skills created (with key best practices encoded)
 - Memory entries added (with location)
-"""

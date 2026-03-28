@@ -3,8 +3,9 @@
 Handles version checking against PyPI (with caching), install-method detection,
 auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
 
-Public entry points never raise; errors are caught and logged to avoid
-disrupting user experience.
+Most public entry points absorb errors and return sentinel values.
+`set_auto_update` raises on write failures so callers can surface
+actionable feedback.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import sys
 import time
 import tomllib
 from typing import TYPE_CHECKING, Literal
+
+from packaging.version import InvalidVersion, Version
 
 from deepagents_cli._version import PYPI_URL, USER_AGENT, __version__
 
@@ -48,35 +51,83 @@ no fallback chain.
 _UPGRADE_TIMEOUT = 120  # seconds
 
 
-def _parse_version(v: str) -> tuple[int, ...]:
-    """Parse a dotted version string into a comparable integer tuple.
+def _parse_version(v: str) -> Version:
+    """Parse a PEP 440 version string into a comparable `Version` object.
+
+    Supports stable (`1.2.3`) and pre-release (`1.2.3a1`, `1.2.3rc2`) versions.
 
     Args:
-        v: Version string like `'1.2.3'`.
+        v: Version string like `'1.2.3'` or `'1.2.3a1'`.
 
     Returns:
-        Tuple of integers, e.g. `(1, 2, 3)`.
+        A `packaging.version.Version` instance.
     """
-    return tuple(int(x) for x in v.strip().split("."))
+    return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
-def get_latest_version(*, bypass_cache: bool = False) -> str | None:
+def _latest_from_releases(
+    releases: dict[str, list[object]],
+    *,
+    include_prereleases: bool,
+) -> str | None:
+    """Pick the newest version from a PyPI `releases` mapping.
+
+    Skips versions with no uploaded files (empty entries) and, when
+    *include_prereleases* is `False`, skips pre-release versions.
+
+    Args:
+        releases: The `releases` dict from the PyPI JSON API.
+        include_prereleases: Whether to consider pre-release versions.
+
+    Returns:
+        The highest matching version string, or `None` if none qualify.
+    """
+    best: Version | None = None
+    best_str: str | None = None
+    for ver_str, files in releases.items():
+        if not files:
+            continue
+        try:
+            ver = Version(ver_str)
+        except InvalidVersion:
+            logger.debug("Skipping unparseable release key: %s", ver_str)
+            continue
+        if not include_prereleases and ver.is_prerelease:
+            continue
+        if best is None or ver > best:
+            best = ver
+            best_str = ver_str
+    return best_str
+
+
+def get_latest_version(
+    *,
+    bypass_cache: bool = False,
+    include_prereleases: bool = False,
+) -> str | None:
     """Fetch the latest deepagents-cli version from PyPI, with caching.
 
     Results are cached to `CACHE_FILE` to avoid repeated network calls.
+    The cache stores both the latest stable and pre-release versions so a
+    single PyPI request serves both code paths.
 
     Args:
         bypass_cache: Skip the cache and always hit PyPI.
+        include_prereleases: When `True`, consider pre-release versions
+            (alpha, beta, rc). Stable users should leave this `False`.
 
     Returns:
         The latest version string, or `None` on any failure.
     """
+    cache_key = "version_prerelease" if include_prereleases else "version"
+
     try:
         if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-            if time.time() - data.get("checked_at", 0) < CACHE_TTL:
-                return data["version"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            fresh = time.time() - data.get("checked_at", 0) < CACHE_TTL
+            if fresh and cache_key in data:
+                return data[cache_key]
+    except (OSError, json.JSONDecodeError, TypeError):
         logger.debug("Failed to read update-check cache", exc_info=True)
 
     try:
@@ -95,7 +146,12 @@ def get_latest_version(*, bypass_cache: bool = False) -> str | None:
             timeout=3,
         )
         resp.raise_for_status()
-        latest: str = resp.json()["info"]["version"]
+        payload = resp.json()
+        stable: str = payload["info"]["version"]
+        releases: dict[str, list[object]] = payload.get("releases", {})
+        if not releases:
+            logger.debug("PyPI response missing or empty 'releases' key")
+        prerelease = _latest_from_releases(releases, include_prereleases=True)
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return None
@@ -103,17 +159,28 @@ def get_latest_version(*, bypass_cache: bool = False) -> str | None:
     try:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         CACHE_FILE.write_text(
-            json.dumps({"version": latest, "checked_at": time.time()}),
+            json.dumps(
+                {
+                    "version": stable,
+                    "version_prerelease": prerelease,
+                    "checked_at": time.time(),
+                }
+            ),
             encoding="utf-8",
         )
     except OSError:
         logger.debug("Failed to write update-check cache", exc_info=True)
 
-    return latest
+    return prerelease if include_prereleases else stable
 
 
 def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
     """Check whether a newer version of deepagents-cli is available.
+
+    When the installed version is a pre-release (e.g. `0.0.35a1`),
+    pre-release versions on PyPI are included in the comparison so alpha
+    testers are notified of newer alphas and the eventual stable release.
+    Stable installs only compare against stable PyPI releases.
 
     Args:
         bypass_cache: Skip the cache and always hit PyPI.
@@ -125,14 +192,28 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
             the installed version; `latest` is the version string (or `None`
             when the check fails).
     """
-    latest = get_latest_version(bypass_cache=bypass_cache)
+    try:
+        installed = _parse_version(__version__)
+    except InvalidVersion:
+        logger.warning(
+            "Installed version %r is not PEP 440 compliant; "
+            "update checks disabled for this install",
+            __version__,
+        )
+        return False, None
+
+    include_prereleases = installed.is_prerelease
+    latest = get_latest_version(
+        bypass_cache=bypass_cache,
+        include_prereleases=include_prereleases,
+    )
     if latest is None:
         return False, None
 
     try:
-        if _parse_version(latest) > _parse_version(__version__):
+        if _parse_version(latest) > installed:
             return True, latest
-    except (ValueError, TypeError):
+    except InvalidVersion:
         logger.debug("Failed to compare versions", exc_info=True)
 
     return False, None
@@ -245,12 +326,14 @@ async def perform_upgrade() -> tuple[bool, str]:
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_NO_UPDATE_CHECK` env var and the `[update].check` key
+    Checks `DEEPAGENTS_CLI_NO_UPDATE_CHECK` env var and the `[update].check` key
     in `config.toml`.
 
     Defaults to enabled.
     """
-    if os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+    from deepagents_cli._env_vars import NO_UPDATE_CHECK
+
+    if os.environ.get(NO_UPDATE_CHECK):
         return False
     return _read_update_config().get("check", True)
 
@@ -258,20 +341,57 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-in via `DEEPAGENTS_AUTO_UPDATE=1` env var or
+    Opt-in via `DEEPAGENTS_CLI_AUTO_UPDATE=1` env var or
     `[update].auto_update = true` in `config.toml`.
 
     Defaults to `False`.
 
     Always disabled for editable installs.
     """
+    from deepagents_cli._env_vars import AUTO_UPDATE
     from deepagents_cli.config import _is_editable_install
 
     if _is_editable_install():
         return False
-    if os.environ.get("DEEPAGENTS_AUTO_UPDATE", "").lower() in {"1", "true", "yes"}:
+    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
         return True
     return _read_update_config().get("auto_update", False)
+
+
+def set_auto_update(enabled: bool) -> None:
+    """Persist the auto-update preference to `config.toml`.
+
+    Writes `[update].auto_update` so the setting survives across sessions.
+
+    Args:
+        enabled: Whether auto-update should be enabled.
+    """
+    import contextlib
+    import tempfile
+    from pathlib import Path
+
+    import tomli_w
+
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DEFAULT_CONFIG_PATH.exists():
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
+
+    if "update" not in data:
+        data["update"] = {}
+    data["update"]["auto_update"] = enabled
+
+    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            tomli_w.dump(data, f)
+        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp_path).unlink()
+        raise
 
 
 def _read_update_config() -> dict[str, bool]:
@@ -329,6 +449,6 @@ def should_show_whats_new() -> bool:
         return False
     try:
         return _parse_version(__version__) > _parse_version(seen)
-    except (ValueError, TypeError):
+    except InvalidVersion:
         logger.debug("Failed to compare versions for what's-new check", exc_info=True)
         return False

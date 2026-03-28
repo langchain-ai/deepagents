@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 2024
-_HEALTH_POLL_INTERVAL = 0.3
+_HEALTH_POLL_INTERVAL_LOCAL = 0.1
+_HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
 _SHUTDOWN_TIMEOUT = 5
 
@@ -167,6 +168,7 @@ async def wait_for_server_healthy(
     timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
     process: subprocess.Popen | None = None,
     read_log: Callable[[], str] | None = None,
+    local: bool = False,
 ) -> None:
     """Poll a LangGraph server health endpoint until it responds.
 
@@ -177,38 +179,42 @@ async def wait_for_server_healthy(
             we fail fast instead of waiting for the timeout.
         read_log: Optional callable returning log file contents (for
             error messages on early exit).
+        local: Use a shorter poll interval for local servers.
 
     Raises:
         RuntimeError: If the server doesn't become healthy in time.
     """
     import httpx
 
+    poll_interval = (
+        _HEALTH_POLL_INTERVAL_LOCAL if local else _HEALTH_POLL_INTERVAL_REMOTE
+    )
     health_url = f"{url}/ok"
     deadline = time.monotonic() + timeout
     last_status: int | None = None
     last_exc: Exception | None = None
 
-    while time.monotonic() < deadline:
-        if process and process.poll() is not None:
-            output = read_log() if read_log else ""
-            msg = f"Server process exited with code {process.returncode}"
-            if output:
-                msg += f"\n{output[-3000:]}"
-            raise RuntimeError(msg)
+    async with httpx.AsyncClient() as client:
+        while time.monotonic() < deadline:
+            if process and process.poll() is not None:
+                output = read_log() if read_log else ""
+                msg = f"Server process exited with code {process.returncode}"
+                if output:
+                    msg += f"\n{output[-3000:]}"
+                raise RuntimeError(msg)
 
-        try:
-            async with httpx.AsyncClient() as client:
+            try:
                 resp = await client.get(health_url, timeout=2)
                 if resp.status_code == 200:  # noqa: PLR2004
                     logger.info("Server is healthy at %s", url)
                     return
                 last_status = resp.status_code
                 logger.debug("Health check returned status %d", resp.status_code)
-        except (httpx.TransportError, OSError) as exc:
-            logger.debug("Health check attempt failed: %s", exc)
-            last_exc = exc
+            except (httpx.TransportError, OSError) as exc:
+                logger.debug("Health check attempt failed: %s", exc)
+                last_exc = exc
 
-        await asyncio.sleep(_HEALTH_POLL_INTERVAL)
+            await asyncio.sleep(poll_interval)
 
     msg = f"Server did not become healthy within {timeout}s"
     if last_status is not None:
@@ -404,6 +410,7 @@ class ServerProcess:
                 timeout=timeout,
                 process=self._process,
                 read_log=self._read_log_file,
+                local=True,
             )
         except Exception:
             self.stop()

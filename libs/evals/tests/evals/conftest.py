@@ -59,7 +59,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--eval-category",
         action="append",
         default=[],
-        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category hitl",
+        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
+    )
+    parser.addoption(
+        "--openrouter-provider",
+        action="store",
+        default=None,
+        help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
     )
 
 
@@ -120,5 +126,15 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 
 
 @pytest.fixture
-def model(model_name: str) -> BaseChatModel:
-    return init_chat_model(model_name)
+def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
+    kwargs: dict[str, Any] = {}
+    provider = request.config.getoption("--openrouter-provider")
+    if provider:
+        if not model_name.startswith("openrouter:"):
+            msg = "--openrouter-provider requires an openrouter: model prefix"
+            raise ValueError(msg)
+        kwargs["openrouter_provider"] = {
+            "only": [provider],
+            "allow_fallbacks": False,
+        }
+    return init_chat_model(model_name, **kwargs)

@@ -478,6 +478,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+D again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -531,6 +532,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+C again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -678,6 +680,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -715,6 +718,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -758,6 +762,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -1290,13 +1295,62 @@ class TestTraceCommand:
                 patch(
                     "deepagents_cli.app.webbrowser.open",
                     side_effect=webbrowser.Error("no browser"),
+                ) as mock_open,
+                patch("deepagents_cli.app.logger") as mock_logger,
+            ):
+                await app._handle_trace_command("/trace")
+                # Give the executor thread time to run and fail
+                await pilot.pause()
+                await asyncio.sleep(0.1)
+
+            # Browser was attempted
+            mock_open.assert_called_once()
+            # Exception was logged, not silently dropped
+            mock_logger.debug.assert_called()
+            calls = mock_logger.debug.call_args_list
+            assert any("Could not open browser" in str(c) for c in calls)
+            # Link still rendered despite browser failure
+            app_msgs = app.query(AppMessage)
+            assert any(
+                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
+                for w in app_msgs
+            )
+
+    async def test_trace_defers_output_when_busy(self) -> None:
+        """Should defer chat output when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent_running = True
+
+            with (
+                patch(
+                    "deepagents_cli.config.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
+                patch("deepagents_cli.app.webbrowser.open"),
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
 
+            # A QueuedUserMessage should be mounted as a placeholder
+            queued = app.query(QueuedUserMessage)
+            assert len(queued) == 1
+
+            # A deferred action should be queued
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "chat_output"
+
+            # Execute the deferred action (simulates drain after agent finishes)
+            await action.execute()
+            await pilot.pause()
+
+            # Queued widget replaced by real UserMessage + AppMessage with link
+            assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
+            assert any(
                 "https://smith.langchain.com/t/test-thread-123" in str(w._content)
                 for w in app_msgs
             )
@@ -2611,8 +2665,13 @@ class TestBypassFrozensetDrift:
     these tests.
     """
 
-    @staticmethod
-    def _handled_commands() -> set[str]:
+    # Dynamic namespace prefixes handled via startswith() rather than
+    # static command dispatch.  These are not registered in COMMANDS and
+    # should be excluded from the drift check.
+    _DYNAMIC_PREFIXES = frozenset({"/skill:"})
+
+    @classmethod
+    def _handled_commands(cls) -> set[str]:
         """Extract slash-command literals from `_handle_command` source."""
         import ast
         import inspect
@@ -2627,7 +2686,13 @@ class TestBypassFrozensetDrift:
                 val = node.value.strip()
                 if val.startswith("/") and len(val) > 1:
                     handled.add(val)
-        return handled
+        # Exclude dynamic namespace prefixes (e.g. /skill:*) and their
+        # derivatives (e.g. /skill:<name> from help text).
+        return {
+            cmd
+            for cmd in handled
+            if not any(cmd.startswith(p) for p in cls._DYNAMIC_PREFIXES)
+        }
 
     def test_all_bypass_commands_are_handled(self) -> None:
         """Every command in a bypass frozenset must appear in _handle_command."""

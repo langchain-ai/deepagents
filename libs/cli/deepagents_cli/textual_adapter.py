@@ -22,11 +22,13 @@ if TYPE_CHECKING:
     )
     from langchain_core.messages import AIMessage
     from langgraph.types import Command, Interrupt
+    from pydantic import TypeAdapter
     from rich.console import Console
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from pydantic import TypeAdapter, ValidationError
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 from deepagents_cli._ask_user_types import AskUserRequest
 from deepagents_cli._cli_context import CLIContext  # noqa: TC001
@@ -39,6 +41,7 @@ from deepagents_cli._session_stats import (
 )
 from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.formatting import format_duration
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
 from deepagents_cli.media_utils import create_multimodal_content
@@ -72,27 +75,10 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """
     global _hitl_adapter_cache  # noqa: PLW0603
     if _hitl_adapter_cache is None:
+        from pydantic import TypeAdapter
+
         _hitl_adapter_cache = TypeAdapter(hitl_request_type)
     return _hitl_adapter_cache
-
-
-def _format_duration(seconds: float) -> str:
-    """Format a duration in seconds into a human-readable string.
-
-    Args:
-        seconds: Duration in seconds.
-
-    Returns:
-        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
-    """
-    rounded = round(seconds, 1)
-    if rounded < 60:  # noqa: PLR2004
-        return f"{rounded:.1f}s"
-    minutes, secs = divmod(int(rounded), 60)
-    if minutes < 60:  # noqa: PLR2004
-        return f"{minutes}m {secs}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m {secs}s"
 
 
 def print_usage_table(
@@ -160,18 +146,28 @@ def print_usage_table(
     if has_time:
         console.print()
         console.print(
-            f"Agent active  {_format_duration(wall_time)}",
+            f"Agent active  {format_duration(wall_time)}",
             style="dim",
             highlight=False,
         )
 
 
-if TYPE_CHECKING:
-    # Type alias matching HITLResponse["decisions"] element type
-    HITLDecision = ApproveDecision | EditDecision | RejectDecision
+_ask_user_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the `ask_user` interrupt validator."""
 
-_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
-"""Validator for incoming `ask_user` interrupt payloads."""
+
+def _get_ask_user_adapter() -> TypeAdapter:
+    """Return a cached `TypeAdapter(AskUserRequest)`.
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _ask_user_adapter_cache  # noqa: PLW0603
+    if _ask_user_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
+    return _ask_user_adapter_cache
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -384,6 +380,8 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
+    turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -402,6 +400,15 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
+        turn_stats: Pre-created `SessionStats` to accumulate into.
+
+            When the caller holds a reference to the same object, stats are
+            available even if this coroutine is cancelled before it can return.
+
+            If `None`, a new instance is created internally.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -417,8 +424,10 @@ async def execute_task_textual(
     )
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
+    from pydantic import ValidationError
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+    ask_user_adapter = _get_ask_user_adapter()
 
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(
@@ -465,7 +474,8 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    turn_stats = SessionStats()
+    if turn_stats is None:
+        turn_stats = SessionStats()
     start_time = time.monotonic()
 
     # Show spinner
@@ -489,9 +499,10 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {
-        "messages": [{"role": "user", "content": message_content}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -542,9 +553,7 @@ async def execute_task_textual(
                                 ):
                                     try:
                                         validated_ask_user = (
-                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
-                                                iv
-                                            )
+                                            ask_user_adapter.validate_python(iv)
                                         )
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user

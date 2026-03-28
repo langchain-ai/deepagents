@@ -274,6 +274,7 @@ async def create_experiment_async(
     dataset_name: str,
     experiment_name: str | None = None,
     *,
+    model: str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
     """Create a LangSmith experiment session for the given dataset.
@@ -282,6 +283,12 @@ async def create_experiment_async(
         dataset_name: Name of the LangSmith dataset to create experiment for.
         experiment_name: Optional name for the experiment (auto-generated if
             not provided).
+        model: Optional model identifier (e.g. `anthropic:claude-sonnet-4-6`).
+
+            Used as the suffix in auto-generated experiment names.
+
+            If not provided, a random suffix will be used to avoid
+            name collisions.
         metadata: Optional metadata to attach to the experiment session.
 
     Returns:
@@ -296,7 +303,8 @@ async def create_experiment_async(
 
         if experiment_name is None:
             timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d_%H-%M-%S")
-            experiment_name = f"{dataset_name}-{timestamp}"
+            suffix = model or uuid.uuid4().hex[:8]
+            experiment_name = f"{dataset_name}-{timestamp}-{suffix}"
 
         experiment_metadata = metadata or {}
 
@@ -326,6 +334,7 @@ def create_experiment(
     dataset_name: str,
     experiment_name: str | None = None,
     *,
+    model: str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
     """Synchronous wrapper for `create_experiment_async`."""
@@ -333,6 +342,7 @@ def create_experiment(
         create_experiment_async(
             dataset_name,
             experiment_name,
+            model=model,
             metadata=metadata,
         )
     )

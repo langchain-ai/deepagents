@@ -1202,6 +1202,29 @@ api_key_env = "TOGETHER_API_KEY"
         assert kwargs["api_key"] == "together-key"
         assert "base_url" not in kwargs
 
+    def test_prefixed_env_var_beats_canonical(self, tmp_path: Path) -> None:
+        """DEEPAGENTS_CLI_ prefixed var overrides canonical in provider kwargs."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "FIREWORKS_API_KEY": "canonical",
+                    "DEEPAGENTS_CLI_FIREWORKS_API_KEY": "prefixed",
+                },
+                clear=False,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("fireworks")
+
+        assert kwargs["api_key"] == "prefixed"
+
     def test_omits_api_key_when_env_not_set(self, tmp_path: Path) -> None:
         """Omits api_key when the env var is not set."""
         config_path = tmp_path / "config.toml"

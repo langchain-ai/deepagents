@@ -77,26 +77,24 @@ except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
 
-def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
-    """Load environment variables from project and global `.env` files.
+def _load_dotenv(*, start_path: Path | None = None) -> bool:
+    """Load environment variables from global and project `.env` files.
 
-    Loads in order:
+    Loads in order (last write wins):
 
-    1. Project/CWD `.env` — project-specific values (uses caller's `override`)
-    2. `~/.deepagents/.env` — global fallback defaults (always `override=False`)
+    1. `~/.deepagents/.env` — global user defaults
+    2. Project/CWD `.env` — project-specific overrides
 
-    Precedence (highest to lowest):
+    Both layers use `override=True` so that dotenv files always beat
+    shell-exported variables (e.g., from `$ZDOTDIR/.env`). Because project loads
+    second, the effective precedence is:
 
-    - `override=False` (bootstrap): shell env > project `.env` > global `.env`
-    - `override=True` (`/reload`): project `.env` > shell env > global `.env`
-
-    Keys already present in the process environment (e.g., exported in a shell
-    profile) are never overwritten when `override` is `False`.
+    ```text
+    project `.env` > global `.env` > shell env (incl. inline `VAR=x`)
+    ```
 
     Args:
         start_path: Directory to use for project `.env` discovery.
-        override: Whether project `.env` values should override existing
-            env vars (global `.env` always uses `override=False`).
 
     Returns:
         `True` when at least one dotenv file was loaded, `False` otherwise.
@@ -105,30 +103,13 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
 
     loaded = False
 
-    # 1. Project/CWD .env — uses caller's override setting
-    try:
-        if start_path is None:
-            loaded = dotenv.load_dotenv(override=override) or loaded
-        else:
-            dotenv_path = _find_dotenv_from_start_path(start_path)
-            if dotenv_path is not None:
-                loaded = (
-                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
-                    or loaded
-                )
-    except (OSError, ValueError):
-        logger.warning(
-            "Could not read project dotenv at %s; project env vars will not be loaded",
-            start_path,
-            exc_info=True,
-        )
-
-    # 2. Global fallback (~/.deepagents/.env) — never override existing vars.
+    # 1. Global (~/.deepagents/.env) — override shell env so the user's
+    # explicit dotenv config always wins over shell profile exports.
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
         if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
-            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
+            dotenv_path=_GLOBAL_DOTENV_PATH, override=True
         ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
@@ -136,6 +117,23 @@ def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> b
         logger.warning(
             "Could not read global dotenv at %s; global defaults will not be applied",
             _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+
+    # 2. Project/CWD .env — loads second so project values win over global.
+    try:
+        if start_path is None:
+            loaded = dotenv.load_dotenv(override=True) or loaded
+        else:
+            dotenv_path = _find_dotenv_from_start_path(start_path)
+            if dotenv_path is not None:
+                loaded = (
+                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=True) or loaded
+                )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read project dotenv at %s; project env vars will not be loaded",
+            start_path,
             exc_info=True,
         )
 
@@ -871,13 +869,16 @@ class Settings:
         Returns:
             Settings instance with detected configuration
         """
-        # Detect API keys (normalize empty strings to None)
-        openai_key = os.environ.get("OPENAI_API_KEY") or None
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or None
-        google_key = os.environ.get("GOOGLE_API_KEY") or None
-        nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
-        tavily_key = os.environ.get("TAVILY_API_KEY") or None
-        google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        # Detect API keys (normalize empty strings to None).
+        # resolve_env_var checks DEEPAGENTS_CLI_{name} first, then {name}.
+        from deepagents_cli.model_config import resolve_env_var
+
+        openai_key = resolve_env_var("OPENAI_API_KEY")
+        anthropic_key = resolve_env_var("ANTHROPIC_API_KEY")
+        google_key = resolve_env_var("GOOGLE_API_KEY")
+        nvidia_key = resolve_env_var("NVIDIA_API_KEY")
+        tavily_key = resolve_env_var("TAVILY_API_KEY")
+        google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
@@ -887,7 +888,7 @@ class Settings:
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
-        deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+        deepagents_langchain_project = resolve_env_var("DEEPAGENTS_LANGSMITH_PROJECT")
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
@@ -941,7 +942,7 @@ class Settings:
         Returns:
             A list of human-readable change descriptions.
         """
-        _load_dotenv(start_path=start_path, override=True)
+        _load_dotenv(start_path=start_path)
 
         api_key_fields = {
             "openai_api_key",
@@ -995,14 +996,16 @@ class Settings:
             )
             project_root = previous["project_root"]
 
+        from deepagents_cli.model_config import resolve_env_var
+
         refreshed = {
-            "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
-            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY") or None,
-            "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
-            "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
-            "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
-            "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
-            "deepagents_langchain_project": os.environ.get(
+            "openai_api_key": resolve_env_var("OPENAI_API_KEY"),
+            "anthropic_api_key": resolve_env_var("ANTHROPIC_API_KEY"),
+            "google_api_key": resolve_env_var("GOOGLE_API_KEY"),
+            "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
+            "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
+            "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": resolve_env_var(
                 "DEEPAGENTS_LANGSMITH_PROJECT"
             ),
             "project_root": project_root,
@@ -1845,7 +1848,9 @@ def _get_provider_kwargs(
         result["base_url"] = base_url
     api_key_env = config.get_api_key_env(provider)
     if api_key_env:
-        api_key = os.environ.get(api_key_env)
+        from deepagents_cli.model_config import resolve_env_var
+
+        api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
 

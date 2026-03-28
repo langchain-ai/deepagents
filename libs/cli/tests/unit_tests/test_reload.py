@@ -16,12 +16,19 @@ _real_load_dotenv = _dotenv_module.load_dotenv
 
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",
+    "DEEPAGENTS_CLI_OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "DEEPAGENTS_CLI_ANTHROPIC_API_KEY",
     "GOOGLE_API_KEY",
+    "DEEPAGENTS_CLI_GOOGLE_API_KEY",
     "NVIDIA_API_KEY",
+    "DEEPAGENTS_CLI_NVIDIA_API_KEY",
     "TAVILY_API_KEY",
+    "DEEPAGENTS_CLI_TAVILY_API_KEY",
     "GOOGLE_CLOUD_PROJECT",
+    "DEEPAGENTS_CLI_GOOGLE_CLOUD_PROJECT",
     "DEEPAGENTS_LANGSMITH_PROJECT",
+    "DEEPAGENTS_CLI_DEEPAGENTS_LANGSMITH_PROJECT",
     "DEEPAGENTS_SHELL_ALLOW_LIST",
 )
 
@@ -159,12 +166,13 @@ class TestReloadFromEnvironment:
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        mock_load.assert_called_once_with(dotenv_path=env_file, override=True)
+        # Project .env is the second call (global loads first).
+        mock_load.assert_any_call(dotenv_path=env_file, override=True)
 
     def test_loads_global_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should load project dotenv first, then global as fallback."""
+        """Reload should load global dotenv first, then project."""
         settings = Settings.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
@@ -183,8 +191,8 @@ class TestReloadFromEnvironment:
         assert mock_load.call_count == 2
         mock_load.assert_has_calls(
             [
+                call(dotenv_path=global_env, override=True),
                 call(dotenv_path=project_env, override=True),
-                call(dotenv_path=global_env, override=False),
             ]
         )
 
@@ -216,10 +224,10 @@ class TestReloadFromEnvironment:
         # Only the project .env call should happen
         mock_load.assert_called_once_with(dotenv_path=project_env, override=True)
 
-    def test_global_dotenv_precedence_on_reload(
+    def test_project_dotenv_beats_global(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """With `override=True` (`/reload`), project `.env` beats global."""
+        """Project `.env` should always beat global `.env`."""
         from deepagents_cli.config import _load_dotenv
 
         global_dir = tmp_path / "global"
@@ -238,15 +246,15 @@ class TestReloadFromEnvironment:
         )
         monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
 
-        _load_dotenv(start_path=tmp_path, override=True)
+        _load_dotenv(start_path=tmp_path)
 
         assert os.environ.get("TEST_PRECEDENCE_KEY") == "project-value"
         monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
 
-    def test_global_dotenv_precedence_at_bootstrap(
+    def test_global_dotenv_beats_shell_env(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """With `override=False` (bootstrap), project `.env` still beats global."""
+        """Global `~/.deepagents/.env` should override shell-exported vars."""
         from deepagents_cli.config import _load_dotenv
 
         global_dir = tmp_path / "global"
@@ -255,18 +263,22 @@ class TestReloadFromEnvironment:
         global_env.write_text("TEST_BOOT_KEY=global-value\n")
         monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
 
-        project_env = tmp_path / ".env"
-        project_env.write_text("TEST_BOOT_KEY=project-value\n")
+        # Simulate a shell-exported variable (e.g., from $ZDOTDIR/.env)
+        monkeypatch.setenv("TEST_BOOT_KEY", "shell-value")
 
         monkeypatch.setattr(
             "dotenv.load_dotenv",
             _real_load_dotenv,
         )
-        monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
+        # No project .env
+        monkeypatch.setattr(
+            "deepagents_cli.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
 
-        _load_dotenv(start_path=tmp_path, override=False)
+        _load_dotenv(start_path=tmp_path)
 
-        assert os.environ.get("TEST_BOOT_KEY") == "project-value"
+        assert os.environ.get("TEST_BOOT_KEY") == "global-value"
         monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
 
     def test_global_only_no_project_dotenv(
@@ -294,7 +306,7 @@ class TestReloadFromEnvironment:
         )
         isolated = tmp_path / "no_project_env"
         isolated.mkdir()
-        result = _load_dotenv(start_path=isolated, override=False)
+        result = _load_dotenv(start_path=isolated)
 
         assert result is True
         assert os.environ.get("TEST_GLOBAL_ONLY") == "global-value"
@@ -322,7 +334,8 @@ class TestReloadFromEnvironment:
         def _fail_on_global(*_args: object, **_kwargs: object) -> bool:
             nonlocal call_count
             call_count += 1
-            if call_count == 2:
+            # Global loads first now; fail on first call
+            if call_count == 1:
                 msg = "read error"
                 raise OSError(msg)
             return True
@@ -349,6 +362,29 @@ class TestReloadFromEnvironment:
         assert len(changes) == 3
         fields = {c.split(":")[0] for c in changes}
         assert fields == {"openai_api_key", "anthropic_api_key", "shell_allow_list"}
+
+    def test_prefixed_env_var_beats_canonical(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """DEEPAGENTS_CLI_ prefixed var should override canonical on reload."""
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
+        monkeypatch.setenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "sk-override")
+        settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.anthropic_api_key == "sk-override"
+
+    def test_from_environment_uses_prefixed_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Settings.from_environment should honour the DEEPAGENTS_CLI_ prefix."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-canonical")
+        monkeypatch.setenv("DEEPAGENTS_CLI_OPENAI_API_KEY", "sk-override")
+
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        assert settings.openai_api_key == "sk-override"
 
 
 class TestReloadErrorPaths:

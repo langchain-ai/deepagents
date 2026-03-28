@@ -326,12 +326,14 @@ async def perform_upgrade() -> tuple[bool, str]:
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_NO_UPDATE_CHECK` env var and the `[update].check` key
+    Checks `DEEPAGENTS_CLI_NO_UPDATE_CHECK` env var and the `[update].check` key
     in `config.toml`.
 
     Defaults to enabled.
     """
-    if os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+    from deepagents_cli._env_vars import NO_UPDATE_CHECK
+
+    if os.environ.get(NO_UPDATE_CHECK):
         return False
     return _read_update_config().get("check", True)
 
@@ -339,18 +341,19 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-in via `DEEPAGENTS_AUTO_UPDATE=1` env var or
+    Opt-in via `DEEPAGENTS_CLI_AUTO_UPDATE=1` env var or
     `[update].auto_update = true` in `config.toml`.
 
     Defaults to `False`.
 
     Always disabled for editable installs.
     """
+    from deepagents_cli._env_vars import AUTO_UPDATE
     from deepagents_cli.config import _is_editable_install
 
     if _is_editable_install():
         return False
-    if os.environ.get("DEEPAGENTS_AUTO_UPDATE", "").lower() in {"1", "true", "yes"}:
+    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
         return True
     return _read_update_config().get("auto_update", False)
 

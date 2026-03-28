@@ -1148,7 +1148,7 @@ def cli_main() -> None:
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
-    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # This ensures agent traces use DEEPAGENTS_CLI_LANGSMITH_PROJECT while
     # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies

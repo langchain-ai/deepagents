@@ -1,7 +1,9 @@
 """Unit tests for LocalShellBackend."""
 
+import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -268,6 +270,53 @@ def test_local_shell_backend_stderr_formatting() -> None:
         assert result.exit_code == 0
         assert "[stderr]" in result.output
         assert "error message" in result.output
+
+
+def test_local_shell_backend_decodes_utf8_stdout_bytes() -> None:
+    """Test that byte stdout is decoded without relying on subprocess text mode."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+        completed = subprocess.CompletedProcess(
+            args="echo bytes",
+            returncode=0,
+            stdout="中".encode(),
+            stderr=b"",
+        )
+
+        with patch(
+            "deepagents.backends.local_shell.subprocess.run",
+            return_value=completed,
+        ) as mock_run:
+            result = backend.execute("echo bytes")
+
+        assert result.exit_code == 0
+        assert result.output == "中"
+        assert "text" not in mock_run.call_args.kwargs
+
+
+def test_local_shell_backend_decodes_preferred_encoding_stderr_bytes() -> None:
+    """Test that byte stderr falls back to the preferred locale encoding."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+        completed = subprocess.CompletedProcess(
+            args="bad-command",
+            returncode=1,
+            stdout=b"",
+            stderr="中".encode("gbk"),
+        )
+
+        with (
+            patch("locale.getpreferredencoding", return_value="cp936"),
+            patch(
+                "deepagents.backends.local_shell.subprocess.run",
+                return_value=completed,
+            ),
+        ):
+            result = backend.execute("bad-command")
+
+        assert result.exit_code == 1
+        assert "[stderr] 中" in result.output
+        assert "Exit code: 1" in result.output
 
 
 async def test_local_shell_backend_async_execute() -> None:

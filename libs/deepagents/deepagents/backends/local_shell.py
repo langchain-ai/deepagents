@@ -7,6 +7,7 @@ on the host machine with full system access.
 
 from __future__ import annotations
 
+import locale
 import os
 import subprocess
 import uuid
@@ -22,6 +23,30 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+
+def _decode_command_output(data: str | bytes | None) -> str:
+    """Decode subprocess output without relying on locale-implicit text mode."""
+    if data is None:
+        return ""
+
+    if isinstance(data, str):
+        return data
+
+    preferred_encoding = locale.getpreferredencoding(do_setlocale=False) or "utf-8"
+    candidate_encodings = ["utf-8", preferred_encoding]
+    tried_encodings: set[str] = set()
+
+    for encoding in candidate_encodings:
+        if not encoding or encoding in tried_encodings:
+            continue
+        tried_encodings.add(encoding)
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    return data.decode(preferred_encoding, errors="replace")
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -301,20 +326,22 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
-                text=True,
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
             )
 
+            stdout = _decode_command_output(result.stdout)
+            stderr = _decode_command_output(result.stderr)
+
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.
             # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
             output_parts = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
+            if stdout:
+                output_parts.append(stdout)
+            if stderr:
+                stderr_lines = stderr.strip().splitlines()
                 output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
             output = "\n".join(output_parts) if output_parts else "<no output>"

@@ -80,26 +80,40 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._current_tool_messages == {}
 
-    def test_token_tracker_initialized_none(self) -> None:
-        """Verify `_token_tracker` is initialized as `None`."""
+    def test_token_callbacks_initialized_none(self) -> None:
+        """Verify token callbacks are initialized as `None`."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        assert adapter._token_tracker is None
+        assert adapter._on_tokens_update is None
+        assert adapter._on_tokens_hide is None
+        assert adapter._on_tokens_show is None
 
-    def test_set_token_tracker(self) -> None:
-        """Verify `set_token_tracker` stores the tracker."""
+    def test_set_token_callbacks(self) -> None:
+        """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
 
-        mock_tracker = object()
-        adapter.set_token_tracker(mock_tracker)
-        assert adapter._token_tracker is mock_tracker
+        def update_cb(count: int) -> None:
+            pass
+
+        def hide_cb() -> None:
+            pass
+
+        def show_cb() -> None:
+            pass
+
+        adapter._on_tokens_update = update_cb
+        adapter._on_tokens_hide = hide_cb
+        adapter._on_tokens_show = show_cb
+        assert adapter._on_tokens_update is update_cb
+        assert adapter._on_tokens_hide is hide_cb
+        assert adapter._on_tokens_show is show_cb
 
     def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
         """Pending tool widgets should be marked error and then cleared."""

@@ -363,42 +363,15 @@ class DeferredAction:
     """Async callable that performs the actual work."""
 
 
-class TextualTokenTracker:
-    """Token tracker that updates the status bar."""
+@dataclass(frozen=True, slots=True)
+class _ThreadHistoryPayload:
+    """Data returned by `_fetch_thread_history_data`."""
 
-    def __init__(
-        self,
-        update_callback: Callable[[int], None],
-        hide_callback: Callable[[], None] | None = None,
-    ) -> None:
-        """Initialize with callbacks to update the display."""
-        self._update_callback = update_callback
-        self._hide_callback = hide_callback
-        self.current_context = 0
+    messages: list[MessageData]
+    """Converted message data ready for bulk loading."""
 
-    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:
-        """Update token count from a response.
-
-        Args:
-            total_tokens: Total context tokens (input + output from usage_metadata)
-            _output_tokens: Unused, kept for backwards compatibility
-        """
-        self.current_context = total_tokens
-        self._update_callback(self.current_context)
-
-    def reset(self) -> None:
-        """Reset token count."""
-        self.current_context = 0
-        self._update_callback(0)
-
-    def hide(self) -> None:
-        """Hide the token display (e.g., during streaming)."""
-        if self._hide_callback:
-            self._hide_callback()
-
-    def show(self) -> None:
-        """Show the token display with current value (e.g., after interrupt)."""
-        self._update_callback(self.current_context)
+    context_tokens: int
+    """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
 
 
 def _new_thread_id() -> str:
@@ -676,7 +649,12 @@ class DeepAgentsApp(App):
 
         self._loading_widget: LoadingWidget | None = None
 
-        self._token_tracker: TextualTokenTracker | None = None
+        self._context_tokens: int = 0
+        """Local cache of the last total-context token count.
+
+        Source of truth is `_context_tokens` in graph state; this is a sync
+        copy for the status bar.
+        """
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -904,11 +882,6 @@ class DeepAgentsApp(App):
         Everything here is non-blocking: workers and thread-offloaded calls
         so the UI stays responsive.
         """
-        # Create token tracker (lightweight, no imports)
-        self._token_tracker = TextualTokenTracker(
-            self._update_tokens, self._hide_tokens
-        )
-
         # Create UI adapter unconditionally — it only holds UI callbacks and
         # doesn't depend on the agent. The agent is injected later at
         # execute_task_textual() call time.
@@ -924,7 +897,10 @@ class DeepAgentsApp(App):
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
         )
-        self._ui_adapter.set_token_tracker(self._token_tracker)
+        # Wire token display callbacks
+        self._ui_adapter._on_tokens_update = self._on_tokens_update
+        self._ui_adapter._on_tokens_hide = self._hide_tokens
+        self._ui_adapter._on_tokens_show = self._show_tokens
 
         # Fire-and-forget workers — none of these block the event loop.
 
@@ -1649,9 +1625,31 @@ class DeepAgentsApp(App):
             self._status_bar.set_status_message(message)
 
     def _update_tokens(self, count: int) -> None:
-        """Update the token count in status bar."""
+        """Update the token count in the status bar.
+
+        Low-level helper — only touches the UI.  Callers that also need to
+        update the local cache should use `_on_tokens_update` instead.
+
+        Args:
+            count: Total context token count.
+        """
         if self._status_bar:
             self._status_bar.set_tokens(count)
+
+    def _on_tokens_update(self, count: int) -> None:
+        """Update the local cache *and* the status bar.
+
+        This is the callback wired to the adapter's `_on_tokens_update`.
+
+        Args:
+            count: Total context token count to cache and display.
+        """
+        self._context_tokens = count
+        self._update_tokens(count)
+
+    def _show_tokens(self) -> None:
+        """Restore the status bar to the cached token value."""
+        self._update_tokens(self._context_tokens)
 
     def _hide_tokens(self) -> None:
         """Hide the token display during streaming."""
@@ -2643,8 +2641,8 @@ class DeepAgentsApp(App):
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
-            if self._token_tracker:
-                self._token_tracker.reset()
+            self._context_tokens = 0
+            self._update_tokens(0)
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
             # Reset thread to start fresh conversation
@@ -2673,8 +2671,8 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
-            if self._token_tracker and self._token_tracker.current_context > 0:
-                count = self._token_tracker.current_context
+            if self._context_tokens > 0:
+                count = self._context_tokens
                 formatted = format_token_count(count)
 
                 model_name = settings.model_name
@@ -3106,9 +3104,7 @@ class DeepAgentsApp(App):
                 model_spec=(f"{settings.model_provider}:{settings.model_name}"),
                 profile_overrides=self._profile_override,
                 context_limit=settings.model_context_limit,
-                total_context_tokens=(
-                    self._token_tracker.current_context if self._token_tracker else 0
-                ),
+                total_context_tokens=self._context_tokens,
                 backend=self._backend,
             )
 
@@ -3167,8 +3163,10 @@ class DeepAgentsApp(App):
                 )
             )
 
-            if self._token_tracker:
-                self._token_tracker.add(result.tokens_after)
+            self._on_tokens_update(result.tokens_after)
+            from deepagents_cli.textual_adapter import _persist_context_tokens
+
+            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -3344,8 +3342,7 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=True)
 
         # Ensure token display is restored (in case of early cancellation)
-        if self._token_tracker:
-            self._token_tracker.show()
+        self._show_tokens()
 
         try:
             await self._maybe_drain_deferred()
@@ -3521,9 +3518,14 @@ class DeepAgentsApp(App):
             and "_summarization_event" in fallback_values
         ):
             values["_summarization_event"] = fallback_values["_summarization_event"]
+        if (
+            values.get("_context_tokens") is None
+            and "_context_tokens" in fallback_values
+        ):
+            values["_context_tokens"] = fallback_values["_context_tokens"]
         return values
 
-    async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
+    async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
 
         In server mode the LangGraph dev server starts with an empty thread
@@ -3535,13 +3537,18 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
-            Converted message data ready for bulk loading.
+            Payload containing converted message data and the persisted
+            context-token count.
         """
         state_values = await self._get_thread_state_values(thread_id)
+        raw_tokens = state_values.get("_context_tokens")
+        context_tokens = (
+            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+        )
         messages = state_values.get("messages", [])
 
         if not messages:
-            return []
+            return _ThreadHistoryPayload([], context_tokens)
 
         # Server mode / direct checkpointer may return dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
@@ -3551,7 +3558,8 @@ class DeepAgentsApp(App):
             messages = convert_to_messages(messages)
 
         # Offload conversion so large histories don't block the UI loop.
-        return await asyncio.to_thread(self._convert_messages_to_data, messages)
+        data = await asyncio.to_thread(self._convert_messages_to_data, messages)
+        return _ThreadHistoryPayload(data, context_tokens)
 
     @staticmethod
     async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
@@ -3656,12 +3664,12 @@ class DeepAgentsApp(App):
         self,
         *,
         thread_id: str | None = None,
-        preloaded_data: list[MessageData] | None = None,
+        preloaded_payload: _ThreadHistoryPayload | None = None,
     ) -> None:
         """Load and render message history when resuming a thread.
 
-        When `preloaded_data` is provided (e.g., from `_resume_thread`), this
-        reuses that payload. Otherwise, it fetches checkpoint state from the
+        When `preloaded_payload` is provided (e.g., from `_resume_thread`),
+        this reuses that data. Otherwise, it fetches checkpoint state from the
         agent and converts stored messages into lightweight `MessageData`
         objects. The method then bulk-loads into the `MessageStore` and mounts
         only the last `WINDOW_SIZE` widgets to reduce DOM operations on large
@@ -3671,13 +3679,14 @@ class DeepAgentsApp(App):
             thread_id: Optional explicit thread ID to load.
 
                 Defaults to current.
-            preloaded_data: Optional pre-fetched history data for the thread.
+            preloaded_payload: Optional pre-fetched history payload for the
+                thread.
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
             logger.debug("Skipping history load: no thread ID available")
             return
-        if preloaded_data is None and not self._agent:
+        if preloaded_payload is None and not self._agent:
             logger.debug(
                 "Skipping history load for %s: no active agent and no preloaded data",
                 history_thread_id,
@@ -3686,16 +3695,20 @@ class DeepAgentsApp(App):
 
         try:
             # Fetch + convert, or reuse preloaded payload on thread switch.
-            all_data = (
-                preloaded_data
-                if preloaded_data is not None
+            payload = (
+                preloaded_payload
+                if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
-            if not all_data:
+            if not payload.messages:
                 return
 
+            # Seed token cache from persisted state
+            if payload.context_tokens > 0:
+                self._on_tokens_update(payload.context_tokens)
+
             # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(all_data)
+            _archived, visible = self._message_store.bulk_load(payload.messages)
 
             # 5. Cache container ref (single query)
             try:
@@ -4599,17 +4612,17 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        prefetched_history: list[MessageData] | None = None
+        prefetched_payload: _ThreadHistoryPayload | None = None
         try:
             self._update_status(f"Loading thread: {thread_id}")
-            prefetched_history = await self._fetch_thread_history_data(thread_id)
+            prefetched_payload = await self._fetch_thread_history_data(thread_id)
 
             # Clear conversation (similar to /clear, without creating a new thread)
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
-            if self._token_tracker:
-                self._token_tracker.reset()
+            self._context_tokens = 0
+            self._update_tokens(0)
             self._update_status("")
 
             # Switch to the selected thread
@@ -4625,10 +4638,10 @@ class DeepAgentsApp(App):
             # Load thread history
             await self._load_thread_history(
                 thread_id=thread_id,
-                preloaded_data=prefetched_history,
+                preloaded_payload=prefetched_payload,
             )
         except Exception as exc:
-            if prefetched_history is None:
+            if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
                 await self._mount_message(
                     AppMessage(

@@ -343,7 +343,7 @@ class FilesystemBackend(BackendProtocol):
 
             selected_lines = lines[start_idx:end_idx]
             return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(

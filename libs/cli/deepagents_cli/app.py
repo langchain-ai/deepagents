@@ -897,7 +897,7 @@ class DeepAgentsApp(App):
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
         )
-        # Wire token display callbacks (lightweight, no imports)
+        # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_hide = self._hide_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
@@ -1642,7 +1642,7 @@ class DeepAgentsApp(App):
         This is the callback wired to the adapter's `_on_tokens_update`.
 
         Args:
-            count: Total context token count from `usage_metadata`.
+            count: Total context token count to cache and display.
         """
         self._context_tokens = count
         self._update_tokens(count)
@@ -3164,17 +3164,9 @@ class DeepAgentsApp(App):
             )
 
             self._on_tokens_update(result.tokens_after)
-            try:
-                await self._agent.aupdate_state(
-                    config, {"_context_tokens": result.tokens_after}
-                )
-            except Exception:  # non-critical persistence
-                logger.warning(
-                    "Failed to persist _context_tokens=%d after offload; "
-                    "token count may be stale on resume",
-                    result.tokens_after,
-                    exc_info=True,
-                )
+            from deepagents_cli.textual_adapter import _persist_context_tokens
+
+            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -3549,7 +3541,10 @@ class DeepAgentsApp(App):
             context-token count.
         """
         state_values = await self._get_thread_state_values(thread_id)
-        context_tokens = state_values.get("_context_tokens", 0) or 0
+        raw_tokens = state_values.get("_context_tokens")
+        context_tokens = (
+            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+        )
         messages = state_values.get("messages", [])
 
         if not messages:

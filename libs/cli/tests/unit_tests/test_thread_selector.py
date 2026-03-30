@@ -2344,6 +2344,48 @@ class TestFetchThreadHistoryData:
         assert await_args is not None
         assert await_args.args[1] == raw_messages
 
+    async def test_extracts_nonzero_context_tokens(self) -> None:
+        """Persisted _context_tokens should propagate to the payload."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages, "_context_tokens": 12000}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 12000
+
+    async def test_none_context_tokens_coerced_to_zero(self) -> None:
+        """`_context_tokens: None` in checkpoint should coerce to 0."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages, "_context_tokens": None}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 0
+
 
 class TestLoadThreadHistory:
     """Tests for DeepAgentsApp._load_thread_history."""
@@ -2406,6 +2448,34 @@ class TestLoadThreadHistory:
         await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
         assert app._context_tokens == 8500
+
+    async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
+        """Loading a payload with 0 tokens should not reset an existing cache."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._context_tokens = 5000  # pre-existing cache from a previous thread
+
+        mount_message_mock = AsyncMock()
+        schedule_link_mock = MagicMock()
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
+
+        assert app._context_tokens == 5000
 
     async def test_fallback_fetch_path_used_without_preloaded_data(self) -> None:
         """History should be fetched when preloaded data is not provided."""

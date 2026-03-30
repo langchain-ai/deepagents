@@ -2,8 +2,9 @@
 
 The field is checkpointed (survives across sessions) but not passed to the
 model (`PrivateStateAttr`).  The CLI writes the latest total-context token
-count here after every LLM response and reads it back when resuming a thread
-so that `/tokens` and the status bar show accurate values immediately.
+count here after every LLM response and context offload, and reads it back
+when resuming a thread so that `/tokens` and the status bar show accurate
+values immediately.
 """
 
 from __future__ import annotations
@@ -25,6 +26,6 @@ class TokenTrackingState(AgentState):
 
 
 class TokenStateMiddleware(AgentMiddleware):
-    """No-op middleware that registers `_context_tokens` in the state schema."""
+    """Schema-only middleware that registers `_context_tokens` in the state schema."""
 
     state_schema = TokenTrackingState

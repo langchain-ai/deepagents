@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -197,55 +198,6 @@ class TextualUIAdapter:
     Textual UI, allowing streaming output to be rendered as widgets.
     """
 
-    _mount_message: Callable[..., Awaitable[None]]
-    """Async callback to mount a message widget to the chat."""
-
-    _update_status: Callable[[str], None]
-    """Callback to update the status bar text."""
-
-    _request_approval: Callable[..., Awaitable[Any]]
-    """Async callback that returns a Future for HITL approval."""
-
-    _on_auto_approve_enabled: Callable[[], None] | None
-    """Callback invoked when auto-approve is enabled via the HITL approval menu.
-
-    Fired when the user selects "Auto-approve all" from an approval dialog,
-    allowing the app to sync its status bar and session state.
-    """
-
-    _request_ask_user: (
-        Callable[
-            [list[Question]],
-            Awaitable[asyncio.Future[AskUserWidgetResult] | None],
-        ]
-        | None
-    )
-    """Async callback for `ask_user` interrupts.
-
-    When awaited, returns a `Future` that resolves to user answers.
-    """
-
-    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
-    """Callback to show/hide loading spinner."""
-
-    _set_active_message: Callable[[str | None], None] | None
-    """Callback to set the active streaming message ID (pass `None` to clear)."""
-
-    _sync_message_content: Callable[[str, str], None] | None
-    """Callback to sync final message content back to the store after streaming."""
-
-    _current_tool_messages: dict[str, ToolCallMessage]
-    """Map of tool call IDs to their message widgets."""
-
-    _on_tokens_update: Callable[[int], None] | None
-    """Called with total context tokens after each LLM response."""
-
-    _on_tokens_hide: Callable[[], None] | None
-    """Called to hide the token display during streaming."""
-
-    _on_tokens_show: Callable[[], None] | None
-    """Called to restore the token display with the cached value."""
-
     def __init__(
         self,
         mount_message: Callable[..., Awaitable[None]],
@@ -263,40 +215,50 @@ class TextualUIAdapter:
             | None
         ) = None,
     ) -> None:
-        """Initialize the adapter.
-
-        Args:
-            mount_message: Async callable to mount a message widget.
-            update_status: Callable to update the status bar message.
-            request_approval: Async callable that returns a Future for HITL approval.
-            on_auto_approve_enabled: Callback fired when the user selects
-                "Auto-approve all" from an approval dialog.
-
-                Used by the app to sync the status bar indicator and session state.
-            set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
-            set_active_message: Callback to set the active streaming message ID.
-            sync_message_content: Callback to sync final content back to the
-                message store after streaming completes.
-            request_ask_user: Async callable that displays an `ask_user` widget
-                and returns a `Future` resolving to user answers.
-        """
+        """Initialize the adapter."""
         self._mount_message = mount_message
+        """Async callback to mount a message widget to the chat."""
+
         self._update_status = update_status
+        """Callback to update the status bar text."""
+
         self._request_approval = request_approval
+        """Async callback that returns a Future for HITL approval."""
+
         self._on_auto_approve_enabled = on_auto_approve_enabled
+        """Callback invoked when auto-approve is enabled via the HITL approval
+        menu.
+
+        Fired when the user selects "Auto-approve all" from an approval dialog,
+        allowing the app to sync its status bar and session state.
+        """
+
         self._set_spinner = set_spinner
+        """Callback to show/hide loading spinner."""
+
         self._set_active_message = set_active_message
+        """Callback to set the active streaming message ID (pass `None` to clear)."""
+
         self._sync_message_content = sync_message_content
+        """Callback to sync final message content back to the store after streaming."""
+
         self._request_ask_user = request_ask_user
+        """Async callback for `ask_user` interrupts.
+
+        When awaited, returns a `Future` that resolves to user answers.
+        """
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
+        """Map of tool call IDs to their message widgets."""
 
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: Callable[[int], None] | None = None
-        """Called with the total context token count after each LLM response."""
+        """Called with total context tokens after each LLM response."""
+
         self._on_tokens_hide: Callable[[], None] | None = None
         """Called to hide the token display during streaming."""
+
         self._on_tokens_show: Callable[[], None] | None = None
         """Called to restore the token display with the cached value."""
 
@@ -487,6 +449,22 @@ async def execute_task_textual(
     if turn_stats is None:
         turn_stats = SessionStats()
     start_time = time.monotonic()
+
+    # Warn if token display callbacks are only partially wired — all three
+    # should be set together to avoid inconsistent status-bar behavior.
+    token_cbs = (
+        adapter._on_tokens_update,
+        adapter._on_tokens_hide,
+        adapter._on_tokens_show,
+    )
+    if any(token_cbs) and not all(token_cbs):
+        logger.warning(
+            "Token callbacks partially wired (update=%s, hide=%s, show=%s); "
+            "token display may behave inconsistently",
+            adapter._on_tokens_update is not None,
+            adapter._on_tokens_hide is not None,
+            adapter._on_tokens_show is not None,
+        )
 
     # Show spinner
     if adapter._set_spinner:
@@ -1207,12 +1185,14 @@ async def execute_task_textual(
 
         # Report tokens even on interrupt (or restore display if none captured)
         turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if captured_input_tokens or captured_output_tokens:
-            if adapter._on_tokens_update:
-                adapter._on_tokens_update(captured_input_tokens)
-            await _persist_context_tokens(agent, config, captured_input_tokens)
-        elif adapter._on_tokens_show:
-            adapter._on_tokens_show()
+        await _report_and_persist_tokens(
+            adapter,
+            agent,
+            config,
+            captured_input_tokens,
+            captured_output_tokens,
+            shield=True,
+        )
         return turn_stats
 
     except KeyboardInterrupt:
@@ -1254,22 +1234,25 @@ async def execute_task_textual(
 
         # Report tokens even on interrupt (or restore display if none captured)
         turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if captured_input_tokens or captured_output_tokens:
-            if adapter._on_tokens_update:
-                adapter._on_tokens_update(captured_input_tokens)
-            await _persist_context_tokens(agent, config, captured_input_tokens)
-        elif adapter._on_tokens_show:
-            adapter._on_tokens_show()
+        await _report_and_persist_tokens(
+            adapter,
+            agent,
+            config,
+            captured_input_tokens,
+            captured_output_tokens,
+            shield=True,
+        )
         return turn_stats
 
     # Update token count and return stats
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    if captured_input_tokens or captured_output_tokens:
-        if adapter._on_tokens_update:
-            adapter._on_tokens_update(captured_input_tokens)
-        await _persist_context_tokens(agent, config, captured_input_tokens)
-    elif adapter._on_tokens_show:
-        adapter._on_tokens_show()  # Restore previous value
+    await _report_and_persist_tokens(
+        adapter,
+        agent,
+        config,
+        captured_input_tokens,
+        captured_output_tokens,
+    )
     return turn_stats
 
 
@@ -1293,6 +1276,39 @@ async def _persist_context_tokens(
             tokens,
             exc_info=True,
         )
+
+
+async def _report_and_persist_tokens(
+    adapter: TextualUIAdapter,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    captured_input_tokens: int,
+    captured_output_tokens: int,
+    *,
+    shield: bool = False,
+) -> None:
+    """Update the token display and best-effort persist to graph state.
+
+    Args:
+        adapter: UI adapter with token callbacks.
+        agent: The LangGraph agent.
+        config: Runnable config with `thread_id` in its configurable dict.
+        captured_input_tokens: Total input tokens captured during the turn.
+        captured_output_tokens: Total output tokens captured during the turn.
+        shield: When `True`, suppress all exceptions (including `BaseException`)
+            from the persist call so that cancellation handlers can safely await
+            this without re-raising.
+    """
+    if captured_input_tokens or captured_output_tokens:
+        if adapter._on_tokens_update:
+            adapter._on_tokens_update(captured_input_tokens)
+        if shield:
+            with contextlib.suppress(BaseException):
+                await _persist_context_tokens(agent, config, captured_input_tokens)
+        else:
+            await _persist_context_tokens(agent, config, captured_input_tokens)
+    elif adapter._on_tokens_show:
+        adapter._on_tokens_show()
 
 
 async def _flush_assistant_text_ns(

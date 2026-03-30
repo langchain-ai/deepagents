@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         RejectDecision,
     )
     from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableConfig
     from langgraph.types import Command, Interrupt
     from pydantic import TypeAdapter
     from rich.console import Console
@@ -236,8 +237,14 @@ class TextualUIAdapter:
     _current_tool_messages: dict[str, ToolCallMessage]
     """Map of tool call IDs to their message widgets."""
 
-    _token_tracker: Any
-    """Token usage tracker for displaying counts."""
+    _on_tokens_update: Callable[[int], None] | None
+    """Called with total context tokens after each LLM response."""
+
+    _on_tokens_hide: Callable[[], None] | None
+    """Called to hide the token display during streaming."""
+
+    _on_tokens_show: Callable[[], None] | None
+    """Called to restore the token display with the cached value."""
 
     def __init__(
         self,
@@ -284,11 +291,14 @@ class TextualUIAdapter:
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
-        self._token_tracker: Any = None
 
-    def set_token_tracker(self, tracker: Any) -> None:  # noqa: ANN401  # Dynamic tracker type from Textual
-        """Set the token tracker for usage tracking."""
-        self._token_tracker = tracker
+        # Token display callbacks (set by the app after construction)
+        self._on_tokens_update: Callable[[int], None] | None = None
+        """Called with the total context token count after each LLM response."""
+        self._on_tokens_hide: Callable[[], None] | None = None
+        """Called to hide the token display during streaming."""
+        self._on_tokens_show: Callable[[], None] | None = None
+        """Called to restore the token display with the cached value."""
 
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
@@ -483,8 +493,8 @@ async def execute_task_textual(
         await adapter._set_spinner("Thinking")
 
     # Hide token display during streaming (will be shown with accurate count at end)
-    if adapter._token_tracker:
-        adapter._token_tracker.hide()
+    if adapter._on_tokens_hide:
+        adapter._on_tokens_hide()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
@@ -1197,13 +1207,12 @@ async def execute_task_textual(
 
         # Report tokens even on interrupt (or restore display if none captured)
         turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if adapter._token_tracker:
-            if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(
-                    captured_input_tokens, captured_output_tokens
-                )
-            else:
-                adapter._token_tracker.show()  # Restore previous value
+        if captured_input_tokens or captured_output_tokens:
+            if adapter._on_tokens_update:
+                adapter._on_tokens_update(captured_input_tokens)
+            await _persist_context_tokens(agent, config, captured_input_tokens)
+        elif adapter._on_tokens_show:
+            adapter._on_tokens_show()
         return turn_stats
 
     except KeyboardInterrupt:
@@ -1245,20 +1254,45 @@ async def execute_task_textual(
 
         # Report tokens even on interrupt (or restore display if none captured)
         turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if adapter._token_tracker:
-            if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(
-                    captured_input_tokens, captured_output_tokens
-                )
-            else:
-                adapter._token_tracker.show()  # Restore previous value
+        if captured_input_tokens or captured_output_tokens:
+            if adapter._on_tokens_update:
+                adapter._on_tokens_update(captured_input_tokens)
+            await _persist_context_tokens(agent, config, captured_input_tokens)
+        elif adapter._on_tokens_show:
+            adapter._on_tokens_show()
         return turn_stats
 
-    # Update token tracker and return stats
+    # Update token count and return stats
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
-        adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+    if captured_input_tokens or captured_output_tokens:
+        if adapter._on_tokens_update:
+            adapter._on_tokens_update(captured_input_tokens)
+        await _persist_context_tokens(agent, config, captured_input_tokens)
+    elif adapter._on_tokens_show:
+        adapter._on_tokens_show()  # Restore previous value
     return turn_stats
+
+
+async def _persist_context_tokens(
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    tokens: int,
+) -> None:
+    """Best-effort persist of the context token count into graph state.
+
+    Args:
+        agent: The LangGraph agent (must support `aupdate_state`).
+        config: Runnable config with `thread_id`.
+        tokens: Total context tokens to persist.
+    """
+    try:
+        await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except Exception:  # non-critical; stale count on resume is acceptable
+        logger.warning(
+            "Failed to persist _context_tokens=%d; token count may be stale on resume",
+            tokens,
+            exc_info=True,
+        )
 
 
 async def _flush_assistant_text_ns(

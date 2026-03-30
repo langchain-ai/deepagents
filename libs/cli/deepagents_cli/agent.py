@@ -1005,6 +1005,13 @@ def create_cli_agent(
     agent_middleware = []
     agent_middleware.append(ConfigurableModelMiddleware())
 
+    # Token state: adds _context_tokens to graph state (checkpointed, not
+    # passed to model).  Must be registered before any middleware that might
+    # read the channel.
+    from deepagents_cli.token_state import TokenStateMiddleware
+
+    agent_middleware.append(TokenStateMiddleware())
+
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:
         from deepagents_cli.ask_user import AskUserMiddleware

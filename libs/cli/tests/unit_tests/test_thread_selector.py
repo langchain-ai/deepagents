@@ -2120,9 +2120,11 @@ class TestResumeThread:
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        mock_payload = MagicMock()
+        mock_payload.messages = []
+        mock_payload.context_tokens = 0
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._load_thread_history = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
@@ -2134,11 +2136,11 @@ class TestResumeThread:
         app._pending_messages.clear.assert_called_once()
         app._queued_widgets.clear.assert_called_once()
         app._clear_messages.assert_awaited_once()
-        app._token_tracker.reset.assert_called_once()
+        assert app._context_tokens == 0
         app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
         app._load_thread_history.assert_awaited_once_with(
             thread_id="new-thread",
-            preloaded_data=[],
+            preloaded_payload=mock_payload,
         )
 
     async def test_failure_restores_previous_thread_ids(self) -> None:
@@ -2151,7 +2153,10 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        mock_payload = _ThreadHistoryPayload(messages=[], context_tokens=0)
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
         app._update_status = MagicMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
@@ -2177,9 +2182,11 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        mock_payload = MagicMock()
+        mock_payload.messages = []
+        mock_payload.context_tokens = 0
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
         app._load_thread_history = AsyncMock(  # type: ignore[assignment]
             side_effect=[RuntimeError("checkpoint corrupt"), None]
@@ -2280,9 +2287,10 @@ class TestFetchThreadHistoryData:
         app = DeepAgentsApp()
         app._agent = None
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
 
     async def test_returns_empty_when_state_missing(self) -> None:
         """Missing checkpoint state should return an empty history payload."""
@@ -2290,9 +2298,10 @@ class TestFetchThreadHistoryData:
         app._agent = MagicMock()
         app._agent.aget_state = AsyncMock(return_value=None)
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
         app._agent.aget_state.assert_awaited_once_with(
             {"configurable": {"thread_id": "tid-1"}}
         )
@@ -2305,9 +2314,10 @@ class TestFetchThreadHistoryData:
         state.values = {}
         app._agent.aget_state = AsyncMock(return_value=state)
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
 
     async def test_offloads_conversion_to_thread(self) -> None:
         """Message conversion should be offloaded via `asyncio.to_thread`."""
@@ -2326,9 +2336,9 @@ class TestFetchThreadHistoryData:
             new_callable=AsyncMock,
             return_value=converted,
         ) as to_thread_mock:
-            result = await app._fetch_thread_history_data("tid-1")
+            payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == converted
+        assert payload.messages == converted
         to_thread_mock.assert_awaited_once()
         await_args = to_thread_mock.await_args
         assert await_args is not None
@@ -2357,13 +2367,45 @@ class TestLoadThreadHistory:
         messages_container.mount = AsyncMock()
         app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
 
-        preloaded = [MessageData(type=MessageType.USER, content="hello")]
-        await app._load_thread_history(thread_id="tid-1", preloaded_data=preloaded)
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
         fetch_history_mock.assert_not_awaited()
         messages_container.mount.assert_awaited_once()
         mount_message_mock.assert_awaited_once()
         schedule_link_mock.assert_called_once()
+
+    async def test_resume_seeds_context_tokens_from_state(self) -> None:
+        """Resuming a thread with persisted tokens should seed the local cache."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="tid-1")
+
+        mount_message_mock = AsyncMock()
+        schedule_link_mock = MagicMock()
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=8500,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
+
+        assert app._context_tokens == 8500
 
     async def test_fallback_fetch_path_used_without_preloaded_data(self) -> None:
         """History should be fetched when preloaded data is not provided."""
@@ -2371,7 +2413,12 @@ class TestLoadThreadHistory:
 
         app = DeepAgentsApp(thread_id="tid-1")
         app._agent = MagicMock()
-        fetched = [MessageData(type=MessageType.USER, content="hello")]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        fetched = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
         fetch_history_mock = AsyncMock(return_value=fetched)
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
@@ -2410,10 +2457,15 @@ class TestLoadThreadHistory:
         messages_container.mount = AsyncMock()
         app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
 
-        preloaded = [
-            MessageData(type=MessageType.ASSISTANT, content="ok"),
-            MessageData(type=MessageType.ASSISTANT, content="fail"),
-        ]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[
+                MessageData(type=MessageType.ASSISTANT, content="ok"),
+                MessageData(type=MessageType.ASSISTANT, content="fail"),
+            ],
+            context_tokens=0,
+        )
 
         def _set_content_side_effect(content: str) -> None:
             if content == "fail":
@@ -2426,7 +2478,9 @@ class TestLoadThreadHistory:
             new_callable=AsyncMock,
             side_effect=_set_content_side_effect,
         ) as set_content_mock:
-            await app._load_thread_history(thread_id="tid-1", preloaded_data=preloaded)
+            await app._load_thread_history(
+                thread_id="tid-1", preloaded_payload=preloaded
+            )
 
         assert set_content_mock.await_count == 2
         mount_message_mock.assert_awaited_once()

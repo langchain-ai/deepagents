@@ -2401,15 +2401,15 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
 
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-        result = await app._fetch_thread_history_data("t-1")
+        payload = await app._fetch_thread_history_data("t-1")
 
-        assert len(result) == 2
-        assert isinstance(result[0], MessageData)
-        assert result[0].type == MessageType.USER
-        assert result[0].content == "hello"
-        assert isinstance(result[1], MessageData)
-        assert result[1].type == MessageType.ASSISTANT
-        assert result[1].content == "Hi there!"
+        assert len(payload.messages) == 2
+        assert isinstance(payload.messages[0], MessageData)
+        assert payload.messages[0].type == MessageType.USER
+        assert payload.messages[0].content == "hello"
+        assert isinstance(payload.messages[1], MessageData)
+        assert payload.messages[1].type == MessageType.ASSISTANT
+        assert payload.messages[1].content == "Hi there!"
 
     async def test_server_mode_falls_back_to_checkpointer(self) -> None:
         """When the server returns empty state, read SQLite checkpointer directly."""
@@ -2438,13 +2438,13 @@ class TestFetchThreadHistoryData:
             "_read_channel_values_from_checkpointer",
             return_value={"messages": checkpointer_msgs},
         ):
-            result = await app._fetch_thread_history_data("t-1")
+            payload = await app._fetch_thread_history_data("t-1")
 
-        assert len(result) == 2
-        assert result[0].type == MessageType.USER
-        assert result[0].content == "hello"
-        assert result[1].type == MessageType.ASSISTANT
-        assert result[1].content == "world"
+        assert len(payload.messages) == 2
+        assert payload.messages[0].type == MessageType.USER
+        assert payload.messages[0].content == "hello"
+        assert payload.messages[1].type == MessageType.ASSISTANT
+        assert payload.messages[1].content == "world"
 
 
 class TestRemoteAgent:

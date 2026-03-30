@@ -1402,6 +1402,10 @@ class TestLargeHumanMessageEviction:
         assert evicted_to is not None
         assert evicted_to.startswith("/conversation_history/")
 
+        files = result.get("files", {})
+        assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+        assert files[evicted_to]["content"] == large_content
+
         assert len(fake_model.call_history) == 1
         model_messages = fake_model.call_history[0]["messages"]
         model_human = [m for m in model_messages if isinstance(m, HumanMessage)]
@@ -1463,6 +1467,76 @@ class TestLargeHumanMessageEviction:
         assert len(tagged) == 2
         for m in tagged:
             assert m.content in (large_content_1, large_content_2)
+
+        files = result_3.get("files", {})
+        for m in tagged:
+            evicted_to = m.additional_kwargs["lc_evicted_to"]
+            assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+            assert files[evicted_to]["content"] == m.content
+
+
+class TestSummarizationOffloadToState:
+    """Test that SummarizationMiddleware offloads conversation history to StateBackend."""
+
+    def test_offloaded_file_persisted_in_state(self) -> None:
+        """Summarization should write the offloaded history to state via files_update.
+
+        Uses ``create_deep_agent`` with default ``StateBackend`` so that
+        ``backend.write`` returns a ``files_update`` dict. The ``Command``
+        produced by ``wrap_model_call`` must propagate that dict so the file
+        is persisted in graph state under the ``files`` channel.
+        """
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
+        )
+        fake_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(
+            model=fake_model,
+            checkpointer=InMemorySaver(),
+        )
+
+        text_10_000_tokens = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        text_50_000_tokens = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        input_messages = [
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 60,000 tokens
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 120,000 tokens
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
+            HumanMessage(content="query"),
+        ]
+
+        config = {"configurable": {"thread_id": "summarization-state-test"}}
+        result = agent.invoke({"messages": input_messages}, config)
+
+        assert len(result["messages"]) == 8  # 7 inputs + response
+        assert result["messages"][-1].content == "response"
+
+        # two calls: one to summarize, one for response
+        assert len(fake_model.call_history) == 2
+
+        # summarization call
+        summarization_messages = fake_model.call_history[0]["messages"]
+        assert any("Messages to summarize:" in m.content for m in summarization_messages if hasattr(m, "content"))
+
+        # model call on reduced context
+        summarized_messages = fake_model.call_history[1]["messages"]
+        assert len(summarized_messages) < len(input_messages)
+        summary_message = next(m for m in summarized_messages if isinstance(m, HumanMessage))
+        assert "summary goes here" in summary_message.content
+
+        # Verify conversation history was offloaded to state
+        state = agent.get_state(config)
+        files = state.values.get("files", {})
+        conversation_history_files = {k: v for k, v in files.items() if k.startswith("/conversation_history/")}
+        assert conversation_history_files, "Offloaded conversation history file not found in state"
 
 
 class TestCompactConversationTool:

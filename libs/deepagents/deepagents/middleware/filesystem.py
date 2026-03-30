@@ -1568,7 +1568,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     }
                 }
             )
-            state_command = Command(update={"messages": [tagged]})
+            update: dict[str, Any] = {"messages": [tagged]}
+            if write_result.files_update is not None:
+                update["files"] = write_result.files_update
+            state_command = Command(update=update)
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
@@ -1606,7 +1609,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         file_path: str | None = None
         if new_eviction_needed:
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_path = f"/conversation_history/{uuid.uuid4().hex[:12]}"
+            file_path = f"/conversation_history/{uuid.uuid4()}.md"
             write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)
@@ -1632,7 +1635,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         file_path: str | None = None
         if new_eviction_needed:
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_path = f"/conversation_history/{uuid.uuid4().hex[:12]}"
+            file_path = f"/conversation_history/{uuid.uuid4()}.md"
             write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)

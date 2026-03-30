@@ -81,6 +81,16 @@ Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
+# Server-side file edit via `execute()`.
+# Reads the file, performs string replacement, and writes back — all on the
+# sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
+# base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
+#
+# Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
+# on failure.
+#
+# Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
+# to `_edit_via_upload()` which transfers old/new strings as temp files.
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys, os, base64, json
 
@@ -116,19 +126,10 @@ with open(path, 'wb') as f:
 print(json.dumps({{'count': count}}))
 " 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
-__DEEPAGENTS_EDIT_EOF__"""
-"""Server-side file edit via `execute()`.
-
-Reads the file, performs string replacement, and writes back — all on the
-sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
-base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
-
-Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
-on failure.
-
-Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
-to `_edit_via_upload()` which transfers old/new strings as temp files.
+__DEEPAGENTS_EDIT_EOF__
 """
+# Keep a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
+# detect end-of-input on a newline-delimited heredoc feed can observe completion.
 
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
 """Maximum combined byte size of old_string + new_string for inline server-side edit.

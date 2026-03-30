@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_cli import model_config
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
@@ -110,8 +111,8 @@ class TestProjectContext:
         user_cwd.mkdir()
 
         env = {
-            "DA_SERVER_CWD": str(user_cwd),
-            "DA_SERVER_PROJECT_ROOT": str(project_root),
+            f"{SERVER_ENV_PREFIX}CWD": str(user_cwd),
+            f"{SERVER_ENV_PREFIX}PROJECT_ROOT": str(project_root),
         }
         context = get_server_project_context(env)
 
@@ -502,6 +503,102 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
+    @patch("langchain.chat_models.init_chat_model")
+    def test_extracts_unsupported_modalities(self, mock_init_chat_model: Mock) -> None:
+        """Test that explicitly False modality flags are extracted."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 64000,
+            "tool_calling": True,
+            "image_inputs": False,
+            "audio_inputs": False,
+            "video_inputs": False,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("deepseek:deepseek-r1")
+        assert result.unsupported_modalities == frozenset(
+            {"image", "audio", "video", "pdf"}
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_supported_modalities_not_flagged(self, mock_init_chat_model: Mock) -> None:
+        """Test that True modality flags produce empty unsupported set."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 200000,
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": True,
+            "video_inputs": True,
+            "pdf_inputs": True,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_modality_keys_not_flagged(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that absent modality keys are not treated as unsupported."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("openai:gpt-4o")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_mixed_modality_flags(self, mock_init_chat_model: Mock) -> None:
+        """Test partial modality support extraction."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": False,
+            "video_inputs": True,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset({"audio", "pdf"})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_profile_leaves_modalities_empty(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that missing profile produces empty unsupported set."""
+        mock_model = Mock(spec=["invoke"])
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+
+class TestModelResultApplyToSettings:
+    """Tests for ModelResult.apply_to_settings propagation."""
+
+    def test_propagates_unsupported_modalities(self) -> None:
+        """Test that apply_to_settings writes unsupported_modalities to settings."""
+        model_result = ModelResult(
+            model=Mock(),
+            model_name="deepseek-r1",
+            provider="deepseek",
+            context_limit=64000,
+            unsupported_modalities=frozenset({"image", "audio"}),
+        )
+        original = settings.model_unsupported_modalities
+        try:
+            model_result.apply_to_settings()
+            expected = frozenset({"image", "audio"})
+            assert settings.model_unsupported_modalities == expected
+        finally:
+            settings.model_unsupported_modalities = original
+
 
 class TestCreateModelProfileOverrides:
     """Tests for profile overrides from config.toml in create_model."""
@@ -875,6 +972,8 @@ class TestGetLangsmithProjectName:
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGSMITH_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_API_KEY": "",
             "LANGSMITH_TRACING": "true",
         }
         with patch.dict("os.environ", env, clear=False):
@@ -886,6 +985,8 @@ class TestGetLangsmithProjectName:
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "",
             "LANGCHAIN_TRACING_V2": "",
+            "DEEPAGENTS_CLI_LANGSMITH_TRACING": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_TRACING_V2": "",
         }
         with patch.dict("os.environ", env, clear=False):
             assert get_langsmith_project_name() is None
@@ -919,7 +1020,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'default' when no project name configured."""
+        """Should fall back to 'deepagents-cli' when no project name configured."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -929,7 +1030,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
@@ -943,7 +1044,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
 
 class TestFetchLangsmithProjectUrl:
@@ -1202,6 +1303,29 @@ api_key_env = "TOGETHER_API_KEY"
         assert kwargs["api_key"] == "together-key"
         assert "base_url" not in kwargs
 
+    def test_prefixed_env_var_beats_canonical(self, tmp_path: Path) -> None:
+        """DEEPAGENTS_CLI_ prefixed var overrides canonical in provider kwargs."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "FIREWORKS_API_KEY": "canonical",
+                    "DEEPAGENTS_CLI_FIREWORKS_API_KEY": "prefixed",
+                },
+                clear=False,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("fireworks")
+
+        assert kwargs["api_key"] == "prefixed"
+
     def test_omits_api_key_when_env_not_set(self, tmp_path: Path) -> None:
         """Omits api_key when the env var is not set."""
         config_path = tmp_path / "config.toml"
@@ -1224,12 +1348,13 @@ api_key_env = "FIREWORKS_API_KEY"
         assert kwargs == {}
 
     def test_unconfigured_providers_return_empty(self) -> None:
-        """Providers without config return empty kwargs."""
-        kwargs = _get_provider_kwargs("anthropic")
-        assert kwargs == {}
+        """Providers without config or env credentials return empty kwargs."""
+        with patch.dict("os.environ", {}, clear=True):
+            kwargs = _get_provider_kwargs("anthropic")
+            assert kwargs == {}
 
-        kwargs = _get_provider_kwargs("google_genai")
-        assert kwargs == {}
+            kwargs = _get_provider_kwargs("google_genai")
+            assert kwargs == {}
 
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""
@@ -1915,7 +2040,7 @@ class TestLazyModuleAttributes:
     def test_ensure_bootstrap_langsmith_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_ensure_bootstrap copies DEEPAGENTS_LANGSMITH_PROJECT."""
+        """_ensure_bootstrap copies DEEPAGENTS_CLI_LANGSMITH_PROJECT."""
         import deepagents_cli.config as config_mod
         from deepagents_cli.config import _ensure_bootstrap
 
@@ -1924,7 +2049,7 @@ class TestLazyModuleAttributes:
         config_mod._bootstrap_done = False
 
         try:
-            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "my-agent-project")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "my-agent-project")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
 
             with (
@@ -1957,7 +2082,7 @@ class TestLazyModuleAttributes:
 
         try:
             monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
-            monkeypatch.setenv("DEEPAGENTS_LANGSMITH_PROJECT", "agent-project")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "agent-project")
 
             with (
                 patch("deepagents_cli.config._load_dotenv"),
@@ -1972,6 +2097,107 @@ class TestLazyModuleAttributes:
             import os
 
             assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_propagates_prefixed_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prefixed LangSmith vars are copied to canonical names at bootstrap."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_does_not_overwrite_canonical_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Canonical LangSmith vars are preserved when already set."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_override")
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Canonical value preserved — propagation does not overwrite.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_original"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_propagates_empty_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty prefixed var propagates to canonical (explicit disable)."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "")
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Empty string propagated — lets user explicitly disable tracing.
+            assert os.environ["LANGSMITH_TRACING"] == ""
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls

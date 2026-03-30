@@ -39,6 +39,7 @@ _TIPS: list[str] = [
     "Type /update to check for and install updates",
     "Use /theme to customize the CLI colors and style",
     "Use /skill-creator to build reusable agent skills",
+    "Use /auto-update to toggle automatic CLI updates",
 ]
 """Rotating tips shown in the welcome footer.
 

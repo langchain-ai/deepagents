@@ -1,7 +1,8 @@
 """Typed configuration for the CLI-to-server subprocess communication channel.
 
 The CLI spawns a `langgraph dev` subprocess and passes configuration via
-environment variables prefixed with `DA_SERVER_`. This module provides a single
+environment variables prefixed with `DEEPAGENTS_CLI_SERVER_`. This module
+provides a single
 `ServerConfig` dataclass that both sides share so that the set of variables,
 their serialization format, and their default values are defined in one place.
 The CLI writes config with `to_env()` and the server graph reads it back
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from deepagents_cli.project_utils import ProjectContext
@@ -28,29 +29,29 @@ _DEFAULT_ASSISTANT_ID = "agent"
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
-    """Read a `DA_SERVER_*` boolean from the environment.
+    """Read a `DEEPAGENTS_CLI_SERVER_*` boolean from the environment.
 
     Boolean env vars use the `'true'` / `'false'` convention (case insensitive).
     Missing variables fall back to *default*.
 
     Args:
-        suffix: Variable name suffix after the `DA_SERVER_` prefix.
+        suffix: Variable name suffix after the `DEEPAGENTS_CLI_SERVER_` prefix.
         default: Value when the variable is absent.
 
     Returns:
         Parsed boolean.
     """
-    raw = os.environ.get(f"{_ENV_PREFIX}{suffix}")
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
     if raw is None:
         return default
     return raw.lower() == "true"
 
 
 def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
-    """Read a JSON-encoded `DA_SERVER_*` variable.
+    """Read a JSON-encoded `DEEPAGENTS_CLI_SERVER_*` variable.
 
     Args:
-        suffix: Variable name suffix after the `DA_SERVER_` prefix.
+        suffix: Variable name suffix after the `DEEPAGENTS_CLI_SERVER_` prefix.
 
     Returns:
         Parsed JSON value, or `None` if the variable is absent.
@@ -58,44 +59,44 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
     Raises:
         ValueError: If the variable is present but not valid JSON.
     """
-    raw = os.environ.get(f"{_ENV_PREFIX}{suffix}")
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
     if raw is None:
         return None
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         msg = (
-            f"Failed to parse {_ENV_PREFIX}{suffix} as JSON: {exc}. "
+            f"Failed to parse {SERVER_ENV_PREFIX}{suffix} as JSON: {exc}. "
             f"Value was: {raw[:200]!r}"
         )
         raise ValueError(msg) from exc
 
 
 def _read_env_str(suffix: str) -> str | None:
-    """Read an optional `DA_SERVER_*` string variable.
+    """Read an optional `DEEPAGENTS_CLI_SERVER_*` string variable.
 
     Args:
-        suffix: Variable name suffix after the `DA_SERVER_` prefix.
+        suffix: Variable name suffix after the `DEEPAGENTS_CLI_SERVER_` prefix.
 
     Returns:
         The string value, or `None` if absent.
     """
-    return os.environ.get(f"{_ENV_PREFIX}{suffix}")
+    return os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
 
 
 def _read_env_optional_bool(suffix: str) -> bool | None:
-    """Read a tri-state `DA_SERVER_*` boolean (`True` / `False` / `None`).
+    """Read a tri-state `DEEPAGENTS_CLI_SERVER_*` boolean (`True` / `False` / `None`).
 
     Used for settings where `None` carries a distinct meaning (e.g. "not
     specified, use default logic").
 
     Args:
-        suffix: Variable name suffix after the `DA_SERVER_` prefix.
+        suffix: Variable name suffix after the `DEEPAGENTS_CLI_SERVER_` prefix.
 
     Returns:
         `True`, `False`, or `None` when the variable is absent.
     """
-    raw = os.environ.get(f"{_ENV_PREFIX}{suffix}")
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
     if raw is None:
         return None
     return raw.lower() == "true"
@@ -105,7 +106,8 @@ def _read_env_optional_bool(suffix: str) -> bool | None:
 class ServerConfig:
     """Full configuration payload passed from the CLI to the server subprocess.
 
-    Serialized to/from `DA_SERVER_*` environment variables so that the server
+    Serialized to/from `DEEPAGENTS_CLI_SERVER_*` environment variables so
+    that the server
     graph (which runs in a separate Python interpreter) can reconstruct the
     CLI's intent without sharing memory.
     """
@@ -115,6 +117,8 @@ class ServerConfig:
     assistant_id: str = _DEFAULT_ASSISTANT_ID
     system_prompt: str | None = None
     auto_approve: bool = False
+    interrupt_shell_only: bool = False
+    shell_allow_list: list[str] | None = None
     interactive: bool = True
     enable_shell: bool = True
     enable_ask_user: bool = False
@@ -130,16 +134,23 @@ class ServerConfig:
     trust_project_mcp: bool | None = None
 
     def __post_init__(self) -> None:
-        """Normalize fields that have canonical representations."""
+        """Normalize fields and validate invariants.
+
+        Raises:
+            ValueError: If `shell_allow_list` is an empty list.
+        """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
+        if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
+            msg = "shell_allow_list must be None or non-empty"
+            raise ValueError(msg)
 
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
 
     def to_env(self) -> dict[str, str | None]:
-        """Serialize this config to a `DA_SERVER_*` env-var mapping.
+        """Serialize this config to a `DEEPAGENTS_CLI_SERVER_*` env-var mapping.
 
         `None` values signal that the variable should be *cleared* from the
         environment (rather than set to an empty string), so callers can
@@ -157,6 +168,12 @@ class ServerConfig:
             "ASSISTANT_ID": self.assistant_id,
             "SYSTEM_PROMPT": self.system_prompt,
             "AUTO_APPROVE": str(self.auto_approve).lower(),
+            "INTERRUPT_SHELL_ONLY": str(self.interrupt_shell_only).lower(),
+            "SHELL_ALLOW_LIST": (
+                ",".join(self.shell_allow_list)
+                if self.shell_allow_list is not None
+                else None
+            ),
             "INTERACTIVE": str(self.interactive).lower(),
             "ENABLE_SHELL": str(self.enable_shell).lower(),
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
@@ -178,7 +195,7 @@ class ServerConfig:
 
     @classmethod
     def from_env(cls) -> ServerConfig:
-        """Reconstruct a `ServerConfig` from the current `DA_SERVER_*` env vars.
+        """Reconstruct a `ServerConfig` from `DEEPAGENTS_CLI_SERVER_*` env vars.
 
         This is the inverse of `to_env()` and is called inside the server
         subprocess to recover the CLI's configuration.
@@ -192,6 +209,13 @@ class ServerConfig:
             assistant_id=_read_env_str("ASSISTANT_ID") or _DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
+            interrupt_shell_only=_read_env_bool("INTERRUPT_SHELL_ONLY"),
+            shell_allow_list=(
+                [cmd.strip() for cmd in raw.split(",") if cmd.strip()]
+                if (raw := _read_env_str("SHELL_ALLOW_LIST"))
+                else None
+            )
+            or None,
             interactive=_read_env_bool("INTERACTIVE", default=True),
             enable_shell=_read_env_bool("ENABLE_SHELL", default=True),
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
@@ -220,7 +244,9 @@ class ServerConfig:
         model_params: dict[str, Any] | None,
         assistant_id: str,
         auto_approve: bool,
-        sandbox_type: str,
+        interrupt_shell_only: bool = False,
+        shell_allow_list: list[str] | None = None,
+        sandbox_type: str = "none",
         sandbox_id: str | None,
         sandbox_setup: str | None,
         enable_shell: bool,
@@ -242,6 +268,10 @@ class ServerConfig:
             model_params: Extra model kwargs.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
+            interrupt_shell_only: Validate shell commands via middleware instead
+                of HITL.
+            shell_allow_list: Restrictive shell allow-list to forward to the
+                server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
             sandbox_setup: Path to setup script for the sandbox.
@@ -262,6 +292,8 @@ class ServerConfig:
             model_params=model_params,
             assistant_id=assistant_id,
             auto_approve=auto_approve,
+            interrupt_shell_only=interrupt_shell_only,
+            shell_allow_list=shell_allow_list,
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,

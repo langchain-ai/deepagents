@@ -22,11 +22,13 @@ if TYPE_CHECKING:
     )
     from langchain_core.messages import AIMessage
     from langgraph.types import Command, Interrupt
+    from pydantic import TypeAdapter
     from rich.console import Console
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from pydantic import TypeAdapter, ValidationError
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 from deepagents_cli._ask_user_types import AskUserRequest
 from deepagents_cli._cli_context import CLIContext  # noqa: TC001
@@ -73,6 +75,8 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """
     global _hitl_adapter_cache  # noqa: PLW0603
     if _hitl_adapter_cache is None:
+        from pydantic import TypeAdapter
+
         _hitl_adapter_cache = TypeAdapter(hitl_request_type)
     return _hitl_adapter_cache
 
@@ -148,12 +152,22 @@ def print_usage_table(
         )
 
 
-if TYPE_CHECKING:
-    # Type alias matching HITLResponse["decisions"] element type
-    HITLDecision = ApproveDecision | EditDecision | RejectDecision
+_ask_user_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the `ask_user` interrupt validator."""
 
-_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
-"""Validator for incoming `ask_user` interrupt payloads."""
+
+def _get_ask_user_adapter() -> TypeAdapter:
+    """Return a cached `TypeAdapter(AskUserRequest)`.
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _ask_user_adapter_cache  # noqa: PLW0603
+    if _ask_user_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
+    return _ask_user_adapter_cache
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -410,8 +424,10 @@ async def execute_task_textual(
     )
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
+    from pydantic import ValidationError
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+    ask_user_adapter = _get_ask_user_adapter()
 
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(
@@ -537,9 +553,7 @@ async def execute_task_textual(
                                 ):
                                     try:
                                         validated_ask_user = (
-                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
-                                                iv
-                                            )
+                                            ask_user_adapter.validate_python(iv)
                                         )
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user

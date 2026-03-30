@@ -195,6 +195,9 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["server_kwargs"] is not None
         assert captured_kwargs["server_kwargs"]["assistant_id"] == "agent"
         assert captured_kwargs["server_kwargs"]["interactive"] is True
+        # auto_approve must NOT be in server_kwargs — the interactive server
+        # must always compile with full HITL interrupts so Shift+Tab works.
+        assert "auto_approve" not in captured_kwargs["server_kwargs"]
 
         # MCP preload kwargs forwarded (no_mcp=False by default)
         assert captured_kwargs["mcp_preload_kwargs"] is not None

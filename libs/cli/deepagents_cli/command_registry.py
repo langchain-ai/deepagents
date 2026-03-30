@@ -103,7 +103,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/trace",
         description="Open current thread in LangSmith",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/tokens",
@@ -128,6 +128,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="upgrade",
+    ),
+    SlashCommand(
+        name="/auto-update",
+        description="Toggle automatic updates on or off",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/changelog",

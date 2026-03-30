@@ -25,6 +25,46 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ENV_PREFIX = "DEEPAGENTS_CLI_"
+
+
+def resolve_env_var(name: str) -> str | None:
+    """Look up an env var with `DEEPAGENTS_CLI_` prefix override.
+
+    Checks `DEEPAGENTS_CLI_{name}` first, then falls back to `{name}`.
+
+    If the prefixed variable is *present* in the environment (even as an empty
+    string), the canonical variable is never consulted. This lets users
+    set `DEEPAGENTS_CLI_X=""` to shadow a canonically-set key -- the function
+    will return `None` (since empty strings are normalized to `None`),
+    effectively suppressing the canonical value.
+
+    If `name` already carries the prefix, the double-prefixed lookup is skipped
+    to avoid nonsensical `DEEPAGENTS_CLI_DEEPAGENTS_CLI_*` reads
+    (e.g., when the name comes from a user's `config.toml`).
+
+    Args:
+        name: The canonical environment variable name (e.g.
+            `ANTHROPIC_API_KEY`).
+
+    Returns:
+        The resolved value, or `None` when absent or empty.
+    """
+    if not name.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{name}"
+        if prefixed in os.environ:
+            val = os.environ[prefixed]
+            if not val and os.environ.get(name):
+                logger.debug(
+                    "%s is set but empty, blocking non-empty %s. "
+                    "Unset %s to use the canonical variable.",
+                    prefixed,
+                    name,
+                    prefixed,
+                )
+            return val or None
+    return os.environ.get(name) or None
+
 
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
@@ -703,7 +743,7 @@ def has_provider_credentials(provider: str) -> bool | None:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -949,7 +989,7 @@ class ModelConfig:
         env_var = provider.get("api_key_env")
         if not env_var:
             return None  # No key configured — can't verify
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:
         """Get custom base URL.

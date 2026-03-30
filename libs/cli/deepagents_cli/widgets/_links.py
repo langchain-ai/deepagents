@@ -49,6 +49,7 @@ def open_style_link(event: Click) -> None:
                 notify(
                     f"Blocked suspicious URL: {safe_url}\n{detail}",
                     severity="warning",
+                    markup=False,
                 )
         except (AttributeError, TypeError):
             logger.debug("Could not send URL-blocked notification", exc_info=True)

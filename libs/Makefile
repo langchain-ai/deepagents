@@ -1,10 +1,11 @@
-PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(wildcard */Makefile partners/*/Makefile))))
+MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(patsubst $(MAKEFILE_DIR)%,%,$(wildcard $(MAKEFILE_DIR)*/Makefile $(MAKEFILE_DIR)partners/*/Makefile)))))
 
 # Map package dirs to their required Python version
 # acp requires 3.14, everything else uses 3.12
 python_version = $(if $(filter acp,$1),3.14,3.12)
 
-.PHONY: help lock lock-check lint format
+.PHONY: help lock lock-bump lock-check lint format
 
 .DEFAULT_GOAL := help
 
@@ -21,6 +22,18 @@ lock: ## Update all lockfiles
 		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
 	)
 	@echo "✅ All lockfiles updated!"
+
+lock-bump: ## Bump a dependency across all lockfiles (usage: make lock-bump DEP=requests)
+	@if [ -z "$(DEP)" ]; then \
+		echo "Usage: make lock-bump DEP=<package>"; \
+		exit 1; \
+	fi
+	@set -e; \
+	$(foreach pkg,$(PACKAGE_DIRS), \
+		echo "⬆️  Bumping $(DEP) in $(pkg)"; \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))' -P '$(DEP)'; \
+	)
+	@echo "✅ Bumped $(DEP) across all lockfiles!"
 
 lock-check: ## Check all lockfiles are up-to-date
 	@set -e; \

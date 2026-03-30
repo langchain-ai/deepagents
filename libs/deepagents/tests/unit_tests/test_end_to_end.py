@@ -25,6 +25,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -195,8 +196,8 @@ class TestDeepAgentEndToEnd:
         assert first_metadata.get("request_id") == "req-main-123"
         assert first_metadata.get("tenant") == "acme-main"
 
-    def test_tool_runtime_config_includes_tags_and_metadata(self) -> None:
-        """Test tool runtime config includes caller-provided tags and metadata."""
+    def test_tool_runtime_config_includes_default_graph_metadata(self) -> None:
+        """Test tool runtime config includes the defaults from `create_deep_agent`."""
         captured_config: dict[str, Any] | None = None
 
         @tool
@@ -237,10 +238,12 @@ class TestDeepAgentEndToEnd:
             },
         )
 
-        metadata = captured_config["metadata"]
-        assert metadata["ls_integration"] == "deepagents"
-        assert metadata["lc_agent_name"] == "supervisor"
-        assert captured_config.get("tags") == ["tool-tag", "tool-session-456"]
+        assert captured_config is not None
+        assert captured_config["recursion_limit"] == agent.config["recursion_limit"]
+        assert captured_config["tags"] == ["tool-tag", "tool-session-456"]
+        assert captured_config["metadata"]["ls_integration"] == "deepagents"
+        assert captured_config["metadata"]["lc_agent_name"] == "supervisor"
+        assert "deepagents" in captured_config["metadata"]["versions"]
 
     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
         """Test deepagent with tools using a fake LLM model.
@@ -1401,6 +1404,10 @@ class TestLargeHumanMessageEviction:
         assert evicted_to is not None
         assert evicted_to.startswith("/conversation_history/")
 
+        files = result.get("files", {})
+        assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+        assert files[evicted_to]["content"] == large_content
+
         assert len(fake_model.call_history) == 1
         model_messages = fake_model.call_history[0]["messages"]
         model_human = [m for m in model_messages if isinstance(m, HumanMessage)]
@@ -1462,3 +1469,150 @@ class TestLargeHumanMessageEviction:
         assert len(tagged) == 2
         for m in tagged:
             assert m.content in (large_content_1, large_content_2)
+
+        files = result_3.get("files", {})
+        for m in tagged:
+            evicted_to = m.additional_kwargs["lc_evicted_to"]
+            assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
+            assert files[evicted_to]["content"] == m.content
+
+
+class TestSummarizationOffloadToState:
+    """Test that SummarizationMiddleware offloads conversation history to StateBackend."""
+
+    def test_offloaded_file_persisted_in_state(self) -> None:
+        """Summarization should write the offloaded history to state via files_update.
+
+        Uses ``create_deep_agent`` with default ``StateBackend`` so that
+        ``backend.write`` returns a ``files_update`` dict. The ``Command``
+        produced by ``wrap_model_call`` must propagate that dict so the file
+        is persisted in graph state under the ``files`` channel.
+        """
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
+        )
+        fake_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(
+            model=fake_model,
+            checkpointer=InMemorySaver(),
+        )
+
+        text_10_000_tokens = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        text_50_000_tokens = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        input_messages = [
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 60,000 tokens
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 120,000 tokens
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
+            HumanMessage(content="query"),
+        ]
+
+        config = {"configurable": {"thread_id": "summarization-state-test"}}
+        result = agent.invoke({"messages": input_messages}, config)
+
+        assert len(result["messages"]) == 8  # 7 inputs + response
+        assert result["messages"][-1].content == "response"
+
+        # two calls: one to summarize, one for response
+        assert len(fake_model.call_history) == 2
+
+        # summarization call
+        summarization_messages = fake_model.call_history[0]["messages"]
+        assert any("Messages to summarize:" in m.content for m in summarization_messages if hasattr(m, "content"))
+
+        # model call on reduced context
+        summarized_messages = fake_model.call_history[1]["messages"]
+        assert len(summarized_messages) < len(input_messages)
+        summary_message = next(m for m in summarized_messages if isinstance(m, HumanMessage))
+        assert "summary goes here" in summary_message.content
+
+        # Verify conversation history was offloaded to state
+        state = agent.get_state(config)
+        files = state.values.get("files", {})
+        conversation_history_files = {k: v for k, v in files.items() if k.startswith("/conversation_history/")}
+        assert conversation_history_files, "Offloaded conversation history file not found in state"
+
+
+class TestCompactConversationTool:
+    """Test that the compact_conversation tool triggers summarization."""
+
+    def test_compact_conversation_tool_invocation(self) -> None:
+        """Agent invokes compact_conversation and conversation is compacted.
+
+        Uses ``create_summarization_tool_middleware`` with a fake model that
+        has a profile so fraction-based defaults are used. Input messages
+        carry ``usage_metadata`` and ``response_metadata`` so the eligibility
+        gate passes. The summarization model (same fake instance) returns a
+        summary, and the agent model emits the tool call then a final response.
+        """
+        summary_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="summary of earlier conversation")]))
+        summary_model.profile = {"max_input_tokens": 200_000}
+
+        provider = summary_model._get_ls_params()["ls_provider"]
+
+        agent_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "compact_conversation",
+                                "args": {},
+                                "id": "call_compact",
+                                "type": "tool_call",
+                            }
+                        ],
+                        usage_metadata={"input_tokens": 150_000, "output_tokens": 100, "total_tokens": 150_100},
+                        response_metadata={"model_provider": provider},
+                    ),
+                    AIMessage(content="Done, conversation compacted."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=agent_model,
+            middleware=[
+                create_summarization_tool_middleware(summary_model, StateBackend),
+            ],
+            checkpointer=InMemorySaver(),
+        )
+
+        text_10k = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        text_50k = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+
+        input_messages: list = [
+            HumanMessage(content=text_10k),
+            AIMessage(
+                content=text_50k,
+                usage_metadata={"input_tokens": 60_000, "output_tokens": 30_000, "total_tokens": 90_000},
+                response_metadata={"model_provider": provider},
+            ),
+            HumanMessage(content=text_10k),
+            AIMessage(
+                content=text_50k,
+                usage_metadata={"input_tokens": 120_000, "output_tokens": 30_000, "total_tokens": 150_000},
+                response_metadata={"model_provider": provider},
+            ),
+            HumanMessage(content="please compact"),
+        ]
+
+        config = {"configurable": {"thread_id": "compact-tool-test"}}
+        result = agent.invoke({"messages": input_messages}, config)
+
+        assert result["messages"][-1].content == "Done, conversation compacted."
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        compact_msgs = [m for m in tool_messages if m.tool_call_id == "call_compact"]
+        assert len(compact_msgs) == 1
+        assert "compacted" in compact_msgs[0].content.lower() or "summarized" in compact_msgs[0].content.lower()
+        assert "conversation that has been summarized" in agent_model.call_history[1]["messages"][1].content

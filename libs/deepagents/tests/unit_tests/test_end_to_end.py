@@ -230,10 +230,17 @@ class TestDeepAgentEndToEnd:
             name="supervisor",
         )
 
-        agent.invoke({"messages": [HumanMessage(content="Call foo")]})
+        agent.invoke(
+            {"messages": [HumanMessage(content="Call foo")]},
+            config={
+                "configurable": {"thread_id": "test_tool_runtime_metadata"},
+                "tags": ["tool-tag", "tool-session-456"],
+            },
+        )
 
         assert captured_config is not None
         assert captured_config["recursion_limit"] == 9_999
+        assert captured_config["tags"] == ["tool-tag", "tool-session-456"]
         assert captured_config["metadata"]["ls_integration"] == "deepagents"
         assert captured_config["metadata"]["lc_agent_name"] == "supervisor"
         assert "deepagents" in captured_config["metadata"]["versions"]

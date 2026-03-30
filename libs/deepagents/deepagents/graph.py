@@ -214,15 +214,14 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if interrupt_on is not None:
-        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
         "middleware": gp_middleware,
     }
+    if interrupt_on is not None:
+        general_purpose_spec["interrupt_on"] = interrupt_on
 
     # Set up subagent middleware
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -253,12 +252,16 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             subagent_middleware.extend(spec.get("middleware", []))
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
+            subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
                 "middleware": subagent_middleware,
             }
+            if subagent_interrupt_on is not None:
+                processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it

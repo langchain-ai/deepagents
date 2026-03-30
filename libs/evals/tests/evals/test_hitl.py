@@ -253,3 +253,61 @@ def test_subagent_with_custom_interrupt_on(model: BaseChatModel) -> None:
     # Verify no more interrupts after approval
     state_after = agent.get_state(config)
     assert len(state_after.interrupts) == 0
+
+
+@pytest.mark.langsmith
+def test_custom_subagent_inherits_parent_interrupt_on(model: BaseChatModel) -> None:
+    """Test that custom subagents inherit `interrupt_on` from the parent agent when omitted."""
+    checkpointer = MemorySaver()
+    agent = create_deep_agent(
+        model=model,
+        tools=[sample_tool, get_weather, get_soccer_scores],
+        interrupt_on=SAMPLE_TOOL_CONFIG,
+        checkpointer=checkpointer,
+        subagents=[
+            {
+                "name": "task_handler",
+                "description": "A subagent that can handle all sorts of tasks",
+                "system_prompt": "You are a task handler. You can handle all sorts of tasks.",
+                "tools": [sample_tool, get_weather, get_soccer_scores],
+            },
+        ],
+    )
+
+    thread_id = str(uuid.uuid4())
+    query = (
+        "Use the task tool to kick off the task_handler subagent. "
+        "Tell it to call the sample tool, get the weather in New York "
+        "and get scores for the latest soccer games in parallel"
+    )
+
+    _ = run_agent(
+        agent,
+        model=model,
+        query=query,
+        thread_id=thread_id,
+    )
+
+    config = {"configurable": {"thread_id": thread_id}}
+    state = agent.get_state(config)
+
+    assert state.interrupts is not None
+    assert len(state.interrupts) > 0
+    interrupt_value = state.interrupts[0].value
+    action_requests = interrupt_value["action_requests"]
+    assert len(action_requests) == 2
+    assert any(action_request["name"] == "sample_tool" for action_request in action_requests)
+    assert any(action_request["name"] == "get_soccer_scores" for action_request in action_requests)
+    assert not any(action_request["name"] == "get_weather" for action_request in action_requests)
+
+    review_configs = interrupt_value["review_configs"]
+    assert any(
+        review_config["action_name"] == "sample_tool"
+        and review_config["allowed_decisions"] == ["approve", "edit", "reject"]
+        for review_config in review_configs
+    )
+    assert any(
+        review_config["action_name"] == "get_soccer_scores"
+        and review_config["allowed_decisions"] == ["approve", "reject"]
+        for review_config in review_configs
+    )

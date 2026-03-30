@@ -155,7 +155,7 @@ class TestMakeHitlDecision:
         """Nested string values should be inspected recursively."""
         warnings = _collect_action_request_warnings(
             {
-                "name": "http_request",
+                "name": "fetch_url",
                 "args": {"headers": {"Referer": "echo \u200bhello"}},
             }
         )
@@ -797,24 +797,35 @@ class TestStartLangsmithThreadUrlLookup:
 
 
 class TestShellAllowListDecisionLogic:
-    """Tests for shell allow-list → auto_approve derivation."""
+    """Tests for shell allow-list → auto_approve / interrupt_shell_only."""
 
     @pytest.mark.parametrize(
-        ("shell_allow_list", "expected_auto"),
+        (
+            "shell_allow_list",
+            "expected_auto",
+            "expected_shell_only",
+            "expected_allow_list",
+        ),
         [
             pytest.param(
                 None,
                 True,
+                False,
+                None,
                 id="no-allow-list-auto-approves",
             ),
             pytest.param(
                 ["ls", "cat"],
                 False,
-                id="restrictive-list-disables-auto-approve",
+                True,
+                ["ls", "cat"],
+                id="restrictive-list-interrupts-shell-only",
             ),
             pytest.param(
                 SHELL_ALLOW_ALL,
                 True,
+                False,
+                None,
                 id="allow-all-auto-approves",
             ),
         ],
@@ -823,8 +834,10 @@ class TestShellAllowListDecisionLogic:
         self,
         shell_allow_list: list[str] | None,
         expected_auto: bool,
+        expected_shell_only: bool,
+        expected_allow_list: list[str] | None,
     ) -> None:
-        """Verify start_server_and_get_agent receives correct auto_approve."""
+        """Verify start_server_and_get_agent receives correct flags."""
         mock_agent = MagicMock()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
@@ -863,6 +876,8 @@ class TestShellAllowListDecisionLogic:
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["auto_approve"] is expected_auto
+        assert kwargs["interrupt_shell_only"] is expected_shell_only
+        assert kwargs["shell_allow_list"] == expected_allow_list
 
 
 class TestNonInteractivePrompt:

@@ -52,17 +52,15 @@ def show_help() -> None:
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"
     )
-    console.print(
-        "  deepagents list                                List all available agents"
-    )
-    console.print(
-        "  deepagents reset --agent AGENT [--target SRC]  Reset an agent's prompt"
-    )
+    console.print("  deepagents agents <list|reset>                 Manage agents")
     console.print(
         "  deepagents skills <list|create|info|delete>    Manage agent skills"
     )
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
+    )
+    console.print(
+        "  deepagents update                              Check for and install updates"
     )
     console.print()
 
@@ -105,6 +103,7 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
+    console.print("  --stdin                    Read input from stdin explicitly")
     console.print(
         "  --json                     Emit machine-readable JSON for commands"
     )
@@ -138,6 +137,10 @@ def show_help() -> None:
         "  deepagents -n 'Fix tests' -S all           # Any command",
         style=theme.MUTED,
     )
+    console.print(
+        "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",
+        style=theme.MUTED,
+    )
     console.print()
 
 
@@ -158,6 +161,29 @@ def show_list_help() -> None:
     )
     console.print()
     _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents list")
+    console.print("  deepagents list --json")
+    console.print()
+
+
+def show_agents_help() -> None:
+    """Show help information for the `agents` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents agents <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls           List all agents")
+    console.print("  reset             Reset an agent's prompt to default")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents agents list")
+    console.print("  deepagents agents reset --agent coder")
+    console.print("  deepagents agents reset --agent coder --target researcher")
     console.print()
 
 
@@ -180,11 +206,13 @@ def show_reset_help() -> None:
     _print_option_section(
         "  --agent NAME            Agent to reset (required)",
         "  --target SRC            Copy AGENTS.md from another agent instead",
+        "  --dry-run               Show what would happen without making changes",
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents reset --agent coder")
     console.print("  deepagents reset --agent coder --target researcher")
+    console.print("  deepagents reset --agent coder --dry-run")
     console.print()
 
 
@@ -245,6 +273,11 @@ def show_skills_list_help() -> None:
         "  --project               Show only project-level skills",
     )
     console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents skills list")
+    console.print("  deepagents skills list --project")
+    console.print("  deepagents skills list --json")
+    console.print()
 
 
 def show_skills_create_help() -> None:
@@ -276,6 +309,10 @@ def show_skills_info_help() -> None:
         "  --project               Search only in project skills",
     )
     console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents skills info web-research")
+    console.print("  deepagents skills info my-skill --project")
+    console.print()
 
 
 def show_skills_delete_help() -> None:
@@ -288,12 +325,32 @@ def show_skills_delete_help() -> None:
         "  --agent NAME            Agent identifier (default: agent)",
         "  --project               Search only in project skills",
         "  -f, --force             Skip confirmation prompt",
+        "  --dry-run               Show what would happen without making changes",
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents skills delete old-skill")
     console.print("  deepagents skills delete old-skill --force")
     console.print("  deepagents skills delete old-skill --project")
+    console.print("  deepagents skills delete old-skill --dry-run")
+    console.print()
+
+
+def show_update_help() -> None:
+    """Show help information for the `update` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents update [options]")
+    console.print()
+    console.print(
+        "Check for and install CLI updates from PyPI.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents update")
+    console.print("  deepagents update --json")
     console.print()
 
 
@@ -327,10 +384,13 @@ def show_threads_delete_help() -> None:
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads delete <ID> [options]")
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  --dry-run               Show what would happen without making changes",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents threads delete abc123")
+    console.print("  deepagents threads delete abc123 --dry-run")
     console.print()
 
 

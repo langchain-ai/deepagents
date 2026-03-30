@@ -6,6 +6,11 @@ Screen {
     layers: base autocomplete;
 }
 
+/* Thin scrollbars app-wide */
+* {
+    scrollbar-size-vertical: 1;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */
@@ -100,11 +105,6 @@ Screen {
 /* Tool approval widgets */
 .tool-approval-widget {
     height: auto;
-}
-
-.approval-file-path {
-    color: $primary;
-    text-style: bold;
 }
 
 .approval-description {
@@ -250,6 +250,11 @@ ToolCallMessage.-ascii:hover {
 .ask-user-menu .ask-user-question-inactive {
     opacity: 0.5;
     padding-left: 2;
+}
+
+.ask-user-menu .ask-user-question-text {
+    margin: 0 0 0 2;
+    padding: 0;
 }
 
 .ask-user-menu .ask-user-choice {

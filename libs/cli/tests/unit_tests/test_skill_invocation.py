@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_cli.command_registry import build_skill_commands, parse_skill_command
+from deepagents_cli.command_registry import (
+    _STATIC_SKILL_ALIASES,
+    build_skill_commands,
+    parse_skill_command,
+)
 from deepagents_cli.skills.load import load_skill_content
 
 if TYPE_CHECKING:
@@ -157,6 +161,69 @@ class TestBuildSkillCommands:
             assert isinstance(entry, tuple)
             assert len(entry) == 3
             assert all(isinstance(s, str) for s in entry)
+
+    def test_excludes_static_skill_aliases(self) -> None:
+        """Skills with names matching static aliases are excluded."""
+        skills = [
+            {
+                "name": "remember",
+                "description": "Update memory",
+                "path": "/built-in/SKILL.md",
+                "license": "MIT",
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "built-in",
+            },
+            {
+                "name": "skill-creator",
+                "description": "Create skills",
+                "path": "/built-in/SKILL.md",
+                "license": "MIT",
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "built-in",
+            },
+            {
+                "name": "custom-skill",
+                "description": "A custom skill",
+                "path": "/user/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "user",
+            },
+        ]
+        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        names = [r[0] for r in result]
+        assert "/skill:remember" not in names
+        assert "/skill:skill-creator" not in names
+        assert "/skill:custom-skill" in names
+        assert len(result) == 1
+
+    def test_non_alias_command_names_not_suppressed(self) -> None:
+        """Skills named after non-alias commands are NOT excluded."""
+        skills = [
+            {
+                "name": "model",
+                "description": "A model management skill",
+                "path": "/user/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+                "source": "user",
+            },
+        ]
+        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        assert len(result) == 1
+        assert result[0][0] == "/skill:model"
+
+    def test_static_skill_aliases_contains_expected_entries(self) -> None:
+        """Verify the alias set only contains actual skill-backed commands."""
+        assert {"remember", "skill-creator"} == _STATIC_SKILL_ALIASES
 
 
 class TestSkillCommandParsing:

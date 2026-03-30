@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from deepagents.backends import FilesystemBackend, LocalShellBackend
 from deepagents.backends.utils import create_file_data
@@ -29,6 +32,26 @@ def _assert_snapshot(snapshot_path: Path, actual: str, *, update_snapshots: bool
     assert actual == expected
 
 
+def _tools_as_openai_snapshot(tools: list[Any]) -> str:
+    formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+    return json.dumps(formatted_tools, indent=2, sort_keys=True) + "\n"
+
+
+def _assert_tools_snapshot(
+    snapshots_dir: Path,
+    snapshot_name: str,
+    tools: list[Any],
+    *,
+    update_snapshots: bool,
+) -> None:
+    snapshot_path = snapshots_dir / snapshot_name
+    _assert_snapshot(
+        snapshot_path,
+        _tools_as_openai_snapshot(tools),
+        update_snapshots=update_snapshots,
+    )
+
+
 def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
     backend = LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True)
@@ -38,6 +61,13 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
 
     history = model.call_history
     assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_execute_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
@@ -60,6 +90,13 @@ def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_s
 
     history = model.call_history
     assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_without_execute_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
@@ -87,6 +124,13 @@ def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots
 
     history = model.call_history
     assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "custom_system_message_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
@@ -132,6 +176,13 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 
     history = model.call_history
     assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_sync_and_async_subagents_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
@@ -205,6 +256,13 @@ description: Systematic code review process following best practices and style g
 
     history = model.call_history
     assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_memory_and_skills_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
 
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]

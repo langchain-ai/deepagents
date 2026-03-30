@@ -2,10 +2,71 @@
 
 from __future__ import annotations
 
+import os
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+from packaging.version import Version
+
+OPENROUTER_MIN_VERSION = "0.2.0"
+"""Minimum required version of `langchain-openrouter`.
+
+Used by both the SDK (`resolve_model`) and the CLI (`config.py`) to enforce
+a consistent version floor at runtime.
+"""
+
+_OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"
+"""Default `app_url` (maps to `HTTP-Referer`) for OpenRouter attribution.
+
+See https://openrouter.ai/docs/app-attribution for details.
+"""
+
+_OPENROUTER_APP_TITLE = "Deep Agents"
+"""Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
+
+
+def _openrouter_attribution_kwargs() -> dict[str, Any]:
+    """Build OpenRouter attribution kwargs, deferring to env var overrides.
+
+    `ChatOpenRouter` reads `OPENROUTER_APP_URL` and `OPENROUTER_APP_TITLE` via
+    `from_env()` defaults. Explicit kwargs passed to the constructor take
+    precedence over those env-var defaults, so we only inject our SDK defaults
+    when the corresponding env var is **not** set — otherwise the user's env var
+    would be overridden.
+
+    Returns:
+        Dictionary of attribution kwargs to spread into `init_chat_model`.
+    """
+    kwargs: dict[str, Any] = {}
+    if not os.environ.get("OPENROUTER_APP_URL"):
+        kwargs["app_url"] = _OPENROUTER_APP_URL
+    if not os.environ.get("OPENROUTER_APP_TITLE"):
+        kwargs["app_title"] = _OPENROUTER_APP_TITLE
+    return kwargs
+
+
+def check_openrouter_version() -> None:
+    """Raise if the installed `langchain-openrouter` is below the minimum.
+
+    If the package is not installed at all the check is skipped;
+    `init_chat_model` will surface its own missing-dependency error downstream.
+
+    Raises:
+        ImportError: If the installed version is too old.
+    """
+    try:
+        installed = pkg_version("langchain-openrouter")
+    except PackageNotFoundError:
+        return
+    if Version(installed) < Version(OPENROUTER_MIN_VERSION):
+        msg = (
+            f"deepagents requires langchain-openrouter>={OPENROUTER_MIN_VERSION}, "
+            f"but {installed} is installed. "
+            f"Run: pip install 'langchain-openrouter>={OPENROUTER_MIN_VERSION}'"
+        )
+        raise ImportError(msg)
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -15,6 +76,9 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
 
     String models are resolved via `init_chat_model`. OpenAI models
     (prefixed with `openai:`) default to the Responses API.
+
+    OpenRouter models include default app attribution headers unless overridden
+    via `OPENROUTER_APP_URL` / `OPENROUTER_APP_TITLE` env vars.
 
     Args:
         model: Model string or pre-configured model instance.
@@ -26,6 +90,9 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
         return model
     if model.startswith("openai:"):
         return init_chat_model(model, use_responses_api=True)
+    if model.startswith("openrouter:"):
+        check_openrouter_version()
+        return init_chat_model(model, **_openrouter_attribution_kwargs())
     return init_chat_model(model)
 
 

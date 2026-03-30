@@ -20,7 +20,7 @@ Then, navigate into the newly created folder and run `uv sync`:
 
 ```sh
 cd deepagents/libs/acp
-uv sync
+uv sync --group examples
 ```
 
 Rename the `.env.example` file to `.env` and add your [Anthropic](https://claude.com/platform/api) API key. You may also optionally set up tracing for your Deep Agent using [LangSmith](https://smith.langchain.com/) by populating the other env vars in the example file:
@@ -60,10 +60,16 @@ Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an op
 
 And that's it! You can now use the Deep Agent in Zed to interact with your project.
 
-If you need to upgrade your version of Deep Agents, run:
+If you need to upgrade your version of Deep Agents, pull the latest changes and re-sync:
 
 ```sh
-uv upgrade deepagents-acp
+git pull && uv sync --group examples
+```
+
+Or for specific packages:
+
+```sh
+uv lock --upgrade-package langchain_anthropic # for example
 ```
 
 ## Launch a custom Deep Agent with ACP
@@ -110,3 +116,36 @@ toad acp "python path/to/your_server.py" .
 # or
 toad acp "uv run python path/to/your_server.py" .
 ```
+
+## Model Switching
+
+The ACP adapter supports dynamic model switching using Session Config Options. This allows users to switch between different LLM models mid-session without losing conversation history.
+
+### Quick Example
+
+```python
+from deepagents_acp.server import AgentServerACP, AgentSessionContext
+
+# Define available models
+models = [
+    {"value": "anthropic:claude-opus-4-6", "name": "Claude Opus 4"},
+    {"value": "anthropic:claude-sonnet-4", "name": "Claude Sonnet 4"},
+    {"value": "openai:gpt-4-turbo", "name": "GPT-4 Turbo"},
+]
+
+# Create an agent factory that uses the model from context
+def build_agent(context: AgentSessionContext):
+    model = context.model
+
+    # Pass model string directly - it handles provider:model-name format
+    return create_deep_agent(
+        model=model,
+        checkpointer=checkpointer,
+        backend=create_backend,
+    )
+
+# Pass models to the server
+server = AgentServerACP(agent=build_agent, models=models)
+```
+
+You can see a full example [here](./examples/demo_agent.py) with LangChain's model profile feature.

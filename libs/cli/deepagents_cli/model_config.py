@@ -11,6 +11,7 @@ import importlib.util
 import logging
 import os
 import tempfile
+import threading
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,46 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
+
+_ENV_PREFIX = "DEEPAGENTS_CLI_"
+
+
+def resolve_env_var(name: str) -> str | None:
+    """Look up an env var with `DEEPAGENTS_CLI_` prefix override.
+
+    Checks `DEEPAGENTS_CLI_{name}` first, then falls back to `{name}`.
+
+    If the prefixed variable is *present* in the environment (even as an empty
+    string), the canonical variable is never consulted. This lets users
+    set `DEEPAGENTS_CLI_X=""` to shadow a canonically-set key -- the function
+    will return `None` (since empty strings are normalized to `None`),
+    effectively suppressing the canonical value.
+
+    If `name` already carries the prefix, the double-prefixed lookup is skipped
+    to avoid nonsensical `DEEPAGENTS_CLI_DEEPAGENTS_CLI_*` reads
+    (e.g., when the name comes from a user's `config.toml`).
+
+    Args:
+        name: The canonical environment variable name (e.g.
+            `ANTHROPIC_API_KEY`).
+
+    Returns:
+        The resolved value, or `None` when absent or empty.
+    """
+    if not name.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{name}"
+        if prefixed in os.environ:
+            val = os.environ[prefixed]
+            if not val and os.environ.get(name):
+                logger.debug(
+                    "%s is set but empty, blocking non-empty %s. "
+                    "Unset %s to use the canonical variable.",
+                    prefixed,
+                    name,
+                    prefixed,
+                )
+            return val or None
+    return os.environ.get(name) or None
 
 
 class ModelConfigError(Exception):
@@ -219,6 +260,8 @@ registry fallback.
 _available_models_cache: dict[str, list[str]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
+_provider_profiles_cache: dict[str, dict[str, Any]] = {}
+_provider_profiles_lock = threading.Lock()
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
 
@@ -232,6 +275,7 @@ def clear_caches() -> None:
     _available_models_cache = None
     _builtin_providers_cache = None
     _default_config_cache = None
+    _provider_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
@@ -292,7 +336,11 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
-    Locating the package on disk with `importlib.util.find_spec` and load *only*
+    Results are cached by `module_path` so repeated calls (e.g., from both
+    `get_available_models` and `get_model_profiles`) reuse the same dict.
+    Use `clear_caches()` to reset.
+
+    Locates the package on disk with `importlib.util.find_spec` and loads *only*
     the `_profiles.py` file via `spec_from_file_location`.
 
     Args:
@@ -306,41 +354,48 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         ImportError: If the package is not installed or the profile module
             cannot be found on disk.
     """
-    parts = module_path.split(".")
-    package_root = parts[0]
+    with _provider_profiles_lock:
+        cached = _provider_profiles_cache.get(module_path)
+        if cached is not None:  # `is not None` so empty profile dicts are cached
+            return cached
 
-    spec = importlib.util.find_spec(package_root)
-    if spec is None:
-        msg = f"Package {package_root} is not installed"
-        raise ImportError(msg)
+        parts = module_path.split(".")
+        package_root = parts[0]
 
-    # Determine the package directory from the spec.
-    if spec.origin:
-        package_dir = Path(spec.origin).parent
-    elif spec.submodule_search_locations:
-        package_dir = Path(next(iter(spec.submodule_search_locations)))
-    else:
-        msg = f"Cannot determine location for {package_root}"
-        raise ImportError(msg)
+        spec = importlib.util.find_spec(package_root)
+        if spec is None:
+            msg = f"Package {package_root} is not installed"
+            raise ImportError(msg)
 
-    # Build the path to the target file (e.g., data/_profiles.py).
-    relative_parts = parts[1:]  # ["data", "_profiles"]
-    profiles_path = package_dir.joinpath(
-        *relative_parts[:-1], f"{relative_parts[-1]}.py"
-    )
+        # Determine the package directory from the spec.
+        if spec.origin:
+            package_dir = Path(spec.origin).parent
+        elif spec.submodule_search_locations:
+            package_dir = Path(next(iter(spec.submodule_search_locations)))
+        else:
+            msg = f"Cannot determine location for {package_root}"
+            raise ImportError(msg)
 
-    if not profiles_path.exists():
-        msg = f"Profile module not found: {profiles_path}"
-        raise ImportError(msg)
+        # Build the path to the target file (e.g., data/_profiles.py).
+        relative_parts = parts[1:]  # ["data", "_profiles"]
+        profiles_path = package_dir.joinpath(
+            *relative_parts[:-1], f"{relative_parts[-1]}.py"
+        )
 
-    file_spec = importlib.util.spec_from_file_location(module_path, profiles_path)
-    if file_spec is None or file_spec.loader is None:
-        msg = f"Could not create module spec for {profiles_path}"
-        raise ImportError(msg)
+        if not profiles_path.exists():
+            msg = f"Profile module not found: {profiles_path}"
+            raise ImportError(msg)
 
-    module = importlib.util.module_from_spec(file_spec)
-    file_spec.loader.exec_module(module)
-    return getattr(module, "_PROFILES", {})
+        file_spec = importlib.util.spec_from_file_location(module_path, profiles_path)
+        if file_spec is None or file_spec.loader is None:
+            msg = f"Could not create module spec for {profiles_path}"
+            raise ImportError(msg)
+
+        module = importlib.util.module_from_spec(file_spec)
+        file_spec.loader.exec_module(module)
+        profiles = getattr(module, "_PROFILES", {})
+        _provider_profiles_cache[module_path] = profiles
+        return profiles
 
 
 def _profile_module_from_class_path(class_path: str) -> str | None:
@@ -688,7 +743,7 @@ def has_provider_credentials(provider: str) -> bool | None:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -934,7 +989,7 @@ class ModelConfig:
         env_var = provider.get("api_key_env")
         if not env_var:
             return None  # No key configured — can't verify
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:
         """Get custom base URL.

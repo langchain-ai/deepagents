@@ -38,6 +38,8 @@ _TIPS: list[str] = [
     "Use /skill:<name> to invoke a skill directly",
     "Type /update to check for and install updates",
     "Use /theme to customize the CLI colors and style",
+    "Use /skill-creator to build reusable agent skills",
+    "Use /auto-update to toggle automatic CLI updates",
 ]
 """Rotating tips shown in the welcome footer.
 
@@ -187,8 +189,8 @@ class WelcomeBanner(Static):
         )
 
         if not ansi and _is_editable_install():
-            # Only color the version number in dev orange; art stays primary.
-            dev_style = TStyle(foreground=TColor.parse(colors.primary_dev), bold=True)
+            # Highlight local-install version tag with tool accent; art stays primary.
+            dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
             version_tag = f"v{__version__} (local)"
             idx = banner.rfind(version_tag)
             if idx >= 0:

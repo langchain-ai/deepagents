@@ -400,7 +400,8 @@ except PermissionError:
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
             # An unreachable condition was reached
-            raise AssertionError(f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}")
+            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
+            raise AssertionError(msg)
         response = responses[0]
         if response.error:
             return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")

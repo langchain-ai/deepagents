@@ -119,7 +119,6 @@ _MAX_INLINE_ARGS = 3
 # Truncation limits for display
 _MAX_TODO_CONTENT_LEN = 70
 _MAX_WEB_CONTENT_LEN = 100
-_MAX_WEB_PREVIEW_LEN = 150
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -136,7 +135,6 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Web tools
     "web_search",
     "fetch_url",
-    "http_request",
     # Agent tools
     "task",
     "write_todos",
@@ -1056,7 +1054,6 @@ class ToolCallMessage(Vertical):
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
-            "http_request": self._format_web_output,
             "task": self._format_task_output,
         }
 
@@ -1342,7 +1339,7 @@ class ToolCallMessage(Vertical):
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Format web_search/fetch_url/http_request output.
+        """Format web_search/fetch_url output.
 
         Returns:
             FormattedOutput with web response and optional truncation info.
@@ -1380,19 +1377,10 @@ class ToolCallMessage(Vertical):
                 data.get("results", []), is_preview=is_preview
             )
 
-        # Handle fetch_url/http_request response
+        # Handle fetch_url response
         if "markdown_content" in data:
             lines = data["markdown_content"].split("\n")
             return self._format_lines_output(lines, is_preview=is_preview)
-
-        if "content" in data:
-            raw = str(data["content"])
-            if is_preview and len(raw) > _MAX_WEB_PREVIEW_LEN:
-                return FormattedOutput(
-                    content=Content(raw[:_MAX_WEB_PREVIEW_LEN]),
-                    truncation="more",
-                )
-            return FormattedOutput(content=Content(raw))
 
         # Generic dict - show key fields
         parts: list[Content] = []

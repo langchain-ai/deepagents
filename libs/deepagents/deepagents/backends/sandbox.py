@@ -116,7 +116,8 @@ with open(path, 'wb') as f:
 print(json.dumps({{'count': count}}))
 " 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
-__DEEPAGENTS_EDIT_EOF__"""
+__DEEPAGENTS_EDIT_EOF__
+"""
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the

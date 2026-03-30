@@ -155,7 +155,7 @@ class TestMakeHitlDecision:
         """Nested string values should be inspected recursively."""
         warnings = _collect_action_request_warnings(
             {
-                "name": "http_request",
+                "name": "fetch_url",
                 "args": {"headers": {"Referer": "echo \u200bhello"}},
             }
         )

@@ -819,7 +819,7 @@ async def _run_acp_cli_async(
     from deepagents_cli.agent import create_cli_agent, load_async_subagents
     from deepagents_cli.config import create_model, settings
     from deepagents_cli.model_config import ModelConfigError, save_recent_model
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, web_search
 
     try:
         model_result = create_model(
@@ -836,7 +836,7 @@ async def _run_acp_cli_async(
     # Persist the resolved model so [models].recent is always populated.
     save_recent_model(f"{model_result.provider}:{model_result.model_name}")
 
-    tools: list[Any] = [http_request, fetch_url]
+    tools: list[Any] = [fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
 

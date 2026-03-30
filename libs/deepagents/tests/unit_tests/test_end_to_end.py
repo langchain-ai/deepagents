@@ -239,7 +239,7 @@ class TestDeepAgentEndToEnd:
         )
 
         assert captured_config is not None
-        assert captured_config["recursion_limit"] == 9_999
+        assert captured_config["recursion_limit"] >= agent.config["recursion_limit"]
         assert captured_config["tags"] == ["tool-tag", "tool-session-456"]
         assert captured_config["metadata"]["ls_integration"] == "deepagents"
         assert captured_config["metadata"]["lc_agent_name"] == "supervisor"

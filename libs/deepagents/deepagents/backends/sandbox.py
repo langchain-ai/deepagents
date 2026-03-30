@@ -118,6 +118,9 @@ print(json.dumps({{'count': count}}))
 {payload_b64}
 __DEEPAGENTS_EDIT_EOF__
 """
+# Make sure to maintain a new line at the end of DEEPAGENTS_EDIT_EOF to denote end of
+# feed. This may not matter for some integrations.
+
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the

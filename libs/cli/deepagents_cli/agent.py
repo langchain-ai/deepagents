@@ -430,6 +430,7 @@ def build_model_identity_section(
     name: str | None,
     provider: str | None = None,
     context_limit: int | None = None,
+    unsupported_modalities: frozenset[str] = frozenset(),
 ) -> str:
     """Build the `### Model Identity` section for the system prompt.
 
@@ -437,6 +438,8 @@ def build_model_identity_section(
         name: Model identifier (e.g. `claude-opus-4-6`).
         provider: Provider identifier (e.g. `anthropic`).
         context_limit: Max input tokens from the model profile.
+        unsupported_modalities: Input modalities not indicated as supported by
+            the model profile (e.g. `{"audio", "video"}`).
 
     Returns:
         The section text including the heading and trailing newline,
@@ -450,6 +453,18 @@ def build_model_identity_section(
     section += ".\n"
     if context_limit:
         section += f"Your context window is {context_limit:,} tokens.\n"
+    if unsupported_modalities:
+        items = sorted(unsupported_modalities)
+        if len(items) == 1:
+            joined = items[0]
+        elif len(items) == 2:  # noqa: PLR2004
+            joined = f"{items[0]} and {items[1]}"
+        else:
+            joined = ", ".join(items[:-1]) + f", and {items[-1]}"
+        section += (
+            f"{joined.capitalize()} input may not be available for this model. "
+            "Do not attempt to read or process these content types.\n"
+        )
     section += "\n"
     return section
 
@@ -532,6 +547,7 @@ def get_system_prompt(
         settings.model_name,
         provider=settings.model_provider,
         context_limit=settings.model_context_limit,
+        unsupported_modalities=settings.model_unsupported_modalities,
     )
 
     # Build working directory section (local vs sandbox)

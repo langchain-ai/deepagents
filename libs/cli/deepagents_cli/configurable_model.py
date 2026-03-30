@@ -125,6 +125,7 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
             model_result.model_name,
             provider=model_result.provider,
             context_limit=model_result.context_limit,
+            unsupported_modalities=model_result.unsupported_modalities,
         )
         patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
         if patched != prompt:

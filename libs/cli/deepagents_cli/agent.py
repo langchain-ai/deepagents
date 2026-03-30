@@ -1165,5 +1165,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
+        extra_subagent_middleware=[ConfigurableModelMiddleware()],
     ).with_config(config)
     return agent, composite_backend

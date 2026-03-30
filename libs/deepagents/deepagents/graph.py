@@ -98,6 +98,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    extra_subagent_middleware: Sequence[AgentMiddleware] | None = None,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -197,6 +198,16 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        extra_subagent_middleware: Additional middleware injected into every subagent's
+            middleware stack (both the built-in `general-purpose` subagent and any
+            `SubAgent` entries in `subagents`).
+
+            Middleware is inserted just before `AnthropicPromptCachingMiddleware` so
+            that it runs after the base stack but before provider-specific settings
+            are applied.
+
+            Use this to propagate cross-cutting concerns — such as runtime model
+            overrides — to all subagents without modifying each spec individually.
 
     Returns:
         A configured deep agent.
@@ -213,6 +224,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    if extra_subagent_middleware:
+        gp_middleware.extend(extra_subagent_middleware)
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if interrupt_on is not None:
         gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
@@ -251,6 +264,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
+            if extra_subagent_middleware:
+                subagent_middleware.extend(extra_subagent_middleware)
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]

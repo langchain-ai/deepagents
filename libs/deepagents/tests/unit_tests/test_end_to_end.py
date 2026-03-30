@@ -196,8 +196,8 @@ class TestDeepAgentEndToEnd:
         assert first_metadata.get("request_id") == "req-main-123"
         assert first_metadata.get("tenant") == "acme-main"
 
-    def test_tool_runtime_config_includes_tags_and_metadata(self) -> None:
-        """Test tool runtime config includes caller-provided tags and metadata."""
+    def test_tool_runtime_config_includes_default_graph_metadata(self) -> None:
+        """Test tool runtime config includes the defaults from `create_deep_agent`."""
         captured_config: dict[str, Any] | None = None
 
         @tool
@@ -230,18 +230,13 @@ class TestDeepAgentEndToEnd:
             name="supervisor",
         )
 
-        agent.invoke(
-            {"messages": [HumanMessage(content="Call foo")]},
-            config={
-                "configurable": {"thread_id": "test_tool_runtime_metadata"},
-                "tags": ["tool-tag", "tool-session-456"],
-            },
-        )
+        agent.invoke({"messages": [HumanMessage(content="Call foo")]})
 
-        metadata = captured_config["metadata"]
-        assert metadata["ls_integration"] == "deepagents"
-        assert metadata["lc_agent_name"] == "supervisor"
-        assert captured_config.get("tags") == ["tool-tag", "tool-session-456"]
+        assert captured_config is not None
+        assert captured_config["recursion_limit"] == 9_999
+        assert captured_config["metadata"]["ls_integration"] == "deepagents"
+        assert captured_config["metadata"]["lc_agent_name"] == "supervisor"
+        assert "deepagents" in captured_config["metadata"]["versions"]
 
     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
         """Test deepagent with tools using a fake LLM model.

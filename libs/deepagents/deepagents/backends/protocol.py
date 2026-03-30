@@ -302,7 +302,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.ls_info(path)
+            return LsResult(entries=self.ls_info(path))
 
         raise NotImplementedError
 
@@ -387,7 +387,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.grep_raw(pattern, path, glob)
+            result = self.grep_raw(pattern, path, glob)
+            if isinstance(result, str):
+                return GrepResult(error=result)
+            return GrepResult(matches=result)
 
         raise NotImplementedError
 
@@ -428,7 +431,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.glob_info(pattern, path)
+            return GlobResult(matches=self.glob_info(pattern, path))
 
         raise NotImplementedError
 
@@ -555,7 +558,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
     # -- deprecated methods --------------------------------------------------
 
-    def ls_info(self, path: str) -> "LsResult":
+    def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
         !!! warning "Deprecated"
@@ -567,9 +570,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.ls(path)
+        result = self.ls(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `ls` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
 
-    async def als_info(self, path: str) -> "LsResult":
+    async def als_info(self, path: str) -> list["FileInfo"]:
         """Async version of `ls_info`.
 
         !!! warning "Deprecated"
@@ -581,9 +588,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.als(path)
+        result = await self.als(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `als` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
 
         !!! warning "Deprecated"
@@ -595,9 +606,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.glob(pattern, path)
+        result = self.glob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `glob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Async version of `glob_info`.
 
         !!! warning "Deprecated"
@@ -609,14 +624,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.aglob(pattern, path)
+        result = await self.aglob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `aglob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
 
     def grep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> "GrepResult":
+    ) -> list["GrepMatch"] | str:
         """Search for a literal text pattern in files.
 
         !!! warning "Deprecated"
@@ -628,14 +647,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.grep(pattern, path, glob)
+        result = self.grep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
     async def agrep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> "GrepResult":
+    ) -> list["GrepMatch"] | str:
         """Async version of `grep_raw`.
 
         !!! warning "Deprecated"
@@ -647,7 +669,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.agrep(pattern, path, glob)
+        result = await self.agrep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
 
 @dataclass

@@ -200,7 +200,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen .model-detail-footer {
         height: 4;
         padding: 0 2;
-        border-top: solid $primary-lighten-2;
+        margin-top: 1;
     }
     """
 

@@ -74,7 +74,7 @@ scorer = (
 | `test_external_benchmarks.py` | `retrieval`, `tool_use` | FRAMES (multi-hop retrieval), Nexus (nested function composition), BFCL v3 (multi-turn stateful tool calling) |
 | `test_memory.py` | `memory` | Memory recall and behavior guidance from `AGENTS.md` files, preference persistence, composite backends |
 | `test_memory_multiturn.py` | `memory` | Multi-turn memory: implicit preference extraction, explicit remember instructions, transient info filtering |
-| `memory_agent_bench/test_memory_agent_bench.py` | `memory` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
+| `memory_agent_bench/test_memory_agent_bench.py` | `memory` | MemoryAgentBench (ICLR 2026): four focused evals — cross-session retrieval (LongMemEval), in-context label learning (CLINC150), narrative reasoning (Detective QA), and multi-hop conflict resolution |
 | `test_followup_quality.py` | `conversation` | Followup question relevance for underspecified requests (LLM judge) |
 | `tau2_airline/test_tau2_airline.py` | `conversation` | [tau2-bench](https://github.com/sierra-research/tau-bench) airline tasks: multi-turn agent-user conversations scored on DB state accuracy and communicate info |
 | `test_summarization.py` | `summarization` | Summarization middleware triggers, post-summarization task continuation, history offload to filesystem |

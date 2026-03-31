@@ -19,9 +19,18 @@ class DatasetConfig:
         split: HuggingFace dataset split name (e.g. `Conflict_Resolution`).
         source: Value matched against `metadata.source` in the dataset.
         chunk_size: Token budget per text chunk during memorization.
-        max_samples: Maximum number of context samples to evaluate.
+        max_samples: Maximum number of context samples to load after
+            filtering by source. Must be large enough to include
+            `sample_index`.
         max_questions: Cap on questions asked per sample. When `None`,
-            all questions in the dataset are used.
+            all questions in the dataset are used. Ignored when
+            `question_indices` is set.
+        question_indices: Specific 0-based question indices to evaluate.
+            When set, only these questions are posed to the agent and
+            `max_questions` is ignored.
+        sample_index: 0-based index of the sample to evaluate within
+            the loaded dataset. Configs that target a sample other than
+            the first must set `max_samples` high enough to include it.
     """
 
     split: str
@@ -29,6 +38,8 @@ class DatasetConfig:
     chunk_size: int = 4096
     max_samples: int = 1
     max_questions: int | None = None
+    question_indices: tuple[int, ...] | None = None
+    sample_index: int = 0
 
 
 # -- Conflict Resolution (single-hop) ----------------------------------------
@@ -229,24 +240,47 @@ ALL_CONFIGS: list[DatasetConfig] = (
     + LONG_RANGE_UNDERSTANDING_CONFIGS
 )
 
-# High-signal subset for CI: 2 per category, biased toward harder variants.
-#
-# Selection rationale (see MemoryAgentBench ICLR 2026 paper):
-#   CR  — SH@64K gives a good gradient at meaningful context length; MH@6K is
-#          a near-zero canary at the cheapest context length (MH is unsolved).
-#   TTL — CLINC150 is the hardest MCC (151 labels); Recsys is structurally
-#          different (recommendation, not classification).
-#   AR  — RULER QA2 is multi-hop retrieval (harder than QA1); EventQA-full
-#          is the only temporal-reasoning task.
-#   LRU — Both kept: infbench_sum (generation) and detective_qa (reasoning QA)
-#          test genuinely different skills.
-CI_CONFIGS: list[DatasetConfig] = [
-    CR_SH_64K,
-    CR_MH_6K,
-    TTL_CLINIC150,
-    TTL_RECSYS,
-    AR_RULER_QA2,
-    AR_EVENTQA_FULL,
-    LRU_INFBENCH_SUM,
-    LRU_DETECTIVE_QA,
+# ---------------------------------------------------------------------------
+# Focused configs — one cherry-picked question per category
+# ---------------------------------------------------------------------------
+# Each config targets a single question chosen for clean, unambiguous signal
+# on the capability the category is meant to measure. See individual test
+# function docstrings in test_memory_agent_bench.py for selection rationale.
+
+FOCUSED_AR_LONGMEMEVAL = DatasetConfig(
+    split="Accurate_Retrieval",
+    source="longmemeval_s*",
+    question_indices=(1,),
+)
+
+FOCUSED_TTL_CLINC150 = DatasetConfig(
+    split="Test_Time_Learning",
+    source="icl_clinic150_7050shot_balance",
+    question_indices=(42,),
+)
+
+FOCUSED_LRU_DETECTIVE_QA = DatasetConfig(
+    split="Long_Range_Understanding",
+    source="detective_qa",
+    max_samples=10,
+    sample_index=1,
+    question_indices=(5,),
+)
+
+FOCUSED_CR_MH_6K = DatasetConfig(
+    split="Conflict_Resolution",
+    source="factconsolidation_mh_6k",
+    question_indices=(61,),
+)
+
+FOCUSED_CONFIGS: list[DatasetConfig] = [
+    FOCUSED_AR_LONGMEMEVAL,
+    FOCUSED_TTL_CLINC150,
+    FOCUSED_LRU_DETECTIVE_QA,
+    FOCUSED_CR_MH_6K,
 ]
+
+# CI runs the focused set: 4 tests, one per category, each posing a single
+# cherry-picked question. This keeps cost low while covering all four
+# MemoryAgentBench capability axes.
+CI_CONFIGS: list[DatasetConfig] = FOCUSED_CONFIGS

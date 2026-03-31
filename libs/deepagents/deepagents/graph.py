@@ -202,7 +202,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Returns:
         A configured deep agent.
     """
-    sleep(1)
+    sleep(0.1)
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else (StateBackend)
 

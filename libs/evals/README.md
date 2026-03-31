@@ -183,6 +183,18 @@ python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.pn
 python scripts/generate_radar.py --toy -o charts/radar.png
 ```
 
+### Eval catalog
+
+[`EVAL_CATALOG.md`](EVAL_CATALOG.md) is an auto-generated quick reference listing every eval grouped by category, with links to the source definition on GitHub and the local file path.
+
+Regenerate after adding or removing evals:
+
+```bash
+make eval-catalog
+```
+
+A drift test (`tests/unit_tests/test_eval_catalog.py`) fails CI if the file is stale.
+
 ### Adding a new category
 
 1. Add the category name and label to `deepagents_evals/categories.json` — add it to `categories` (all), and also to `radar_categories` if it measures model capability (not SDK plumbing)

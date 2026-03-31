@@ -13,9 +13,9 @@ when skills have the same name (last one wins). This enables layering: base -> u
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
 portable across different storage backends (filesystem, state, remote storage, etc.).
 
-For StateBackend (ephemeral/in-memory), use a factory function:
+For StateBackend (ephemeral/in-memory):
 ```python
-SkillsMiddleware(backend=lambda rt: StateBackend(rt), ...)
+SkillsMiddleware(backend=StateBackend(), ...)
 ```
 
 ## Skill Structure

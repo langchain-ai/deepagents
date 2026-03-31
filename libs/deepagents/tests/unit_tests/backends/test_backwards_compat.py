@@ -17,21 +17,11 @@ from deepagents.backends.protocol import ReadResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import _to_legacy_file_data, create_file_data
+from tests.unit_tests.conftest import state_config_context
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_store_runtime():
-    return ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t1",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
 
 
 def _make_state_runtime(files=None):
@@ -55,133 +45,114 @@ class TestV1StyleWritesStateBackend:
 
     def test_write_read_roundtrip(self):
         """Write a file in v1 mode, then read it back successfully."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context() as store:
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        result = be.write("/project/main.py", "import os\nprint('hello')\n")
-        assert result.error is None
-        assert result.path == "/project/main.py"
+            result = be.write("/project/main.py", "import os\nprint('hello')\n")
+            assert result.error is None
+            assert result.path == "/project/main.py"
 
-        # Verify v1 storage shape: list[str], no encoding key
-        fd = result.files_update["/project/main.py"]
-        assert isinstance(fd["content"], list)
-        assert "encoding" not in fd
+            # Verify v1 storage shape: list[str], no encoding key
+            fd = store["files"]["/project/main.py"]
+            assert isinstance(fd["content"], list)
+            assert "encoding" not in fd
 
-        # Simulate state update (as LangGraph would apply it)
-        rt2 = _make_state_runtime(files=result.files_update)
-        be2 = StateBackend(rt2, file_format="v1")
-
-        read_result = be2.read("/project/main.py")
-        assert isinstance(read_result, ReadResult)
-        assert read_result.file_data is not None
-        assert "import os" in read_result.file_data["content"]
-        assert "print('hello')" in read_result.file_data["content"]
+            # Read back (state already updated automatically)
+            read_result = be.read("/project/main.py")
+            assert isinstance(read_result, ReadResult)
+            assert read_result.file_data is not None
+            assert "import os" in read_result.file_data["content"]
+            assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context() as store:
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        write_res = be.write("/app.py", "def greet():\n    return 'hi'\n")
-        assert write_res.error is None
+            write_res = be.write("/app.py", "def greet():\n    return 'hi'\n")
+            assert write_res.error is None
 
-        # Apply write to state, then edit
-        rt2 = _make_state_runtime(files=write_res.files_update)
-        be2 = StateBackend(rt2, file_format="v1")
+            edit_res = be.edit("/app.py", "'hi'", "'hello'")
+            assert edit_res.error is None
+            assert edit_res.occurrences == 1
 
-        edit_res = be2.edit("/app.py", "'hi'", "'hello'")
-        assert edit_res.error is None
-        assert edit_res.occurrences == 1
+            # Verify stored data is still v1 format
+            fd = store["files"]["/app.py"]
+            assert isinstance(fd["content"], list)
+            assert "encoding" not in fd
 
-        # Verify edit result is still v1 format
-        fd = edit_res.files_update["/app.py"]
-        assert isinstance(fd["content"], list)
-        assert "encoding" not in fd
-
-        # Apply edit and read
-        rt3 = _make_state_runtime(files=edit_res.files_update)
-        be3 = StateBackend(rt3, file_format="v1")
-
-        read_result = be3.read("/app.py")
-        assert isinstance(read_result, ReadResult)
-        assert read_result.file_data is not None
-        assert "'hello'" in read_result.file_data["content"]
-        assert "'hi'" not in read_result.file_data["content"]
+            # Read back
+            read_result = be.read("/app.py")
+            assert isinstance(read_result, ReadResult)
+            assert read_result.file_data is not None
+            assert "'hello'" in read_result.file_data["content"]
+            assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted file data."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context():
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        write_res = be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
-        assert write_res.error is None
+            write_res = be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
+            assert write_res.error is None
 
-        rt2 = _make_state_runtime(files=write_res.files_update)
-        be2 = StateBackend(rt2, file_format="v1")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                matches = be.grep("import", path="/").matches
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            matches = be2.grep("import", path="/").matches
-
-        assert matches is not None
-        assert len(matches) == 2
-        paths = {m["text"] for m in matches}
-        assert "import sys" in paths
-        assert "import os" in paths
+            assert matches is not None
+            assert len(matches) == 2
+            paths = {m["text"] for m in matches}
+            assert "import sys" in paths
+            assert "import os" in paths
 
     def test_download_works_with_v1_data(self):
         """download_files can retrieve v1-formatted data as bytes."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context():
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        write_res = be.write("/data.txt", "line1\nline2\nline3")
-        assert write_res.error is None
+            write_res = be.write("/data.txt", "line1\nline2\nline3")
+            assert write_res.error is None
 
-        rt2 = _make_state_runtime(files=write_res.files_update)
-        be2 = StateBackend(rt2, file_format="v1")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/data.txt"])
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be2.download_files(["/data.txt"])
-
-        assert len(responses) == 1
-        assert responses[0].error is None
-        assert responses[0].content == b"line1\nline2\nline3"
+            assert len(responses) == 1
+            assert responses[0].error is None
+            assert responses[0].content == b"line1\nline2\nline3"
 
     def test_ls_works_with_v1_data(self):
         """ls_info works correctly with v1-formatted file data."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context():
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        write_res = be.write("/dir/file.txt", "content here")
-        assert write_res.error is None
+            write_res = be.write("/dir/file.txt", "content here")
+            assert write_res.error is None
 
-        rt2 = _make_state_runtime(files=write_res.files_update)
-        be2 = StateBackend(rt2, file_format="v1")
-
-        infos = be2.ls("/dir").entries
-        assert infos is not None
-        assert len(infos) == 1
-        assert infos[0]["path"] == "/dir/file.txt"
+            infos = be.ls("/dir").entries
+            assert infos is not None
+            assert len(infos) == 1
+            assert infos[0]["path"] == "/dir/file.txt"
 
     def test_glob_works_with_v1_data(self):
         """Glob works correctly with v1-formatted file data."""
-        rt = _make_state_runtime()
-        be = StateBackend(rt, file_format="v1")
+        with state_config_context():
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v1")
 
-        w1 = be.write("/src/a.py", "aaa")
-        w2_rt = _make_state_runtime(files=w1.files_update)
-        be2 = StateBackend(w2_rt, file_format="v1")
-        w2 = be2.write("/src/b.txt", "bbb")
+            be.write("/src/a.py", "aaa")
+            be.write("/src/b.txt", "bbb")
 
-        merged = {**w1.files_update, **w2.files_update}
-        rt3 = _make_state_runtime(files=merged)
-        be3 = StateBackend(rt3, file_format="v1")
-
-        infos = be3.glob("**/*.py", path="/").matches
-        paths = [fi["path"] for fi in infos]
-        assert "/src/a.py" in paths
-        assert "/src/b.txt" not in paths
+            infos = be.glob("**/*.py", path="/").matches
+            paths = [fi["path"] for fi in infos]
+            assert "/src/a.py" in paths
+            assert "/src/b.txt" not in paths
 
 
 class TestV1StyleWritesStoreBackend:
@@ -189,80 +160,84 @@ class TestV1StyleWritesStoreBackend:
 
     def test_write_read_roundtrip(self):
         """Write a file in v1 mode, then read it back successfully."""
-        rt = _make_store_runtime()
-        be = StoreBackend(rt, namespace=lambda _ctx: ("fs",), file_format="v1")
+        mem_store = InMemoryStore()
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ("fs",), file_format="v1")
 
-        result = be.write("/project/main.py", "import os\nprint('hello')\n")
-        assert result.error is None
+            result = be.write("/project/main.py", "import os\nprint('hello')\n")
+            assert result.error is None
 
-        # Verify v1 shape in store
-        item = rt.store.get(("fs",), "/project/main.py")
-        assert isinstance(item.value["content"], list)
-        assert "encoding" not in item.value
+            # Verify v1 shape in store
+            item = mem_store.get(("fs",), "/project/main.py")
+            assert isinstance(item.value["content"], list)
+            assert "encoding" not in item.value
 
-        # Read back
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            read_result = be.read("/project/main.py")
+            # Read back
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                read_result = be.read("/project/main.py")
 
-        assert isinstance(read_result, ReadResult)
-        assert read_result.file_data is not None
-        assert "import os" in read_result.file_data["content"]
-        assert "print('hello')" in read_result.file_data["content"]
+            assert isinstance(read_result, ReadResult)
+            assert read_result.file_data is not None
+            assert "import os" in read_result.file_data["content"]
+            assert "print('hello')" in read_result.file_data["content"]
 
     def test_write_edit_read_lifecycle(self):
         """Write → edit → read cycle works entirely in v1 mode."""
-        rt = _make_store_runtime()
-        be = StoreBackend(rt, namespace=lambda _ctx: ("fs",), file_format="v1")
+        mem_store = InMemoryStore()
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ("fs",), file_format="v1")
 
-        be.write("/app.py", "def greet():\n    return 'hi'\n")
+            be.write("/app.py", "def greet():\n    return 'hi'\n")
 
-        edit_res = be.edit("/app.py", "'hi'", "'hello'")
-        assert edit_res.error is None
-        assert edit_res.occurrences == 1
+            edit_res = be.edit("/app.py", "'hi'", "'hello'")
+            assert edit_res.error is None
+            assert edit_res.occurrences == 1
 
-        # Verify store still has v1 format
-        item = rt.store.get(("fs",), "/app.py")
-        assert isinstance(item.value["content"], list)
-        assert "encoding" not in item.value
+            # Verify store still has v1 format
+            item = mem_store.get(("fs",), "/app.py")
+            assert isinstance(item.value["content"], list)
+            assert "encoding" not in item.value
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            read_result = be.read("/app.py")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                read_result = be.read("/app.py")
 
-        assert isinstance(read_result, ReadResult)
-        assert read_result.file_data is not None
-        assert "'hello'" in read_result.file_data["content"]
-        assert "'hi'" not in read_result.file_data["content"]
+            assert isinstance(read_result, ReadResult)
+            assert read_result.file_data is not None
+            assert "'hello'" in read_result.file_data["content"]
+            assert "'hi'" not in read_result.file_data["content"]
 
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted store data."""
-        rt = _make_store_runtime()
-        be = StoreBackend(rt, namespace=lambda _ctx: ("fs",), file_format="v1")
+        mem_store = InMemoryStore()
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ("fs",), file_format="v1")
 
-        be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
+            be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            matches = be.grep("import", path="/").matches
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                matches = be.grep("import", path="/").matches
 
-        assert matches is not None
-        assert len(matches) == 2
+            assert matches is not None
+            assert len(matches) == 2
 
     def test_download_works_with_v1_data(self):
         """download_files can retrieve v1-formatted store data as bytes."""
-        rt = _make_store_runtime()
-        be = StoreBackend(rt, namespace=lambda _ctx: ("fs",), file_format="v1")
+        mem_store = InMemoryStore()
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ("fs",), file_format="v1")
 
-        be.write("/data.txt", "line1\nline2\nline3")
+            be.write("/data.txt", "line1\nline2\nline3")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be.download_files(["/data.txt"])
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/data.txt"])
 
-        assert len(responses) == 1
-        assert responses[0].error is None
-        assert responses[0].content == b"line1\nline2\nline3"
+            assert len(responses) == 1
+            assert responses[0].error is None
+            assert responses[0].content == b"line1\nline2\nline3"
 
 
 # ===================================================================
@@ -283,18 +258,19 @@ class TestV2LoadsV1CheckpointStateBackend:
     def test_read_v1_checkpoint_data(self):
         """V2 backend can read files from a v1-era checkpoint."""
         v1_data = self._make_v1_file_data("hello\nworld")
-        rt = _make_state_runtime(files={"/old/file.txt": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/old/file.txt": v1_data}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = be.read("/old/file.txt")
-            assert isinstance(result, ReadResult)
-            assert result.file_data is not None
-            assert "hello" in result.file_data["content"]
-            assert "world" in result.file_data["content"]
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) >= 1
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = be.read("/old/file.txt")
+                assert isinstance(result, ReadResult)
+                assert result.file_data is not None
+                assert "hello" in result.file_data["content"]
+                assert "world" in result.file_data["content"]
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) >= 1
 
     def test_edit_v1_checkpoint_data(self):
         """V2 backend can edit files from a v1-era checkpoint.
@@ -302,90 +278,96 @@ class TestV2LoadsV1CheckpointStateBackend:
         After editing, the result should be in v2 format (str, with encoding).
         """
         v1_data = self._make_v1_file_data("foo\nbar\nbaz")
-        rt = _make_state_runtime(files={"/old/code.py": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/old/code.py": v1_data}) as store:
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edit_res = be.edit("/old/code.py", "bar", "qux")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edit_res = be.edit("/old/code.py", "bar", "qux")
 
-        assert edit_res.error is None
-        assert edit_res.occurrences == 1
+            assert edit_res.error is None
+            assert edit_res.occurrences == 1
 
-        # The edit result should now be v2 format
-        fd = edit_res.files_update["/old/code.py"]
-        assert isinstance(fd["content"], str)
-        assert fd["encoding"] == "utf-8"
-        assert "qux" in fd["content"]
-        assert "bar" not in fd["content"]
+            # The stored data should now be v2 format
+            fd = store["files"]["/old/code.py"]
+            assert isinstance(fd["content"], str)
+            assert fd["encoding"] == "utf-8"
+            assert "qux" in fd["content"]
+            assert "bar" not in fd["content"]
 
     def test_grep_v1_checkpoint_data(self):
         """V2 backend can grep through v1-era checkpoint data."""
         v1_data = self._make_v1_file_data("def foo():\n    return 1\ndef bar():\n    return 2")
-        rt = _make_state_runtime(files={"/src/funcs.py": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/src/funcs.py": v1_data}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            matches = be.grep("def", path="/").matches
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                matches = be.grep("def", path="/").matches
 
-        assert matches is not None
-        assert len(matches) == 2
-        assert matches[0]["text"] == "def foo():"
-        assert matches[1]["text"] == "def bar():"
+            assert matches is not None
+            assert len(matches) == 2
+            assert matches[0]["text"] == "def foo():"
+            assert matches[1]["text"] == "def bar():"
 
     def test_download_v1_checkpoint_data(self):
         """V2 backend can download v1-era checkpoint data as bytes."""
         v1_data = self._make_v1_file_data("alpha\nbeta\ngamma")
-        rt = _make_state_runtime(files={"/data.csv": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/data.csv": v1_data}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be.download_files(["/data.csv"])
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/data.csv"])
 
-        assert len(responses) == 1
-        assert responses[0].error is None
-        assert responses[0].content == b"alpha\nbeta\ngamma"
+            assert len(responses) == 1
+            assert responses[0].error is None
+            assert responses[0].content == b"alpha\nbeta\ngamma"
 
     def test_ls_v1_checkpoint_data(self):
         """V2 backend can list v1-era checkpoint data."""
         v1_data = self._make_v1_file_data("some content")
-        rt = _make_state_runtime(files={"/dir/file.txt": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/dir/file.txt": v1_data}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        infos = be.ls("/dir").entries
-        assert infos is not None
-        assert len(infos) == 1
-        assert infos[0]["path"] == "/dir/file.txt"
-        # size should still be computed correctly from list content
-        assert infos[0]["size"] == len("some content")
+            infos = be.ls("/dir").entries
+            assert infos is not None
+            assert len(infos) == 1
+            assert infos[0]["path"] == "/dir/file.txt"
+            # size should still be computed correctly from list content
+            assert infos[0]["size"] == len("some content")
 
     def test_glob_v1_checkpoint_data(self):
         """V2 backend can glob through v1-era checkpoint data."""
         v1_py = self._make_v1_file_data("print('hi')")
         v1_txt = self._make_v1_file_data("notes")
-        rt = _make_state_runtime(files={"/src/a.py": v1_py, "/src/b.txt": v1_txt})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/src/a.py": v1_py, "/src/b.txt": v1_txt}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        infos = be.glob("**/*.py", path="/").matches
-        paths = [fi["path"] for fi in infos]
-        assert "/src/a.py" in paths
-        assert "/src/b.txt" not in paths
+            infos = be.glob("**/*.py", path="/").matches
+            paths = [fi["path"] for fi in infos]
+            assert "/src/a.py" in paths
+            assert "/src/b.txt" not in paths
 
     def test_write_new_file_alongside_v1_data(self):
         """V2 backend can write new v2 files alongside v1 checkpoint data."""
         v1_data = self._make_v1_file_data("old content")
-        rt = _make_state_runtime(files={"/old/file.txt": v1_data})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/old/file.txt": v1_data}) as store:
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        result = be.write("/new/file.txt", "new content")
-        assert result.error is None
+            result = be.write("/new/file.txt", "new content")
+            assert result.error is None
 
-        # New file should be in v2 format
-        fd = result.files_update["/new/file.txt"]
-        assert isinstance(fd["content"], str)
-        assert fd["encoding"] == "utf-8"
+            # New file should be in v2 format
+            fd = store["files"]["/new/file.txt"]
+            assert isinstance(fd["content"], str)
+            assert fd["encoding"] == "utf-8"
 
     def test_full_lifecycle_v1_checkpoint_to_v2_operations(self):
         """Complete lifecycle: load v1 checkpoint → read → edit → write new → read all.
@@ -401,58 +383,52 @@ class TestV2LoadsV1CheckpointStateBackend:
             "/src/db.py": v1_code,
         }
 
-        # Step 2: V2 backend reads v1 data
-        rt = _make_state_runtime(files=checkpoint_files)
-        be = StateBackend(rt)
+        with state_config_context(files=checkpoint_files):
+            rt = _make_state_runtime()
+            be = StateBackend(rt)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            config_content = be.read("/config.env")
-        assert isinstance(config_content, ReadResult)
-        assert config_content.file_data is not None
-        assert "DB_HOST=localhost" in config_content.file_data["content"]
-        assert "DB_PORT=5432" in config_content.file_data["content"]
+            # Step 2: V2 backend reads v1 data
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                config_content = be.read("/config.env")
+            assert isinstance(config_content, ReadResult)
+            assert config_content.file_data is not None
+            assert "DB_HOST=localhost" in config_content.file_data["content"]
+            assert "DB_PORT=5432" in config_content.file_data["content"]
 
-        # Step 3: Edit v1 data (result upgrades to v2)
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edit_res = be.edit("/config.env", "DB_HOST=localhost", "DB_HOST=prod.example.com")
-        assert edit_res.error is None
+            # Step 3: Edit v1 data (result upgrades to v2)
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edit_res = be.edit("/config.env", "DB_HOST=localhost", "DB_HOST=prod.example.com")
+            assert edit_res.error is None
 
-        # Step 4: Write a brand new file in v2
-        new_write = be.write("/src/migrations.py", "# migration scripts\n")
-        assert new_write.error is None
+            # Step 4: Write a brand new file in v2
+            new_write = be.write("/src/migrations.py", "# migration scripts\n")
+            assert new_write.error is None
 
-        # Step 5: Merge everything and verify
-        merged_files = {
-            **checkpoint_files,
-            **edit_res.files_update,
-            **new_write.files_update,
-        }
-        rt2 = _make_state_runtime(files=merged_files)
-        be2 = StateBackend(rt2)
+            # Step 5: Verify everything via reads (state is updated automatically)
 
-        # Edited file is now v2
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edited = be2.read("/config.env")
-        assert isinstance(edited, ReadResult)
-        assert edited.file_data is not None
-        assert "prod.example.com" in edited.file_data["content"]
+            # Edited file is now v2
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edited = be.read("/config.env")
+            assert isinstance(edited, ReadResult)
+            assert edited.file_data is not None
+            assert "prod.example.com" in edited.file_data["content"]
 
-        # Untouched v1 file still readable
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            code = be2.read("/src/db.py")
-        assert isinstance(code, ReadResult)
-        assert code.file_data is not None
-        assert "def connect():" in code.file_data["content"]
+            # Untouched v1 file still readable
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                code = be.read("/src/db.py")
+            assert isinstance(code, ReadResult)
+            assert code.file_data is not None
+            assert "def connect():" in code.file_data["content"]
 
-        # New v2 file readable
-        new_file = be2.read("/src/migrations.py")
-        assert isinstance(new_file, ReadResult)
-        assert new_file.file_data is not None
-        assert "migration scripts" in new_file.file_data["content"]
+            # New v2 file readable
+            new_file = be.read("/src/migrations.py")
+            assert isinstance(new_file, ReadResult)
+            assert new_file.file_data is not None
+            assert "migration scripts" in new_file.file_data["content"]
 
 
 class TestV2LoadsV1CheckpointStoreBackend:
@@ -469,124 +445,129 @@ class TestV2LoadsV1CheckpointStoreBackend:
 
     def test_read_v1_store_data(self):
         """V2 backend can read v1-format items from the store."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
-        self._seed_v1_store_item(rt.store, ns, "/old/file.txt", "hello\nworld")
+        self._seed_v1_store_item(mem_store, ns, "/old/file.txt", "hello\nworld")
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns, file_format="v2")
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns, file_format="v2")
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = be.read("/old/file.txt")
-            assert isinstance(result, ReadResult)
-            assert result.file_data is not None
-            assert "hello" in result.file_data["content"]
-            assert "world" in result.file_data["content"]
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) >= 1
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = be.read("/old/file.txt")
+                assert isinstance(result, ReadResult)
+                assert result.file_data is not None
+                assert "hello" in result.file_data["content"]
+                assert "world" in result.file_data["content"]
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) >= 1
 
     def test_edit_v1_store_data(self):
         """V2 backend can edit v1-format items in the store.
 
         After editing, the stored item should be upgraded to v2 format.
         """
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
-        self._seed_v1_store_item(rt.store, ns, "/code.py", "foo\nbar\nbaz")
+        self._seed_v1_store_item(mem_store, ns, "/code.py", "foo\nbar\nbaz")
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns, file_format="v2")
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns, file_format="v2")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edit_res = be.edit("/code.py", "bar", "qux")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edit_res = be.edit("/code.py", "bar", "qux")
 
-        assert edit_res.error is None
-        assert edit_res.occurrences == 1
+            assert edit_res.error is None
+            assert edit_res.occurrences == 1
 
-        # Verify the store now has v2 format
-        item = rt.store.get(ns, "/code.py")
-        assert isinstance(item.value["content"], str)
-        assert item.value["encoding"] == "utf-8"
-        assert "qux" in item.value["content"]
+            # Verify the store now has v2 format
+            item = mem_store.get(ns, "/code.py")
+            assert isinstance(item.value["content"], str)
+            assert item.value["encoding"] == "utf-8"
+            assert "qux" in item.value["content"]
 
     def test_grep_v1_store_data(self):
         """V2 backend can grep through v1-format store items."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
-        self._seed_v1_store_item(rt.store, ns, "/funcs.py", "def foo():\n    pass\ndef bar():\n    pass")
+        self._seed_v1_store_item(mem_store, ns, "/funcs.py", "def foo():\n    pass\ndef bar():\n    pass")
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns)
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            matches = be.grep("def", path="/").matches
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                matches = be.grep("def", path="/").matches
 
-        assert matches is not None
-        assert len(matches) == 2
+            assert matches is not None
+            assert len(matches) == 2
 
     def test_download_v1_store_data(self):
         """V2 backend can download v1-format store data as bytes."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
-        self._seed_v1_store_item(rt.store, ns, "/data.txt", "line1\nline2")
+        self._seed_v1_store_item(mem_store, ns, "/data.txt", "line1\nline2")
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns)
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be.download_files(["/data.txt"])
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/data.txt"])
 
-        assert len(responses) == 1
-        assert responses[0].error is None
-        assert responses[0].content == b"line1\nline2"
+            assert len(responses) == 1
+            assert responses[0].error is None
+            assert responses[0].content == b"line1\nline2"
 
     def test_full_lifecycle_v1_store_to_v2_operations(self):
         """Complete lifecycle: v1 store data → read → edit → write new → read all."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
 
         # Seed v1 data
-        self._seed_v1_store_item(rt.store, ns, "/config.env", "DB_HOST=localhost\nDB_PORT=5432")
-        self._seed_v1_store_item(rt.store, ns, "/src/db.py", "def connect():\n    pass")
+        self._seed_v1_store_item(mem_store, ns, "/config.env", "DB_HOST=localhost\nDB_PORT=5432")
+        self._seed_v1_store_item(mem_store, ns, "/src/db.py", "def connect():\n    pass")
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns, file_format="v2")
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns, file_format="v2")
 
-        # Read v1 data
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            config = be.read("/config.env")
-        assert isinstance(config, ReadResult)
-        assert config.file_data is not None
-        assert "DB_HOST=localhost" in config.file_data["content"]
+            # Read v1 data
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                config = be.read("/config.env")
+            assert isinstance(config, ReadResult)
+            assert config.file_data is not None
+            assert "DB_HOST=localhost" in config.file_data["content"]
 
-        # Edit v1 data (upgrades to v2 in store)
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edit_res = be.edit("/config.env", "DB_HOST=localhost", "DB_HOST=prod.example.com")
-        assert edit_res.error is None
+            # Edit v1 data (upgrades to v2 in store)
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edit_res = be.edit("/config.env", "DB_HOST=localhost", "DB_HOST=prod.example.com")
+            assert edit_res.error is None
 
-        # Write brand new v2 file
-        new_write = be.write("/src/migrations.py", "# migration scripts\n")
-        assert new_write.error is None
+            # Write brand new v2 file
+            new_write = be.write("/src/migrations.py", "# migration scripts\n")
+            assert new_write.error is None
 
-        # Verify edited file is now v2 in store
-        item = rt.store.get(ns, "/config.env")
-        assert isinstance(item.value["content"], str)
-        assert "encoding" in item.value
+            # Verify edited file is now v2 in store
+            item = mem_store.get(ns, "/config.env")
+            assert isinstance(item.value["content"], str)
+            assert "encoding" in item.value
 
-        # Verify untouched v1 file still readable
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            code = be.read("/src/db.py")
-        assert isinstance(code, ReadResult)
-        assert code.file_data is not None
-        assert "def connect():" in code.file_data["content"]
+            # Verify untouched v1 file still readable
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                code = be.read("/src/db.py")
+            assert isinstance(code, ReadResult)
+            assert code.file_data is not None
+            assert "def connect():" in code.file_data["content"]
 
-        # Verify new file
-        new = be.read("/src/migrations.py")
-        assert isinstance(new, ReadResult)
-        assert new.file_data is not None
-        assert "migration scripts" in new.file_data["content"]
+            # Verify new file
+            new = be.read("/src/migrations.py")
+            assert isinstance(new, ReadResult)
+            assert new.file_data is not None
+            assert "migration scripts" in new.file_data["content"]
 
 
 # ===================================================================
@@ -608,27 +589,28 @@ class TestBareV1DataNoEncodingField:
             "created_at": "2024-06-01T00:00:00+00:00",
             "modified_at": "2024-06-01T00:00:00+00:00",
         }
-        rt = _make_state_runtime(files={"/legacy.txt": bare_v1})
-        be = StateBackend(rt)
+        with state_config_context(files={"/legacy.txt": bare_v1}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt)
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = be.read("/legacy.txt")
-            assert isinstance(result, ReadResult)
-            assert result.file_data is not None
-            assert "line1" in result.file_data["content"]
-            assert "line2" in result.file_data["content"]
-            assert "line3" in result.file_data["content"]
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) >= 1
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = be.read("/legacy.txt")
+                assert isinstance(result, ReadResult)
+                assert result.file_data is not None
+                assert "line1" in result.file_data["content"]
+                assert "line2" in result.file_data["content"]
+                assert "line3" in result.file_data["content"]
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) >= 1
 
     def test_store_backend_reads_bare_v1(self):
         """StoreBackend (v2 mode) handles v1 data missing the encoding field."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
 
         # Manually insert bare v1 data (no encoding key)
-        rt.store.put(
+        mem_store.put(
             ns,
             "/legacy.txt",
             {
@@ -638,17 +620,18 @@ class TestBareV1DataNoEncodingField:
             },
         )
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns)
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns)
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = be.read("/legacy.txt")
-            assert isinstance(result, ReadResult)
-            assert result.file_data is not None
-            assert "line1" in result.file_data["content"]
-            assert "line2" in result.file_data["content"]
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) >= 1
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = be.read("/legacy.txt")
+                assert isinstance(result, ReadResult)
+                assert result.file_data is not None
+                assert "line1" in result.file_data["content"]
+                assert "line2" in result.file_data["content"]
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) >= 1
 
     def test_state_backend_edits_bare_v1(self):
         """Editing bare v1 data upgrades it to v2 with encoding field."""
@@ -657,19 +640,20 @@ class TestBareV1DataNoEncodingField:
             "created_at": "2024-06-01T00:00:00+00:00",
             "modified_at": "2024-06-01T00:00:00+00:00",
         }
-        rt = _make_state_runtime(files={"/legacy.txt": bare_v1})
-        be = StateBackend(rt, file_format="v2")
+        with state_config_context(files={"/legacy.txt": bare_v1}) as store:
+            rt = _make_state_runtime()
+            be = StateBackend(rt, file_format="v2")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            edit_res = be.edit("/legacy.txt", "old", "new")
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                edit_res = be.edit("/legacy.txt", "old", "new")
 
-        assert edit_res.error is None
-        fd = edit_res.files_update["/legacy.txt"]
-        assert isinstance(fd["content"], str)
-        # update_file_data uses .get("encoding", "utf-8") so bare v1 gets default
-        assert fd["encoding"] == "utf-8"
-        assert "new" in fd["content"]
+            assert edit_res.error is None
+            fd = store["files"]["/legacy.txt"]
+            assert isinstance(fd["content"], str)
+            # update_file_data uses .get("encoding", "utf-8") so bare v1 gets default
+            assert fd["encoding"] == "utf-8"
+            assert "new" in fd["content"]
 
     def test_state_backend_download_bare_v1(self):
         """Downloading bare v1 data (no encoding key) defaults to utf-8."""
@@ -678,22 +662,23 @@ class TestBareV1DataNoEncodingField:
             "created_at": "2024-06-01T00:00:00+00:00",
             "modified_at": "2024-06-01T00:00:00+00:00",
         }
-        rt = _make_state_runtime(files={"/legacy.txt": bare_v1})
-        be = StateBackend(rt)
+        with state_config_context(files={"/legacy.txt": bare_v1}):
+            rt = _make_state_runtime()
+            be = StateBackend(rt)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be.download_files(["/legacy.txt"])
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/legacy.txt"])
 
-        assert responses[0].error is None
-        assert responses[0].content == b"hello\nworld"
+            assert responses[0].error is None
+            assert responses[0].content == b"hello\nworld"
 
     def test_store_backend_download_bare_v1(self):
         """Downloading bare v1 store data (no encoding key) defaults to utf-8."""
-        rt = _make_store_runtime()
+        mem_store = InMemoryStore()
         ns = ("fs",)
 
-        rt.store.put(
+        mem_store.put(
             ns,
             "/legacy.txt",
             {
@@ -703,11 +688,12 @@ class TestBareV1DataNoEncodingField:
             },
         )
 
-        be = StoreBackend(rt, namespace=lambda _ctx: ns)
+        with state_config_context(store=mem_store):
+            be = StoreBackend(namespace=lambda _ctx: ns)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            responses = be.download_files(["/legacy.txt"])
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                responses = be.download_files(["/legacy.txt"])
 
-        assert responses[0].error is None
-        assert responses[0].content == b"hello\nworld"
+            assert responses[0].error is None
+            assert responses[0].content == b"hello\nworld"

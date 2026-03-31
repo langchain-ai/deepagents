@@ -1,290 +1,303 @@
 """Async tests for StateBackend."""
 
+from contextlib import contextmanager
 from functools import partial
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from langchain_core.runnables.config import var_child_runnable_config
+from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.state import StateBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, _file_data_reducer
 
 
-def make_runtime(files=None):
-    return ToolRuntime(
-        state={
-            "messages": [],
-            "files": files or {},
-        },
+def _make_state_config(files=None):
+    store = {"files": files or {}}
+
+    def read(select, fresh=False):
+        if isinstance(select, str):
+            return store.get(select)
+        return {k: store.get(k) for k in select}
+
+    def send(writes):
+        for channel, value in writes:
+            if channel == "files":
+                store["files"] = _file_data_reducer(store.get("files"), value)
+
+    config = {"configurable": {CONFIG_KEY_SEND: send, CONFIG_KEY_READ: read}}
+    return config, store
+
+
+@contextmanager
+def state_config_context(files=None):
+    config, store = _make_state_config(files)
+    token = var_child_runnable_config.set(config)
+    try:
+        yield store
+    finally:
+        var_child_runnable_config.reset(token)
+
+
+async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
+    """Test async write, read, edit, ls, grep, and glob operations."""
+    with state_config_context():
+        be = StateBackend()
+
+        # awrite
+        res = await be.awrite("/notes.txt", "hello world")
+        assert isinstance(res, WriteResult)
+        assert res.error is None
+
+        # aread
+        read_result = await be.aread("/notes.txt")
+        assert "hello world" in read_result.file_data["content"]
+
+        # aedit unique occurrence
+        res2 = await be.aedit("/notes.txt", "hello", "hi", replace_all=False)
+        assert isinstance(res2, EditResult)
+        assert res2.error is None
+
+        read_result2 = await be.aread("/notes.txt")
+        assert "hi world" in read_result2.file_data["content"]
+
+        # als_info should include the file
+        listing = (await be.als("/")).entries
+        assert listing is not None
+        assert any(fi["path"] == "/notes.txt" for fi in listing)
+
+        # agrep
+        matches = (await be.agrep("hi", path="/")).matches
+        assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
+
+        # special characters are treated literally, not regex
+        result = await be.agrep("[", path="/")
+        assert result.matches is not None  # Returns empty list, not error
+
+        # aglob
+        infos = (await be.aglob("*.txt", path="/")).matches
+        assert any(i["path"] == "/notes.txt" for i in infos)
+
+
+async def test_state_backend_async_errors():
+    """Test async error handling for StateBackend."""
+    with state_config_context():
+        be = StateBackend()
+
+        # aedit missing file
+        err = await be.aedit("/missing.txt", "a", "b")
+        assert isinstance(err, EditResult) and err.error and "not found" in err.error
+
+        # awrite duplicate
+        res = await be.awrite("/dup.txt", "x")
+        assert isinstance(res, WriteResult)
+        dup_err = await be.awrite("/dup.txt", "y")
+        assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
+
+
+async def test_state_backend_als_nested_directories():
+    """Test async ls with nested directories."""
+    with state_config_context():
+        be = StateBackend()
+
+        files = {
+            "/src/main.py": "main code",
+            "/src/utils/helper.py": "helper code",
+            "/src/utils/common.py": "common code",
+            "/docs/readme.md": "readme",
+            "/docs/api/reference.md": "api reference",
+            "/config.json": "config",
+        }
+
+        for path, content in files.items():
+            res = await be.awrite(path, content)
+            assert res.error is None
+
+        root_listing = (await be.als("/")).entries
+        assert root_listing is not None
+        root_paths = [fi["path"] for fi in root_listing]
+        assert "/config.json" in root_paths
+        assert "/src/" in root_paths
+        assert "/docs/" in root_paths
+        assert "/src/main.py" not in root_paths
+        assert "/src/utils/helper.py" not in root_paths
+
+        src_listing = (await be.als("/src/")).entries
+        assert src_listing is not None
+        src_paths = [fi["path"] for fi in src_listing]
+        assert "/src/main.py" in src_paths
+        assert "/src/utils/" in src_paths
+        assert "/src/utils/helper.py" not in src_paths
+
+        utils_listing = (await be.als("/src/utils/")).entries
+        assert utils_listing is not None
+        utils_paths = [fi["path"] for fi in utils_listing]
+        assert "/src/utils/helper.py" in utils_paths
+        assert "/src/utils/common.py" in utils_paths
+        assert len(utils_paths) == 2
+
+        empty_listing = await be.als("/nonexistent/")
+        assert empty_listing.entries == []
+
+
+async def test_state_backend_als_trailing_slash():
+    """Test async ls with trailing slash behavior."""
+    with state_config_context():
+        be = StateBackend()
+
+        files = {
+            "/file.txt": "content",
+            "/dir/nested.txt": "nested",
+        }
+
+        for path, content in files.items():
+            res = await be.awrite(path, content)
+            assert res.error is None
+
+        listing_with_slash = (await be.als("/")).entries
+        assert listing_with_slash is not None
+        assert len(listing_with_slash) == 2
+        assert "/file.txt" in [fi["path"] for fi in listing_with_slash]
+        assert "/dir/" in [fi["path"] for fi in listing_with_slash]
+
+        listing_from_dir = (await be.als("/dir/")).entries
+        assert listing_from_dir is not None
+        assert len(listing_from_dir) == 1
+        assert listing_from_dir[0]["path"] == "/dir/nested.txt"
+
+
+async def test_state_backend_aedit_replace_all():
+    """Test async edit with replace_all option."""
+    with state_config_context():
+        be = StateBackend()
+
+        # Write file with multiple occurrences
+        res = await be.awrite("/test.txt", "hello world hello universe")
+        assert res.error is None
+
+        # Edit with replace_all=False when string appears multiple times should error
+        res2 = await be.aedit("/test.txt", "hello", "hi", replace_all=False)
+        assert res2.error is not None
+        assert "appears 2 times" in res2.error
+
+        # Edit with replace_all=True - should replace all occurrences
+        res3 = await be.aedit("/test.txt", "hello", "hi", replace_all=True)
+        assert res3.error is None
+        assert res3.occurrences == 2
+
+        read_result = await be.aread("/test.txt")
+        assert "hi world hi universe" in read_result.file_data["content"]
+
+        # Now test replace_all=False with unique string (should succeed)
+        res4 = await be.aedit("/test.txt", "world", "galaxy", replace_all=False)
+        assert res4.error is None
+        assert res4.occurrences == 1
+
+        read_result2 = await be.aread("/test.txt")
+        assert "hi galaxy hi universe" in read_result2.file_data["content"]
+
+
+async def test_state_backend_aread_with_offset_and_limit():
+    """Test async read with offset and limit parameters."""
+    with state_config_context():
+        be = StateBackend()
+
+        # Write file with multiple lines
+        lines = "\n".join([f"Line {i}" for i in range(1, 11)])
+        res = await be.awrite("/multi.txt", lines)
+        assert res.error is None
+
+        # Read with offset
+        result = await be.aread("/multi.txt", offset=2, limit=3)
+        content = result.file_data["content"]
+        assert "Line 3" in content
+        assert "Line 4" in content
+        assert "Line 5" in content
+        assert "Line 1" not in content
+        assert "Line 6" not in content
+
+
+async def test_state_backend_agrep_with_pattern_and_glob():
+    """Test async grep with pattern and glob filter."""
+    with state_config_context():
+        be = StateBackend()
+
+        # Write multiple files
+        files = {
+            "/test.py": "import os",
+            "/test.txt": "import nothing",
+            "/main.py": "import sys",
+        }
+
+        for path, content in files.items():
+            res = await be.awrite(path, content)
+            assert res.error is None
+
+        # agrep with glob filter for .py files only
+        matches = (await be.agrep("import", path="/", glob="*.py")).matches
+        assert matches is not None
+        assert any(m["path"] == "/test.py" for m in matches)
+        assert any(m["path"] == "/main.py" for m in matches)
+        # test.txt should not be in matches even though it contains "import"
+        assert not any(m["path"] == "/test.txt" for m in matches)
+
+
+async def test_state_backend_aglob_recursive():
+    """Test async glob with recursive patterns."""
+    with state_config_context():
+        be = StateBackend()
+
+        # Write files in nested directories
+        files = {
+            "/src/main.py": "code",
+            "/src/utils/helper.py": "utils",
+            "/tests/test_main.py": "tests",
+            "/readme.txt": "docs",
+        }
+
+        for path, content in files.items():
+            res = await be.awrite(path, content)
+            assert res.error is None
+
+        # Recursive glob for all .py files
+        infos = (await be.aglob("**/*.py", path="/")).matches
+        py_files = [i["path"] for i in infos]
+        assert "/src/main.py" in py_files
+        assert "/src/utils/helper.py" in py_files
+        assert "/tests/test_main.py" in py_files
+        assert "/readme.txt" not in py_files
+
+
+@pytest.mark.parametrize("file_format", ["v1", "v2"])
+async def test_state_backend_intercept_large_tool_result_async(file_format):
+    """Test that StateBackend properly handles large tool result interception in async context."""
+    from langchain.tools import ToolRuntime
+
+    rt = ToolRuntime(
+        state={"messages": [], "files": {}},
         context=None,
         tool_call_id="t1",
         store=None,
         stream_writer=lambda _: None,
         config={},
     )
+    with state_config_context() as store:
+        middleware = FilesystemMiddleware(
+            backend=partial(StateBackend, file_format=file_format),
+            tool_token_limit_before_evict=1000,
+        )
 
+        large_content = "x" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        result = middleware._intercept_large_tool_result(tool_message, rt)
 
-async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
-    """Test async write, read, edit, ls, grep, and glob operations."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # awrite
-    res = await be.awrite("/notes.txt", "hello world")
-    assert isinstance(res, WriteResult)
-    assert res.error is None and res.files_update is not None
-    # apply state update
-    rt.state["files"].update(res.files_update)
-
-    # aread
-    read_result = await be.aread("/notes.txt")
-    assert "hello world" in read_result.file_data["content"]
-
-    # aedit unique occurrence
-    res2 = await be.aedit("/notes.txt", "hello", "hi", replace_all=False)
-    assert isinstance(res2, EditResult)
-    assert res2.error is None and res2.files_update is not None
-    rt.state["files"].update(res2.files_update)
-
-    read_result2 = await be.aread("/notes.txt")
-    assert "hi world" in read_result2.file_data["content"]
-
-    # als_info should include the file
-    listing = (await be.als("/")).entries
-    assert listing is not None
-    assert any(fi["path"] == "/notes.txt" for fi in listing)
-
-    # agrep
-    matches = (await be.agrep("hi", path="/")).matches
-    assert matches is not None and any(m["path"] == "/notes.txt" for m in matches)
-
-    # special characters are treated literally, not regex
-    result = await be.agrep("[", path="/")
-    assert result.matches is not None  # Returns empty list, not error
-
-    # aglob
-    infos = (await be.aglob("*.txt", path="/")).matches
-    assert any(i["path"] == "/notes.txt" for i in infos)
-
-
-async def test_state_backend_async_errors():
-    """Test async error handling for StateBackend."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # aedit missing file
-    err = await be.aedit("/missing.txt", "a", "b")
-    assert isinstance(err, EditResult) and err.error and "not found" in err.error
-
-    # awrite duplicate
-    res = await be.awrite("/dup.txt", "x")
-    assert isinstance(res, WriteResult) and res.files_update is not None
-    rt.state["files"].update(res.files_update)
-    dup_err = await be.awrite("/dup.txt", "y")
-    assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
-
-
-async def test_state_backend_als_nested_directories():
-    """Test async ls with nested directories."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    files = {
-        "/src/main.py": "main code",
-        "/src/utils/helper.py": "helper code",
-        "/src/utils/common.py": "common code",
-        "/docs/readme.md": "readme",
-        "/docs/api/reference.md": "api reference",
-        "/config.json": "config",
-    }
-
-    for path, content in files.items():
-        res = await be.awrite(path, content)
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
-
-    root_listing = (await be.als("/")).entries
-    assert root_listing is not None
-    root_paths = [fi["path"] for fi in root_listing]
-    assert "/config.json" in root_paths
-    assert "/src/" in root_paths
-    assert "/docs/" in root_paths
-    assert "/src/main.py" not in root_paths
-    assert "/src/utils/helper.py" not in root_paths
-
-    src_listing = (await be.als("/src/")).entries
-    assert src_listing is not None
-    src_paths = [fi["path"] for fi in src_listing]
-    assert "/src/main.py" in src_paths
-    assert "/src/utils/" in src_paths
-    assert "/src/utils/helper.py" not in src_paths
-
-    utils_listing = (await be.als("/src/utils/")).entries
-    assert utils_listing is not None
-    utils_paths = [fi["path"] for fi in utils_listing]
-    assert "/src/utils/helper.py" in utils_paths
-    assert "/src/utils/common.py" in utils_paths
-    assert len(utils_paths) == 2
-
-    empty_listing = await be.als("/nonexistent/")
-    assert empty_listing.entries == []
-
-
-async def test_state_backend_als_trailing_slash():
-    """Test async ls with trailing slash behavior."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    files = {
-        "/file.txt": "content",
-        "/dir/nested.txt": "nested",
-    }
-
-    for path, content in files.items():
-        res = await be.awrite(path, content)
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
-
-    listing_with_slash = (await be.als("/")).entries
-    assert listing_with_slash is not None
-    assert len(listing_with_slash) == 2
-    assert "/file.txt" in [fi["path"] for fi in listing_with_slash]
-    assert "/dir/" in [fi["path"] for fi in listing_with_slash]
-
-    listing_from_dir = (await be.als("/dir/")).entries
-    assert listing_from_dir is not None
-    assert len(listing_from_dir) == 1
-    assert listing_from_dir[0]["path"] == "/dir/nested.txt"
-
-
-async def test_state_backend_aedit_replace_all():
-    """Test async edit with replace_all option."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # Write file with multiple occurrences
-    res = await be.awrite("/test.txt", "hello world hello universe")
-    assert res.error is None
-    rt.state["files"].update(res.files_update)
-
-    # Edit with replace_all=False when string appears multiple times should error
-    res2 = await be.aedit("/test.txt", "hello", "hi", replace_all=False)
-    assert res2.error is not None
-    assert "appears 2 times" in res2.error
-
-    # Edit with replace_all=True - should replace all occurrences
-    res3 = await be.aedit("/test.txt", "hello", "hi", replace_all=True)
-    assert res3.error is None
-    assert res3.occurrences == 2
-    rt.state["files"].update(res3.files_update)
-
-    read_result = await be.aread("/test.txt")
-    assert "hi world hi universe" in read_result.file_data["content"]
-
-    # Now test replace_all=False with unique string (should succeed)
-    res4 = await be.aedit("/test.txt", "world", "galaxy", replace_all=False)
-    assert res4.error is None
-    assert res4.occurrences == 1
-    rt.state["files"].update(res4.files_update)
-
-    read_result2 = await be.aread("/test.txt")
-    assert "hi galaxy hi universe" in read_result2.file_data["content"]
-
-
-async def test_state_backend_aread_with_offset_and_limit():
-    """Test async read with offset and limit parameters."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # Write file with multiple lines
-    lines = "\n".join([f"Line {i}" for i in range(1, 11)])
-    res = await be.awrite("/multi.txt", lines)
-    assert res.error is None
-    rt.state["files"].update(res.files_update)
-
-    # Read with offset
-    result = await be.aread("/multi.txt", offset=2, limit=3)
-    content = result.file_data["content"]
-    assert "Line 3" in content
-    assert "Line 4" in content
-    assert "Line 5" in content
-    assert "Line 1" not in content
-    assert "Line 6" not in content
-
-
-async def test_state_backend_agrep_with_pattern_and_glob():
-    """Test async grep with pattern and glob filter."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # Write multiple files
-    files = {
-        "/test.py": "import os",
-        "/test.txt": "import nothing",
-        "/main.py": "import sys",
-    }
-
-    for path, content in files.items():
-        res = await be.awrite(path, content)
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
-
-    # agrep with glob filter for .py files only
-    matches = (await be.agrep("import", path="/", glob="*.py")).matches
-    assert matches is not None
-    assert any(m["path"] == "/test.py" for m in matches)
-    assert any(m["path"] == "/main.py" for m in matches)
-    # test.txt should not be in matches even though it contains "import"
-    assert not any(m["path"] == "/test.txt" for m in matches)
-
-
-async def test_state_backend_aglob_recursive():
-    """Test async glob with recursive patterns."""
-    rt = make_runtime()
-    be = StateBackend(rt)
-
-    # Write files in nested directories
-    files = {
-        "/src/main.py": "code",
-        "/src/utils/helper.py": "utils",
-        "/tests/test_main.py": "tests",
-        "/readme.txt": "docs",
-    }
-
-    for path, content in files.items():
-        res = await be.awrite(path, content)
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
-
-    # Recursive glob for all .py files
-    infos = (await be.aglob("**/*.py", path="/")).matches
-    py_files = [i["path"] for i in infos]
-    assert "/src/main.py" in py_files
-    assert "/src/utils/helper.py" in py_files
-    assert "/tests/test_main.py" in py_files
-    assert "/readme.txt" not in py_files
-
-
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-async def test_state_backend_intercept_large_tool_result_async(file_format):
-    """Test that StateBackend properly handles large tool result interception in async context."""
-    rt = make_runtime()
-    middleware = FilesystemMiddleware(
-        backend=partial(StateBackend, file_format=file_format),
-        tool_token_limit_before_evict=1000,
-    )
-
-    large_content = "x" * 5000
-    tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
-
-    assert isinstance(result, Command)
-    assert "/large_tool_results/test_123" in result.update["files"]
-    expected = [large_content] if file_format == "v1" else large_content
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == expected
-    assert "Tool result too large" in result.update["messages"][0].content
+        # With CONFIG_KEY_SEND, write goes directly to state — result is a ToolMessage
+        assert isinstance(result, ToolMessage)
+        assert "Tool result too large" in result.content
+        assert "/large_tool_results/test_123" in store["files"]
+        expected = [large_content] if file_format == "v1" else large_content
+        assert store["files"]["/large_tool_results/test_123"]["content"] == expected
 
 
 async def test_state_backend_agrep_exact_file_path() -> None:
@@ -297,96 +310,94 @@ async def test_state_backend_agrep_exact_file_path() -> None:
     validate_path adds a trailing slash making it "/data/result_abc123/",
     which doesn't match the key in state (which has no trailing slash).
     """
-    rt = make_runtime()
-    be = StateBackend(rt)
+    with state_config_context():
+        be = StateBackend()
 
-    # Simulate an evicted large tool result (like what happens with large API responses)
-    evicted_path = "/large_tool_results/toolu_01ABC123XYZ"
-    content = """Task Results:
+        # Simulate an evicted large tool result (like what happens with large API responses)
+        evicted_path = "/large_tool_results/toolu_01ABC123XYZ"
+        content = """Task Results:
 Project Alpha - Status: Active
 Project Beta - Status: Pending
 Project Gamma - Status: Completed
 Total projects: 3
 """
 
-    res = await be.awrite(evicted_path, content)
-    assert res.error is None
-    rt.state["files"].update(res.files_update)
+        res = await be.awrite(evicted_path, content)
+        assert res.error is None
 
-    # Test 1: Grep with parent directory path works (establishes baseline)
-    matches_parent = (await be.agrep("Project Beta", path="/large_tool_results/")).matches
-    assert matches_parent is not None
-    assert len(matches_parent) == 1
-    assert matches_parent[0]["path"] == evicted_path
-    assert "Project Beta" in matches_parent[0]["text"]
+        # Test 1: Grep with parent directory path works (establishes baseline)
+        matches_parent = (await be.agrep("Project Beta", path="/large_tool_results/")).matches
+        assert matches_parent is not None
+        assert len(matches_parent) == 1
+        assert matches_parent[0]["path"] == evicted_path
+        assert "Project Beta" in matches_parent[0]["text"]
 
-    # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
-    matches_exact = (await be.agrep("Project Beta", path=evicted_path)).matches
-    assert matches_exact is not None, "Expected list but got None"
-    assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
-    assert matches_exact[0]["path"] == evicted_path
-    assert "Project Beta" in matches_exact[0]["text"]
+        # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
+        matches_exact = (await be.agrep("Project Beta", path=evicted_path)).matches
+        assert matches_exact is not None, "Expected list but got None"
+        assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
+        assert matches_exact[0]["path"] == evicted_path
+        assert "Project Beta" in matches_exact[0]["text"]
 
-    # Test 3: Verify glob also works with exact file paths
-    glob_matches = (await be.aglob("*", path=evicted_path)).matches
-    assert glob_matches is not None
-    assert len(glob_matches) == 1
-    assert glob_matches[0]["path"] == evicted_path
+        # Test 3: Verify glob also works with exact file paths
+        glob_matches = (await be.aglob("*", path=evicted_path)).matches
+        assert glob_matches is not None
+        assert len(glob_matches) == 1
+        assert glob_matches[0]["path"] == evicted_path
 
 
 async def test_state_backend_apath_edge_cases() -> None:
     """Test edge cases in path handling for async grep and glob operations."""
-    rt = make_runtime()
-    be = StateBackend(rt)
+    with state_config_context():
+        be = StateBackend()
 
-    # Create test files
-    files = {
-        "/file.txt": "root content",
-        "/dir/nested.txt": "nested content",
-        "/dir/subdir/deep.txt": "deep content",
-    }
+        # Create test files
+        files = {
+            "/file.txt": "root content",
+            "/dir/nested.txt": "nested content",
+            "/dir/subdir/deep.txt": "deep content",
+        }
 
-    for path, content in files.items():
-        res = await be.awrite(path, content)
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
+        for path, content in files.items():
+            res = await be.awrite(path, content)
+            assert res.error is None
 
-    # Test 1: Grep with None path should default to root
-    matches = (await be.agrep("content", path=None)).matches
-    assert matches is not None
-    assert len(matches) == 3
+        # Test 1: Grep with None path should default to root
+        matches = (await be.agrep("content", path=None)).matches
+        assert matches is not None
+        assert len(matches) == 3
 
-    # Test 2: Grep with trailing slash on directory
-    matches_slash = (await be.agrep("nested", path="/dir/")).matches
-    assert matches_slash is not None
-    assert len(matches_slash) == 1
-    assert matches_slash[0]["path"] == "/dir/nested.txt"
+        # Test 2: Grep with trailing slash on directory
+        matches_slash = (await be.agrep("nested", path="/dir/")).matches
+        assert matches_slash is not None
+        assert len(matches_slash) == 1
+        assert matches_slash[0]["path"] == "/dir/nested.txt"
 
-    # Test 3: Grep with no trailing slash on directory
-    matches_no_slash = (await be.agrep("nested", path="/dir")).matches
-    assert matches_no_slash is not None
-    assert len(matches_no_slash) == 1
-    assert matches_no_slash[0]["path"] == "/dir/nested.txt"
+        # Test 3: Grep with no trailing slash on directory
+        matches_no_slash = (await be.agrep("nested", path="/dir")).matches
+        assert matches_no_slash is not None
+        assert len(matches_no_slash) == 1
+        assert matches_no_slash[0]["path"] == "/dir/nested.txt"
 
-    # Test 4: Glob with exact file path
-    glob_exact = (await be.aglob("*.txt", path="/file.txt")).matches
-    assert glob_exact is not None
-    assert len(glob_exact) == 1
-    assert glob_exact[0]["path"] == "/file.txt"
+        # Test 4: Glob with exact file path
+        glob_exact = (await be.aglob("*.txt", path="/file.txt")).matches
+        assert glob_exact is not None
+        assert len(glob_exact) == 1
+        assert glob_exact[0]["path"] == "/file.txt"
 
-    # Test 5: Glob with directory and pattern
-    glob_dir = (await be.aglob("*.txt", path="/dir/")).matches
-    assert glob_dir is not None
-    assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
-    assert glob_dir[0]["path"] == "/dir/nested.txt"
+        # Test 5: Glob with directory and pattern
+        glob_dir = (await be.aglob("*.txt", path="/dir/")).matches
+        assert glob_dir is not None
+        assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
+        assert glob_dir[0]["path"] == "/dir/nested.txt"
 
-    # Test 6: Glob with recursive pattern
-    glob_recursive = (await be.aglob("**/*.txt", path="/dir/")).matches
-    assert glob_recursive is not None
-    assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
-    paths = {g["path"] for g in glob_recursive}
-    assert "/dir/nested.txt" in paths
-    assert "/dir/subdir/deep.txt" in paths
+        # Test 6: Glob with recursive pattern
+        glob_recursive = (await be.aglob("**/*.txt", path="/dir/")).matches
+        assert glob_recursive is not None
+        assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
+        paths = {g["path"] for g in glob_recursive}
+        assert "/dir/nested.txt" in paths
+        assert "/dir/subdir/deep.txt" in paths
 
 
 @pytest.mark.parametrize(
@@ -399,21 +410,20 @@ async def test_state_backend_apath_edge_cases() -> None:
 )
 async def test_state_backend_agrep_with_path_variations(path: str, expected_count: int, expected_paths: list[str]) -> None:
     """Test async grep with various path input formats."""
-    rt = make_runtime()
-    be = StateBackend(rt)
+    with state_config_context():
+        be = StateBackend()
 
-    # Create nested structure
-    res1 = await be.awrite("/app/main.py", "import os\nprint('main')")
-    res2 = await be.awrite("/app/utils.py", "import sys\nprint('utils')")
-    res3 = await be.awrite("/tests/test_main.py", "import pytest")
+        # Create nested structure
+        res1 = await be.awrite("/app/main.py", "import os\nprint('main')")
+        res2 = await be.awrite("/app/utils.py", "import sys\nprint('utils')")
+        res3 = await be.awrite("/tests/test_main.py", "import pytest")
 
-    for res in [res1, res2, res3]:
-        assert res.error is None
-        rt.state["files"].update(res.files_update)
+        for res in [res1, res2, res3]:
+            assert res.error is None
 
-    # Test the path variation
-    matches = (await be.agrep("import", path=path)).matches
-    assert matches is not None
-    assert len(matches) == expected_count
-    match_paths = {m["path"] for m in matches}
-    assert match_paths == set(expected_paths)
+        # Test the path variation
+        matches = (await be.agrep("import", path=path)).matches
+        assert matches is not None
+        assert len(matches) == expected_count
+        match_paths = {m["path"] for m in matches}
+        assert match_paths == set(expected_paths)

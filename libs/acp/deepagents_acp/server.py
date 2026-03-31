@@ -952,7 +952,7 @@ async def _serve_test_agent() -> None:
         agent_root_dir = context.cwd
 
         def create_backend(run_time: ToolRuntime) -> CompositeBackend:
-            ephemeral_backend = StateBackend(run_time)
+            ephemeral_backend = StateBackend()
             return CompositeBackend(
                 default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
                 routes={

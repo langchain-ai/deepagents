@@ -13,7 +13,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Literal, NotRequired, TypeAlias
+from typing import Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
@@ -181,22 +181,14 @@ class WriteResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of written file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
 
     Examples:
-        >>> # Checkpoint storage
-        >>> WriteResult(path="/f.txt", files_update={"/f.txt": {...}})
-        >>> # External storage
-        >>> WriteResult(path="/f.txt", files_update=None)
-        >>> # Error
+        >>> WriteResult(path="/f.txt")
         >>> WriteResult(error="File exists")
     """
 
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
 
 
 @dataclass
@@ -206,23 +198,15 @@ class EditResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of edited file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
         occurrences: Number of replacements made, None on failure.
 
     Examples:
-        >>> # Checkpoint storage
-        >>> EditResult(path="/f.txt", files_update={"/f.txt": {...}}, occurrences=1)
-        >>> # External storage
-        >>> EditResult(path="/f.txt", files_update=None, occurrences=2)
-        >>> # Error
+        >>> EditResult(path="/f.txt", occurrences=1)
         >>> EditResult(error="File not found")
     """
 
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
     occurrences: int | None = None
 
 
@@ -298,7 +282,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).ls_info is not BackendProtocol.ls_info:
             warnings.warn(
-                "`ls_info` is deprecated; rename to `ls` instead.",
+                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -383,7 +367,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
             warnings.warn(
-                "`grep_raw` is deprecated; rename to `grep` instead.",
+                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -424,7 +408,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).glob_info is not BackendProtocol.glob_info:
             warnings.warn(
-                "`glob_info` is deprecated; rename to `glob` instead.",
+                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -563,7 +547,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `ls` instead.
         """
         warnings.warn(
-            "`ls_info` is deprecated; use `ls` instead.",
+            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -577,7 +561,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `als` instead.
         """
         warnings.warn(
-            "`als_info` is deprecated; use `als` instead.",
+            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -591,7 +575,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `glob` instead.
         """
         warnings.warn(
-            "`glob_info` is deprecated; use `glob` instead.",
+            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -605,7 +589,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `aglob` instead.
         """
         warnings.warn(
-            "`aglob_info` is deprecated; use `aglob` instead.",
+            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -624,7 +608,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `grep` instead.
         """
         warnings.warn(
-            "`grep_raw` is deprecated; use `grep` instead.",
+            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -643,7 +627,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `agrep` instead.
         """
         warnings.warn(
-            "`agrep_raw` is deprecated; use `agrep` instead.",
+            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
             DeprecationWarning,
             stacklevel=2,
         )

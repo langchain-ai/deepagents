@@ -5,23 +5,12 @@ from unittest.mock import patch
 
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
-
-
-def build_composite_state_backend(runtime: ToolRuntime, *, routes):
-    built_routes = {}
-    for prefix, backend_or_factory in routes.items():
-        if callable(backend_or_factory):
-            built_routes[prefix] = backend_or_factory(runtime)
-        else:
-            built_routes[prefix] = backend_or_factory
-    default_state = StateBackend(runtime)
-    return CompositeBackend(default=default_state, routes=built_routes)
+from tests.unit_tests.conftest import state_config_context
 
 
 class TestFilesystemMiddlewareAsync:
@@ -29,63 +18,61 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_als_shortterm(self):
         """Test async ls tool with state backend."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/test2.txt": FileData(
-                    content=["Goodbye world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/test2.txt": FileData(
+                content=["Goodbye world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result = await ls_tool.ainvoke(
-            {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
-        )
+        with state_config_context(files):
+            result = await ls_tool.ainvoke(
+                {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
+            )
         assert result == str(["/test.txt", "/test2.txt"])
 
     async def test_als_shortterm_with_path(self):
         """Test async ls tool with specific path."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/test2.txt": FileData(
-                    content=["Goodbye world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/charmander.txt": FileData(
-                    content=["Ember"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/water/squirtle.txt": FileData(
-                    content=["Water"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/test2.txt": FileData(
+                content=["Goodbye world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/charmander.txt": FileData(
+                content=["Ember"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/water/squirtle.txt": FileData(
+                content=["Water"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result = await ls_tool.ainvoke(
-            {
-                "path": "/pokemon/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await ls_tool.ainvoke(
+                {
+                    "path": "/pokemon/",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
@@ -94,39 +81,38 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_als_shortterm_lists_directories(self):
         """Test async ls lists directories with trailing /."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/charmander.txt": FileData(
-                    content=["Ember"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/water/squirtle.txt": FileData(
-                    content=["Water"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/docs/readme.md": FileData(
-                    content=["Documentation"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/charmander.txt": FileData(
+                content=["Ember"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/water/squirtle.txt": FileData(
+                content=["Water"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/docs/readme.md": FileData(
+                content=["Documentation"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result = await ls_tool.ainvoke(
-            {
-                "path": "/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await ls_tool.ainvoke(
+                {
+                    "path": "/",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
@@ -137,455 +123,442 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/test.py": FileData(
-                    content=["print('hello')"],
-                    modified_at="2021-01-02",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/charmander.py": FileData(
-                    content=["Ember"],
-                    modified_at="2021-01-03",
-                    created_at="2021-01-01",
-                ),
-                "/pokemon/squirtle.txt": FileData(
-                    content=["Water"],
-                    modified_at="2021-01-04",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/test.py": FileData(
+                content=["print('hello')"],
+                modified_at="2021-01-02",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/charmander.py": FileData(
+                content=["Ember"],
+                modified_at="2021-01-03",
+                created_at="2021-01-01",
+            ),
+            "/pokemon/squirtle.txt": FileData(
+                content=["Water"],
+                modified_at="2021-01-04",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = await glob_search_tool.ainvoke(
-            {
-                "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "*.py",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
 
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/src/main.py": FileData(
-                    content=["main code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/src/utils/helper.py": FileData(
-                    content=["helper code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/tests/test_main.py": FileData(
-                    content=["test code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/src/main.py": FileData(
+                content=["main code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/src/utils/helper.py": FileData(
+                content=["helper code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/tests/test_main.py": FileData(
+                content=["test code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = await glob_search_tool.ainvoke(
-            {
-                "pattern": "**/*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "**/*.py",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
 
     async def test_aglob_search_shortterm_with_path(self):
         """Test async glob with specific path."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/src/main.py": FileData(
-                    content=["main code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/src/utils/helper.py": FileData(
-                    content=["helper code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/tests/test_main.py": FileData(
-                    content=["test code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/src/main.py": FileData(
+                content=["main code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/src/utils/helper.py": FileData(
+                content=["helper code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/tests/test_main.py": FileData(
+                content=["test code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = await glob_search_tool.ainvoke(
-            {
-                "pattern": "*.py",
-                "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "*.py",
+                    "path": "/src",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
 
     async def test_aglob_search_shortterm_brace_expansion(self):
         """Test async glob with brace expansion."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["code"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/test.pyi": FileData(
-                    content=["stubs"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/test.txt": FileData(
-                    content=["text"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["code"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/test.pyi": FileData(
+                content=["stubs"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/test.txt": FileData(
+                content=["text"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = await glob_search_tool.ainvoke(
-            {
-                "pattern": "*.{py,pyi}",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await glob_search_tool.ainvoke(
+                {
+                    "pattern": "*.{py,pyi}",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
 
     async def test_aglob_search_shortterm_no_matches(self):
         """Test async glob with no matches."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = await glob_search_tool.ainvoke(
-            {
-                "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
-        assert result == str([])
-
-    async def test_glob_timeout_returns_error_message_async(self):
-        state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
-        backend = middleware._get_backend(backend_runtime)
-
-        async def slow_aglob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
-            await asyncio.sleep(2)
-            return []
-
-        with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "aglob", side_effect=slow_aglob),
-        ):
+        with state_config_context(files):
             result = await glob_search_tool.ainvoke(
                 {
-                    "pattern": "**/*",
+                    "pattern": "*.py",
                     "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
                 }
             )
+        assert result == str([])
+
+    async def test_glob_timeout_returns_error_message_async(self):
+        files = {}
+        state = FilesystemState(messages=[], files=files)
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        with state_config_context(files):
+            backend_runtime = ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+            backend = middleware._get_backend(backend_runtime)
+
+            async def slow_aglob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+                await asyncio.sleep(2)
+                return []
+
+            with (
+                patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+                patch.object(middleware, "_get_backend", return_value=backend),
+                patch.object(backend, "aglob", side_effect=slow_aglob),
+            ):
+                result = await glob_search_tool.ainvoke(
+                    {
+                        "pattern": "**/*",
+                        "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                    }
+                )
 
         assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["import os", "import sys", "print('hello')"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/main.py": FileData(
-                    content=["def main():", "    pass"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/helper.txt": FileData(
-                    content=["import json"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["import os", "import sys", "print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/main.py": FileData(
+                content=["def main():", "    pass"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/helper.txt": FileData(
+                content=["import json"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/test.py" in result
         assert "/helper.txt" in result
         assert "/main.py" not in result
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["import os", "import sys", "print('hello')"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["import os", "import sys", "print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "1: import os" in result
         assert "2: import sys" in result
         assert "print" not in result
 
     async def test_agrep_search_shortterm_count_mode(self):
         """Test async grep with count mode."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["import os", "import sys", "print('hello')"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/main.py": FileData(
-                    content=["import json", "data = {}"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["import os", "import sys", "print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/main.py": FileData(
+                content=["import json", "data = {}"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "output_mode": "count",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "count",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/test.py:2" in result or "/test.py: 2" in result
         assert "/main.py:1" in result or "/main.py: 1" in result
 
     async def test_agrep_search_shortterm_with_include(self):
         """Test async grep with glob filter."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["import os"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/test.txt": FileData(
-                    content=["import nothing"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["import os"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/test.txt": FileData(
+                content=["import nothing"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "glob": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "glob": "*.py",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/test.py" in result
         assert "/test.txt" not in result
 
     async def test_agrep_search_shortterm_with_path(self):
         """Test async grep with specific path."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/src/main.py": FileData(
-                    content=["import os"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-                "/tests/test.py": FileData(
-                    content=["import pytest"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/src/main.py": FileData(
+                content=["import os"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+            "/tests/test.py": FileData(
+                content=["import pytest"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "path": "/src",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "/src/main.py" in result
         assert "/tests/test.py" not in result
 
     async def test_agrep_search_shortterm_regex_pattern(self):
         """Test async grep with literal pattern (not regex)."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["def hello():", "def world():", "x = 5"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["def hello():", "def world():", "x = 5"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         # Search for literal "def " - literal search, not regex
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "def ",
-                "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "def ",
+                    "output_mode": "content",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "1: def hello():" in result
         assert "2: def world():" in result
         assert "x = 5" not in result
 
     async def test_agrep_search_shortterm_no_matches(self):
         """Test async grep with no matches."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["print('hello')"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert result == "No matches found"
 
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.py": FileData(
-                    content=["print('hello')"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.py": FileData(
+                content=["print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         # Special characters are treated literally, so no matches expected
-        result = await grep_search_tool.ainvoke(
-            {
-                "pattern": "[invalid",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "[invalid",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "No matches found" in result
 
     async def test_aread_file(self):
         """Test async read_file tool."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world", "Line 2", "Line 3"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world", "Line 2", "Line 3"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = await read_file_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await read_file_tool.ainvoke(
+                {
+                    "file_path": "/test.txt",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "Hello world" in result
         assert "Line 2" in result
         assert "Line 3" in result
 
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Line 1", "Line 2", "Line 3", "Line 4"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Line 1", "Line 2", "Line 3", "Line 4"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        result = await read_file_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "offset": 1,
-                "limit": 2,
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
+        with state_config_context(files):
+            result = await read_file_tool.ainvoke(
+                {
+                    "file_path": "/test.txt",
+                    "offset": 1,
+                    "limit": 2,
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
         assert "Line 2" in result
         assert "Line 3" in result
         assert "Line 1" not in result
@@ -593,75 +566,76 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_awrite_file(self):
         """Test async write_file tool."""
-        state = FilesystemState(messages=[], files={})
+        files = {}
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         write_file_tool = next(tool for tool in middleware.tools if tool.name == "write_file")
-        result = await write_file_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "content": "Hello world",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
-        # StateBackend returns a Command with files_update
-        assert isinstance(result, Command)
-        assert "/test.txt" in result.update["files"]
+        with state_config_context(files) as store:
+            result = await write_file_tool.ainvoke(
+                {
+                    "file_path": "/test.txt",
+                    "content": "Hello world",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+        # StateBackend now writes via get_config() and returns a plain string
+        assert isinstance(result, str)
+        assert "/test.txt" in store["files"]
 
     async def test_aedit_file(self):
         """Test async edit_file tool."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world", "Goodbye world"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world", "Goodbye world"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
-        result = await edit_file_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "old_string": "Hello",
-                "new_string": "Hi",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
-        # StateBackend returns a Command with files_update
-        assert isinstance(result, Command)
-        assert "/test.txt" in result.update["files"]
+        with state_config_context(files) as store:
+            result = await edit_file_tool.ainvoke(
+                {
+                    "file_path": "/test.txt",
+                    "old_string": "Hello",
+                    "new_string": "Hi",
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+        # StateBackend now writes via get_config() and returns a plain string
+        assert isinstance(result, str)
+        assert "/test.txt" in store["files"]
 
     async def test_aedit_file_replace_all(self):
         """Test async edit_file tool with replace_all."""
-        state = FilesystemState(
-            messages=[],
-            files={
-                "/test.txt": FileData(
-                    content=["Hello world", "Hello again"],
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                ),
-            },
-        )
+        files = {
+            "/test.txt": FileData(
+                content=["Hello world", "Hello again"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
-        result = await edit_file_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "old_string": "Hello",
-                "new_string": "Hi",
-                "replace_all": True,
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
-        assert isinstance(result, Command)
-        assert "/test.txt" in result.update["files"]
+        with state_config_context(files) as store:
+            result = await edit_file_tool.ainvoke(
+                {
+                    "file_path": "/test.txt",
+                    "old_string": "Hello",
+                    "new_string": "Hi",
+                    "replace_all": True,
+                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
+                }
+            )
+        assert isinstance(result, str)
+        assert "/test.txt" in store["files"]
 
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
         """Test async execute tool returns friendly error instead of raising exception."""
-        state = FilesystemState(messages=[], files={})
+        files = {}
+        state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
 
         # Find the execute tool
@@ -678,7 +652,8 @@ class TestFilesystemMiddlewareAsync:
         )
 
         # Execute should return error message, not raise exception
-        result = await execute_tool.ainvoke({"command": "ls -la", "runtime": runtime})
+        with state_config_context(files):
+            result = await execute_tool.ainvoke({"command": "ls -la", "runtime": runtime})
 
         assert isinstance(result, str)
         assert "Error: Execution not available" in result
@@ -715,7 +690,7 @@ class TestFilesystemMiddlewareAsync:
             config={},
         )
 
-        backend = TimeoutCaptureSandbox(rt)
+        backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
@@ -757,7 +732,7 @@ class TestFilesystemMiddlewareAsync:
             config={},
         )
 
-        backend = FormattingMockSandboxBackend(rt)
+        backend = FormattingMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
@@ -800,7 +775,7 @@ class TestFilesystemMiddlewareAsync:
             config={},
         )
 
-        backend = FailureMockSandboxBackend(rt)
+        backend = FailureMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
@@ -843,7 +818,7 @@ class TestFilesystemMiddlewareAsync:
             config={},
         )
 
-        backend = TruncatedMockSandboxBackend(rt)
+        backend = TruncatedMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")

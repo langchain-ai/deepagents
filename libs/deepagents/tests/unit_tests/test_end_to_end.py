@@ -73,19 +73,20 @@ def make_runtime(tid: str = "tc") -> ToolRuntime:
     )
 
 
-def create_filesystem_backend_virtual(tmp_path: Path) -> BackendProtocol:
+def create_filesystem_backend_virtual(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:
     """Create a FilesystemBackend in virtual mode."""
-    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), None
 
 
-def create_state_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
+def create_state_backend(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:  # noqa: ARG001
     """Create a StateBackend."""
-    return StateBackend(make_runtime())
+    return StateBackend(), None
 
 
-def create_store_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
-    """Create a StoreBackend."""
-    return StoreBackend(make_runtime())
+def create_store_backend(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:  # noqa: ARG001
+    """Create a StoreBackend with an explicit store."""
+    mem_store = InMemoryStore()
+    return StoreBackend(store=mem_store), mem_store
 
 
 # Backend factories for parametrization
@@ -94,6 +95,22 @@ BACKEND_FACTORIES = [
     pytest.param(create_state_backend, id="state"),
     pytest.param(create_store_backend, id="store"),
 ]
+
+
+def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
+    """Write a file to the backend, returning starter ``files`` for StateBackend.
+
+    For external backends (filesystem, store) the write happens immediately.
+    For StateBackend, the file data is returned as a dict that should be
+    passed via ``agent.invoke({"files": ...})`` since StateBackend requires
+    a LangGraph execution context.
+    """
+    from deepagents.backends.utils import create_file_data
+
+    if isinstance(backend, StateBackend):
+        return {file_path: {**create_file_data(content)}}
+    backend.write(file_path, content)
+    return None
 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -413,7 +430,7 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]) -> None:
         """Test line count limiting in read_file tool with very long lines."""
         # Create a file with a very long line (18,000 chars) that will be split into continuation lines
         # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
@@ -430,12 +447,10 @@ class TestDeepAgentEndToEnd:
         content = "\n".join(lines)
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/my_file"
-        res = backend.write(file_path, content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, content)
 
         # Create a fake model that calls read_file with limit=3
         # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
@@ -461,10 +476,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -494,15 +512,15 @@ class TestDeepAgentEndToEnd:
         assert len(output_lines) <= 3
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_empty_file(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test reading an empty file through the agent."""
         # Create backend and write empty file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/my_file"
-        res = backend.write(file_path, "")
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, "")
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -527,10 +545,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -902,19 +923,19 @@ class TestDeepAgentEndToEnd:
             assert "'list' object has no attribute 'items'" not in glob_result
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_truncation(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test that read_file truncates large files and provides pagination guidance."""
         # Create a file with content that exceeds the truncation threshold
         # Default token_limit_before_evict is 20000, so threshold is 4 * 20000 = 80000 chars
         large_content = "x" * 85000  # 85k chars exceeds the 80k threshold
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file.txt"
-        res = backend.write(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -939,10 +960,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -961,18 +985,18 @@ class TestDeepAgentEndToEnd:
         assert len(file_content) <= 80000
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_no_truncation_small_file(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test that read_file does NOT truncate small files."""
         # Create a small file that doesn't exceed the truncation threshold
         small_content = "Hello, world!\n" * 100  # Much smaller than 80k chars
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/small_file.txt"
-        res = backend.write(file_path, small_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, small_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -997,10 +1021,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1016,7 +1043,9 @@ class TestDeepAgentEndToEnd:
         assert "Hello, world!" in file_content
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_truncation_with_offset(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test that read_file truncation message includes correct offset for pagination."""
         # Create a large file with many lines (each line is 500 chars + newline)
         # 500 lines total, we'll read lines 50-250 (200 lines)
@@ -1024,12 +1053,10 @@ class TestDeepAgentEndToEnd:
         large_content = "\n".join(["y" * 500 for _ in range(500)])
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file_offset.txt"
-        res = backend.write(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file with a non-zero offset
         model = FixedGenericFakeChatModel(
@@ -1054,10 +1081,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1073,18 +1103,18 @@ class TestDeepAgentEndToEnd:
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    async def test_deep_agent_read_file_truncation_async(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test that read_file truncates large files in async mode."""
         # Create a large file
         large_content = "z" * 85000
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file_async.txt"
-        res = await backend.awrite(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -1109,10 +1139,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent (async)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = await agent.ainvoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1131,7 +1164,9 @@ class TestDeepAgentEndToEnd:
         assert len(file_content) < 85000
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_single_long_line_behavior(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test the behavior with a single very long line.
 
         When a file has a single very long line (e.g., 85,000 chars), it gets split
@@ -1152,12 +1187,10 @@ class TestDeepAgentEndToEnd:
         single_long_line = "x" * 85000
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         file_path = "/single_long_line.txt"
-        res = backend.write(file_path, single_long_line)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, single_long_line)
 
         # Create a fake model that calls read_file with limit=1
         # This should return just 1 formatted line (the first chunk of the long line)
@@ -1183,10 +1216,13 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
+        agent = create_deep_agent(model=model, backend=backend, store=store)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1268,9 +1304,11 @@ class TestDeepAgentEndToEnd:
         )
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_invalid_args_returns_tool_message(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test invalid read_file arguments still produce a ToolMessage."""
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
 
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
@@ -1291,7 +1329,7 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=fake_model, backend=backend)
+        agent = create_deep_agent(model=fake_model, backend=backend, store=store)
         result = agent.invoke({"messages": [HumanMessage(content="Try reading a file with invalid args")]})
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
@@ -1302,18 +1340,19 @@ class TestDeepAgentEndToEnd:
         assert "Error invoking tool 'read_file' with kwargs " in tool_message.content
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_image_file(
+        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
+    ) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
-        backend = backend_factory(tmp_path)
+        backend, store = backend_factory(tmp_path)
         img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
 
+        starter_files = None
         if isinstance(backend, FilesystemBackend):
             (tmp_path / "photo.png").write_bytes(img_bytes)
         else:
             encoded = base64.b64encode(img_bytes).decode("ascii")
-            res = backend.write("/photo.png", encoded)
-            if isinstance(backend, StateBackend):
-                backend.runtime.state["files"].update(res.files_update)
+            starter_files = prepopulate_file(backend, "/photo.png", encoded)
 
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
@@ -1334,8 +1373,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=fake_model, backend=backend)
-        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+        agent = create_deep_agent(model=fake_model, backend=backend, store=store)
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
@@ -1616,3 +1658,314 @@ class TestCompactConversationTool:
         assert len(compact_msgs) == 1
         assert "compacted" in compact_msgs[0].content.lower() or "summarized" in compact_msgs[0].content.lower()
         assert "conversation that has been summarized" in agent_model.call_history[1]["messages"][1].content
+
+
+class TestStateBackendConfigKeys:
+    """Test that StateBackend reads/writes via CONFIG_KEY_READ/CONFIG_KEY_SEND."""
+
+    def test_write_then_read(self) -> None:
+        """Write a file via tool call, then read it back in the same turn."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/hello.txt", "content": "hello world"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/hello.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # write should succeed
+        assert any("Updated file" in m.content for m in tool_msgs)
+        # read should return the content
+        assert any("hello world" in m.content for m in tool_msgs)
+
+    def test_write_then_edit_then_read(self) -> None:
+        """Write, edit, then read a file across tool calls."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/doc.txt", "content": "foo bar baz"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "edit_file",
+                                "args": {
+                                    "file_path": "/doc.txt",
+                                    "old_string": "bar",
+                                    "new_string": "qux",
+                                },
+                                "id": "call_e",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/doc.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # The read should reflect the edit
+        read_msg = next(m for m in tool_msgs if m.tool_call_id == "call_r")
+        assert "foo qux baz" in read_msg.content
+
+    def test_write_then_ls(self) -> None:
+        """Write a file, then ls to verify it appears."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/data/notes.md", "content": "# Notes"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": {"path": "/data/"},
+                                "id": "call_ls",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
+        assert "/data/notes.md" in ls_msg.content
+
+    def test_backward_compat_lambda_factory(self) -> None:
+        """The old ``lambda rt: StateBackend(rt)`` factory pattern still works."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/compat.txt", "content": "works"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/compat.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            agent = create_deep_agent(
+                model=model,
+                backend=StateBackend,
+            )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("works" in m.content for m in tool_msgs)
+
+    def test_state_backend_runtime_deprecation(self) -> None:
+        """Passing runtime to StateBackend emits a DeprecationWarning."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            StateBackend("ignored_runtime_value")
+
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "runtime" in str(deprecations[0].message).lower()
+
+    def test_store_backend_runtime_deprecation(self) -> None:
+        """Passing runtime to StoreBackend emits a DeprecationWarning."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            StoreBackend("ignored_runtime_value")
+
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "runtime" in str(deprecations[0].message).lower()
+
+    def test_store_backend_explicit_store_works(self) -> None:
+        """StoreBackend(store=my_store) works without a graph context."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/note.txt", "content": "stored"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/note.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        mem_store = InMemoryStore()
+        agent = create_deep_agent(
+            model=model,
+            backend=StoreBackend(store=mem_store),
+            store=mem_store,
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("stored" in m.content for m in tool_msgs)
+
+    def test_store_backend_get_store_fallback(self) -> None:
+        """StoreBackend() without explicit store works inside a graph via get_store()."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/auto.txt", "content": "via get_store"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/auto.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            backend=StoreBackend(),  # No explicit store
+            store=InMemoryStore(),  # Passed to graph — get_store() picks it up
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("via get_store" in m.content for m in tool_msgs)
+
+    def test_backend_factory_deprecation(self) -> None:
+        """Passing a callable factory as backend emits a DeprecationWarning."""
+        import warnings
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            agent = create_deep_agent(
+                model=model,
+                backend=StateBackend,
+            )
+            agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
+        assert len(factory_warnings) >= 1

@@ -51,7 +51,7 @@ async def _serve_example_agent() -> None:
         interrupt_config = _get_interrupt_config(context.mode)
 
         def create_backend(tr: ToolRuntime | None = None) -> CompositeBackend:
-            ephemeral_backend = StateBackend(tr) if tr is not None else None
+            ephemeral_backend = StateBackend()
             shell_env = os.environ.copy()
 
             # Use CLIShellBackend for filesystem + shell execution.

@@ -656,6 +656,9 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._tokens_approximate: bool = False
+        """Whether the cached token count is stale (interrupted generation)."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -1624,7 +1627,7 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_status_message(message)
 
-    def _update_tokens(self, count: int) -> None:
+    def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
 
         Low-level helper — only touches the UI.  Callers that also need to
@@ -1632,24 +1635,38 @@ class DeepAgentsApp(App):
 
         Args:
             count: Total context token count.
+            approximate: Append "+" to signal a stale/interrupted count.
         """
         if self._status_bar:
-            self._status_bar.set_tokens(count)
+            self._status_bar.set_tokens(count, approximate=approximate)
 
-    def _on_tokens_update(self, count: int) -> None:
+    def _on_tokens_update(self, count: int, *, approximate: bool = False) -> None:
         """Update the local cache *and* the status bar.
 
         This is the callback wired to the adapter's `_on_tokens_update`.
 
         Args:
             count: Total context token count to cache and display.
+            approximate: Append "+" to signal a stale/interrupted count.
         """
         self._context_tokens = count
-        self._update_tokens(count)
+        self._tokens_approximate = approximate
+        self._update_tokens(count, approximate=approximate)
 
-    def _show_tokens(self) -> None:
-        """Restore the status bar to the cached token value."""
-        self._update_tokens(self._context_tokens)
+    def _show_tokens(self, *, approximate: bool = False) -> None:
+        """Restore the status bar to the cached token value.
+
+        Args:
+            approximate: Append "+" to signal a stale/interrupted count.
+
+                This flag is sticky until `_on_tokens_update` receives a fresh
+                count from the model.
+        """
+        self._tokens_approximate = self._tokens_approximate or approximate
+        self._update_tokens(
+            self._context_tokens,
+            approximate=self._tokens_approximate,
+        )
 
     def _hide_tokens(self) -> None:
         """Hide the token display during streaming."""
@@ -2642,6 +2659,7 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             await self._clear_messages()
             self._context_tokens = 0
+            self._tokens_approximate = False
             self._update_tokens(0)
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
@@ -3341,8 +3359,9 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
 
-        # Ensure token display is restored (in case of early cancellation)
-        self._show_tokens()
+        # Ensure token display is restored (in case of early cancellation).
+        # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
+        self._show_tokens(approximate=self._tokens_approximate)
 
         try:
             await self._maybe_drain_deferred()
@@ -4622,6 +4641,7 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             await self._clear_messages()
             self._context_tokens = 0
+            self._tokens_approximate = False
             self._update_tokens(0)
             self._update_status("")
 

@@ -48,7 +48,7 @@ env:
   UV_FROZEN: "true"
 
 permissions:
-  contents: read # Job-level overrides grant write only where needed (mark-release)
+  contents: read # Job-level overrides grant write only where needed
 
 jobs:
   # Determine working directory from package input

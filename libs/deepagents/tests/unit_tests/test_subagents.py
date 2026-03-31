@@ -18,6 +18,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
+from langchain_core.callbacks import BaseCallbackHandler
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
@@ -643,6 +644,79 @@ class TestSubAgents:
         # config instead of replacing it wholesale.
         assert captured_config["tags"] == ["hello"]
         assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
+
+    def test_subagent_propagates_callbacks_to_model_calls(self) -> None:
+        """Test that callbacks in parent config are forwarded to subagent model invocations.
+        Regression test for https://github.com/langchain-ai/deepagents/issues/2315
+
+        """
+
+        llm_start_agent_names: list[str] = []
+
+        class CapturingCallback(BaseCallbackHandler):
+            def on_llm_start(self, serialized: dict, prompts: list, **kwargs: Any) -> None:
+                llm_start_agent_names.append(kwargs.get("name", "unknown"))
+
+        parent_chat_model = GenericFakeChatModel(
+            messages = iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls = [
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do something.",
+                                    "subagent_type": "general-purpose",},
+                                "id": "call_subagent_callback",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Subagent done.")])
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            name="callback-check-subagent",
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        callback = CapturingCallback()
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the callback check.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                "callbacks": [callback],
+            },
+            durability="exit",)
+
+        # All three LLM calls (2 parent + 1 subagent) should trigger the callback
+        assert len(llm_start_agent_names) >= 2, (
+            f"Expected callbacks from both parent and subagent LLM calls, "
+            f"but only got {len(llm_start_agent_names)}: {llm_start_agent_names}")
+        # The subagent name should be identifiable in at least one callback
+        assert any(name == "callback-check-subagent" for name in llm_start_agent_names), (
+            f"Subagent LLM call should have triggered callback with correct name, "
+            f"got: {llm_start_agent_names}")
 
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.

@@ -308,6 +308,7 @@ class TestCheckTool:
 
         tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "running"
+        assert tasks["thread_abc"]["last_updated_at"] == "2024-01-15T10:30:00Z"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_completed_task_returns_result(self, mock_get_client: MagicMock) -> None:
@@ -336,6 +337,7 @@ class TestCheckTool:
 
         tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "success"
+        assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_errored_task(self, mock_get_client: MagicMock) -> None:
@@ -357,6 +359,7 @@ class TestCheckTool:
 
         tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "error"
+        assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
 
 
 class TestUpdateTool:
@@ -475,7 +478,9 @@ class TestListTasksTool:
         # state should be updated with fresh statuses
         updated = result.update["async_tasks"]
         assert updated["t1"]["status"] == "success"
+        assert updated["t1"]["last_updated_at"] != "2024-01-15T10:30:00Z"
         assert updated["t2"]["status"] == "running"
+        assert updated["t2"]["last_updated_at"] == "2024-01-15T10:31:00Z"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_skips_sdk_call_for_terminal_statuses(self, mock_get_client: MagicMock) -> None:
@@ -727,6 +732,7 @@ class TestCancelTool:
         assert isinstance(result, Command)
         tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "cancelled"
+        assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
         assert tasks["thread_abc"]["task_id"] == "thread_abc"
         msgs = result.update["messages"]
         assert msgs[0].tool_call_id == "tc_cancel"

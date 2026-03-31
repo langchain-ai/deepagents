@@ -103,7 +103,7 @@ class AsyncTask(TypedDict):
     """
 
     last_updated_at: str
-    """ISO-8601 timestamp (UTC) when the task was last updated with a new message.
+    """ISO-8601 timestamp (UTC) when the task status changes or when a follow-up message is sent via the update tool.
 
     Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
@@ -391,6 +391,7 @@ def _build_check_command(
 ) -> Command:
     """Build the `Command` update for a check result."""
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    last_updated_at = now if task["status"] != result["status"] else task["last_updated_at"]
     updated_task = AsyncTask(
         task_id=task["task_id"],
         agent_name=task["agent_name"],
@@ -399,7 +400,7 @@ def _build_check_command(
         status=result["status"],
         created_at=task["created_at"],
         last_checked_at=now,
-        last_updated_at=task["last_updated_at"],
+        last_updated_at=last_updated_at,
     )
     return Command(
         update={
@@ -621,7 +622,7 @@ def _build_cancel_tool(
             status="cancelled",
             created_at=tracked["created_at"],
             last_checked_at=now,
-            last_updated_at=tracked["last_updated_at"],
+            last_updated_at=now,
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -653,7 +654,7 @@ def _build_cancel_tool(
             status="cancelled",
             created_at=tracked["created_at"],
             last_checked_at=now,
-            last_updated_at=tracked["last_updated_at"],
+            last_updated_at=now,
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -760,6 +761,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         for task in filtered:
             status = _fetch_live_status(clients, task)
             entries.append(_format_task_entry(task, status))
+            last_updated_at = now if status != task["status"] else task["last_updated_at"]
             updated_tasks[task["task_id"]] = AsyncTask(
                 task_id=task["task_id"],
                 agent_name=task["agent_name"],
@@ -768,7 +770,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
                 status=status,
                 created_at=task["created_at"],
                 last_checked_at=now,
-                last_updated_at=task["last_updated_at"],
+                last_updated_at=last_updated_at,
             )
         msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
         return Command(
@@ -792,6 +794,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for task, status in zip(filtered, statuses, strict=True):
             entries.append(_format_task_entry(task, status))
+            last_updated_at = now if status != task["status"] else task["last_updated_at"]
             updated_tasks[task["task_id"]] = AsyncTask(
                 task_id=task["task_id"],
                 agent_name=task["agent_name"],
@@ -800,7 +803,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
                 status=status,
                 created_at=task["created_at"],
                 last_checked_at=now,
-                last_updated_at=task["last_updated_at"],
+                last_updated_at=last_updated_at,
             )
         msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
         return Command(

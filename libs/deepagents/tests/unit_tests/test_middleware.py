@@ -1234,6 +1234,44 @@ class TestFilesystemMiddleware:
         assert result.content[0]["type"] == "image"
         assert result.content[0]["mime_type"] == "image/png"
         assert result.content[0]["base64"] == "<base64_data>"
+        assert result.content[0]["name"] == "screenshot"
+
+    def test_read_file_pdf_returns_file_content_block_with_name(self):
+        """Test PDF reads return file blocks with name for Bedrock compatibility."""
+
+        class PdfBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "<base64_pdf_data>",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=lambda rt: PdfBackend(rt))  # noqa: PLW0108
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="pdf-read-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.name == "read_file"
+        assert result.tool_call_id == "pdf-read-1"
+        assert result.additional_kwargs["read_file_path"] == "/app/report.pdf"
+        assert result.additional_kwargs["read_file_media_type"] == "application/pdf"
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "file"
+        assert result.content[0]["mime_type"] == "application/pdf"
+        assert result.content[0]["base64"] == "<base64_pdf_data>"
+        assert result.content[0]["name"] == "report"
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

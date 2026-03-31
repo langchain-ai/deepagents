@@ -185,9 +185,8 @@ class StoreBackend(BackendProtocol):
             try:
                 runtime = get_runtime()
             except RuntimeError:
-                msg = "StoreBackend must be used inside a LangGraph graph execution (e.g. via create_deep_agent)."
-                raise RuntimeError(msg) from None
-            ctx = BackendContext(state=None, runtime=runtime)
+                runtime = None
+            ctx = BackendContext(state=None, runtime=runtime)  # type: ignore[arg-type]
             return _validate_namespace(self._namespace(ctx))
 
         return self._get_namespace_legacy()

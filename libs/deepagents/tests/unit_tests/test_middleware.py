@@ -44,7 +44,29 @@ from deepagents.middleware.filesystem import (
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
-from tests.unit_tests.conftest import state_config_context
+
+
+def _make_backend(files=None):
+    """Create a StoreBackend backed by InMemoryStore, optionally pre-populated with files."""
+    mem_store = InMemoryStore()
+    if files:
+        for path, fdata in files.items():
+            mem_store.put(
+                ("filesystem",),
+                path,
+                {
+                    "content": fdata["content"],
+                    "encoding": fdata.get("encoding", "utf-8"),
+                    "created_at": fdata.get("created_at", ""),
+                    "modified_at": fdata.get("modified_at", ""),
+                },
+            )
+    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    return backend, mem_store
+
+
+def _runtime(tool_call_id=""):
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
 
 
 class TestAddMiddleware:
@@ -145,13 +167,10 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        with state_config_context(files):
-            result = ls_tool.invoke(
-                {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
-            )
+        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result == str(["/test.txt", "/test2.txt"])
 
     def test_ls_shortterm_with_path(self):
@@ -177,16 +196,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        with state_config_context(files):
-            result_raw = ls_tool.invoke(
-                {
-                    "path": "/pokemon/",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = ls_tool.invoke(
+            {
+                "path": "/pokemon/",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
@@ -219,16 +237,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        with state_config_context(files):
-            result_raw = ls_tool.invoke(
-                {
-                    "path": "/",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = ls_tool.invoke(
+            {
+                "path": "/",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         # ls should list both files and directories at root level
         assert "/test.txt" in result
@@ -261,16 +278,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result_raw = glob_search_tool.invoke(
-                {
-                    "pattern": "*.py",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
@@ -293,16 +309,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result_raw = glob_search_tool.invoke(
-                {
-                    "pattern": "**/*.py",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = glob_search_tool.invoke(
+            {
+                "pattern": "**/*.py",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
@@ -326,17 +341,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result_raw = glob_search_tool.invoke(
-                {
-                    "pattern": "*.py",
-                    "path": "/src",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "path": "/src",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
@@ -360,16 +374,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result_raw = glob_search_tool.invoke(
-                {
-                    "pattern": "*.{py,pyi}",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = glob_search_tool.invoke(
+            {
+                "pattern": "*.{py,pyi}",
+                "runtime": _runtime(),
+            }
+        )
         result = result_raw
         assert "/test.py" in result
         assert "/test.pyi" in result
@@ -383,25 +396,22 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result = glob_search_tool.invoke(
-                {
-                    "pattern": "*.py",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "runtime": _runtime(),
+            }
+        )
         assert result == str([])
 
     def test_glob_timeout_returns_error_message(self):
-        state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend = middleware._get_backend(
-            ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
-        )
+        backend_obj = middleware._get_backend(_runtime())
 
         def slow_glob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             time.sleep(2)
@@ -409,14 +419,13 @@ class TestFilesystemMiddleware:
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend),
-            patch.object(backend, "glob", side_effect=slow_glob),
-            state_config_context(),
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
             result = glob_search_tool.invoke(
                 {
                     "pattern": "**/*",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                    "runtime": _runtime(),
                 }
             )
 
@@ -437,16 +446,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             )
 
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        with state_config_context(files):
-            result_raw = glob_search_tool.invoke(
-                {
-                    "pattern": "*.txt",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result_raw = glob_search_tool.invoke(
+            {
+                "pattern": "*.txt",
+                "runtime": _runtime(),
+            }
+        )
 
         # Result should be truncated
         result = result_raw
@@ -474,16 +482,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": _runtime(),
+            }
+        )
         assert "/test.py" in result
         assert "/helper.txt" in result
         assert "/main.py" not in result
@@ -496,17 +503,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "output_mode": "content",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "output_mode": "content",
+                "runtime": _runtime(),
+            }
+        )
         assert "1: import os" in result
         assert "2: import sys" in result
         assert "print" not in result
@@ -524,17 +530,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "output_mode": "count",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "output_mode": "count",
+                "runtime": _runtime(),
+            }
+        )
         assert "/test.py:2" in result or "/test.py: 2" in result
         assert "/main.py:1" in result or "/main.py: 1" in result
 
@@ -551,17 +556,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "glob": "*.py",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "glob": "*.py",
+                "runtime": _runtime(),
+            }
+        )
         assert "/test.py" in result
         assert "/test.txt" not in result
 
@@ -578,17 +582,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "path": "/src",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "path": "/src",
+                "runtime": _runtime(),
+            }
+        )
         assert "/src/main.py" in result
         assert "/tests/test.py" not in result
 
@@ -601,18 +604,17 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         # Search for literal "def " - literal search, not regex
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "def ",
-                    "output_mode": "content",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "def ",
+                "output_mode": "content",
+                "runtime": _runtime(),
+            }
+        )
         assert "1: def hello():" in result
         assert "2: def world():" in result
         assert "x = 5" not in result
@@ -625,16 +627,15 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": _runtime(),
+            }
+        )
         assert result == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
@@ -646,17 +647,16 @@ class TestFilesystemMiddleware:
                 created_at="2021-01-01",
             ),
         }
-        state = FilesystemState(messages=[], files=files)
-        middleware = FilesystemMiddleware()
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         # Special characters are treated literally, so no matches expected
-        with state_config_context(files):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "[invalid",
-                    "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                }
-            )
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "[invalid",
+                "runtime": _runtime(),
+            }
+        )
         assert "No matches found" in result
 
     def test_search_store_paginated_empty(self):
@@ -899,51 +899,48 @@ class TestFilesystemMiddleware:
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert result == tool_message
 
     def test_intercept_long_toolmessage(self):
         """Test that large ToolMessages are intercepted and saved to filesystem."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
-        assert "/large_tool_results/test_123" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert "Tool result too large" in result.content
 
     def test_intercept_long_toolmessage_preserves_name(self):
         """Test that ToolMessage name is preserved after eviction."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123", name="example_tool")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
         assert result.name == "example_tool"
 
     def test_intercept_long_toolmessage_preserves_artifact_and_metadata(self):
         """Test that ToolMessage artifact and metadata fields are preserved after eviction."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
@@ -957,8 +954,7 @@ class TestFilesystemMiddleware:
             additional_kwargs={"source": "unit-test"},
             response_metadata={"provider": "mock"},
         )
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
         processed_message = result
@@ -971,51 +967,48 @@ class TestFilesystemMiddleware:
 
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
         assert result.update["messages"][0].content == small_content
 
     def test_intercept_command_with_long_toolmessage(self):
         """Test that Commands with large messages are intercepted."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert "/large_tool_results/test_123" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert "Tool result too large" in result.update["messages"][0].content
 
     def test_intercept_command_with_files_and_long_toolmessage(self):
         """Test that file updates are properly merged with existing files and other keys preserved."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         existing_file = FileData(content=["existing"], created_at="2021-01-01", modified_at="2021-01-01")
         command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(command, runtime)
+        result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
         assert "/existing.txt" in result.update["files"]
-        assert "/large_tool_results/test_123" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
     def test_sanitize_tool_call_id(self):
@@ -1026,47 +1019,44 @@ class TestFilesystemMiddleware:
 
     def test_intercept_sanitizes_tool_call_id(self):
         """Test that tool_call_id with dangerous characters is sanitized in file path."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test/call.id")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
-        assert "/large_tool_results/test_call_id" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_call_id") is not None
 
     def test_intercept_content_block_with_large_text(self):
         """Test that content blocks with large text get evicted and converted to string."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_cb", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        runtime = _runtime("test_cb")
 
         # Create list with content block with large text
         content_blocks = [{"type": "text", "text": "x" * 5000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_cb")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
-        assert "/large_tool_results/test_cb" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_cb") is not None
         # After eviction, content is always converted to plain string
         assert isinstance(result.content, str)
         assert "Tool result too large" in result.content
 
     def test_intercept_content_block_with_small_text(self):
         """Test that content blocks with small text are not evicted."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_small_cb", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_small_cb")
 
         # Create list with content block with small text
         content_blocks = [{"type": "text", "text": "small text"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_small_cb")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         # Should return original message unchanged
         assert result == tool_message
@@ -1074,33 +1064,34 @@ class TestFilesystemMiddleware:
 
     def test_intercept_content_block_non_text_type_not_evicted(self):
         """Test that non-text-only content blocks are not evicted regardless of size."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        runtime = _runtime("test_other")
 
         content_blocks = [{"type": "image", "base64": "x" * 5000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert result == tool_message
 
     @pytest.mark.parametrize("file_format", ["v1", "v2"])
     def test_single_text_block_extracts_text_directly(self, file_format):
         """Test that single text block extracts text content directly, not stringified structure."""
-        middleware = FilesystemMiddleware(backend=StateBackend(file_format=file_format), tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
+        mem_store = InMemoryStore()
+        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
+        runtime = _runtime("test_single")
 
         # Create single text block with large text
         content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_single")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
         # Check that the file contains actual text, not stringified dict
-        file_content = store["files"]["/large_tool_results/test_single"]["content"]
+        item = mem_store.get(("filesystem",), "/large_tool_results/test_single")
+        assert item is not None
+        file_content = item.value["content"]
         if file_format == "v1":
             assert isinstance(file_content, list)
             text = "\n".join(file_content)
@@ -1114,20 +1105,22 @@ class TestFilesystemMiddleware:
     @pytest.mark.parametrize("file_format", ["v1", "v2"])
     def test_multiple_text_blocks_joins_text(self, file_format):
         """Test that multiple text blocks are joined, not stringified."""
-        middleware = FilesystemMiddleware(backend=StateBackend(file_format=file_format), tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
+        mem_store = InMemoryStore()
+        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
+        runtime = _runtime("test_multi")
 
         content_blocks = [
             {"type": "text", "text": "First block " * 500},
             {"type": "text", "text": "Second block " * 500},
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_multi")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
-        file_content = store["files"]["/large_tool_results/test_multi"]["content"]
+        item = mem_store.get(("filesystem",), "/large_tool_results/test_multi")
+        assert item is not None
+        file_content = item.value["content"]
         if file_format == "v1":
             assert isinstance(file_content, list)
             text = "\n".join(file_content)
@@ -1141,9 +1134,10 @@ class TestFilesystemMiddleware:
     @pytest.mark.parametrize("file_format", ["v1", "v2"])
     def test_mixed_content_blocks_preserves_non_text(self, file_format):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
-        middleware = FilesystemMiddleware(backend=StateBackend(file_format=file_format), tool_token_limit_before_evict=100)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
+        mem_store = InMemoryStore()
+        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
+        runtime = _runtime("test_mixed")
 
         image_block = {"type": "image", "url": "https://example.com/image.png"}
         content_blocks = [
@@ -1151,11 +1145,12 @@ class TestFilesystemMiddleware:
             image_block,
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
-        with state_config_context() as store:
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
-        file_content = store["files"]["/large_tool_results/test_mixed"]["content"]
+        item = mem_store.get(("filesystem",), "/large_tool_results/test_mixed")
+        assert item is not None
+        file_content = item.value["content"]
         text = "\n".join(file_content) if file_format == "v1" else file_content
         assert text.startswith("Some text")
 
@@ -1168,17 +1163,16 @@ class TestFilesystemMiddleware:
 
     def test_mixed_content_small_text_large_image_not_evicted(self):
         """Test that text+image content is not evicted when only the image is large."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_no_evict", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_no_evict")
 
         content_blocks = [
             {"type": "text", "text": "small text"},
             {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"},
         ]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert result == tool_message
 
@@ -1325,40 +1319,29 @@ class TestFilesystemMiddleware:
 
     def test_read_file_empty_file_returns_warning(self):
         """ReadResult with empty content returns the empty-content warning."""
-        middleware = FilesystemMiddleware()
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="empty-read",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = _runtime("empty-read")
 
-        backend = middleware._get_backend(runtime)
-        with state_config_context():
-            res = backend.write("/empty.txt", "")
-            if hasattr(backend, "runtime"):
-                backend.runtime.state["files"].update(res.files_update)
+        backend.write("/empty.txt", "")
 
-            read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-            result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
 
         assert isinstance(result, str)
         assert result == EMPTY_CONTENT_WARNING
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
-        state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
 
         # Find the execute tool
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
 
-        # Create runtime with StateBackend
+        # Create runtime with StoreBackend
         runtime = ToolRuntime(
-            state=state,
+            state={},
             context=None,
             tool_call_id="test_exec",
             store=InMemoryStore(),
@@ -1367,8 +1350,7 @@ class TestFilesystemMiddleware:
         )
 
         # Execute should return error message, not raise exception
-        with state_config_context():
-            result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
+        result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
 
         assert isinstance(result, str)
         assert "Error: Execution not available" in result
@@ -1521,9 +1503,9 @@ class TestFilesystemMiddleware:
 
     def test_intercept_truncates_content_sample_lines(self):
         """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
 
         # Create content with 15 lines (more than head_lines + tail_lines = 10) to trigger truncation
         # Some lines are longer than 1000 chars to test line truncation
@@ -1547,8 +1529,7 @@ class TestFilesystemMiddleware:
         large_content = "\n".join(lines_content)
 
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        with state_config_context():
-            result = middleware._intercept_large_tool_result(tool_message, runtime)
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
 
         assert isinstance(result, ToolMessage)
         content_sample_section = result.content
@@ -1873,9 +1854,9 @@ class TestTruncation:
 class TestBuiltinTruncationTools:
     def test_builtin_truncation_tool_not_evicted(self):
         """Test that tools excluded from eviction (grep, ls, glob, etc.) are NOT evicted to filesystem."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_grep_123", store=None, stream_writer=lambda _: None, config={})
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)  # Very low limit
+        runtime = _runtime("test_grep_123")
 
         # Create a large tool result
         large_content = "x" * 5000
@@ -1889,13 +1870,12 @@ class TestBuiltinTruncationTools:
         request = ToolCallRequest(
             runtime=runtime,
             tool_call={"id": "test_grep_123", "name": "grep", "args": {"pattern": "test"}},
-            state=state,
+            state={},
             tool=None,
         )
 
         # Call wrap_tool_call
-        with state_config_context():
-            result = middleware.wrap_tool_call(request, mock_handler)
+        result = middleware.wrap_tool_call(request, mock_handler)
 
         # Result should NOT be intercepted - should be the original ToolMessage
         assert isinstance(result, ToolMessage)
@@ -1904,9 +1884,9 @@ class TestBuiltinTruncationTools:
 
     def test_non_builtin_truncation_tool_evicted(self):
         """Test that tools NOT in TOOLS_EXCLUDED_FROM_EVICTION are evicted to filesystem."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_custom_123", store=None, stream_writer=lambda _: None, config={})
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)  # Very low limit
+        runtime = _runtime("test_custom_123")
 
         # Create a large tool result
         large_content = "y" * 5000
@@ -1920,31 +1900,23 @@ class TestBuiltinTruncationTools:
         request = ToolCallRequest(
             runtime=runtime,
             tool_call={"id": "test_custom_123", "name": "custom_tool", "args": {"input": "test"}},
-            state=state,
+            state={},
             tool=None,
         )
 
         # Call wrap_tool_call
-        with state_config_context() as store:
-            result = middleware.wrap_tool_call(request, mock_handler)
+        result = middleware.wrap_tool_call(request, mock_handler)
 
-        # Result SHOULD be intercepted — evicted file goes to state via CONFIG_KEY_SEND
+        # Result SHOULD be intercepted - evicted file goes to store
         assert isinstance(result, ToolMessage)
-        assert "/large_tool_results/test_custom_123" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_custom_123") is not None
         assert "Tool result too large" in result.content
 
     def test_execute_tool_large_output_evicted(self) -> None:
         """Test that execute tool with large output gets evicted to filesystem."""
-        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)  # Low threshold
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_exec_123",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)  # Low threshold
+        runtime = _runtime("test_exec_123")
 
         # Simulate large execute output (like a command that outputs many lines)
         large_execute_output = "x" * 10000
@@ -1961,17 +1933,16 @@ class TestBuiltinTruncationTools:
         request = ToolCallRequest(
             runtime=runtime,
             tool_call={"id": "test_exec_123", "name": "execute", "args": {"command": "echo large output"}},
-            state=state,
+            state={},
             tool=None,
         )
 
         # Call wrap_tool_call - this is where eviction happens
-        with state_config_context() as store:
-            result = middleware.wrap_tool_call(request, mock_handler)
+        result = middleware.wrap_tool_call(request, mock_handler)
 
-        # Result SHOULD be intercepted — evicted file goes to state via CONFIG_KEY_SEND
+        # Result SHOULD be intercepted - evicted file goes to store
         assert isinstance(result, ToolMessage)
-        assert "/large_tool_results/test_exec_123" in store["files"]
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_exec_123") is not None
         assert "Tool result too large" in result.content
 
         # Verify the message has the tool name preserved

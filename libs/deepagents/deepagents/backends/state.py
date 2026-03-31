@@ -4,6 +4,7 @@ import base64
 import warnings
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 
@@ -76,7 +77,7 @@ class StateBackend(BackendProtocol):
     # Internal helpers for reading / writing state via config keys
     # ------------------------------------------------------------------
 
-    def _get_config(self) -> dict[str, Any]:
+    def _get_config(self) -> RunnableConfig:
         """Return the current LangGraph config, with a clear error if missing."""
         try:
             config = get_config()

@@ -62,28 +62,14 @@ def sample_tool(sample_input: str) -> str:
     return sample_input
 
 
-def create_filesystem_backend_virtual(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:
-    """Create a FilesystemBackend in virtual mode."""
-    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), None
-
-
-def create_state_backend(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:  # noqa: ARG001
-    """Create a StateBackend."""
-    return StateBackend(), None
-
-
-def create_store_backend(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:  # noqa: ARG001
-    """Create a StoreBackend with an explicit store."""
-    mem_store = InMemoryStore()
-    return StoreBackend(store=mem_store), mem_store
-
-
-# Backend factories for parametrization
-BACKEND_FACTORIES = [
-    pytest.param(create_filesystem_backend_virtual, id="filesystem_virtual"),
-    pytest.param(create_state_backend, id="state"),
-    pytest.param(create_store_backend, id="store"),
-]
+@pytest.fixture(params=["filesystem_virtual", "state", "store"])
+def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
+    """Create a backend for parametrized tests."""
+    if request.param == "filesystem_virtual":
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    if request.param == "state":
+        return StateBackend()
+    return StoreBackend(store=InMemoryStore())
 
 
 def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
@@ -416,8 +402,7 @@ class TestDeepAgentEndToEnd:
             assert "messages" in result
             assert len(result["messages"]) > 0
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]) -> None:
+    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test line count limiting in read_file tool with very long lines."""
         # Create a file with a very long line (18,000 chars) that will be split into continuation lines
         # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
@@ -434,7 +419,6 @@ class TestDeepAgentEndToEnd:
         content = "\n".join(lines)
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
@@ -463,7 +447,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -498,13 +482,9 @@ class TestDeepAgentEndToEnd:
         # This includes continuation lines as separate lines
         assert len(output_lines) <= 3
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_empty_file(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
         # Create backend and write empty file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, "")
@@ -532,7 +512,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -895,17 +875,13 @@ class TestDeepAgentEndToEnd:
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files and provides pagination guidance."""
         # Create a file with content that exceeds the truncation threshold
         # Default token_limit_before_evict is 20000, so threshold is 4 * 20000 = 80000 chars
         large_content = "x" * 85000  # 85k chars exceeds the 80k threshold
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file.txt"
         starter_files = prepopulate_file(backend, file_path, large_content)
@@ -933,7 +909,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -957,16 +933,12 @@ class TestDeepAgentEndToEnd:
         # Verify the content stays under threshold (including truncation message)
         assert len(file_content) <= 80000
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_no_truncation_small_file(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file does NOT truncate small files."""
         # Create a small file that doesn't exceed the truncation threshold
         small_content = "Hello, world!\n" * 100  # Much smaller than 80k chars
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/small_file.txt"
         starter_files = prepopulate_file(backend, file_path, small_content)
@@ -994,7 +966,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -1015,10 +987,7 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated" not in file_content
         assert "Hello, world!" in file_content
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation_with_offset(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncation message includes correct offset for pagination."""
         # Create a large file with many lines (each line is 500 chars + newline)
         # 500 lines total, we'll read lines 50-250 (200 lines)
@@ -1026,7 +995,6 @@ class TestDeepAgentEndToEnd:
         large_content = "\n".join(["y" * 500 for _ in range(500)])
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file_offset.txt"
         starter_files = prepopulate_file(backend, file_path, large_content)
@@ -1054,7 +1022,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -1075,16 +1043,12 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated due to size limits" in file_content
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    async def test_deep_agent_read_file_truncation_async(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files in async mode."""
         # Create a large file
         large_content = "z" * 85000
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/large_file_async.txt"
         starter_files = prepopulate_file(backend, file_path, large_content)
@@ -1112,7 +1076,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent (async)
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -1136,10 +1100,7 @@ class TestDeepAgentEndToEnd:
         # Verify the content is actually truncated
         assert len(file_content) < 85000
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_single_long_line_behavior(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test the behavior with a single very long line.
 
         When a file has a single very long line (e.g., 85,000 chars), it gets split
@@ -1160,7 +1121,6 @@ class TestDeepAgentEndToEnd:
         single_long_line = "x" * 85000
 
         # Create backend and write file
-        backend, store = backend_factory(tmp_path)
 
         file_path = "/single_long_line.txt"
         starter_files = prepopulate_file(backend, file_path, single_long_line)
@@ -1189,7 +1149,7 @@ class TestDeepAgentEndToEnd:
         )
 
         # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend, store=store)
+        agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
@@ -1276,13 +1236,8 @@ class TestDeepAgentEndToEnd:
             f"A single-line file should not cause token overflow."
         )
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_invalid_args_returns_tool_message(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test invalid read_file arguments still produce a ToolMessage."""
-        backend, store = backend_factory(tmp_path)
-
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1302,7 +1257,7 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=fake_model, backend=backend, store=store)
+        agent = create_deep_agent(model=fake_model, backend=backend)
         result = agent.invoke({"messages": [HumanMessage(content="Try reading a file with invalid args")]})
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
@@ -1312,12 +1267,8 @@ class TestDeepAgentEndToEnd:
         assert tool_message.status == "error"
         assert "Error invoking tool 'read_file' with kwargs " in tool_message.content
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_image_file(
-        self, tmp_path: Path, backend_factory: Callable[[Path], tuple[BackendProtocol, InMemoryStore | None]]
-    ) -> None:
+    def test_deep_agent_read_image_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
-        backend, store = backend_factory(tmp_path)
         img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
 
         starter_files = None
@@ -1346,7 +1297,7 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=fake_model, backend=backend, store=store)
+        agent = create_deep_agent(model=fake_model, backend=backend)
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
         if starter_files:
             invoke_input["files"] = starter_files

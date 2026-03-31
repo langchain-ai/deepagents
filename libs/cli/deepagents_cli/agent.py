@@ -504,7 +504,10 @@ def get_system_prompt(
         ... {CONDITIONAL SECTIONS} ...
         ```
     """
-    template = (Path(__file__).parent / "system_prompt.md").read_text()
+    # The prompt templates in this repo are maintained as UTF-8.
+    # On Windows, leaving encoding unspecified can fall back to a non-UTF-8
+    # default (e.g., gbk), causing UnicodeDecodeError during server startup.
+    template = (Path(__file__).parent / "system_prompt.md").read_text(encoding="utf-8")
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 

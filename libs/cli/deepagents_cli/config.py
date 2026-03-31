@@ -1762,7 +1762,9 @@ def get_default_coding_instructions() -> str:
         The default agent instructions as a string.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
-    return default_prompt_path.read_text()
+    # Repo prompt templates are maintained as UTF-8; pin encoding to avoid
+    # Windows default (e.g., gbk) decoding failures.
+    return default_prompt_path.read_text(encoding="utf-8")
 
 
 def detect_provider(model_name: str) -> str | None:

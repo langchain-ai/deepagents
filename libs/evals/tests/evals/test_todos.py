@@ -21,6 +21,7 @@ from tests.evals.utils import TrajectoryScorer, final_text_contains, run_agent, 
 pytestmark = [pytest.mark.eval_category("tool_use")]
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> None:
     """Creates a 5-item todo list and updates it 5 times, then responds with text."""
@@ -46,6 +47,7 @@ def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> No
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_write_todos_three_steps_returns_text(model: BaseChatModel) -> None:
     """Creates a 3-item todo list and updates it twice, then responds with text."""

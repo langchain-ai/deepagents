@@ -85,6 +85,7 @@ FOLLOWUP_CASES = [
 ]
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize(
     "case",

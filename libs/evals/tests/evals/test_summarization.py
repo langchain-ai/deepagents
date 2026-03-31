@@ -110,6 +110,7 @@ def _setup_summarization_test(
     return agent, backend, root
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
@@ -149,6 +150,7 @@ def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that conversation history is offloaded to filesystem during summarization.
@@ -238,6 +240,7 @@ def _load_seed_messages() -> list[AnyMessage]:
     return load(data)
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
     """Agent calls compact_conversation when switching to an unrelated task after a long conversation."""
@@ -253,6 +256,7 @@ def test_compact_tool_new_task(tmp_path: Path, model: BaseChatModel) -> None:
     assert _called_compact(trajectory)
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel) -> None:
     """Agent does NOT call compact_conversation for a follow-up question related to the prior conversation."""
@@ -268,6 +272,7 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel)
     assert not _called_compact(trajectory)
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel) -> None:
     """Agent calls compact_conversation when asked to read another large file after a long conversation."""

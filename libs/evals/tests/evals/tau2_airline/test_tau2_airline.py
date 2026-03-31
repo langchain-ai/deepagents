@@ -77,6 +77,7 @@ def _task_id_label(task_id: str) -> str:
     return f"task_{task_id}"
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
 def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:

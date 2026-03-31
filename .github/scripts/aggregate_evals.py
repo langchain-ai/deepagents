@@ -152,20 +152,27 @@ def main() -> None:
         lines.extend(cat_table)
 
     # --- LangSmith experiment links ---
-    experiment_links: list[tuple[str, str]] = []
+    experiment_entries: list[tuple[str, str, str]] = []  # (model, name, url)
     for r in rows:
         model = str(r.get("model", ""))
-        raw_urls = r.get("experiment_urls") or []
-        if not isinstance(raw_urls, list):
-            continue
-        for url in raw_urls:
-            experiment_links.append((model, str(url)))
-    if experiment_links:
+        # Prefer rich experiment_links; fall back to bare experiment_urls.
+        raw_links = r.get("experiment_links") or []
+        if isinstance(raw_links, list) and raw_links:
+            for link in raw_links:
+                if isinstance(link, dict):
+                    name = str(link.get("name", ""))
+                    url = str(link.get("url", ""))
+                    if url:
+                        experiment_entries.append((model, name or url, url))
+        else:
+            for url in r.get("experiment_urls") or []:
+                experiment_entries.append((model, str(url), str(url)))
+    if experiment_entries:
         lines.append("")
         lines.append("## LangSmith experiments")
         lines.append("")
-        for model, url in experiment_links:
-            lines.append(f"- **{model}**: {url}")
+        for model, name, url in experiment_entries:
+            lines.append(f"- **{model}**: [{name}]({url})")
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:

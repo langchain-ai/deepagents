@@ -247,23 +247,26 @@ jobs:
             echo "## Eval run"
             echo ""
             echo "- Model: ${{ matrix.model }}"
-            urls=$(python -c "
+            links=$(python -c "
             import json, sys
             try:
                 with open('evals_report.json') as f:
                     data = json.load(f)
-                for u in data.get('experiment_urls', []):
-                    print(u)
+                for link in data.get('experiment_links', []):
+                    name = link.get('name', '')
+                    url = link.get('url', '')
+                    if name and url:
+                        print(f'- [{name}]({url})')
+                    elif url:
+                        print(f'- {url}')
             except Exception as exc:
-                print(f'warning: could not extract experiment URLs: {exc}', file=sys.stderr)
+                print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
             " || true)
-            if [ -n "$urls" ]; then
+            if [ -n "$links" ]; then
               echo ""
               echo "### LangSmith experiments"
               echo ""
-              echo "$urls" | while read -r url; do
-                echo "- $url"
-              done
+              echo "$links"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

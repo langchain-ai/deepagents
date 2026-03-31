@@ -36,8 +36,8 @@ _NODEID_TO_CATEGORY: dict[str, str] = {}
 _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 """Per-category pass/fail/total counters, keyed by category name."""
 
-_EXPERIMENT_URLS: list[str] = []
-"""LangSmith experiment comparison URLs collected during session teardown."""
+_EXPERIMENT_LINKS: list[dict[str, str]] = []
+"""LangSmith experiment link dicts with "name" and "url" keys, collected at session teardown."""
 
 
 def _micro_step_ratio() -> float | None:
@@ -145,8 +145,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _EFFICIENCY_RESULTS[-1].passed = outcome == "passed"
 
 
-def _collect_experiment_urls() -> list[str]:
-    """Extract LangSmith experiment comparison URLs from registered test suites."""
+def _collect_experiment_links() -> list[dict[str, str]]:
+    """Best-effort extraction of experiment name/URL pairs from langsmith internals.
+
+    Accesses the private `_LangSmithTestSuite` API; returns an empty list on
+    any failure.
+    """
     try:
         from langsmith.testing._internal import _LangSmithTestSuite
     except ImportError:
@@ -157,21 +161,37 @@ def _collect_experiment_urls() -> list[str]:
         if not instances:
             return []
 
-        urls: list[str] = []
+        links: list[dict[str, str]] = []
+        skipped = 0
         for suite in instances.values():
             dataset = getattr(suite, "_dataset", None)
             if dataset is None:
+                skipped += 1
                 continue
             dataset_url = getattr(dataset, "url", None)
             experiment_id = getattr(suite, "experiment_id", None)
+            experiment = getattr(suite, "_experiment", None)
+            name = getattr(experiment, "name", None) if experiment else None
             if dataset_url and experiment_id:
-                urls.append(f"{dataset_url}/compare?selectedSessions={experiment_id}")
+                url = f"{dataset_url}/compare?selectedSessions={experiment_id}"
+                links.append({"name": name or url, "url": url})
+            else:
+                skipped += 1
+        if skipped and not links:
+            msg = f"warning: found {len(instances)} LangSmith test suite(s) but could not extract any experiment URLs"
+            print(msg, file=sys.stderr)  # noqa: T201
     except Exception as exc:  # noqa: BLE001  # private API; best-effort
-        msg = f"warning: failed to collect experiment URLs: {exc}"
+        try:
+            from importlib.metadata import version as pkg_version
+
+            ls_ver = pkg_version("langsmith")
+        except Exception:  # noqa: BLE001
+            ls_ver = "unknown"
+        msg = f"warning: failed to collect experiment links (langsmith=={ls_ver}): {exc!r}"
         print(msg, file=sys.stderr)  # noqa: T201
         return []
     else:
-        return urls
+        return links
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -179,7 +199,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if session.exitstatus == 1:
         session.exitstatus = 0
 
-    _EXPERIMENT_URLS.extend(_collect_experiment_urls())
+    _EXPERIMENT_LINKS.extend(_collect_experiment_links())
 
     correctness = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
     step_ratio = _micro_step_ratio()
@@ -205,7 +225,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "tool_call_ratio": tool_call_ratio,
         "solve_rate": solve_rate,
         "median_duration_s": median_duration_s,
-        "experiment_urls": _EXPERIMENT_URLS,
+        "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
+        "experiment_links": _EXPERIMENT_LINKS,
     }
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")
@@ -219,7 +240,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         )
         terminal_reporter.write_line(f"correctness: {correctness:.2f}")
         if len(category_scores) > 1:
-            # Only show per-category breakdown when there are multiple categories to compare
             terminal_reporter.write_sep("-", "per-category correctness")
             for cat, score in sorted(category_scores.items()):
                 counts = _CATEGORY_RESULTS[cat]
@@ -233,10 +253,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if solve_rate is not None:
             terminal_reporter.write_line(f"solve_rate: {solve_rate:.4f}")
         terminal_reporter.write_line(f"median_duration_s: {median_duration_s:.4f}")
-        if _EXPERIMENT_URLS:
+        if _EXPERIMENT_LINKS:
             terminal_reporter.write_sep("-", "langsmith experiments")
-            for url in _EXPERIMENT_URLS:
-                terminal_reporter.write_line(f"  {url}")
+            for link in _EXPERIMENT_LINKS:
+                terminal_reporter.write_line(f"  {link['name']}: {link['url']}")
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:

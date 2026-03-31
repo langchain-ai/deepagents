@@ -169,9 +169,12 @@ def main() -> int:
         except LookupError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
-        except Exception as exc:  # noqa: BLE001  # network/API errors
+        except (RuntimeError, OSError) as exc:
             print(f"Error: failed to create experiment: {exc}", file=sys.stderr)
             return 1
+        except Exception as exc:  # noqa: BLE001  # unexpected; distinct exit code
+            print(f"Error: unexpected failure creating experiment: {exc!r}", file=sys.stderr)
+            return 2
         # stdout contract: exactly 2 lines (name, then url) — parsed by harbor.yml
         print(name)
         print(url)

@@ -6,7 +6,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 
 **84 evals** across **7 categories**
 
-## File Ops (13 evals)
+## File Ops (`file_operations`) (13 evals)
 
 - [`test_read_file_seeded_state_backend_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L33) — `tests/evals/test_file_operations.py:33`
 - [`test_write_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L52) — `tests/evals/test_file_operations.py:52`
@@ -22,7 +22,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L544) — `tests/evals/test_file_operations.py:544`
 - [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L581) — `tests/evals/test_file_operations.py:581`
 
-## Retrieval (6 evals)
+## Retrieval (`retrieval`) (6 evals)
 
 - [`test_frames`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L37) — `tests/evals/test_external_benchmarks.py:37`
 - [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L309) — `tests/evals/test_file_operations.py:309`
@@ -31,7 +31,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L398) — `tests/evals/test_file_operations.py:398`
 - [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L472) — `tests/evals/test_file_operations.py:472`
 
-## Tool Use (30 evals)
+## Tool Use (`tool_use`) (30 evals)
 
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L45) — `tests/evals/test_external_benchmarks.py:45`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L53) — `tests/evals/test_external_benchmarks.py:53`
@@ -64,7 +64,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1028) — `tests/evals/test_tool_usage_relational.py:1028`
 - [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1097) — `tests/evals/test_tool_usage_relational.py:1097`
 
-## Memory (16 evals)
+## Memory (`memory`) (16 evals)
 
 - [`test_conflict_resolution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L255) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:255`
 - [`test_time_learning`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L285) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:285`
@@ -83,12 +83,12 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L231) — `tests/evals/test_memory_multiturn.py:231`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L258) — `tests/evals/test_memory_multiturn.py:258`
 
-## Conversation (2 evals)
+## Conversation (`conversation`) (2 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L81) — `tests/evals/tau2_airline/test_tau2_airline.py:81`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L94) — `tests/evals/test_followup_quality.py:94`
 
-## Summarization (5 evals)
+## Summarization (`summarization`) (5 evals)
 
 - [`test_summarize_continues_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L114) — `tests/evals/test_summarization.py:114`
 - [`test_summarization_offloads_to_filesystem`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L153) — `tests/evals/test_summarization.py:153`
@@ -96,7 +96,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_compact_tool_not_overly_sensitive`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L257) — `tests/evals/test_summarization.py:257`
 - [`test_compact_tool_large_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L272) — `tests/evals/test_summarization.py:272`
 
-## Unit Test (12 evals)
+## Unit Test (`unit_test`) (12 evals)
 
 - [`test_hitl_agent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L53) — `tests/evals/test_hitl.py:53`
 - [`test_subagent_with_hitl`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L121) — `tests/evals/test_hitl.py:121`

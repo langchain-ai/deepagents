@@ -503,6 +503,102 @@ class TestCreateModelProfileExtraction:
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
 
+    @patch("langchain.chat_models.init_chat_model")
+    def test_extracts_unsupported_modalities(self, mock_init_chat_model: Mock) -> None:
+        """Test that explicitly False modality flags are extracted."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 64000,
+            "tool_calling": True,
+            "image_inputs": False,
+            "audio_inputs": False,
+            "video_inputs": False,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("deepseek:deepseek-r1")
+        assert result.unsupported_modalities == frozenset(
+            {"image", "audio", "video", "pdf"}
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_supported_modalities_not_flagged(self, mock_init_chat_model: Mock) -> None:
+        """Test that True modality flags produce empty unsupported set."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 200000,
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": True,
+            "video_inputs": True,
+            "pdf_inputs": True,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_modality_keys_not_flagged(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that absent modality keys are not treated as unsupported."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("openai:gpt-4o")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_mixed_modality_flags(self, mock_init_chat_model: Mock) -> None:
+        """Test partial modality support extraction."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": False,
+            "video_inputs": True,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset({"audio", "pdf"})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_profile_leaves_modalities_empty(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that missing profile produces empty unsupported set."""
+        mock_model = Mock(spec=["invoke"])
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+
+class TestModelResultApplyToSettings:
+    """Tests for ModelResult.apply_to_settings propagation."""
+
+    def test_propagates_unsupported_modalities(self) -> None:
+        """Test that apply_to_settings writes unsupported_modalities to settings."""
+        model_result = ModelResult(
+            model=Mock(),
+            model_name="deepseek-r1",
+            provider="deepseek",
+            context_limit=64000,
+            unsupported_modalities=frozenset({"image", "audio"}),
+        )
+        original = settings.model_unsupported_modalities
+        try:
+            model_result.apply_to_settings()
+            expected = frozenset({"image", "audio"})
+            assert settings.model_unsupported_modalities == expected
+        finally:
+            settings.model_unsupported_modalities = original
+
 
 class TestCreateModelProfileOverrides:
     """Tests for profile overrides from config.toml in create_model."""

@@ -256,7 +256,8 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            # Two aupdate_state calls: _summarization_event + _context_tokens
+            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
@@ -284,14 +285,12 @@ class TestOffloadSuccess:
             msgs = app.query(AppMessage)
             assert any("Offloaded 4 older messages" in str(w._content) for w in msgs)
 
-    async def test_offload_updates_token_tracker(self) -> None:
-        """Should update token tracker after offload."""
+    async def test_offload_updates_context_tokens(self) -> None:
+        """Should update _context_tokens after offload."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             _setup_offload_app(app)
-            app._token_tracker = MagicMock()
-
             result = _make_offload_result(tokens_after=500)
 
             with patch(
@@ -302,7 +301,7 @@ class TestOffloadSuccess:
                 await app._handle_offload()
                 await pilot.pause()
 
-            app._token_tracker.add.assert_called_once_with(500)
+            assert app._context_tokens == 500
 
     async def test_no_ui_clear_reload(self) -> None:
         """Should NOT clear/reload UI since messages stay in state."""
@@ -413,8 +412,7 @@ class TestOffloadEdgeCases:
         async with app.run_test() as pilot:
             await pilot.pause()
             messages = _setup_offload_app(app, n_messages=10)
-            app._token_tracker = MagicMock()
-            app._token_tracker.current_context = 7500
+            app._context_tokens = 7500
             app._profile_override = {"temperature": 0.5}
 
             result = _make_offload_result()
@@ -483,7 +481,7 @@ class TestReOffload:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
@@ -568,7 +566,7 @@ class TestOffloadErrorHandling:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
@@ -1074,8 +1072,8 @@ class TestOffloadProfileOverride:
                 await app._handle_offload()
                 await pilot.pause()
 
-            # State should have been updated (offload happened)
-            app._agent.aupdate_state.assert_called_once()  # type: ignore[union-attr]
+            # State should have been updated (offload + _context_tokens)
+            assert app._agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
             kwargs = mock_perform.call_args.kwargs
             assert kwargs["context_limit"] == 4096
 

@@ -33,7 +33,6 @@ class TestServerGraph:
         """Server mode should auto-discover MCP configs when no path is passed."""
         graph_obj = object()
         model_obj = object()
-        http_tool = object()
         fetch_tool = object()
         mcp_tool = object()
         mcp_server_info = [SimpleNamespace(name="docs")]
@@ -60,7 +59,6 @@ class TestServerGraph:
 
         tools_module = _module_with_attrs(
             "deepagents_cli.tools",
-            http_request=http_tool,
             fetch_url=fetch_tool,
             web_search=object(),
         )
@@ -114,7 +112,7 @@ class TestServerGraph:
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",
-            tools=[http_tool, fetch_tool, mcp_tool],
+            tools=[fetch_tool, mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,

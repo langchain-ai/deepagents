@@ -119,7 +119,6 @@ _MAX_INLINE_ARGS = 3
 # Truncation limits for display
 _MAX_TODO_CONTENT_LEN = 70
 _MAX_WEB_CONTENT_LEN = 100
-_MAX_WEB_PREVIEW_LEN = 150
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -136,11 +135,28 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Web tools
     "web_search",
     "fetch_url",
-    "http_request",
     # Agent tools
     "task",
     "write_todos",
 }
+
+
+_SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
+"""Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
+
+
+def _strip_success_exit_line(text: str) -> str:
+    """Remove the `[Command succeeded with exit code 0]` trailer.
+
+    Non-zero exit codes are left intact (they come through `set_error`).
+
+    Args:
+        text: Raw tool output string.
+
+    Returns:
+        Text with the success exit-code trailer removed, if present.
+    """
+    return _SUCCESS_EXIT_RE.sub("", text)
 
 
 class UserMessage(_TimestampClickMixin, Static):
@@ -950,7 +966,8 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "success"
-        self._output = result
+        # Strip redundant success trailer — the UI already conveys success
+        self._output = _strip_success_exit_line(result)
         if self._status_widget:
             self._status_widget.remove_class("pending")
             # Hide status on success - output speaks for itself
@@ -1056,7 +1073,6 @@ class ToolCallMessage(Vertical):
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
-            "http_request": self._format_web_output,
             "task": self._format_task_output,
         }
 
@@ -1342,7 +1358,7 @@ class ToolCallMessage(Vertical):
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Format web_search/fetch_url/http_request output.
+        """Format web_search/fetch_url output.
 
         Returns:
             FormattedOutput with web response and optional truncation info.
@@ -1380,19 +1396,10 @@ class ToolCallMessage(Vertical):
                 data.get("results", []), is_preview=is_preview
             )
 
-        # Handle fetch_url/http_request response
+        # Handle fetch_url response
         if "markdown_content" in data:
             lines = data["markdown_content"].split("\n")
             return self._format_lines_output(lines, is_preview=is_preview)
-
-        if "content" in data:
-            raw = str(data["content"])
-            if is_preview and len(raw) > _MAX_WEB_PREVIEW_LEN:
-                return FormattedOutput(
-                    content=Content(raw[:_MAX_WEB_PREVIEW_LEN]),
-                    truncation="more",
-                )
-            return FormattedOutput(content=Content(raw))
 
         # Generic dict - show key fields
         parts: list[Content] = []

@@ -13,6 +13,7 @@ import datetime
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -27,6 +28,23 @@ from langsmith import Client
 from langsmith.utils import LangSmithNotFoundError
 
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+
+
+def _get_git_remote_url() -> str:
+    """Return the git remote URL for the current repo, or empty string."""
+    try:
+        return (
+            subprocess.check_output(  # noqa: S603
+                ["git", "remote", "get-url", "origin"],  # noqa: S607
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
 HEADERS = {
     "x-api-key": os.getenv("LANGSMITH_API_KEY"),
 }
@@ -170,7 +188,11 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"\nFound {len(examples)} tasks")
 
     print(f"\nCreating LangSmith dataset: {dataset_name}")
-    dataset = langsmith_client.create_dataset(dataset_name=dataset_name)
+    description = "Harbor dataset"
+    remote = _get_git_remote_url()
+    if remote:
+        description += f" for {remote}"
+    dataset = langsmith_client.create_dataset(dataset_name=dataset_name, description=description)
 
     print(f"Dataset created with ID: {dataset.id}")
 

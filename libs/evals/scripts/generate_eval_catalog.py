@@ -133,7 +133,7 @@ def generate() -> str:
         label = labels.get(cat, cat)
         count = len(evals)
         noun = "eval" if count == 1 else "evals"
-        lines.append(f"## {label} ({count} {noun})\n")
+        lines.append(f"## {label} (`{cat}`) ({count} {noun})\n")
 
         for fn_name, rel_path, lineno in evals:
             gh_link = f"{_GITHUB_BASE}/{rel_path}#L{lineno}"

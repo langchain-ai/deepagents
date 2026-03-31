@@ -29,7 +29,6 @@ from tests.evals.utils import (
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("memory")]
@@ -320,13 +319,12 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         },
     )
 
-    def sample_backend(rt: ToolRuntime) -> CompositeBackend:
-        return CompositeBackend(
-            default=StateBackend(rt),
-            routes={
-                "/memories/": StoreBackend(rt),
-            },
-        )
+    sample_backend = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/memories/": StoreBackend(store=store),
+        },
+    )
 
     agent = create_deep_agent(
         model=model,

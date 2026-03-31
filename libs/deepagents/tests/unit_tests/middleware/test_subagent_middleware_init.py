@@ -31,7 +31,7 @@ class TestSubagentMiddlewareInit:
     def test_subagent_middleware_init(self) -> None:
         """Test basic SubAgentMiddleware initialization with general-purpose subagent."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     **GENERAL_PURPOSE_SUBAGENT,
@@ -50,7 +50,7 @@ class TestSubagentMiddlewareInit:
     def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     "name": "weather",
@@ -69,7 +69,7 @@ class TestSubagentMiddlewareInit:
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     "name": "weather",
@@ -106,7 +106,7 @@ class TestSubagentMiddlewareInit:
         """Test that the new API requires at least one subagent."""
         with pytest.raises(ValueError, match="At least one subagent"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[],
             )
 
@@ -115,7 +115,7 @@ class TestSubagentMiddlewareInit:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             middleware = SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
@@ -135,7 +135,7 @@ class TestSubagentMiddlewareInit:
         """Test that subagents must specify model when using new API."""
         with pytest.raises(ValueError, match="must specify 'model'"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
@@ -151,7 +151,7 @@ class TestSubagentMiddlewareInit:
         """Test that subagents must specify tools when using new API."""
         with pytest.raises(ValueError, match="must specify 'tools'"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
@@ -211,7 +211,7 @@ class TestSubagentMiddlewareInit:
         """Test that when both backend and deprecated args are provided, new API is used with warning."""
         with pytest.warns(DeprecationWarning, match="default_model"):
             middleware = SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
@@ -232,7 +232,7 @@ class TestSubagentMiddlewareInit:
             system_prompt="Use the task tool to call subagents.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "subagent1",

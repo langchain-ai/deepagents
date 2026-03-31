@@ -54,7 +54,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the general-purpose subagent to get the weather in a city.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             **GENERAL_PURPOSE_SUBAGENT,
@@ -76,7 +76,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
@@ -105,7 +105,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
@@ -138,7 +138,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
@@ -177,7 +177,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",

@@ -294,11 +294,16 @@ jobs:
           output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
           line_count=$(echo "$output" | wc -l | tr -d ' ')
           if [ "$line_count" -ne 2 ]; then
-            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count"
+            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
+            echo "$output" | head -5
             exit 1
           fi
           experiment_name=$(echo "$output" | head -1)
           experiment_url=$(echo "$output" | tail -1)
+          if [ -z "$experiment_name" ] || [ -z "$experiment_url" ]; then
+            echo "::error::create-experiment returned empty name or URL: name='$experiment_name' url='$experiment_url'"
+            exit 1
+          fi
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"

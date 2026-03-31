@@ -155,7 +155,8 @@ def main() -> None:
     experiment_entries: list[tuple[str, str, str]] = []  # (model, name, url)
     for r in rows:
         model = str(r.get("model", ""))
-        # Prefer rich experiment_links; fall back to bare experiment_urls.
+        # Prefer rich experiment_links (name + url); fall back to bare experiment_urls
+        # for older reports that only have the URL list.
         raw_links = r.get("experiment_links") or []
         if isinstance(raw_links, list) and raw_links:
             for link in raw_links:
@@ -165,8 +166,10 @@ def main() -> None:
                     if url:
                         experiment_entries.append((model, name or url, url))
         else:
-            for url in r.get("experiment_urls") or []:
-                experiment_entries.append((model, str(url), str(url)))
+            raw_urls = r.get("experiment_urls") or []
+            if isinstance(raw_urls, list):
+                for url in raw_urls:
+                    experiment_entries.append((model, str(url), str(url)))
     if experiment_entries:
         lines.append("")
         lines.append("## LangSmith experiments")

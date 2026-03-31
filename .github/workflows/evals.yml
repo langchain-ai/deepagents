@@ -261,7 +261,7 @@ jobs:
                         print(f'- {url}')
             except Exception as exc:
                 print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
-            " || true)
+            ")
             if [ -n "$links" ]; then
               echo ""
               echo "### LangSmith experiments"

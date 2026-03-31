@@ -240,6 +240,36 @@ jobs:
             exit 1
           fi
 
+      - name: "📝 Write workflow summary"
+        if: "!cancelled()"
+        run: |
+          {
+            echo "## Eval run"
+            echo ""
+            echo "- Model: ${{ matrix.model }}"
+            links=$(python -c "
+            import json, sys
+            try:
+                with open('evals_report.json') as f:
+                    data = json.load(f)
+                for link in data.get('experiment_links', []):
+                    name = link.get('name', '')
+                    url = link.get('url', '')
+                    if name and url:
+                        print(f'- [{name}]({url})')
+                    elif url:
+                        print(f'- {url}')
+            except Exception as exc:
+                print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
+            ")
+            if [ -n "$links" ]; then
+              echo ""
+              echo "### LangSmith experiments"
+              echo ""
+              echo "$links"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📤 Upload eval report"
         if: "!cancelled()"
         uses: actions/upload-artifact@v7

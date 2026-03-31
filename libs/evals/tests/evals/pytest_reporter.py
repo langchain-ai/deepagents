@@ -218,7 +218,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             f"results: {payload['passed']} passed, {payload['failed']} failed, {payload['skipped']} skipped (total={payload['total']})"
         )
         terminal_reporter.write_line(f"correctness: {correctness:.2f}")
-        if category_scores:
+        if len(category_scores) > 1:
+            # Only show per-category breakdown when there are multiple categories to compare
             terminal_reporter.write_sep("-", "per-category correctness")
             for cat, score in sorted(category_scores.items()):
                 counts = _CATEGORY_RESULTS[cat]

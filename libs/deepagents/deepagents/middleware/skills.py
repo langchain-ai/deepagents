@@ -635,10 +635,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime and
-                returns a backend.
-
-                Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
+            backend: Backend instance (e.g. ``StateBackend()``).
             sources: List of skill source paths (e.g.,
                 `['/skills/user/', '/skills/project/']`).
         """

@@ -62,18 +62,6 @@ def sample_tool(sample_input: str) -> str:
     return sample_input
 
 
-def make_runtime(tid: str = "tc") -> ToolRuntime:
-    """Create a ToolRuntime for testing."""
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tid,
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-
 def create_filesystem_backend_virtual(tmp_path: Path) -> tuple[BackendProtocol, InMemoryStore | None]:
     """Create a FilesystemBackend in virtual mode."""
     return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), None
@@ -695,14 +683,7 @@ class TestDeepAgentEndToEnd:
         become corrupted into a list instead of a dict, causing AttributeError
         when tools try to access .items().
         """
-        # Create a StateBackend with an explicitly initialized runtime
-        runtime = make_runtime()
-
-        # IMPORTANT: Initialize files as empty dict, not missing
-        # This is key to potentially trigger the reducer issue
-        runtime.state["files"] = {}
-
-        backend = StateBackend(runtime)
+        backend = StateBackend()
 
         # Create a model that writes then globs
         model = FixedGenericFakeChatModel(
@@ -849,14 +830,7 @@ class TestDeepAgentEndToEnd:
         This async test specifically targets the edge case where concurrent async operations
         might cause the files state to become corrupted into a list instead of a dict.
         """
-        # Create a StateBackend with an explicitly initialized runtime
-        runtime = make_runtime()
-
-        # IMPORTANT: Initialize files as empty dict, not missing
-        # This is key to potentially trigger the reducer issue
-        runtime.state["files"] = {}
-
-        backend = StateBackend(runtime)
+        backend = StateBackend()
 
         # Create a model that writes then globs
         model = FixedGenericFakeChatModel(

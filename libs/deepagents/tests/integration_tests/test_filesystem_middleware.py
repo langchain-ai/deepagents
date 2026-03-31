@@ -3,7 +3,6 @@ import uuid
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -1006,28 +1005,17 @@ class TestFilesystem:
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
-        # Create runtimes
-        state = {"messages": [], "files": {}}
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
         # Test CompositeBackend with sandbox default
         comp_with_sandbox = CompositeBackend(
-            default=MockSandboxBackend(rt),
-            routes={"/memories/": StoreBackend(rt)},
+            default=MockSandboxBackend(),
+            routes={"/memories/": StoreBackend()},
         )
         assert _supports_execution(comp_with_sandbox)
 
         # Test CompositeBackend with non-sandbox default
         comp_without_sandbox = CompositeBackend(
-            default=StateBackend(rt),
-            routes={"/memories/": StoreBackend(rt)},
+            default=StateBackend(),
+            routes={"/memories/": StoreBackend()},
         )
         assert not _supports_execution(comp_without_sandbox)
 

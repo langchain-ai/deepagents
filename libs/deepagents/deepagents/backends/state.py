@@ -42,9 +42,9 @@ class StateBackend(BackendProtocol):
     a conversation thread but not across threads. State is automatically
     checkpointed after each agent step.
 
-    Reads and writes go through LangGraph's ``CONFIG_KEY_READ`` /
-    ``CONFIG_KEY_SEND`` so that state updates are queued as proper channel
-    writes rather than returned as ``files_update`` dicts.
+    Reads and writes go through LangGraph's `CONFIG_KEY_READ` /
+    `CONFIG_KEY_SEND` so that state updates are queued as proper channel
+    writes rather than returned as `files_update` dicts.
     """
 
     def __init__(
@@ -57,7 +57,7 @@ class StateBackend(BackendProtocol):
 
         Args:
             runtime: Deprecated - accepted for backward compatibility but
-                ignored.  State is now read/written via ``get_config()``.
+                ignored.  State is now read/written via `get_config()`.
             file_format: Storage format version. `"v1"` stores
                 content as `list[str]` (lines split on `\\n`) without an
                 `encoding` field.  `"v2"` (default) stores content as a
@@ -102,14 +102,40 @@ class StateBackend(BackendProtocol):
         return config
 
     def _read_files(self) -> dict[str, Any]:
-        """Read the current ``files`` channel."""
+        """Read the current `files` channel via Pregel internals.
+
+        Uses `CONFIG_KEY_READ` to read state directly — this lets us
+        initialize StateBackend once and fetch state on demand from any
+        graph context (tools, middleware nodes, etc.).
+
+        `fresh=False` reads the value as of the *start* of the current
+        superstep (checkpointed value + writes from prior steps). Writes
+        queued during the current step aren't applied until the node boundary,
+        so every call within the same step sees a consistent snapshot.
+        """
         config = self._get_config()
         read = config["configurable"][CONFIG_KEY_READ]
         fresh = False
         return read("files", fresh) or {}
 
     def _send_files_update(self, update: dict[str, Any]) -> None:
-        """Queue a write to the ``files`` channel."""
+        """Queue a write to the `files` channel via Pregel internals.
+
+        The whole point of this helper is that callers of `backend.write`
+        / `backend.edit` don't need to know about or manage state updates
+        themselves — the backend handles it internally.
+
+        Uses `CONFIG_KEY_SEND` to enqueue a partial `files` update
+        directly — same rationale as `_read_files` for initializing
+        StateBackend once and writing from any graph context. `send`
+        takes a list of `(channel, value)` tuples; the `files` channel
+        uses a dict-merge reducer, so we only need to include changed
+        files — unchanged ones are preserved by the reducer.
+
+        Writes are not applied until the node boundary, so they won't be
+        visible to other calls in the same step (see `_read_files` and
+        its use of `fresh=False`).
+        """
         config = self._get_config()
         send = config["configurable"][CONFIG_KEY_SEND]
         send([("files", update)])
@@ -220,7 +246,7 @@ class StateBackend(BackendProtocol):
     ) -> WriteResult:
         """Create a new file with content.
 
-        The update is queued directly via ``CONFIG_KEY_SEND``.
+        The update is queued directly via `CONFIG_KEY_SEND`.
         """
         files = self._read_files()
 
@@ -240,7 +266,7 @@ class StateBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        The update is queued directly via ``CONFIG_KEY_SEND``.
+        The update is queued directly via `CONFIG_KEY_SEND`.
         """
         files = self._read_files()
         file_data = files.get(file_path)

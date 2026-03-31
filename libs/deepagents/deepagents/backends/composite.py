@@ -10,8 +10,7 @@ Examples:
     from deepagents.backends.state import StateBackend
     from deepagents.backends.store import StoreBackend
 
-    runtime = make_runtime()
-    composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime)})
+    composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
 
     composite.write("/temp.txt", "ephemeral")
     composite.write("/memories/note.md", "persistent")
@@ -130,7 +129,7 @@ class CompositeBackend(BackendProtocol):
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime), "/cache/": StoreBackend(runtime)})
+        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
 
         composite.write("/temp.txt", "data")
         composite.write("/memories/note.txt", "data")

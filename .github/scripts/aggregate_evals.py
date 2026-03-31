@@ -151,6 +151,19 @@ def main() -> None:
         lines.append("")
         lines.extend(cat_table)
 
+    # --- LangSmith experiment links ---
+    experiment_links: list[tuple[str, str]] = []
+    for r in rows:
+        model = str(r.get("model", ""))
+        for url in r.get("experiment_urls") or []:
+            experiment_links.append((model, str(url)))
+    if experiment_links:
+        lines.append("")
+        lines.append("## LangSmith experiments")
+        lines.append("")
+        for model, url in experiment_links:
+            lines.append(f"- **{model}**: {url}")
+
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
         Path(summary_file).write_text("\n".join(lines) + "\n", encoding="utf-8")

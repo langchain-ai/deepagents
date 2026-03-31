@@ -276,7 +276,7 @@ async def create_experiment_async(
     *,
     model: str | None = None,
     metadata: dict[str, str] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Create a LangSmith experiment session for the given dataset.
 
     Args:
@@ -292,9 +292,13 @@ async def create_experiment_async(
         metadata: Optional metadata to attach to the experiment session.
 
     Returns:
-        The experiment name.
-            Diagnostic output is printed to stderr; the returned name is the
-            only value intended for stdout capture.
+        A `(name, url)` tuple.
+
+            The *name* is the experiment session name (suitable for
+            `LANGSMITH_EXPERIMENT`); the *url* is the comparison URL on
+            smith.langchain.com.
+
+            Diagnostic output is printed to stderr.
     """
     async with aiohttp.ClientSession() as session:
         dataset = await _get_dataset_by_name(dataset_name, session)
@@ -317,17 +321,15 @@ async def create_experiment_async(
         )
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
+        experiment_url = f"https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
 
         print("Experiment created successfully!", file=sys.stderr)
         print(f"  Session ID: {session_id}", file=sys.stderr)
-        print(
-            f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}",
-            file=sys.stderr,
-        )
+        print(f"  View at: {experiment_url}", file=sys.stderr)
         print("\nTo run Harbor with this experiment, use:", file=sys.stderr)
         print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...", file=sys.stderr)
 
-        return experiment_name
+        return experiment_name, experiment_url
 
 
 def create_experiment(
@@ -337,8 +339,16 @@ def create_experiment(
     model: str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
-    """Synchronous wrapper for `create_experiment_async`."""
-    return asyncio.run(
+    """Synchronous wrapper for `create_experiment_async`.
+
+    Returns:
+        The experiment name.
+
+    Raises:
+        LookupError: If the dataset is not found.
+        RuntimeError: If the API request fails.
+    """
+    name, _url = asyncio.run(
         create_experiment_async(
             dataset_name,
             experiment_name,
@@ -346,6 +356,7 @@ def create_experiment(
             metadata=metadata,
         )
     )
+    return name
 
 
 # ============================================================================

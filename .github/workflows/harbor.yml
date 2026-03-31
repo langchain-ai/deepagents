@@ -290,7 +290,13 @@ jobs:
       - name: "🧪 Create LangSmith experiment"
         id: langsmith
         run: |
+          set -euo pipefail
           output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          line_count=$(echo "$output" | wc -l | tr -d ' ')
+          if [ "$line_count" -ne 2 ]; then
+            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count"
+            exit 1
+          fi
           experiment_name=$(echo "$output" | head -1)
           experiment_url=$(echo "$output" | tail -1)
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"

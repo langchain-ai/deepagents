@@ -250,7 +250,8 @@ jobs:
             urls=$(python -c "
             import json, sys
             try:
-                data = json.load(open('evals_report.json'))
+                with open('evals_report.json') as f:
+                    data = json.load(f)
                 for u in data.get('experiment_urls', []):
                     print(u)
             except Exception as exc:

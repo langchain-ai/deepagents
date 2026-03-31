@@ -155,7 +155,10 @@ def main() -> None:
     experiment_links: list[tuple[str, str]] = []
     for r in rows:
         model = str(r.get("model", ""))
-        for url in r.get("experiment_urls") or []:
+        raw_urls = r.get("experiment_urls") or []
+        if not isinstance(raw_urls, list):
+            continue
+        for url in raw_urls:
             experiment_links.append((model, str(url)))
     if experiment_links:
         lines.append("")

@@ -1,5 +1,8 @@
 """Tests for token state persistence and display callbacks."""
 
+from types import SimpleNamespace
+
+from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.token_state import TokenStateMiddleware, TokenTrackingState
 
 
@@ -55,6 +58,24 @@ class TestTokenDisplayCallbacks:
         app._show_tokens()
 
         assert display_calls == [1500]
+
+    def test_show_tokens_preserves_approximate_marker_without_fresh_usage(self):
+        """Turns without usage metadata should not clear a stale-token marker."""
+        display_calls: list[tuple[int, bool]] = []
+
+        def update_tokens(count: int, *, approximate: bool = False) -> None:
+            display_calls.append((count, approximate))
+
+        app = SimpleNamespace(
+            _context_tokens=1500,
+            _tokens_approximate=True,
+            _update_tokens=update_tokens,
+        )
+
+        DeepAgentsApp._show_tokens(app, approximate=False)  # type: ignore[arg-type]
+
+        assert app._tokens_approximate is True
+        assert display_calls == [(1500, True)]
 
     def test_reset_clears_cache(self):
         """Resetting (e.g. /clear) should zero the cache and display."""

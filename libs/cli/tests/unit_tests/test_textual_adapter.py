@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -23,6 +23,7 @@ from deepagents_cli.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _handle_interrupt_cleanup,
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
@@ -99,13 +100,13 @@ class TestTextualUIAdapterInit:
             request_approval=_mock_approval,
         )
 
-        def update_cb(count: int) -> None:
+        def update_cb(count: int, *, approximate: bool = False) -> None:
             pass
 
         def hide_cb() -> None:
             pass
 
-        def show_cb() -> None:
+        def show_cb(*, approximate: bool = False) -> None:
             pass
 
         adapter._on_tokens_update = update_cb
@@ -135,6 +136,69 @@ class TestTextualUIAdapterInit:
         tool_2.set_error.assert_called_once_with("Agent error: boom")
         assert adapter._current_tool_messages == {}
         set_active.assert_called_once_with(None)
+
+
+class TestInterruptCleanup:
+    """Tests for interrupt cleanup token handling."""
+
+    async def test_tool_only_interrupt_marks_tokens_approximate(self) -> None:
+        """Tool-only interrupted turns should keep the stale-token marker."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        set_spinner = AsyncMock()
+        set_active = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+            set_active_message=set_active,
+        )
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        show_calls: list[bool] = []
+
+        def show_cb(*, approximate: bool = False) -> None:
+            show_calls.append(approximate)
+
+        adapter._on_tokens_show = show_cb
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        turn_stats = SessionStats()
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        with patch("deepagents_cli.textual_adapter.time.monotonic", return_value=101.0):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config=config,  # type: ignore[arg-type]
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=turn_stats,
+                start_time=100.0,
+            )
+
+        assert mounted
+        assert show_calls == [True]
+        assert turn_stats.wall_time_seconds == 1.0
+        set_active.assert_called_once_with(None)
+        set_spinner.assert_awaited_once_with(None)
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
+
+        interrupted_payload = agent.aupdate_state.await_args_list[0].args[1]
+        interrupted_msg = interrupted_payload["messages"][0]
+        assert interrupted_msg.tool_calls[0]["id"] == "call-1"
+        assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
 
 class TestBuildStreamConfig:

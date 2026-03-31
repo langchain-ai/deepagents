@@ -141,6 +141,24 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
 }
 
 
+_SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
+"""Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
+
+
+def _strip_success_exit_line(text: str) -> str:
+    """Remove the `[Command succeeded with exit code 0]` trailer.
+
+    Non-zero exit codes are left intact (they come through `set_error`).
+
+    Args:
+        text: Raw tool output string.
+
+    Returns:
+        Text with the success exit-code trailer removed, if present.
+    """
+    return _SUCCESS_EXIT_RE.sub("", text)
+
+
 class UserMessage(_TimestampClickMixin, Static):
     """Widget displaying a user message."""
 
@@ -948,7 +966,8 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "success"
-        self._output = result
+        # Strip redundant success trailer — the UI already conveys success
+        self._output = _strip_success_exit_line(result)
         if self._status_widget:
             self._status_widget.remove_class("pending")
             # Hide status on success - output speaks for itself

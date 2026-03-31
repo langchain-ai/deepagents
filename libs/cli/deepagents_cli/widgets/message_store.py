@@ -375,6 +375,7 @@ class MessageStore:
     def __init__(self) -> None:
         """Initialize the message store."""
         self._messages: list[MessageData] = []
+        self._index: dict[str, MessageData] = {}
         self._visible_start: int = 0
         self._visible_end: int = 0
 
@@ -408,6 +409,7 @@ class MessageStore:
             message: The message data to add.
         """
         self._messages.append(message)
+        self._index[message.id] = message
         self._visible_end = len(self._messages)
 
     def bulk_load(
@@ -426,6 +428,8 @@ class MessageStore:
             Tuple of (archived, visible) message lists.
         """
         self._messages.extend(messages)
+        for msg in messages:
+            self._index[msg.id] = msg
         total = len(self._messages)
 
         if total <= self.WINDOW_SIZE:
@@ -448,10 +452,7 @@ class MessageStore:
         Returns:
             The message data, or None if not found.
         """
-        for msg in self._messages:
-            if msg.id == message_id:
-                return msg
-        return None
+        return self._index.get(message_id)
 
     def get_message_at_index(self, index: int) -> MessageData | None:
         """Get a message by its index.
@@ -488,12 +489,12 @@ class MessageStore:
             msg = f"Cannot update unknown or protected fields: {unknown}"
             raise ValueError(msg)
 
-        for msg_data in self._messages:
-            if msg_data.id == message_id:
-                for key, value in updates.items():
-                    setattr(msg_data, key, value)
-                return True
-        return False
+        msg_data = self._index.get(message_id)
+        if msg_data is None:
+            return False
+        for key, value in updates.items():
+            setattr(msg_data, key, value)
+        return True
 
     def set_active_message(self, message_id: str | None) -> None:
         """Set the currently active (streaming) message.
@@ -646,6 +647,7 @@ class MessageStore:
     def clear(self) -> None:
         """Clear all messages."""
         self._messages.clear()
+        self._index.clear()
         self._visible_start = 0
         self._visible_end = 0
         self._active_message_id = None

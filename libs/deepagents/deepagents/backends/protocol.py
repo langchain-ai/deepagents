@@ -11,9 +11,9 @@ import inspect
 import logging
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Literal, NotRequired, TypeAlias
+from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
@@ -174,6 +174,13 @@ class ReadResult:
     file_data: FileData | None = None
 
 
+class _Unset:
+    """Sentinel type for detecting explicit parameter usage."""
+
+
+_FILES_UPDATE_UNSET = _Unset()
+
+
 @dataclass
 class WriteResult:
     """Result from backend write operations.
@@ -189,6 +196,15 @@ class WriteResult:
 
     error: str | None = None
     path: str | None = None
+    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
+
+    def __post_init__(self) -> None:  # noqa: D105
+        if not isinstance(self.files_update, _Unset):
+            warnings.warn(
+                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass
@@ -207,7 +223,16 @@ class EditResult:
 
     error: str | None = None
     path: str | None = None
+    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
     occurrences: int | None = None
+
+    def __post_init__(self) -> None:  # noqa: D105
+        if not isinstance(self.files_update, _Unset):
+            warnings.warn(
+                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass

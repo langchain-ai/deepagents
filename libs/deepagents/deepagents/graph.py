@@ -1,6 +1,7 @@
 """Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
+from time import sleep
 from typing import Any, cast
 
 from langchain.agents import create_agent
@@ -201,6 +202,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     Returns:
         A configured deep agent.
     """
+    sleep(1)
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else (StateBackend)
 

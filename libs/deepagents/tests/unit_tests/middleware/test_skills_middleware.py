@@ -1094,19 +1094,17 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     assert "test-skill" in content, "System prompt should mention the skill name"
 
 
-def test_skills_middleware_with_state_backend_factory() -> None:
-    """Test that SkillsMiddleware can be initialized with StateBackend factory."""
-    # Test that the middleware accepts StateBackend as a factory function
-    # This is the recommended pattern for StateBackend since it needs runtime context
+def test_skills_middleware_with_state_backend() -> None:
+    """Test that SkillsMiddleware can be initialized with StateBackend instance."""
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=StateBackend,
+        backend=StateBackend(),
         sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
-    assert callable(middleware._backend)
+    assert isinstance(middleware._backend, StateBackend)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 

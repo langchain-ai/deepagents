@@ -1,6 +1,7 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
-from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -105,8 +106,6 @@ def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> 
     passed via ``agent.invoke({"files": ...})`` since StateBackend requires
     a LangGraph execution context.
     """
-    from deepagents.backends.utils import create_file_data
-
     if isinstance(backend, StateBackend):
         return {file_path: {**create_file_data(content)}}
     backend.write(file_path, content)
@@ -1830,8 +1829,6 @@ class TestStateBackendConfigKeys:
             )
         )
 
-        import warnings
-
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             agent = create_deep_agent(
@@ -1845,8 +1842,6 @@ class TestStateBackendConfigKeys:
 
     def test_state_backend_runtime_deprecation(self) -> None:
         """Passing runtime to StateBackend emits a DeprecationWarning."""
-        import warnings
-
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             StateBackend("ignored_runtime_value")
@@ -1857,8 +1852,6 @@ class TestStateBackendConfigKeys:
 
     def test_store_backend_runtime_deprecation(self) -> None:
         """Passing runtime to StoreBackend emits a DeprecationWarning."""
-        import warnings
-
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             StoreBackend("ignored_runtime_value")
@@ -1954,8 +1947,6 @@ class TestStateBackendConfigKeys:
 
     def test_backend_factory_deprecation(self) -> None:
         """Passing a callable factory as backend emits a DeprecationWarning."""
-        import warnings
-
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
 
         with warnings.catch_warnings(record=True) as w:

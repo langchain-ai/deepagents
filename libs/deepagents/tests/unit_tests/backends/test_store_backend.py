@@ -127,7 +127,7 @@ def test_store_backend_intercept_large_tool_result(file_format):
     mem_store = InMemoryStore()
     with state_config_context(store=mem_store):
         middleware = FilesystemMiddleware(
-            backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",), file_format=file_format), tool_token_limit_before_evict=1000
+            backend=StoreBackend(namespace=lambda _ctx: ("filesystem",), file_format=file_format), tool_token_limit_before_evict=1000
         )
 
         large_content = "y" * 5000

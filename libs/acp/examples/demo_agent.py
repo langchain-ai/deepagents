@@ -15,7 +15,6 @@ from deepagents.backends import CompositeBackend, LocalShellBackend, StateBacken
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
-from langgraph.prebuilt import ToolRuntime
 
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from examples.local_context import LocalContextMiddleware
@@ -50,33 +49,30 @@ async def _serve_example_agent() -> None:
         _root_dir = context.cwd
         interrupt_config = _get_interrupt_config(context.mode)
 
-        def create_backend(tr: ToolRuntime | None = None) -> CompositeBackend:
-            ephemeral_backend = StateBackend()
-            shell_env = os.environ.copy()
+        ephemeral_backend = StateBackend()
+        shell_env = os.environ.copy()
 
-            # Use CLIShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware with per-command
-            # timeout support.
-            shell_backend = LocalShellBackend(
-                root_dir=_root_dir,
-                inherit_env=True,
-                env=shell_env,
-            )
-            return CompositeBackend(
-                default=shell_backend,
-                routes={
-                    "/memories/": ephemeral_backend,
-                    "/conversation_history/": ephemeral_backend,
-                }
-                if ephemeral_backend is not None
-                else {},
-            )
+        # Use CLIShellBackend for filesystem + shell execution.
+        # Provides `execute` tool via FilesystemMiddleware with per-command
+        # timeout support.
+        shell_backend = LocalShellBackend(
+            root_dir=_root_dir,
+            inherit_env=True,
+            env=shell_env,
+        )
+        backend = CompositeBackend(
+            default=shell_backend,
+            routes={
+                "/memories/": ephemeral_backend,
+                "/conversation_history/": ephemeral_backend,
+            },
+        )
 
         return create_deep_agent(
             # Falls back to Deep Agent default model if not provided
             model=context.model,
             checkpointer=checkpointer,
-            backend=create_backend,
+            backend=backend,
             interrupt_on=interrupt_config,
             middleware=[LocalContextMiddleware(backend=create_backend())],
         )

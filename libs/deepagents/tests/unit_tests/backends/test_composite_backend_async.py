@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.runnables.config import var_child_runnable_config
@@ -23,7 +24,7 @@ from deepagents.middleware.filesystem import _file_data_reducer
 def _make_state_config(files=None, *, store=None):
     file_store = {"files": files or {}}
 
-    def read(select, fresh=False):
+    def read(select, *, _fresh=False):
         if isinstance(select, str):
             return file_store.get(select)
         return {k: file_store.get(k) for k in select}
@@ -32,8 +33,6 @@ def _make_state_config(files=None, *, store=None):
         for channel, value in writes:
             if channel == "files":
                 file_store["files"] = _file_data_reducer(file_store.get("files"), value)
-
-    from types import SimpleNamespace
 
     mock_runtime = SimpleNamespace(store=store, context=None, stream_writer=lambda _: None)
     config = {

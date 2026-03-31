@@ -1,6 +1,9 @@
+import warnings
 from contextlib import contextmanager
 
 import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 
@@ -17,7 +20,7 @@ def _make_state_config(files=None):
     """
     store = {"files": files or {}}
 
-    def read(select, fresh=False):  # noqa: ARG001
+    def read(select, *, _fresh=False):
         if isinstance(select, str):
             return store.get(select)
         return {k: store.get(k) for k in select}
@@ -169,9 +172,6 @@ def test_state_backend_ls_trailing_slash():
 @pytest.mark.parametrize("file_format", ["v1", "v2"])
 def test_state_backend_intercept_large_tool_result(file_format):
     """Test that StateBackend properly handles large tool result interception."""
-    from langchain.tools import ToolRuntime
-    from langchain_core.messages import ToolMessage
-
     backend = StateBackend(file_format=file_format)
     middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
 
@@ -360,8 +360,6 @@ def test_state_backend_grep_with_path_variations(path: str, expected_count: int,
 
 def test_state_backend_runtime_deprecation_warning():
     """Passing runtime= to StateBackend should emit a DeprecationWarning."""
-    import warnings
-
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         StateBackend(runtime="ignored_value")
@@ -373,8 +371,6 @@ def test_state_backend_runtime_deprecation_warning():
 
 def test_state_backend_no_deprecation_without_runtime():
     """StateBackend() without runtime should NOT emit a DeprecationWarning."""
-    import warnings
-
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         StateBackend()

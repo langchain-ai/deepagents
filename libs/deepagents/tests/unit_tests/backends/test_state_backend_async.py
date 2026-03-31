@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from functools import partial
 
 import pytest
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
@@ -16,7 +17,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware, _file_data_re
 def _make_state_config(files=None):
     store = {"files": files or {}}
 
-    def read(select, fresh=False):
+    def read(select, *, _fresh=False):
         if isinstance(select, str):
             return store.get(select)
         return {k: store.get(k) for k in select}
@@ -272,8 +273,6 @@ async def test_state_backend_aglob_recursive():
 @pytest.mark.parametrize("file_format", ["v1", "v2"])
 async def test_state_backend_intercept_large_tool_result_async(file_format):
     """Test that StateBackend properly handles large tool result interception in async context."""
-    from langchain.tools import ToolRuntime
-
     rt = ToolRuntime(
         state={"messages": [], "files": {}},
         context=None,

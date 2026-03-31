@@ -63,7 +63,7 @@ class TestAddMiddleware:
     def test_subagent_middleware(self):
         middleware = [
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
             )
         ]
@@ -74,7 +74,7 @@ class TestAddMiddleware:
         middleware = [
             FilesystemMiddleware(),
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
             ),
         ]

@@ -583,17 +583,17 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     assert "Test async loading" in content
 
 
-def test_memory_middleware_with_state_backend_factory() -> None:
-    """Test that MemoryMiddleware can be initialized with StateBackend factory."""
+def test_memory_middleware_with_state_backend() -> None:
+    """Test that MemoryMiddleware can be initialized with StateBackend instance."""
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=StateBackend,
+        backend=StateBackend(),
         sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
-    assert callable(middleware._backend)
+    assert isinstance(middleware._backend, StateBackend)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/memory/AGENTS.md"
 

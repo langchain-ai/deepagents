@@ -18,7 +18,7 @@ def make_state_config(files=None, *, store=None, context=None):
     """
     file_store = {"files": files or {}}
 
-    def read(select, fresh=False):  # noqa: ARG001
+    def read(select, *, _fresh=False):
         if isinstance(select, str):
             return file_store.get(select)
         return {k: file_store.get(k) for k in select}

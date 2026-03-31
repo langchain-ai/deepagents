@@ -37,7 +37,7 @@ from deepagents.middleware.filesystem import _file_data_reducer
 def _make_state_config(files=None):
     store = {"files": files or {}}
 
-    def read(select, fresh=False):
+    def read(select, *, _fresh=False):
         if isinstance(select, str):
             return store.get(select)
         return {k: store.get(k) for k in select}

@@ -85,7 +85,7 @@ class LangSmithSandbox(BaseSandbox):
 
         try:
             self._sandbox.write(file_path, content.encode("utf-8"))
-            return WriteResult(path=file_path, files_update=None)
+            return WriteResult(path=file_path)
         except SandboxClientError as e:
             return WriteResult(error=f"Failed to write file '{file_path}': {e}")
 

@@ -290,9 +290,24 @@ jobs:
       - name: "🧪 Create LangSmith experiment"
         id: langsmith
         run: |
-          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          set -euo pipefail
+          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          line_count=$(echo "$output" | wc -l | tr -d ' ')
+          if [ "$line_count" -ne 2 ]; then
+            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
+            echo "$output" | head -5
+            exit 1
+          fi
+          experiment_name=$(echo "$output" | head -1)
+          experiment_url=$(echo "$output" | tail -1)
+          if [ -z "$experiment_name" ] || [ -z "$experiment_url" ]; then
+            echo "::error::create-experiment returned empty name or URL: name='$experiment_name' url='$experiment_url'"
+            exit 1
+          fi
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
+          echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -301,6 +316,12 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
@@ -345,6 +366,7 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
           LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+          LANGSMITH_EXPERIMENT_URL: ${{ steps.langsmith.outputs.experiment_url }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
         run: |
           {
@@ -360,7 +382,11 @@ jobs:
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
             echo "- Agent mode: ${HARBOR_AGENT_MODE}"
-            echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
+              echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
+            else
+              echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            fi
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
               echo "- Harbor job dir: $HARBOR_JOB_DIR"
             fi

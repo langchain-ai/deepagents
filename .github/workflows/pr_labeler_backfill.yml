@@ -71,7 +71,7 @@ jobs:
                 const labels = new Set();
 
                 labels.add(info.isExternal ? 'external' : 'internal');
-                if (info.isExternal && info.mergedCount != null && info.mergedCount >= config.trustedThreshold) {
+                if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
                   labels.add('trusted-contributor');
                 } else if (info.isExternal && info.mergedCount === 0) {
                   labels.add('new-contributor');

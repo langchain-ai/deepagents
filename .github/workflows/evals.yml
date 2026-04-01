@@ -20,6 +20,8 @@
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
 name: "📊 Evals"
+run-name: >-
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ inputs.eval_categories && format(' [{0}]', inputs.eval_categories) || '' }}
 
 on:
   workflow_dispatch:
@@ -106,7 +108,7 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
+        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Full eval listing: libs/evals/EVAL_CATALOG.md. Leave empty to run all."
         required: false
         default: ""
         type: string
@@ -145,21 +147,28 @@ jobs:
           else
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # Build eval_categories — bullet list for multiple, inline for single/(all)
+          # Show eval categories as both comma-separated and bulleted list
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-            if [ "${#cats[@]}" -eq 1 ]; then
-              cat=$(echo "${cats[0]}" | xargs)
-              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              bullets=""
+            # Comma-separated row
+            comma_list=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
+            done
+            echo "| \`eval_categories\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+            # Bulleted list row (only when more than one category)
+            if [ ${#cats[@]} -gt 1 ]; then
+              bulleted=""
               for cat in "${cats[@]}"; do
                 cat=$(echo "$cat" | xargs)
-                bullets="${bullets}<li><code>${cat}</code></li>"
+                [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
+                bulleted="${bulleted}• <code>${cat}</code>"
               done
-              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
 
@@ -230,7 +239,23 @@ jobs:
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
-        run: make evals
+        run: |
+          # Print LangSmith link for monitoring results as they arrive
+          tenant_id=$(curl -sf \
+            -H "x-api-key: $LANGSMITH_API_KEY" \
+            "https://api.smith.langchain.com/sessions?limit=1" \
+            | python3 -c "import sys, json; d = json.load(sys.stdin); print(d[0]['tenant_id'] if d else '')" \
+            2>/dev/null) || true
+          if [ -n "$tenant_id" ]; then
+            echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+            echo "  View results at: https://smith.langchain.com/o/${tenant_id}/testing"
+            echo ""
+          else
+            echo "::warning::Could not resolve LangSmith tenant ID for experiment URL"
+          fi
+
+          # Run evals
+          make evals
 
       - name: "🔍 Check eval report"
         if: "!cancelled()"

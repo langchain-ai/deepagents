@@ -2854,6 +2854,14 @@ class DeepAgentsApp(App):
             )
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
+        # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
+        elif cmd == "/debug-error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Server failed to start: RuntimeError: Server process"
+                    " exited with code 3"
+                )
+            )
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))

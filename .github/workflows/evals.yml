@@ -21,7 +21,7 @@
 
 name: "📊 Evals"
 run-name: >-
-  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ inputs.eval_categories && format(' [{0}]', inputs.eval_categories) || '' }}
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}
 
 on:
   workflow_dispatch:
@@ -108,7 +108,21 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Full eval listing: libs/evals/EVAL_CATALOG.md. Leave empty to run all."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - conversation
+          - file_operations
+          - memory
+          - retrieval
+          - summarization
+          - tool_use
+          - unit_test
+      eval_categories_override:
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
@@ -120,10 +134,6 @@ on:
 
 permissions:
   contents: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
-  cancel-in-progress: false
 
 env:
   UV_NO_SYNC: "true"
@@ -141,7 +151,7 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -178,6 +188,8 @@ jobs:
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -193,6 +205,11 @@ jobs:
     needs: prep
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
+    # jobs on different providers run in parallel.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.provider }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
@@ -233,10 +250,12 @@ jobs:
         run: uv sync --group test
 
       - name: "🏷️ Apply category filter"
-        if: inputs.eval_categories != ''
+        if: inputs.eval_categories_override != '' || inputs.eval_categories != ''
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories }}
         run: |
           flags=""
-          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
           for cat in "${cats[@]}"; do
             cat=$(echo "$cat" | xargs)
             flags="$flags --eval-category $cat"

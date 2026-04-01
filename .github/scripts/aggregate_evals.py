@@ -203,6 +203,13 @@ def main() -> None:
             " currently produce these metrics."
         )
 
+    # --- Reference links ---
+    lines.append("")
+    lines.append(
+        "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md)"
+        " | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)"
+    )
+
     # --- LangSmith experiment links ---
     experiment_entries: list[
         tuple[str, str, str, str]

@@ -555,7 +555,11 @@ def main() -> None:
     env_var, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
-    matrix = {"model": models}
+    matrix = {
+        "include": [
+            {"model": m, "provider": m.split(":")[0]} for m in models
+        ],
+    }
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     line = f"matrix={json.dumps(matrix, separators=(',', ':'))}"

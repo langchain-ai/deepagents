@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,7 @@ import pytest
 from deepagents_cli.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_cli.main import (
+    _check_mcp_project_trust,
     _ripgrep_install_hint,
     check_optional_tools,
     format_tool_warning_cli,
@@ -636,3 +638,114 @@ class TestRunTextualCliAsyncModelConfigError:
             result = await run_textual_cli_async("agent", model_name="openai:gpt-4o")
 
         assert result.return_code == 0
+
+
+class TestCheckMcpProjectTrustDeduplication:
+    """Verify MCP server deduplication when multiple project config files overlap.
+
+    Regression test for https://github.com/langchain-ai/deepagents/issues/2374.
+    When both `.deepagents/.mcp.json` and `.mcp.json` define the same server,
+    the approval prompt must list the server only once.
+    """
+
+    def _make_server_cfg(self, cmd: str = "npx", args: list[str] | None = None) -> dict:
+        return {"command": cmd, "args": args or ["-y", "some-server"]}
+
+    def test_duplicate_server_name_across_configs_shown_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Servers with identical names in both config files appear once in prompt."""
+        shared_server_config = self._make_server_cfg()
+        cfg = {"mcpServers": {"my-server": shared_server_config}}
+
+        deepagents_dir = tmp_path / ".deepagents"
+        deepagents_dir.mkdir()
+        project_mcp = deepagents_dir / ".mcp.json"
+        root_mcp = tmp_path / ".mcp.json"
+
+        project_mcp.write_text(json.dumps(cfg))
+        root_mcp.write_text(json.dumps(cfg))
+
+        from deepagents_cli.project_utils import ProjectContext
+
+        project_context = ProjectContext(project_root=tmp_path, user_cwd=tmp_path)
+
+        shown_servers: list[str] = []
+
+        def fake_input(_prompt: str) -> str:
+            return "n"
+
+        with (
+            patch(
+                "deepagents_cli.main.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch("deepagents_cli.mcp_tools.find_project_root", return_value=tmp_path),
+            patch("deepagents_cli.main.Path.cwd", return_value=tmp_path),
+            patch("builtins.input", side_effect=fake_input),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted", return_value=False
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.compute_config_fingerprint",
+                return_value="fp",
+            ),
+            patch("rich.console.Console.print") as mock_print,
+        ):
+            _check_mcp_project_trust()
+
+        # Collect all server-name occurrences from rich print calls
+        for call in mock_print.call_args_list:
+            args = call[0]
+            if args and '"my-server"' in str(args[0]):
+                shown_servers.append("my-server")
+
+        assert shown_servers == ["my-server"], (
+            f"Expected exactly one entry for 'my-server', got: {shown_servers}"
+        )
+
+    def test_unique_servers_across_configs_both_shown(self, tmp_path: Path) -> None:
+        """Servers with different names in each config both appear in prompt."""
+        cfg_a = {"mcpServers": {"server-a": self._make_server_cfg()}}
+        cfg_b = {"mcpServers": {"server-b": self._make_server_cfg(cmd="node")}}
+
+        deepagents_dir = tmp_path / ".deepagents"
+        deepagents_dir.mkdir()
+        (deepagents_dir / ".mcp.json").write_text(json.dumps(cfg_a))
+        (tmp_path / ".mcp.json").write_text(json.dumps(cfg_b))
+
+        from deepagents_cli.project_utils import ProjectContext
+
+        project_context = ProjectContext(project_root=tmp_path, user_cwd=tmp_path)
+        shown_servers: list[str] = []
+
+        with (
+            patch(
+                "deepagents_cli.main.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch("deepagents_cli.mcp_tools.find_project_root", return_value=tmp_path),
+            patch("deepagents_cli.main.Path.cwd", return_value=tmp_path),
+            patch("builtins.input", return_value="n"),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted", return_value=False
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.compute_config_fingerprint",
+                return_value="fp",
+            ),
+            patch("rich.console.Console.print") as mock_print,
+        ):
+            _check_mcp_project_trust()
+
+        for call in mock_print.call_args_list:
+            args = call[0]
+            line = str(args[0]) if args else ""
+            if '"server-a"' in line:
+                shown_servers.append("server-a")
+            if '"server-b"' in line:
+                shown_servers.append("server-b")
+
+        assert "server-a" in shown_servers
+        assert "server-b" in shown_servers
+        assert len(shown_servers) == 2

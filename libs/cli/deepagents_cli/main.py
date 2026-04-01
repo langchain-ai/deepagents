@@ -1093,12 +1093,16 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not project_configs:
         return None
 
-    # Collect all stdio servers across project configs
-    all_stdio: list[tuple[str, str, list[str]]] = []
+    # Collect all stdio servers across project configs, deduplicating by name.
+    # Later configs have higher precedence, so they overwrite earlier entries
+    # for the same server name (mirrors merge_mcp_configs behaviour).
+    seen: dict[str, tuple[str, str, list[str]]] = {}
     for path in project_configs:
         cfg = load_mcp_config_lenient(path)
         if cfg is not None:
-            all_stdio.extend(extract_stdio_server_commands(cfg))
+            for entry in extract_stdio_server_commands(cfg):
+                seen[entry[0]] = entry
+    all_stdio = list(seen.values())
 
     if not all_stdio:
         return None

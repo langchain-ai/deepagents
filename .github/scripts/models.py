@@ -309,10 +309,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set2",
-                "eval:open",
                 "eval:ollama",
                 "harbor:set2",
-                "harbor:open",
                 "harbor:ollama",
             }
         ),
@@ -430,7 +428,9 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:nvidia/nemotron-3-super-120b-a12b",
         frozenset(
             {
+                "eval:open",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:openrouter",
             }
         ),

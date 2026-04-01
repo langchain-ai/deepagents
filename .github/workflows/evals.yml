@@ -247,6 +247,7 @@ jobs:
             echo "## Eval run"
             echo ""
             echo "- Model: ${{ matrix.model }}"
+            echo "- Categories: ${{ inputs.eval_categories || 'all' }}"
             links=$(python -c "
           import json, sys
           try:

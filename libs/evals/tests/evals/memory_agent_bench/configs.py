@@ -256,7 +256,7 @@ FOCUSED_AR_LONGMEMEVAL = DatasetConfig(
 FOCUSED_TTL_CLINC150 = DatasetConfig(
     split="Test_Time_Learning",
     source="icl_clinic150_7050shot_balance",
-    question_indices=(42,),
+    question_indices=(23,),
 )
 
 FOCUSED_LRU_DETECTIVE_QA = DatasetConfig(

@@ -247,20 +247,21 @@ jobs:
             echo "## Eval run"
             echo ""
             echo "- Model: ${{ matrix.model }}"
+            echo "- Categories: ${{ inputs.eval_categories || 'all' }}"
             links=$(python -c "
-            import json, sys
-            try:
-                with open('evals_report.json') as f:
-                    data = json.load(f)
-                for link in data.get('experiment_links', []):
-                    name = link.get('name', '')
-                    url = link.get('url', '')
-                    if name and url:
-                        print(f'- [{name}]({url})')
-                    elif url:
-                        print(f'- {url}')
-            except Exception as exc:
-                print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
+          import json, sys
+          try:
+              with open('evals_report.json') as f:
+                  data = json.load(f)
+              for link in data.get('experiment_links', []):
+                  name = link.get('name', '')
+                  url = link.get('url', '')
+                  if name and url:
+                      print(f'- [{name}]({url})')
+                  elif url:
+                      print(f'- {url}')
+          except Exception as exc:
+              print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
             ")
             if [ -n "$links" ]; then
               echo ""

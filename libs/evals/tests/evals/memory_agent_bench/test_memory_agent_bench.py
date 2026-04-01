@@ -174,9 +174,7 @@ def _run_benchmark_sample(
     if config.question_indices is not None:
         questions = [questions[i] for i in config.question_indices]
         answers = [answers[i] for i in config.question_indices]
-        qa_pair_ids = [
-            qa_pair_ids[i] for i in config.question_indices if i < len(qa_pair_ids)
-        ]
+        qa_pair_ids = [qa_pair_ids[i] for i in config.question_indices if i < len(qa_pair_ids)]
     elif config.max_questions is not None:
         questions = questions[: config.max_questions]
         answers = answers[: config.max_questions]
@@ -257,9 +255,7 @@ def _run_benchmark_sample_fileseeded(
     if config.question_indices is not None:
         questions = [questions[i] for i in config.question_indices]
         answers = [answers[i] for i in config.question_indices]
-        qa_pair_ids = [
-            qa_pair_ids[i] for i in config.question_indices if i < len(qa_pair_ids)
-        ]
+        qa_pair_ids = [qa_pair_ids[i] for i in config.question_indices if i < len(qa_pair_ids)]
     elif config.max_questions is not None:
         questions = questions[: config.max_questions]
         answers = answers[: config.max_questions]
@@ -363,9 +359,7 @@ def _run_focused_eval(model: BaseChatModel, config: DatasetConfig) -> None:
         max_samples=config.max_samples,
     )
     if not samples or config.sample_index >= len(samples):
-        pytest.skip(
-            f"No sample at index {config.sample_index} for source={config.source!r}"
-        )
+        pytest.skip(f"No sample at index {config.sample_index} for source={config.source!r}")
 
     output = _run_benchmark_sample_fileseeded(samples[config.sample_index], config, model)
     _log_sample_feedback(_score_predictions(output))

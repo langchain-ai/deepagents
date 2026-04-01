@@ -3,11 +3,10 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from rich.markup import render
 from rich.style import Style
-from rich.text import Text
+from textual.content import Content
 
-from deepagents_cli.config import COLORS
+from deepagents_cli import theme
 from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
@@ -15,10 +14,13 @@ from deepagents_cli.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
     _show_timestamp_toast,
+    _strip_frontmatter,
+    _strip_success_exit_line,
 )
 
 # Content that previously caused MarkupError crashes
@@ -65,6 +67,13 @@ class TestErrorMessageMarkupSafety:
         msg = ErrorMessage(error)
         assert msg is not None
 
+    def test_error_message_has_prefix_and_body(self) -> None:
+        """ErrorMessage content should have `'Error: '` prefix followed by the body."""
+        msg = ErrorMessage("something broke")
+        rendered = msg.render()
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "Error: something broke"
+
 
 class TestAppMessageMarkupSafety:
     """Test AppMessage handles content with brackets safely."""
@@ -81,6 +90,20 @@ class TestAppMessageMarkupSafety:
         msg = AppMessage(content)
         assert msg is not None
 
+    def test_app_message_str_gets_dim_italic(self) -> None:
+        """String input should be rendered as dim italic `Content`."""
+        msg = AppMessage("hello")
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "hello"
+
+    def test_app_message_content_passthrough(self) -> None:
+        """Pre-styled `Content` should pass through unchanged."""
+        pre = Content.styled("styled", "bold cyan")
+        msg = AppMessage(pre)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert rendered is pre
+
 
 class TestSummarizationMessage:
     """Tests for summarization notification widget."""
@@ -94,6 +117,20 @@ class TestSummarizationMessage:
         """SummarizationMessage should be treated like an AppMessage."""
         msg = SummarizationMessage()
         assert isinstance(msg, AppMessage)
+
+    def test_summarization_message_str_input(self) -> None:
+        """String input should be rendered as bold cyan `Content`."""
+        msg = SummarizationMessage("custom text")
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "custom text"
+
+    def test_summarization_message_content_passthrough(self) -> None:
+        """Pre-styled `Content` should pass through unchanged."""
+        pre = Content.styled("pre-styled", "bold cyan")
+        msg = SummarizationMessage(pre)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert rendered is pre
 
 
 class TestToolCallMessageMarkupSafety:
@@ -113,18 +150,18 @@ class TestToolCallMessageMarkupSafety:
         assert msg._args == args
 
     def test_tool_header_escapes_markup_in_label(self) -> None:
-        """Tool header should escape tool label content before Rich parsing."""
+        """Task description widget should safely render bracket content."""
         msg = ToolCallMessage(
             "task",
             {"description": "Search for closing tag [/dim] mismatches"},
         )
 
-        # `task` has no inline args widget, so this validates the header markup.
-        header = next(iter(msg.compose()))
-        content = header._Static__content
-        assert isinstance(content, str)
-        rendered = render(content)
-        assert "[/dim]" in rendered.plain
+        # Header shows subagent type; description is a separate dim widget.
+        widgets = list(msg.compose())
+        # Second widget is the task description line (Static with dim style).
+        # Content.styled() produces a Content object stored on the Static.
+        content = widgets[1]._Static__content  # type: ignore[attr-defined]
+        assert "[/dim]" in content.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
         """Inline args line should escape bracket content in argument values."""
@@ -136,10 +173,9 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         args_widget = widgets[1]
         content = args_widget._Static__content  # type: ignore[attr-defined]
-        assert isinstance(content, str)
-        rendered = render(content)
-        assert "[foo]" in rendered.plain
-        assert "[/dim]" in rendered.plain
+        assert isinstance(content, Content)
+        assert "[foo]" in content.plain
+        assert "[/dim]" in content.plain
 
 
 class TestToolCallMessageShellCommand:
@@ -236,15 +272,17 @@ class TestToolCallMessageShellCommand:
     def test_format_shell_output_styles_only_first_line_dim(self) -> None:
         """Shell output formatting should only style the first command line in dim."""
         msg = ToolCallMessage("shell", {"command": "echo test"})
-        # Include a line that looks like a command prompt in the output
         output = "$ echo test\ntest output\n$ not a command"
         result = msg._format_shell_output(output, is_preview=False)
 
-        # First line (the command) should be wrapped in [dim] markup
-        assert "[dim]$ echo test[/dim]" in result.content
-        # Subsequent lines starting with $ should NOT be dimmed
-        assert "$ not a command" in result.content
-        assert "[dim]$ not a command" not in result.content
+        assert isinstance(result.content, Content)
+        lines = result.content.split("\n")
+        # First line (the command) should be styled dim
+        assert lines[0].plain == "$ echo test"
+        assert "dim" in lines[0].markup
+        # Subsequent lines should NOT be dim
+        assert lines[2].plain == "$ not a command"
+        assert "dim" not in lines[2].markup
 
 
 class TestUserMessageHighlighting:
@@ -294,43 +332,60 @@ class TestUserMessageHighlighting:
         assert len(matches) == 0
 
 
-def _compose_text(widget: UserMessage | QueuedUserMessage) -> Text:
-    """Extract the Rich `Text` object from a message widget's first yielded Static."""
-    statics = list(widget.compose())
-    assert statics, "compose() yielded no widgets"
-    content = statics[0]._Static__content  # type: ignore[attr-defined]
-    assert isinstance(content, Text)
-    return content
+def _render_content(widget: UserMessage | QueuedUserMessage) -> Content:
+    """Extract the `Content` object from a message widget's render method."""
+    result = widget.render()
+    assert isinstance(result, Content)
+    return result
 
 
 class TestUserMessageModeRendering:
-    """Test `UserMessage` renders mode-specific prefix indicators and colors."""
+    """Test `UserMessage` renders mode-specific prefix indicators and colors.
+
+    Without an active Textual app, `get_theme_colors` falls back to
+    `DARK_COLORS`, so assertions check for hex values from that palette.
+    """
 
     def test_shell_prefix_renders_dollar_indicator(self) -> None:
         """`UserMessage('!ls')` should render with `'$ '` prefix and shell body."""
-        text = _compose_text(UserMessage("!ls"))
-        assert text.plain == "$ ls"
-        first_span = text._spans[0]
-        assert COLORS["mode_shell"] in str(first_span.style)
+        content = _render_content(UserMessage("!ls"))
+        assert content.plain == "$ ls"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
-        text = _compose_text(UserMessage("/help"))
-        assert text.plain == "/ help"
-        first_span = text._spans[0]
-        assert COLORS["mode_command"] in str(first_span.style)
+        content = _render_content(UserMessage("/help"))
+        assert content.plain == "/ help"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.mode_command in str(first_span.style)
 
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
-        text = _compose_text(UserMessage("hello"))
-        assert text.plain == "> hello"
-        first_span = text._spans[0]
-        assert COLORS["primary"] in str(first_span.style)
+        content = _render_content(UserMessage("hello"))
+        assert content.plain == "> hello"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.primary in str(first_span.style)
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`UserMessage('')` should not crash and should render `'> '` prefix."""
-        text = _compose_text(UserMessage(""))
-        assert text.plain == "> "
+        content = _render_content(UserMessage(""))
+        assert content.plain == "> "
+
+
+class TestModeColorsDrift:
+    """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
+
+    def test_mode_color_returns_non_primary_for_all_modes(self) -> None:
+        from deepagents_cli.config import MODE_PREFIXES
+        from deepagents_cli.widgets.messages import _mode_color
+
+        primary = _mode_color(None)
+        for mode in MODE_PREFIXES:
+            color = _mode_color(mode)
+            assert color != primary, (
+                f"_mode_color({mode!r}) returned primary; add a branch for this mode"
+            )
 
 
 class TestQueuedUserMessageModeRendering:
@@ -338,23 +393,23 @@ class TestQueuedUserMessageModeRendering:
 
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
-        text = _compose_text(QueuedUserMessage("!ls"))
-        assert text.plain == "$ ls"
+        content = _render_content(QueuedUserMessage("!ls"))
+        assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
         """`QueuedUserMessage('/help')` should render dimmed `'/ '` prefix."""
-        text = _compose_text(QueuedUserMessage("/help"))
-        assert text.plain == "/ help"
+        content = _render_content(QueuedUserMessage("/help"))
+        assert content.plain == "/ help"
 
     def test_normal_message_renders_dimmed_angle_bracket(self) -> None:
         """`QueuedUserMessage('hello')` should render dimmed `'> '` prefix."""
-        text = _compose_text(QueuedUserMessage("hello"))
-        assert text.plain == "> hello"
+        content = _render_content(QueuedUserMessage("hello"))
+        assert content.plain == "> hello"
 
     def test_empty_content_renders_angle_bracket(self) -> None:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
-        text = _compose_text(QueuedUserMessage(""))
-        assert text.plain == "> "
+        content = _render_content(QueuedUserMessage(""))
+        assert content.plain == "> "
 
 
 class TestAppMessageAutoLinksDisabled:
@@ -369,10 +424,10 @@ _WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
 
 
 class TestAppMessageOnClickOpensLink:
-    """Tests for `AppMessage.on_click` opening Rich-style hyperlinks."""
+    """Tests for `AppMessage.on_click` opening style-embedded hyperlinks."""
 
     def test_click_on_link_opens_browser(self) -> None:
-        """Clicking a Rich link should call `webbrowser.open`."""
+        """Clicking a styled link should call `webbrowser.open`."""
         msg = AppMessage("test")
         event = MagicMock()
         event.style = Style(link="https://example.com")
@@ -564,3 +619,185 @@ class TestMountMessageIdSync:
             widget.id = data.id
 
         assert widget.id == "my-custom-id"
+
+
+class TestGenericPreviewTruncation:
+    """Tests for generic MCP tool preview truncation fallback."""
+
+    def _make_msg(self, tool_name: str = "mcp_custom_tool") -> ToolCallMessage:
+        """Create a ToolCallMessage with the given tool name."""
+        return ToolCallMessage(tool_name, {})
+
+    def test_unknown_tool_many_lines_truncated_in_preview(self) -> None:
+        """Unknown tool output exceeding line limit should be truncated."""
+        msg = self._make_msg()
+        output = "\n".join(f"line {i}" for i in range(10))
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is not None
+        assert "more lines" in result.truncation
+
+    def test_unknown_tool_long_single_line_truncated_in_preview(self) -> None:
+        """Unknown tool output exceeding char limit should be char-truncated."""
+        msg = self._make_msg()
+        output = "x" * 500
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is not None
+        assert "100 more chars" in result.truncation
+        assert len(result.content.plain) == 400
+
+    def test_unknown_tool_short_output_no_truncation(self) -> None:
+        """Short output from unknown tool should pass through untruncated."""
+        msg = self._make_msg()
+        output = "short output"
+        result = msg._format_output(output, is_preview=True)
+        assert result.truncation is None
+        assert result.content.plain == "short output"
+
+    def test_unknown_tool_exact_preview_lines_not_truncated(self) -> None:
+        """Output with exactly _PREVIEW_LINES lines should NOT be line-truncated."""
+        msg = self._make_msg()
+        output = "\n".join(f"line {i}" for i in range(msg._PREVIEW_LINES))
+        result = msg._format_output(output, is_preview=True)
+        # Boundary: exactly at limit should pass through without line truncation
+        truncation = result.truncation or ""
+        assert result.truncation is None or "more lines" not in truncation
+
+    def test_unknown_tool_full_output_no_truncation(self) -> None:
+        """Non-preview mode should return full output regardless of length."""
+        msg = self._make_msg()
+        output = "x" * 500
+        result = msg._format_output(output, is_preview=False)
+        assert result.truncation is None
+        assert result.content.plain == output
+
+
+class TestStripFrontmatter:
+    """Test _strip_frontmatter helper."""
+
+    def test_strips_yaml_frontmatter(self) -> None:
+        text = "---\nname: test\ndescription: A test\n---\n\n# Body\nContent"
+        assert _strip_frontmatter(text) == "# Body\nContent"
+
+    def test_no_frontmatter_unchanged(self) -> None:
+        text = "# No frontmatter\nJust content"
+        assert _strip_frontmatter(text) == text
+
+    def test_unclosed_frontmatter_unchanged(self) -> None:
+        text = "---\nname: test\nno closing marker"
+        assert _strip_frontmatter(text) == text
+
+    def test_empty_string(self) -> None:
+        assert _strip_frontmatter("") == ""
+
+    def test_leading_whitespace_before_frontmatter(self) -> None:
+        text = "\n  ---\nname: test\n---\n\nBody"
+        assert _strip_frontmatter(text) == "Body"
+
+    def test_frontmatter_only(self) -> None:
+        text = "---\nname: test\n---\n"
+        assert _strip_frontmatter(text) == ""
+
+
+class TestSkillMessageMarkupSafety:
+    """Test SkillMessage handles content with brackets safely."""
+
+    @pytest.mark.parametrize("content", MARKUP_INJECTION_CASES)
+    def test_skill_message_no_markup_error(self, content: str) -> None:
+        """SkillMessage should not raise on bracket content."""
+        msg = SkillMessage(
+            skill_name="test",
+            description=content,
+            body=content,
+            args=content,
+        )
+        # Construction should not raise; compose() needs a running app
+        # (Markdown widget) so we verify fields instead.
+        assert msg._description == content
+        assert msg._args == content
+
+    def test_skill_message_stores_fields(self) -> None:
+        msg = SkillMessage(
+            skill_name="web-research",
+            description="Research topics",
+            source="user",
+            body="# Instructions\nDo stuff",
+            args="find quantum",
+        )
+        assert msg._skill_name == "web-research"
+        assert msg._description == "Research topics"
+        assert msg._source == "user"
+        assert msg._body == "# Instructions\nDo stuff"
+        assert msg._args == "find quantum"
+        assert msg._expanded is False
+
+    def test_skill_message_strips_frontmatter(self) -> None:
+        """Body with frontmatter should have it stripped for display."""
+        body = "---\nname: test\ndescription: A test\n---\n\n# Real content"
+        msg = SkillMessage(skill_name="test", body=body)
+        assert msg._stripped_body == "# Real content"
+        # Raw body preserved for serialization
+        assert msg._body == body
+
+    def test_skill_message_no_args_skips_field(self) -> None:
+        """When no args are provided, internal state should reflect that."""
+        msg = SkillMessage(skill_name="test", args="")
+        assert msg._args == ""
+        assert msg._description == ""
+
+    def test_skill_message_with_description_and_args(self) -> None:
+        msg = SkillMessage(
+            skill_name="test",
+            description="A test skill",
+            args="do something",
+        )
+        assert msg._description == "A test skill"
+        assert msg._args == "do something"
+
+    def test_skill_message_toggle_state(self) -> None:
+        msg = SkillMessage(skill_name="test", body="some body")
+        assert msg._expanded is False
+        msg._expanded = True
+        assert msg._expanded is True
+
+
+class TestStripSuccessExitLine:
+    """Test _strip_success_exit_line helper."""
+
+    def test_strips_success_trailer(self) -> None:
+        text = "hello world\n[Command succeeded with exit code 0]"
+        assert _strip_success_exit_line(text) == "hello world"
+
+    def test_strips_success_trailer_with_trailing_whitespace(self) -> None:
+        text = "output\n[Command succeeded with exit code 0]  \n"
+        assert _strip_success_exit_line(text) == "output"
+
+    def test_preserves_failed_exit_code(self) -> None:
+        text = "error\n[Command failed with exit code 1]"
+        assert _strip_success_exit_line(text) == text
+
+    def test_preserves_non_zero_success_code(self) -> None:
+        """Only exit code 0 is stripped; other codes are untouched."""
+        text = "output\n[Command succeeded with exit code 2]"
+        assert _strip_success_exit_line(text) == text
+
+    def test_empty_string(self) -> None:
+        assert _strip_success_exit_line("") == ""
+
+    def test_no_trailer(self) -> None:
+        text = "just some output"
+        assert _strip_success_exit_line(text) == text
+
+    def test_only_trailer(self) -> None:
+        text = "[Command succeeded with exit code 0]"
+        assert _strip_success_exit_line(text) == ""
+
+    def test_preserves_mid_string_trailer(self) -> None:
+        """Trailer not at end of string should be left intact."""
+        text = "before\n[Command succeeded with exit code 0]\nafter"
+        assert _strip_success_exit_line(text) == text
+
+    def test_set_success_strips_trailer(self) -> None:
+        """Integration: set_success should strip the exit code 0 line."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.set_success("hi\n[Command succeeded with exit code 0]")
+        assert msg._output == "hi"

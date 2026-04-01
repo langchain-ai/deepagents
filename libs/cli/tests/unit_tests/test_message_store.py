@@ -14,6 +14,7 @@ from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
@@ -145,12 +146,12 @@ class TestMessageData:
 
         data = MessageData.from_widget(original)
         assert data.type == MessageType.SUMMARIZATION
-        assert data.content == "✓ Summarized conversation"
+        assert data.content == "✓ Conversation offloaded"
         assert data.id == "test-summary-1"
 
         restored = data.to_widget()
         assert isinstance(restored, SummarizationMessage)
-        assert str(restored._content) == "✓ Summarized conversation"
+        assert str(restored._content) == "✓ Conversation offloaded"
         assert restored.id == "test-summary-1"
 
     def test_message_data_defaults(self):
@@ -167,6 +168,39 @@ class TestMessageData:
         """Test that TOOL messages must have a tool_name."""
         with pytest.raises(ValueError, match="TOOL messages must have a tool_name"):
             MessageData(type=MessageType.TOOL, content="")
+
+    def test_skill_message_roundtrip(self):
+        """Test SkillMessage serialization and deserialization."""
+        original = SkillMessage(
+            skill_name="web-research",
+            description="Research topics",
+            source="user",
+            body="# Instructions\nDo stuff",
+            args="find quantum",
+            id="test-skill-1",
+        )
+        original._expanded = True
+
+        # Serialize
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.SKILL
+        assert data.skill_name == "web-research"
+        assert data.skill_description == "Research topics"
+        assert data.skill_source == "user"
+        assert data.skill_body == "# Instructions\nDo stuff"
+        assert data.skill_args == "find quantum"
+        assert data.skill_expanded is True
+
+        # Deserialize
+        restored = data.to_widget()
+        assert isinstance(restored, SkillMessage)
+        assert restored._skill_name == "web-research"
+        assert restored._description == "Research topics"
+        assert restored._source == "user"
+        assert restored._body == "# Instructions\nDo stuff"
+        assert restored._args == "find quantum"
+        assert restored._deferred_expanded is True
+        assert restored.id == "test-skill-1"
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""

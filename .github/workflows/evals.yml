@@ -14,26 +14,40 @@
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
+#   NVIDIA_API_KEY     — needed for NVIDIA NIM models
 #   BASETEN_API_KEY    — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
 name: "📊 Evals"
 
 on:
-  schedule:
-    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       models:
-        description: "Preset model selection"
-        required: true
-        default: "all"
+        description: "Model set to evaluate. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
         type: choice
         options:
+          - ""
           - all
           - set0
           - set1
           - set2
+          - frontier
+          - fast
+          - open
+          - anthropic
+          - baseten
+          - fireworks
+          - google_genai
+          - groq
+          - nvidia
+          - openai
+          - ollama
+          - openrouter
+          - xai
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
@@ -41,6 +55,38 @@ on:
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:nvidia/Nemotron-120B-A12B"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
+          - "fireworks:fireworks/deepseek-v3p2"
+          - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/minimax-m2p1"
+          - "fireworks:fireworks/kimi-k2p5"
+          - "fireworks:fireworks/glm-5"
+          - "fireworks:fireworks/minimax-m2p5"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
+          - "ollama:glm-5"
+          - "ollama:minimax-m2.5"
+          - "ollama:minimax-m2.7:cloud"
+          - "ollama:qwen3.5:397b-cloud"
+          - "ollama:nemotron-3-nano:30b"
+          - "ollama:nemotron-3-super"
+          - "ollama:cogito-2.1:671b"
+          - "ollama:devstral-2:123b"
+          - "ollama:ministral-3:14b"
+          - "ollama:qwen3-next:80b"
+          - "ollama:qwen3-coder:480b-cloud"
+          - "ollama:deepseek-v3.2:cloud"
           - "openai:gpt-4o"
           - "openai:gpt-4o-mini"
           - "openai:gpt-4.1"
@@ -49,47 +95,32 @@ on:
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
           - "openai:gpt-5.4"
-          - "google_genai:gemini-2.5-flash"
-          - "google_genai:gemini-2.5-pro"
-          - "google_genai:gemini-3-flash-preview"
-          - "google_genai:gemini-3.1-pro-preview"
+          - "openai:gpt-5.4-mini"
+          - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
-          - "groq:openai/gpt-oss-120b"
-          - "groq:qwen/qwen3-32b"
-          - "groq:moonshotai/kimi-k2-instruct"
-          - "ollama:glm-5"
-          - "ollama:minimax-m2.5"
-          - "ollama:nemotron-3-nano:30b"
-          - "ollama:cogito-2.1:671b"
-          - "ollama:devstral-2:123b"
-          - "ollama:ministral-3:14b"
-          - "ollama:qwen3-next:80b"
-          - "ollama:qwen3-coder:480b-cloud"
-          - "ollama:qwen3.5:397b-cloud"
-          - "ollama:deepseek-v3.2:cloud"
-          - "baseten:zai-org/GLM-5"
-          - "baseten:MiniMaxAI/MiniMax-M2.5"
-          - "baseten:moonshotai/Kimi-K2.5"
-          - "baseten:deepseek-ai/DeepSeek-V3.2"
-          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
-          - "fireworks:fireworks/deepseek-v3-0324"
-          - "fireworks:fireworks/minimax-m2p1"
-          - "fireworks:fireworks/kimi-k2p5"
-          - "fireworks:fireworks/glm-5"
-          - "fireworks:fireworks/minimax-m2p5"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,openai:o3'). Takes priority over dropdown when non-empty."
+        description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
+        required: false
+        default: ""
+        type: string
+      eval_categories:
+        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Full eval listing: libs/evals/EVAL_CATALOG.md. Leave empty to run all."
         required: false
         default: ""
         type: string
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
+  cancel-in-progress: true
 
 env:
   UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
 
 jobs:
   prep:
@@ -98,12 +129,48 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models }}
+          MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
+        run: |
+          echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${MODELS_OVERRIDE}" != "(empty)" ]; then
+            echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Build eval_categories — bullet list for multiple, inline for single/(all)
+          if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
+            echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
+            if [ "${#cats[@]}" -eq 1 ]; then
+              cat=$(echo "${cats[0]}" | xargs)
+              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              bullets=""
+              for cat in "${cats[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                bullets="${bullets}<li><code>${cat}</code></li>"
+              done
+              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
-        run: python .github/scripts/get_eval_models.py
+        run: python .github/scripts/models.py eval
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
@@ -111,14 +178,14 @@ jobs:
     name: "📊 Eval (${{ matrix.model }})"
     needs: prep
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
 
     defaults:
       run:
-        working-directory: libs/deepagents
+        working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -133,8 +200,10 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -142,22 +211,72 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --group evals --locked
+        run: uv sync --group test
+
+      - name: "🏷️ Apply category filter"
+        if: inputs.eval_categories != ''
+        run: |
+          flags=""
+          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          for cat in "${cats[@]}"; do
+            cat=$(echo "$cat" | xargs)
+            flags="$flags --eval-category $cat"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals
 
+      - name: "🔍 Check eval report"
+        if: "!cancelled()"
+        run: |
+          if [ ! -f evals_report.json ]; then
+            echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
+            exit 1
+          fi
+
+      - name: "📝 Write workflow summary"
+        if: "!cancelled()"
+        run: |
+          {
+            echo "## Eval run"
+            echo ""
+            echo "- Model: ${{ matrix.model }}"
+            echo "- Categories: ${{ inputs.eval_categories || 'all' }}"
+            links=$(python -c "
+          import json, sys
+          try:
+              with open('evals_report.json') as f:
+                  data = json.load(f)
+              for link in data.get('experiment_links', []):
+                  name = link.get('name', '')
+                  url = link.get('url', '')
+                  if name and url:
+                      print(f'- [{name}]({url})')
+                  elif url:
+                      print(f'- {url}')
+          except Exception as exc:
+              print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
+            ")
+            if [ -n "$links" ]; then
+              echo ""
+              echo "### LangSmith experiments"
+              echo ""
+              echo "$links"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: "📤 Upload eval report"
-        if: always()
+        if: "!cancelled()"
         uses: actions/upload-artifact@v7
         with:
           name: evals-report-${{ strategy.job-index }}
-          path: libs/deepagents/evals_report.json
+          path: libs/evals/evals_report.json
           if-no-files-found: error
 
   aggregate:
@@ -177,12 +296,23 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache-suffix: evals-aggregate
-          working-directory: libs/deepagents
+          working-directory: libs/evals
 
       - name: "🧾 Write summary"
         run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+
+      - name: "📦 Install evals package"
+        id: install-evals
+        if: hashFiles('evals_summary.json') != ''
+        working-directory: libs/evals
+        run: uv sync --extra charts
+
+      - name: "📊 Generate radar chart"
+        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
+        working-directory: libs/evals
+        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@v7
@@ -190,3 +320,80 @@ jobs:
           name: evals-summary
           path: evals_summary.json
           if-no-files-found: warn
+
+      - name: "📤 Upload radar charts"
+        if: hashFiles('charts/radar.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: radar-charts
+          path: charts/
+
+      - name: "🖼️ Publish charts to eval-assets branch"
+        id: publish-charts
+        if: hashFiles('charts/radar.png') != ''
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}"
+
+          # Set up a temp workdir so we don't disturb the main checkout.
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # Fetch eval-assets if it exists; otherwise start an orphan branch.
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+
+          # Copy charts into run-specific directory.
+          mkdir -p "${asset_dir}"
+          cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+
+          git add "${asset_dir}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+
+          # Expose base URL for the summary step.
+          base="https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}"
+          echo "base_url=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append charts to summary"
+        if: steps.publish-charts.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
+        run: |
+          {
+            echo ""
+            echo "## Radar charts"
+            echo ""
+            echo "### Combined"
+            echo ""
+            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            echo ""
+
+            if [ -d charts/individual ]; then
+              echo "### Per-model"
+              echo ""
+              for img in charts/individual/*.png; do
+                name="$(basename "$img" .png)"
+                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

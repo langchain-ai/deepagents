@@ -70,10 +70,10 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
 
 
 def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
-    """Patch load_thread_columns and load_thread_sort_order for tests."""
+    """Patch thread config loaders for tests."""
     import contextlib
 
-    from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS
+    from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
 
     cols = columns if columns is not None else THREAD_COLUMN_DEFAULTS
 
@@ -87,6 +87,14 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
             patch(
                 "deepagents_cli.model_config.load_thread_sort_order",
                 return_value="updated_at",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_thread_config",
+                return_value=ThreadConfig(
+                    columns=dict(cols),
+                    relative_time=True,
+                    sort_order="updated_at",
+                ),
             ),
         ):
             yield
@@ -792,19 +800,27 @@ class TestThreadSelectorBuildTitle:
         assert "abc12345" in title
 
     def test_current_thread_with_url(self) -> None:
-        """Title with a LangSmith URL should produce a Rich Text with a link."""
-        from rich.text import Text
+        """Title with a LangSmith URL should produce Content with a link."""
+        from textual.color import Color as TColor
+        from textual.content import Content
+        from textual.style import Style as TStyle
 
         screen = ThreadSelectorScreen(current_thread="abc12345")
         title = screen._build_title(
             thread_url="https://smith.langchain.com/p/t/abc12345"
         )
-        assert isinstance(title, Text)
+        assert isinstance(title, Content)
         assert "abc12345" in title.plain
 
-        spans = [s for s in title._spans if s.style and "link" in str(s.style)]
+        spans = [
+            s for s in title._spans if isinstance(s.style, TStyle) and s.style.link
+        ]
         assert len(spans) > 0
-        assert "cyan" in str(spans[0].style)
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert style.foreground == TColor.parse(DARK_COLORS.primary)
 
     async def test_title_widget_has_id(self) -> None:
         """Title widget should be queryable by ID for URL updates."""
@@ -825,7 +841,7 @@ class TestFetchThreadUrl:
 
     async def test_successful_url_updates_title(self) -> None:
         """Background worker should update the title with a clickable link."""
-        from rich.text import Text
+        from textual.content import Content
 
         with (
             _patch_list_threads(),
@@ -845,7 +861,7 @@ class TestFetchThreadUrl:
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
                 content = title_widget._Static__content
-                assert isinstance(content, Text)
+                assert isinstance(content, Content)
                 assert "abc12345" in content.plain
 
     async def test_timeout_leaves_title_unchanged(self) -> None:
@@ -853,11 +869,15 @@ class TestFetchThreadUrl:
         import time
 
         def _blocking(_tid: str) -> str:
-            time.sleep(3)
+            time.sleep(0.1)
             return "https://example.com"
 
         with (
             _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector._URL_FETCH_TIMEOUT",
+                0.01,
+            ),
             patch(
                 "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
                 side_effect=_blocking,
@@ -1203,7 +1223,11 @@ class TestThreadSelectorLimit:
                 app.show_selector()
                 await pilot.pause()
 
-                mock_lt.assert_awaited_once_with(limit=5, include_message_count=False)
+                mock_lt.assert_awaited_once()
+                call_kwargs = mock_lt.await_args.kwargs
+                assert call_kwargs["limit"] == 5
+                assert call_kwargs["include_message_count"] is False
+                assert call_kwargs["sort_by"] in {"updated", "created"}
 
     async def test_checkpoint_details_are_loaded_for_initial_render(self) -> None:
         """Visible checkpoint fields should be loaded before first non-cached render."""
@@ -1252,7 +1276,9 @@ class TestThreadSelectorLimit:
                         break
                     await pilot.pause(0.05)
 
-                mock_lt.assert_awaited_once_with(limit=20, include_message_count=False)
+                mock_lt.assert_awaited_once_with(
+                    limit=20, include_message_count=False, sort_by="updated"
+                )
                 mock_populate.assert_awaited_once()
 
                 screen = app.screen
@@ -1399,10 +1425,12 @@ class TestThreadSelectorPrefetchedRows:
                         break
                     await pilot.pause(0.05)
 
-                mock_list_threads.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                )
+                mock_list_threads.assert_awaited_once()
+                assert mock_list_threads.await_args is not None
+                kw = mock_list_threads.await_args.kwargs
+                assert kw["limit"] == 20
+                assert kw["include_message_count"] is False
+                assert kw["sort_by"] in {"updated", "created"}
                 assert len(screen._threads) == 2
                 assert screen._threads[0]["thread_id"] == "new12345"
 
@@ -1490,12 +1518,98 @@ class TestThreadSelectorPrefetchedRows:
                         break
                     await pilot.pause(0.05)
 
-                mock_list_threads.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                )
+                mock_list_threads.assert_awaited_once()
+                assert mock_list_threads.await_args is not None
+                kw = mock_list_threads.await_args.kwargs
+                assert kw["limit"] == 20
+                assert kw["include_message_count"] is False
+                assert kw["sort_by"] in {"updated", "created"}
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
+
+
+class TestThreadSelectorInitialSortOrder:
+    """Tests for initial sort order applied to prefetched rows."""
+
+    async def test_initial_threads_sorted_by_created_at_preference(self) -> None:
+        """Prefetched rows should respect the user's sort preference on first render."""
+        # Threads ordered by updated_at (default cache order from list_threads)
+        prefetched: list[ThreadInfo] = [
+            {
+                "thread_id": "newer-updated",
+                "agent_name": "agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "created_at": "2025-01-10T08:00:00",
+            },
+            {
+                "thread_id": "older-updated",
+                "agent_name": "agent",
+                "updated_at": "2025-01-14T08:00:00",
+                "created_at": "2025-01-15T10:00:00",
+            },
+        ]
+
+        import contextlib
+
+        from deepagents_cli.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
+
+        @contextlib.contextmanager
+        def _patch_sort_created() -> Any:  # noqa: ANN401
+            with (
+                patch(
+                    "deepagents_cli.model_config.load_thread_columns",
+                    return_value=dict(THREAD_COLUMN_DEFAULTS),
+                ),
+                patch(
+                    "deepagents_cli.model_config.load_thread_sort_order",
+                    return_value="created_at",
+                ),
+                patch(
+                    "deepagents_cli.model_config.load_thread_config",
+                    return_value=ThreadConfig(
+                        columns=dict(THREAD_COLUMN_DEFAULTS),
+                        relative_time=True,
+                        sort_order="created_at",
+                    ),
+                ),
+            ):
+                yield
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_a: object, **_kw: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return prefetched
+
+        with (
+            patch(
+                "deepagents_cli.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=_list_threads,
+            ),
+            _patch_sort_created(),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread=None,
+                        thread_limit=20,
+                        initial_threads=prefetched,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                # With sort by created_at, "older-updated" (created 2025-01-15)
+                # should come before "newer-updated" (created 2025-01-10)
+                assert len(screen._option_widgets) == 2
+                assert screen._option_widgets[0].thread_id == "older-updated"
+                assert screen._option_widgets[1].thread_id == "newer-updated"
+
+                gate.set()
 
 
 class TestThreadSelectorSearch:
@@ -2006,9 +2120,11 @@ class TestResumeThread:
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        mock_payload = MagicMock()
+        mock_payload.messages = []
+        mock_payload.context_tokens = 0
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._load_thread_history = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
@@ -2020,11 +2136,11 @@ class TestResumeThread:
         app._pending_messages.clear.assert_called_once()
         app._queued_widgets.clear.assert_called_once()
         app._clear_messages.assert_awaited_once()
-        app._token_tracker.reset.assert_called_once()
+        assert app._context_tokens == 0
         app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
         app._load_thread_history.assert_awaited_once_with(
             thread_id="new-thread",
-            preloaded_data=[],
+            preloaded_payload=mock_payload,
         )
 
     async def test_failure_restores_previous_thread_ids(self) -> None:
@@ -2037,7 +2153,10 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        mock_payload = _ThreadHistoryPayload(messages=[], context_tokens=0)
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
         app._update_status = MagicMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
@@ -2063,9 +2182,11 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
+        mock_payload = MagicMock()
+        mock_payload.messages = []
+        mock_payload.context_tokens = 0
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._token_tracker = MagicMock()
         app._update_status = MagicMock()  # type: ignore[assignment]
         app._load_thread_history = AsyncMock(  # type: ignore[assignment]
             side_effect=[RuntimeError("checkpoint corrupt"), None]
@@ -2166,9 +2287,10 @@ class TestFetchThreadHistoryData:
         app = DeepAgentsApp()
         app._agent = None
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
 
     async def test_returns_empty_when_state_missing(self) -> None:
         """Missing checkpoint state should return an empty history payload."""
@@ -2176,9 +2298,10 @@ class TestFetchThreadHistoryData:
         app._agent = MagicMock()
         app._agent.aget_state = AsyncMock(return_value=None)
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
         app._agent.aget_state.assert_awaited_once_with(
             {"configurable": {"thread_id": "tid-1"}}
         )
@@ -2191,9 +2314,10 @@ class TestFetchThreadHistoryData:
         state.values = {}
         app._agent.aget_state = AsyncMock(return_value=state)
 
-        result = await app._fetch_thread_history_data("tid-1")
+        payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == []
+        assert payload.messages == []
+        assert payload.context_tokens == 0
 
     async def test_offloads_conversion_to_thread(self) -> None:
         """Message conversion should be offloaded via `asyncio.to_thread`."""
@@ -2212,13 +2336,55 @@ class TestFetchThreadHistoryData:
             new_callable=AsyncMock,
             return_value=converted,
         ) as to_thread_mock:
-            result = await app._fetch_thread_history_data("tid-1")
+            payload = await app._fetch_thread_history_data("tid-1")
 
-        assert result == converted
+        assert payload.messages == converted
         to_thread_mock.assert_awaited_once()
         await_args = to_thread_mock.await_args
         assert await_args is not None
         assert await_args.args[1] == raw_messages
+
+    async def test_extracts_nonzero_context_tokens(self) -> None:
+        """Persisted _context_tokens should propagate to the payload."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages, "_context_tokens": 12000}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 12000
+
+    async def test_none_context_tokens_coerced_to_zero(self) -> None:
+        """`_context_tokens: None` in checkpoint should coerce to 0."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages, "_context_tokens": None}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 0
 
 
 class TestLoadThreadHistory:
@@ -2243,13 +2409,73 @@ class TestLoadThreadHistory:
         messages_container.mount = AsyncMock()
         app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
 
-        preloaded = [MessageData(type=MessageType.USER, content="hello")]
-        await app._load_thread_history(thread_id="tid-1", preloaded_data=preloaded)
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
         fetch_history_mock.assert_not_awaited()
         messages_container.mount.assert_awaited_once()
         mount_message_mock.assert_awaited_once()
         schedule_link_mock.assert_called_once()
+
+    async def test_resume_seeds_context_tokens_from_state(self) -> None:
+        """Resuming a thread with persisted tokens should seed the local cache."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="tid-1")
+
+        mount_message_mock = AsyncMock()
+        schedule_link_mock = MagicMock()
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=8500,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
+
+        assert app._context_tokens == 8500
+
+    async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
+        """Loading a payload with 0 tokens should not reset an existing cache."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._context_tokens = 5000  # pre-existing cache from a previous thread
+
+        mount_message_mock = AsyncMock()
+        schedule_link_mock = MagicMock()
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
+        await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
+
+        assert app._context_tokens == 5000
 
     async def test_fallback_fetch_path_used_without_preloaded_data(self) -> None:
         """History should be fetched when preloaded data is not provided."""
@@ -2257,7 +2483,12 @@ class TestLoadThreadHistory:
 
         app = DeepAgentsApp(thread_id="tid-1")
         app._agent = MagicMock()
-        fetched = [MessageData(type=MessageType.USER, content="hello")]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        fetched = _ThreadHistoryPayload(
+            messages=[MessageData(type=MessageType.USER, content="hello")],
+            context_tokens=0,
+        )
         fetch_history_mock = AsyncMock(return_value=fetched)
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
@@ -2296,10 +2527,15 @@ class TestLoadThreadHistory:
         messages_container.mount = AsyncMock()
         app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
 
-        preloaded = [
-            MessageData(type=MessageType.ASSISTANT, content="ok"),
-            MessageData(type=MessageType.ASSISTANT, content="fail"),
-        ]
+        from deepagents_cli.app import _ThreadHistoryPayload
+
+        preloaded = _ThreadHistoryPayload(
+            messages=[
+                MessageData(type=MessageType.ASSISTANT, content="ok"),
+                MessageData(type=MessageType.ASSISTANT, content="fail"),
+            ],
+            context_tokens=0,
+        )
 
         def _set_content_side_effect(content: str) -> None:
             if content == "fail":
@@ -2312,7 +2548,9 @@ class TestLoadThreadHistory:
             new_callable=AsyncMock,
             side_effect=_set_content_side_effect,
         ) as set_content_mock:
-            await app._load_thread_history(thread_id="tid-1", preloaded_data=preloaded)
+            await app._load_thread_history(
+                thread_id="tid-1", preloaded_payload=preloaded
+            )
 
         assert set_content_mock.await_count == 2
         mount_message_mock.assert_awaited_once()
@@ -2367,11 +2605,11 @@ class TestUpgradeThreadMessageLink:
 
     async def test_noop_when_widget_unmounted(self) -> None:
         """Unmounted widget should not be updated even when link resolves."""
-        from rich.text import Text
+        from textual.content import Content
 
         app = DeepAgentsApp()
         app._build_thread_message = AsyncMock(  # type: ignore[assignment]
-            return_value=Text("Resumed thread: tid-1")
+            return_value=Content("Resumed thread: tid-1")
         )
         widget = MagicMock()
         widget.parent = None
@@ -2386,11 +2624,11 @@ class TestUpgradeThreadMessageLink:
         widget.update.assert_not_called()
 
     async def test_updates_widget_when_link_resolves(self) -> None:
-        """Resolved Rich text should replace widget content."""
-        from rich.text import Text
+        """Resolved Content should replace widget content."""
+        from textual.content import Content
 
         app = DeepAgentsApp()
-        linked = Text("Resumed thread: tid-1")
+        linked = Content("Resumed thread: tid-1")
         app._build_thread_message = AsyncMock(return_value=linked)  # type: ignore[assignment]
         widget = MagicMock()
         widget.parent = object()
@@ -2412,27 +2650,34 @@ class TestBuildThreadMessage:
     async def test_plain_text_when_tracing_not_configured(self) -> None:
         """Returns plain string when LangSmith URL is not available."""
         app = DeepAgentsApp()
-        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=None):
+        target = "deepagents_cli.config.build_langsmith_thread_url"
+        with patch(target, return_value=None):
             result = await app._build_thread_message("Resumed thread", "tid-123")
 
         assert result == "Resumed thread: tid-123"
         assert isinstance(result, str)
 
     async def test_hyperlinked_when_tracing_configured(self) -> None:
-        """Returns Rich Text with hyperlink when LangSmith URL is available."""
-        from rich.text import Text
+        """Returns Content with hyperlink when LangSmith URL is available."""
+        from textual.content import Content
+        from textual.style import Style as TStyle
 
         app = DeepAgentsApp()
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
-        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=url):
+        target = "deepagents_cli.config.build_langsmith_thread_url"
+        with patch(target, return_value=url):
             result = await app._build_thread_message("Resumed thread", "tid-123")
 
-        assert isinstance(result, Text)
+        assert isinstance(result, Content)
         assert "Resumed thread: " in result.plain
         assert "tid-123" in result.plain
-        spans = [s for s in result._spans if s.style and "link" in str(s.style)]
+        spans = [
+            s for s in result._spans if isinstance(s.style, TStyle) and s.style.link
+        ]
         assert len(spans) == 1
-        assert url in str(spans[0].style)
+        style = spans[0].style
+        assert isinstance(style, TStyle)
+        assert style.link == url
 
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""
@@ -2450,7 +2695,7 @@ class TestBuildThreadMessage:
         """Returns plain string when URL resolution raises an exception."""
         app = DeepAgentsApp()
         with patch(
-            "deepagents_cli.app.build_langsmith_thread_url",
+            "deepagents_cli.config.build_langsmith_thread_url",
             side_effect=OSError("network error"),
         ):
             result = await app._build_thread_message("Resumed thread", "t-1")
@@ -2620,6 +2865,49 @@ class TestConvertMessagesToData:
         result = DeepAgentsApp._convert_messages_to_data([])
         assert result == []
 
+    def test_skill_message_from_additional_kwargs(self) -> None:
+        """HumanMessage with __skill in additional_kwargs → SKILL MessageData."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msg = HumanMessage(
+            content="I'm invoking the skill `web-research`.\n---\n# Body\n---",
+            additional_kwargs={
+                "__skill": {
+                    "name": "web-research",
+                    "description": "Research topics",
+                    "source": "user",
+                    "args": "find quantum",
+                },
+            },
+        )
+        result = DeepAgentsApp._convert_messages_to_data([msg])
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.SKILL
+        assert result[0].skill_name == "web-research"
+        assert result[0].skill_description == "Research topics"
+        assert result[0].skill_source == "user"
+        assert result[0].skill_args == "find quantum"
+        # Full prompt envelope stored as body for expand view
+        assert "web-research" in (result[0].skill_body or "")
+
+    def test_skill_without_name_falls_back_to_user(self) -> None:
+        """__skill dict missing name should fall back to USER."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_cli.widgets.message_store import MessageType
+
+        msg = HumanMessage(
+            content="some text",
+            additional_kwargs={"__skill": {"description": "no name"}},
+        )
+        result = DeepAgentsApp._convert_messages_to_data([msg])
+
+        assert len(result) == 1
+        assert result[0].type == MessageType.USER
+
 
 class TestColumnKeyConsistency:
     """Verify all column dicts stay in sync."""
@@ -2655,3 +2943,105 @@ class TestColumnKeyConsistency:
             f"missing={order_keys - set(THREAD_COLUMN_DEFAULTS)}, "
             f"extra={set(THREAD_COLUMN_DEFAULTS) - order_keys}"
         )
+
+
+class TestThreadsMatch:
+    """Tests for _threads_match short-circuit comparison."""
+
+    @staticmethod
+    def _thread(tid: str, cp: str | None = None) -> ThreadInfo:
+        t: ThreadInfo = {
+            "thread_id": tid,
+            "agent_name": "a",
+            "updated_at": "x",
+        }
+        if cp is not None:
+            t["latest_checkpoint_id"] = cp
+        return t
+
+    def test_identical_lists_match(self) -> None:
+        """Identical thread lists should match."""
+        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        b = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is True
+
+    def test_different_lengths_do_not_match(self) -> None:
+        """Different-length lists should not match."""
+        a = [self._thread("t1")]
+        b = [self._thread("t1"), self._thread("t2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_different_thread_ids_do_not_match(self) -> None:
+        """Different thread IDs at same position should not match."""
+        a = [self._thread("t1", "cp1")]
+        b = [self._thread("t2", "cp1")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_different_checkpoint_ids_do_not_match(self) -> None:
+        """Lists with different checkpoint IDs should not match."""
+        a = [self._thread("t1", "cp1")]
+        b = [self._thread("t1", "cp2")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_reordered_threads_do_not_match(self) -> None:
+        """Positional comparison means reordered lists fail."""
+        a = [self._thread("t1", "cp1"), self._thread("t2", "cp2")]
+        b = [self._thread("t2", "cp2"), self._thread("t1", "cp1")]
+        assert ThreadSelectorScreen._threads_match(a, b) is False
+
+    def test_empty_lists_match(self) -> None:
+        """Two empty lists should match."""
+        assert ThreadSelectorScreen._threads_match([], []) is True
+
+
+class TestThreadSelectorDomSkip:
+    """Tests for skipping DOM rebuild when data matches prewarm cache."""
+
+    async def test_matching_refresh_skips_dom_rebuild(self) -> None:
+        """When refreshed threads match prefetched, DOM should not be rebuilt."""
+        prefetched: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+                "message_count": 5,
+            }
+        ]
+        # Same thread and checkpoint
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "abc12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-15T10:30:00",
+                "latest_checkpoint_id": "cp_1",
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        with patch(
+            "deepagents_cli.sessions.list_threads",
+            new_callable=AsyncMock,
+            return_value=refreshed,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=prefetched,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                initial_widgets = list(screen._option_widgets)
+                assert len(initial_widgets) == 1
+
+                # Wait for background refresh
+                for _ in range(10):
+                    await pilot.pause(0.05)
+
+                # Same widget objects should still be mounted (no rebuild)
+                assert screen._option_widgets == initial_widgets

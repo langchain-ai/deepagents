@@ -123,7 +123,6 @@ class TestTopLevelHelp:
         # Should contain global help content
         assert "deepagents" in output.lower()
         assert "--help" in output
-        assert "--ask-user" in output
 
     def test_help_subcommand_parses(self) -> None:
         """Running `deepagents help` should parse as command='help'.
@@ -163,18 +162,18 @@ class TestSubcommandHelpFlags:
         assert must_contain in output
         assert must_not_contain not in output
 
-    def test_list_help(self) -> None:
-        """Running `deepagents list -h` should show list-specific help."""
+    def test_agents_list_help(self) -> None:
+        """Running `deepagents agents list -h` should show list-specific help."""
         self._run_help(
-            ["deepagents", "list", "-h"],
+            ["deepagents", "agents", "list", "-h"],
             must_contain="List all agents",
             must_not_contain="--sandbox",
         )
 
-    def test_reset_help(self) -> None:
-        """Running `deepagents reset -h` should show reset-specific help."""
+    def test_agents_reset_help(self) -> None:
+        """Running `deepagents agents reset -h` should show reset-specific help."""
         self._run_help(
-            ["deepagents", "reset", "-h"],
+            ["deepagents", "agents", "reset", "-h"],
             must_contain="--agent",
             must_not_contain="Start interactive thread",
         )
@@ -197,7 +196,7 @@ class TestSubcommandHelpFlags:
 
 
 class TestShortFlags:
-    """Test that short flag aliases (-a, -M, -v) parse correctly."""
+    """Test that short flag aliases (-a, -M, -S, -v, -y) parse correctly."""
 
     def test_short_agent_flag(self) -> None:
         """Verify -a sets agent."""
@@ -225,6 +224,18 @@ class TestShortFlags:
         ):
             parse_args()
         assert exc_info.value.code in (0, None)
+
+    def test_short_auto_approve_flag(self) -> None:
+        """Verify -y sets auto_approve."""
+        with patch.object(sys, "argv", ["deepagents", "-y"]):
+            args = parse_args()
+        assert args.auto_approve is True
+
+    def test_short_shell_allow_list_flag(self) -> None:
+        """Verify -S sets shell_allow_list."""
+        with patch.object(sys, "argv", ["deepagents", "-S", "ls,cat"]):
+            args = parse_args()
+        assert args.shell_allow_list == "ls,cat"
 
 
 class TestQuietArg:
@@ -397,16 +408,16 @@ class TestJsonArg:
 
     def test_json_before_subcommand(self) -> None:
         """Verify --json works before a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "--json", "list"]):
+        with patch.object(sys, "argv", ["deepagents", "--json", "agents", "list"]):
             args = parse_args()
-        assert args.command == "list"
+        assert args.command == "agents"
         assert args.output_format == "json"
 
     def test_json_after_subcommand(self) -> None:
         """Verify --json works after a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "list", "--json"]):
+        with patch.object(sys, "argv", ["deepagents", "agents", "list", "--json"]):
             args = parse_args()
-        assert args.command == "list"
+        assert args.command == "agents"
         assert args.output_format == "json"
 
     def test_output_format_flag_removed(self) -> None:

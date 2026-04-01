@@ -596,7 +596,7 @@ class TestInfoShadowWarning:
         self._make_skill_dir(project_dir, "web-research", "Project version")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -617,7 +617,7 @@ class TestInfoShadowWarning:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             _info("web-research", agent="agent")
@@ -632,7 +632,7 @@ class TestInfoShadowWarning:
         self._make_skill_dir(user_dir, "web-research", "User only skill")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -653,7 +653,7 @@ class TestInfoShadowWarning:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             _info("web-research", agent="agent")
@@ -686,7 +686,7 @@ class TestInfoBuiltInSkill:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -707,7 +707,7 @@ class TestInfoBuiltInSkill:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             _info("test-builtin", agent="agent")
@@ -724,7 +724,7 @@ class TestInfoBuiltInSkill:
         self._make_skill_dir(user_dir, "shared-skill", "User version")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -745,7 +745,7 @@ class TestInfoBuiltInSkill:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             # User overrides built-in; info shows user version, no shadow note
@@ -773,7 +773,7 @@ class TestListBuiltInSkillsDisplay:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -794,7 +794,7 @@ class TestListBuiltInSkillsDisplay:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             _list(agent="agent")
@@ -809,7 +809,7 @@ class TestListBuiltInSkillsDisplay:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -830,7 +830,7 @@ class TestListBuiltInSkillsDisplay:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             _list(agent="agent")
@@ -849,7 +849,7 @@ class TestSkillsLsDispatch:
         built_in_dir.mkdir()
 
         mock_settings = patch(
-            "deepagents_cli.skills.commands.Settings.from_environment",
+            "deepagents_cli.config.Settings.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -872,7 +872,7 @@ class TestSkillsLsDispatch:
 
         with (
             mock_settings,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_console.print = capture_print
             execute_skills_command(args)
@@ -924,7 +924,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("test-skill", agent="agent", project=False, force=True)
 
@@ -947,12 +947,14 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.Settings") as mock_settings_cls,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("nonexistent-skill", agent="agent", project=False, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("nonexistent-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "not found" in joined.lower()
@@ -972,7 +974,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value=response):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -991,7 +993,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value="n"):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1010,7 +1012,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", return_value=""):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1029,7 +1031,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", side_effect=KeyboardInterrupt):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1048,7 +1050,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             with patch("builtins.input", side_effect=EOFError):
                 _delete("test-skill", agent="agent", project=False, force=False)
@@ -1080,12 +1082,14 @@ class TestDeleteSkill:
             output.clear()
 
             with (
-                patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-                patch("deepagents_cli.skills.commands.console") as mock_console,
+                patch("deepagents_cli.config.Settings") as mock_settings_cls,
+                patch("deepagents_cli.config.console") as mock_console,
             ):
                 mock_settings_cls.from_environment.return_value = mock_settings
                 mock_console.print = capture_print
-                _delete(invalid_name, agent="agent", project=False, force=True)
+                with pytest.raises(SystemExit) as exc_info:
+                    _delete(invalid_name, agent="agent", project=False, force=True)
+                assert exc_info.value.code == 1
 
             joined = "\n".join(output)
             assert "invalid skill name" in joined.lower(), (
@@ -1105,7 +1109,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("project-skill", agent="agent", project=True, force=True)
 
@@ -1124,12 +1128,14 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.Settings") as mock_settings_cls,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("any-skill", agent="agent", project=True, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("any-skill", agent="agent", project=True, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "not in a project directory" in joined.lower()
@@ -1154,7 +1160,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("complex-skill", agent="agent", project=False, force=True)
 
@@ -1177,7 +1183,7 @@ class TestDeleteSkill:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
 
-        with patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls:
+        with patch("deepagents_cli.config.Settings") as mock_settings_cls:
             mock_settings_cls.from_environment.return_value = mock_settings
             _delete("shared-skill", agent="agent1", project=False, force=True)
 
@@ -1202,8 +1208,8 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.Settings") as mock_settings_cls,
+            patch("deepagents_cli.config.console") as mock_console,
             patch("shutil.rmtree", side_effect=OSError("Permission denied")),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1235,12 +1241,14 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.Settings") as mock_settings_cls,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            _delete("orphan-skill", agent="agent", project=False, force=True)
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("orphan-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
 
         joined = "\n".join(output)
         assert "cannot determine" in joined.lower() or "refusing" in joined.lower()
@@ -1306,6 +1314,7 @@ class TestDeleteArgparsing:
             agent="agent",
             project=False,
             force=True,
+            dry_run=False,
         )
 
         output: list[str] = []
@@ -1314,12 +1323,14 @@ class TestDeleteArgparsing:
             output.append(" ".join(str(a) for a in args_p))
 
         with (
-            patch("deepagents_cli.skills.commands.Settings") as mock_settings_cls,
-            patch("deepagents_cli.skills.commands.console") as mock_console,
+            patch("deepagents_cli.config.Settings") as mock_settings_cls,
+            patch("deepagents_cli.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
             mock_console.print = capture_print
-            execute_skills_command(args)
+            with pytest.raises(SystemExit) as exc_info:
+                execute_skills_command(args)
+            assert exc_info.value.code == 1
 
         # Should have dispatched to _delete and shown "not found"
         # rather than falling through to show_skills_help()

@@ -213,17 +213,13 @@ class BaseSandboxIntegrationTest(ABC):
         assert responses[0].error == "is_directory"
 
     @pytest.mark.skip(reason="Error handling not yet implemented in sandbox providers")
-    def test_upload_error_parent_not_found(
+    def test_upload_error_parent_is_file_returns_invalid_path(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
-        """Test uploading to non-existent parent returns parent_not_found error.
+        """Test uploading through a file path returns invalid_path.
 
         Expected behavior: upload_files should return FileUploadResponse with
-        error='parent_not_found' when the parent directory doesn't exist and
-        can't be created automatically.
-
-        Note: This test may need adjustment based on whether sandbox providers
-        auto-create parent directories or not.
+        error='invalid_path' when an intermediate path segment is a file.
         """
         # Try to upload to a path where the parent is a file, not a directory
         # First create a file
@@ -236,8 +232,7 @@ class BaseSandboxIntegrationTest(ABC):
 
         assert len(responses) == 1
         assert responses[0].path == "/tmp/parent_is_file.txt/child.txt"
-        # Could be parent_not_found or invalid_path depending on implementation
-        assert responses[0].error in ("parent_not_found", "invalid_path")
+        assert responses[0].error == "invalid_path"
 
     @pytest.mark.skip(reason="Error handling not yet implemented in sandbox providers")
     def test_upload_error_invalid_path(self, sandbox: SandboxBackendProtocol) -> None:
@@ -325,4 +320,14 @@ class TestLangSmithIntegration(BaseSandboxIntegrationTest):
     def sandbox(self) -> Iterator[BaseSandbox]:
         """Provide a LangSmith sandbox instance."""
         with create_sandbox("langsmith") as sandbox:
+            yield sandbox
+
+
+class TestAgentCoreIntegration(BaseSandboxIntegrationTest):
+    """Test AgentCore Code Interpreter backend integration."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
+        """Provide an AgentCore sandbox instance."""
+        with create_sandbox("agentcore") as sandbox:
             yield sandbox

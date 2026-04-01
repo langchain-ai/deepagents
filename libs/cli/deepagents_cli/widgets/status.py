@@ -7,14 +7,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rich.text import Text
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from deepagents_cli.config import COLORS, get_glyphs, settings
+from deepagents_cli.config import get_glyphs
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +54,19 @@ class ModelLabel(Widget):
         """Render the model label with width-aware truncation.
 
         Returns:
-            Right-aligned text, truncated from the left when necessary.
+            Text content, truncated from the left when necessary.
         """
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
         full = f"{self.provider}:{self.model}" if self.provider else self.model
         if len(full) <= width:
-            return Text(full, no_wrap=True, justify="right")
+            return Content(full)
         if len(self.model) <= width:
-            return Text(self.model, no_wrap=True, justify="right")
+            return Content(self.model)
         if width > 1:
-            return Text(
-                "\u2026" + self.model[-(width - 1) :],
-                no_wrap=True,
-                justify="right",
-            )
-        return Text("\u2026", no_wrap=True, justify="right")
+            return Content("\u2026" + self.model[-(width - 1) :])
+        return Content("\u2026")
 
 
 class StatusBar(Horizontal):
@@ -94,13 +90,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.shell {
-        background: __MODE_SHELL__;
+        background: $mode-bash;
         color: white;
         text-style: bold;
     }
 
     StatusBar .status-mode.command {
-        background: __MODE_CMD__;
+        background: $mode-command;
         color: white;
     }
 
@@ -110,13 +106,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-auto-approve.on {
-        background: #10b981;
-        color: black;
+        background: $success;
+        color: $background;
     }
 
     StatusBar .status-auto-approve.off {
-        background: #f59e0b;
-        color: black;
+        background: $warning;
+        color: $background;
     }
 
     StatusBar .status-message {
@@ -160,9 +156,8 @@ class StatusBar(Horizontal):
         color: $text-muted;
         text-align: right;
     }
-    """.replace("__MODE_SHELL__", COLORS["mode_shell"]).replace(
-        "__MODE_CMD__", COLORS["mode_command"]
-    )
+    """
+    """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)
@@ -224,6 +219,8 @@ class StatusBar(Horizontal):
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
+        from deepagents_cli.config import settings
+
         self.cwd = self._initial_cwd
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
@@ -335,33 +332,66 @@ class StatusBar(Horizontal):
         """
         self.status_message = message
 
+    _approximate: bool = False
+    """Append "+" to the token count to signal that the displayed value is stale.
+
+    (The actual context is larger because the generation was interrupted before
+    the model reported final usage.)
+    """
+
     def watch_tokens(self, new_value: int) -> None:
         """Update token display when count changes."""
+        self._render_tokens(new_value, approximate=self._approximate)
+
+    def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
+        """Render the token count into the display widget.
+
+        Args:
+            count: Total context token count.
+            approximate: Append "+" suffix to indicate the count is stale
+                (e.g. after an interrupted generation).
+        """
         try:
             display = self.query_one("#tokens-display", Static)
         except NoMatches:
             return
 
-        if new_value > 0:
+        if count > 0:
+            suffix = "+" if approximate else ""
             # Format with K suffix for thousands
-            if new_value >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{new_value / 1000:.1f}K tokens")
+            if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
+                display.update(f"{count / 1000:.1f}K{suffix} tokens")
             else:
-                display.update(f"{new_value} tokens")
+                display.update(f"{count}{suffix} tokens")
         else:
             display.update("")
 
-    def set_tokens(self, count: int) -> None:
+    def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
 
+        Forces a display refresh even when the value is unchanged, because
+        `hide_tokens` clears the widget text without updating the reactive
+        attribute.
+
         Args:
-            count: Current context token count
+            count: Current context token count.
+            approximate: Append "+" to indicate the count is stale.
         """
-        self.tokens = count
+        self._approximate = approximate
+        if self.tokens == count:
+            # Reactive dedup would skip the watcher — call render directly.
+            self._render_tokens(count, approximate=approximate)
+        else:
+            # Reactive assignment triggers watch_tokens, which reads
+            # self._approximate for the suffix.
+            self.tokens = count
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        self.query_one("#tokens-display", Static).update("")
+        try:
+            self.query_one("#tokens-display", Static).update("")
+        except NoMatches:
+            return
 
     def set_model(self, *, provider: str, model: str) -> None:
         """Update the model display text.

@@ -4,15 +4,16 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
-from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
 
 if TYPE_CHECKING:
@@ -36,6 +37,16 @@ from deepagents.middleware.skills import (
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+@contextmanager
+def _config_context(config: dict):
+    """Set a LangGraph config context so get_config() works in tests."""
+    token = var_child_runnable_config.set(config)
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -1083,66 +1094,44 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     assert "test-skill" in content, "System prompt should mention the skill name"
 
 
-def test_skills_middleware_with_state_backend_factory() -> None:
-    """Test that SkillsMiddleware can be initialized with StateBackend factory."""
-    # Test that the middleware accepts StateBackend as a factory function
-    # This is the recommended pattern for StateBackend since it needs runtime context
+def test_skills_middleware_with_state_backend() -> None:
+    """Test that SkillsMiddleware can be initialized with StateBackend instance."""
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=StateBackend,
+        backend=StateBackend(),
         sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
-    assert callable(middleware._backend)
+    assert isinstance(middleware._backend, StateBackend)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 
-    runtime = ToolRuntime(
-        state={"messages": [], "files": {}},
+    runtime = SimpleNamespace(
         context=None,
-        tool_call_id="test",
         store=None,
         stream_writer=lambda _: None,
-        config={},
     )
 
     backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
     assert isinstance(backend, StateBackend)
-    assert backend.runtime is not None
 
 
-def test_skills_middleware_with_store_backend_factory() -> None:
-    """Test that SkillsMiddleware can be initialized with StoreBackend factory."""
-    # Test that the middleware accepts StoreBackend as a factory function
-    # This is the recommended pattern for StoreBackend since it needs runtime context with store
+def test_skills_middleware_with_store_backend_instance() -> None:
+    """Test that SkillsMiddleware can be initialized with StoreBackend instance."""
+    store = InMemoryStore()
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=StoreBackend,
+        backend=StoreBackend(store=store),
         sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
-    assert callable(middleware._backend)
+    assert isinstance(middleware._backend, StoreBackend)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
-
-    # Test that we can create a runtime with store and get a backend from the factory
-    store = InMemoryStore()
-    runtime = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="test",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
-    assert isinstance(backend, StoreBackend)
-    assert backend.runtime is not None
 
 
 async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
@@ -1398,7 +1387,8 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
     # But this demonstrates the proper format for StateBackend
     skill_files = {
         "/skills/user/test-skill/SKILL.md": {
-            "content": skill_content.split("\n"),
+            "content": skill_content,
+            "encoding": "utf-8",
             "created_at": timestamp,
             "modified_at": timestamp,
         }
@@ -1440,11 +1430,12 @@ def create_store_skill_item(content: str) -> dict:
         content: Skill content string
 
     Returns:
-        Dict with content (as list of lines), created_at, and modified_at
+        Dict with content as str, encoding, created_at, and modified_at
     """
     timestamp = datetime.now(UTC).isoformat()
     return {
-        "content": content.split("\n"),
+        "content": content,
+        "encoding": "utf-8",
         "created_at": timestamp,
         "modified_at": timestamp,
     }
@@ -1452,11 +1443,11 @@ def create_store_skill_item(content: str) -> dict:
 
 def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
+    store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend,
+        backend=StoreBackend(store=store),
         sources=["/skills/user"],
     )
-    store = InMemoryStore()
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
     # Add skill for assistant-123 with namespace (assistant-123, filesystem)
@@ -1469,7 +1460,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-123 can read its own skill
     config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _config_context(config_1):
+        result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1478,7 +1470,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _config_context(config_2):
+        result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1492,7 +1485,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-456 can read its own skill
-    result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _config_context(config_2):
+        result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1500,7 +1494,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     assert result_3["skills_metadata"][0]["description"] == "Skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _config_context(config_1):
+        result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
@@ -1510,11 +1505,11 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
 def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
+    store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend,
+        backend=StoreBackend(store=store),
         sources=["/skills/user"],
     )
-    store = InMemoryStore()
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
     # Add skill to default namespace (filesystem,) - no assistant_id
@@ -1526,7 +1521,8 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     )
 
     # Test: empty config accesses default namespace
-    result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
+    with _config_context({}):
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1535,7 +1531,8 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
     # Test: config with metadata but no assistant_id also uses default namespace
     config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
-    result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
+    with _config_context(config_with_other_metadata):
+        result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 1
@@ -1545,11 +1542,11 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
 async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
+    store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend,
+        backend=StoreBackend(store=store),
         sources=["/skills/user"],
     )
-    store = InMemoryStore()
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
     # Add skill for assistant-123 with namespace (assistant-123, filesystem)
@@ -1562,7 +1559,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-123 can read its own skill
     config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _config_context(config_1):
+        result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1571,7 +1569,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _config_context(config_2):
+        result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1585,7 +1584,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     )
 
     # Test: assistant-456 can read its own skill
-    result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _config_context(config_2):
+        result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1593,7 +1593,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _config_context(config_1):
+        result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1

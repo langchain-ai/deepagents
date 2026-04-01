@@ -16,15 +16,16 @@ curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/c
 ```
 
 ```bash
-# With model provider extras (OpenAI is included by default)
-DEEPAGENTS_EXTRAS="anthropic,groq" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+# With model provider extras
+# OpenAI, Anthropic, and Gemini are included by default
+DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 ```
 
 Or install directly with `uv`:
 
 ```bash
-# Install with chosen model providers (OpenAI is included by default)
-uv tool install 'deepagents-cli[anthropic,groq]'
+# Install with chosen model providers
+uv tool install 'deepagents-cli[nvidia,ollama]'
 ```
 
 Run the CLI:
@@ -42,7 +43,7 @@ The fastest way to start using Deep Agents. `deepagents-cli` is a pre-built codi
 - **Interactive TUI** — rich terminal interface with streaming responses
 - **Conversation resume** — pick up where you left off across sessions
 - **Web search** — ground responses in live information
-- **Remote sandboxes** — run code in isolated environments (Modal, Runloop, Daytona, & more)
+- **Remote sandboxes** — run code in isolated environments (LangSmith, AgentCore, Daytona, Modal, Runloop, & more)
 - **Persistent memory** — agent remembers context across conversations
 - **Custom skills** — extend the agent with your own slash commands
 - **Headless mode** — run non-interactively for scripting and CI

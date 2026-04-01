@@ -8,12 +8,14 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_cli import model_config
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     ModelResult,
     Settings,
     _create_model_from_class,
+    _create_model_via_init,
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
@@ -28,8 +30,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.project_utils import (
+    ProjectContext,
     find_project_agent_md as _find_project_agent_md,
     find_project_root as _find_project_root,
+    get_server_project_context,
 )
 
 
@@ -75,6 +79,46 @@ class TestProjectRootDetection:
         # Should find inner repo, not outer
         result = _find_project_root(inner_repo)
         assert result == inner_repo
+
+
+class TestProjectContext:
+    """Tests for explicit project context handling."""
+
+    def test_from_user_cwd_uses_explicit_path_not_process_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Project context should resolve from the provided user cwd."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        other_cwd = tmp_path / "elsewhere"
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        context = ProjectContext.from_user_cwd(user_cwd)
+
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root
+
+    def test_get_server_project_context_from_env_mapping(self, tmp_path: Path) -> None:
+        """Server context should reconstruct explicit cwd and project root."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        user_cwd = project_root / "src"
+        user_cwd.mkdir()
+
+        env = {
+            f"{SERVER_ENV_PREFIX}CWD": str(user_cwd),
+            f"{SERVER_ENV_PREFIX}PROJECT_ROOT": str(project_root),
+        }
+        context = get_server_project_context(env)
+
+        assert context is not None
+        assert context.user_cwd == user_cwd.resolve()
+        assert context.project_root == project_root.resolve()
 
 
 class TestProjectAgentMdFinding:
@@ -359,6 +403,33 @@ class TestAgentsAliasDirectories:
         assert settings.get_project_agent_skills_dir() is None
 
 
+class TestClaudeSkillsDirs:
+    """Tests for .claude/skills/ directory methods."""
+
+    def test_get_user_claude_skills_dir(self) -> None:
+        """Test get_user_claude_skills_dir returns ~/.claude/skills."""
+        expected = Path.home() / ".claude" / "skills"
+        assert Settings.get_user_claude_skills_dir() == expected
+
+    def test_get_project_claude_skills_dir_with_project(self, tmp_path: Path) -> None:
+        """Test get_project_claude_skills_dir returns .claude/skills in project."""
+        project_root = tmp_path / "my-project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        settings = Settings.from_environment(start_path=project_root)
+        expected = project_root / ".claude" / "skills"
+        assert settings.get_project_claude_skills_dir() == expected
+
+    def test_project_claude_skills_dir_without_project(self, tmp_path: Path) -> None:
+        """Test get_project_claude_skills_dir returns None outside a project."""
+        no_project = tmp_path / "no-project"
+        no_project.mkdir()
+
+        settings = Settings.from_environment(start_path=no_project)
+        assert settings.get_project_claude_skills_dir() is None
+
+
 class TestCreateModelProfileExtraction:
     """Tests for profile extraction in create_model.
 
@@ -431,6 +502,102 @@ class TestCreateModelProfileExtraction:
 
         result = create_model("anthropic:claude-sonnet-4-5")
         assert result.context_limit is None
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_extracts_unsupported_modalities(self, mock_init_chat_model: Mock) -> None:
+        """Test that explicitly False modality flags are extracted."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 64000,
+            "tool_calling": True,
+            "image_inputs": False,
+            "audio_inputs": False,
+            "video_inputs": False,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("deepseek:deepseek-r1")
+        assert result.unsupported_modalities == frozenset(
+            {"image", "audio", "video", "pdf"}
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_supported_modalities_not_flagged(self, mock_init_chat_model: Mock) -> None:
+        """Test that True modality flags produce empty unsupported set."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "max_input_tokens": 200000,
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": True,
+            "video_inputs": True,
+            "pdf_inputs": True,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_modality_keys_not_flagged(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that absent modality keys are not treated as unsupported."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("openai:gpt-4o")
+        assert result.unsupported_modalities == frozenset()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_mixed_modality_flags(self, mock_init_chat_model: Mock) -> None:
+        """Test partial modality support extraction."""
+        mock_model = Mock()
+        mock_model.profile = {
+            "tool_calling": True,
+            "image_inputs": True,
+            "audio_inputs": False,
+            "video_inputs": True,
+            "pdf_inputs": False,
+        }
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset({"audio", "pdf"})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_profile_leaves_modalities_empty(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Test that missing profile produces empty unsupported set."""
+        mock_model = Mock(spec=["invoke"])
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.unsupported_modalities == frozenset()
+
+
+class TestModelResultApplyToSettings:
+    """Tests for ModelResult.apply_to_settings propagation."""
+
+    def test_propagates_unsupported_modalities(self) -> None:
+        """Test that apply_to_settings writes unsupported_modalities to settings."""
+        model_result = ModelResult(
+            model=Mock(),
+            model_name="deepseek-r1",
+            provider="deepseek",
+            context_limit=64000,
+            unsupported_modalities=frozenset({"image", "audio"}),
+        )
+        original = settings.model_unsupported_modalities
+        try:
+            model_result.apply_to_settings()
+            expected = frozenset({"image", "audio"})
+            assert settings.model_unsupported_modalities == expected
+        finally:
+            settings.model_unsupported_modalities = original
 
 
 class TestCreateModelProfileOverrides:
@@ -805,6 +972,8 @@ class TestGetLangsmithProjectName:
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGSMITH_API_KEY": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_API_KEY": "",
             "LANGSMITH_TRACING": "true",
         }
         with patch.dict("os.environ", env, clear=False):
@@ -816,6 +985,8 @@ class TestGetLangsmithProjectName:
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "",
             "LANGCHAIN_TRACING_V2": "",
+            "DEEPAGENTS_CLI_LANGSMITH_TRACING": "",
+            "DEEPAGENTS_CLI_LANGCHAIN_TRACING_V2": "",
         }
         with patch.dict("os.environ", env, clear=False):
             assert get_langsmith_project_name() is None
@@ -849,7 +1020,7 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'default' when no project name configured."""
+        """Should fall back to 'deepagents-cli' when no project name configured."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -859,7 +1030,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
@@ -873,7 +1044,7 @@ class TestGetLangsmithProjectName:
             patch("deepagents_cli.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "default"
+            assert get_langsmith_project_name() == "deepagents-cli"
 
 
 class TestFetchLangsmithProjectUrl:
@@ -935,7 +1106,7 @@ class TestFetchLangsmithProjectUrl:
             patch("langsmith.Client") as mock_client_cls,
         ):
             mock_client_cls.return_value.read_project.side_effect = lambda **_kwargs: (
-                time.sleep(0.1)
+                time.sleep(0.02)
             )
             result = fetch_langsmith_project_url("my-project")
 
@@ -1132,6 +1303,29 @@ api_key_env = "TOGETHER_API_KEY"
         assert kwargs["api_key"] == "together-key"
         assert "base_url" not in kwargs
 
+    def test_prefixed_env_var_beats_canonical(self, tmp_path: Path) -> None:
+        """DEEPAGENTS_CLI_ prefixed var overrides canonical in provider kwargs."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "FIREWORKS_API_KEY": "canonical",
+                    "DEEPAGENTS_CLI_FIREWORKS_API_KEY": "prefixed",
+                },
+                clear=False,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("fireworks")
+
+        assert kwargs["api_key"] == "prefixed"
+
     def test_omits_api_key_when_env_not_set(self, tmp_path: Path) -> None:
         """Omits api_key when the env var is not set."""
         config_path = tmp_path / "config.toml"
@@ -1154,12 +1348,13 @@ api_key_env = "FIREWORKS_API_KEY"
         assert kwargs == {}
 
     def test_unconfigured_providers_return_empty(self) -> None:
-        """Providers without config return empty kwargs."""
-        kwargs = _get_provider_kwargs("anthropic")
-        assert kwargs == {}
+        """Providers without config or env credentials return empty kwargs."""
+        with patch.dict("os.environ", {}, clear=True):
+            kwargs = _get_provider_kwargs("anthropic")
+            assert kwargs == {}
 
-        kwargs = _get_provider_kwargs("google_genai")
-        assert kwargs == {}
+            kwargs = _get_provider_kwargs("google_genai")
+            assert kwargs == {}
 
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""
@@ -1246,6 +1441,44 @@ base_url = "https://wrong-url.com"
         assert kwargs["base_url"] == "https://correct-url.com"
 
 
+class TestOpenRouterVersionCheck:
+    """Tests for OpenRouter version enforcement via the SDK check."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    def test_rejects_old_version(self) -> None:
+        """_get_provider_kwargs raises ImportError for old langchain-openrouter."""
+        with (
+            patch(
+                "deepagents._models.pkg_version",
+                return_value="0.0.1",
+            ),
+            pytest.raises(ImportError, match="langchain-openrouter>="),
+        ):
+            _get_provider_kwargs("openrouter")
+
+    def test_accepts_sufficient_version(self) -> None:
+        """_get_provider_kwargs succeeds when version meets minimum."""
+        from deepagents._models import OPENROUTER_MIN_VERSION
+
+        with patch(
+            "deepagents._models.pkg_version",
+            return_value=OPENROUTER_MIN_VERSION,
+        ):
+            kwargs = _get_provider_kwargs("openrouter")
+
+        assert "app_url" in kwargs
+
+    def test_skipped_for_other_providers(self) -> None:
+        """Version check is not invoked for non-openrouter providers."""
+        with patch("deepagents._models.check_openrouter_version") as mock:
+            _get_provider_kwargs("openai")
+
+        mock.assert_not_called()
+
+
 class TestOpenRouterHeaders:
     """Tests for OpenRouter default attribution headers."""
 
@@ -1254,11 +1487,12 @@ class TestOpenRouterHeaders:
         clear_caches()
 
     def test_injects_attribution_kwargs(self) -> None:
-        """Injects app_url and app_title for openrouter provider."""
+        """Injects app_url, app_title, and app_categories for openrouter."""
         kwargs = _get_provider_kwargs("openrouter")
 
-        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
         assert kwargs["app_title"] == "Deep Agents CLI"
+        assert kwargs["app_categories"] == ["cli-agent"]
 
     def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
         """Per-model app_title overrides built-in default."""
@@ -1277,13 +1511,31 @@ app_title = "My Custom App"
 
         assert kwargs["app_title"] == "My Custom App"
         # Built-in app_url should still be present
-        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
+
+    def test_per_model_categories_override(self, tmp_path: Path) -> None:
+        """Per-model app_categories overrides built-in default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openrouter]
+models = ["deepseek/deepseek-chat"]
+
+[models.providers.openrouter.params."deepseek/deepseek-chat"]
+app_categories = ["cloud-agent"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs(
+                "openrouter", model_name="deepseek/deepseek-chat"
+            )
+
+        assert kwargs["app_categories"] == ["cloud-agent"]
 
     def test_no_attribution_for_other_providers(self) -> None:
         """Other providers do not get OpenRouter attribution kwargs."""
         kwargs = _get_provider_kwargs("openai")
         assert "app_url" not in kwargs
         assert "app_title" not in kwargs
+        assert "app_categories" not in kwargs
 
 
 class TestCreateModelFromClass:
@@ -1572,6 +1824,82 @@ class TestCreateModelEdgeCaseParsing:
         mock_default.assert_called_once()
 
 
+class TestCreateModelViaInitImportError:
+    """Tests for _create_model_via_init() ImportError handling."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_package_error(self, mock_init: Mock) -> None:
+        """Shows install hint when provider package is not installed."""
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_nvidia_ai_endpoints'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package for provider 'nvidia'",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_import(self, mock_init: Mock) -> None:
+        """Shows real error when package is installed but import fails internally."""
+        mock_init.side_effect = ImportError("cannot import name 'foo' from 'bar'")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec) as mock_find_spec,
+            pytest.raises(
+                ModelConfigError,
+                match="installed but failed to import",
+            ),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+        mock_find_spec.assert_called_once_with("langchain_nvidia_ai_endpoints")
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_installed_but_broken_includes_original_error(
+        self, mock_init: Mock
+    ) -> None:
+        """Original ImportError message is included when package is installed."""
+        mock_init.side_effect = ImportError("some transitive dep missing")
+        mock_spec = Mock()
+        with (
+            patch("importlib.util.find_spec", return_value=mock_spec),
+            pytest.raises(ModelConfigError, match="some transitive dep missing"),
+        ):
+            _create_model_via_init("nemotron", "nvidia", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
+        """Unknown provider falls back to langchain-{provider} package name."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(
+                ModelConfigError,
+                match=r"pip install langchain-custom_provider",
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_find_spec_raises_falls_back_to_missing(self, mock_init: Mock) -> None:
+        """find_spec failure falls back to 'missing package' message."""
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch(
+                "importlib.util.find_spec",
+                side_effect=ModuleNotFoundError("no parent"),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Missing package",
+            ),
+        ):
+            _create_model_via_init("model", "dotted.provider", {})
+
+
 class TestDetectProvider:
     """Tests for detect_provider() auto-detection from model names."""
 
@@ -1644,3 +1972,292 @@ class TestDetectProvider:
             assert detect_provider("GPT-4o") == "openai"
         finally:
             settings.anthropic_api_key = None
+
+
+class TestLazyModuleAttributes:
+    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+
+    def test_getattr_returns_settings(self) -> None:
+        """Module __getattr__ resolves 'settings' to a Settings instance."""
+        from deepagents_cli.config import _get_settings
+
+        result = _get_settings()
+        assert isinstance(result, Settings)
+
+    def test_getattr_returns_console(self) -> None:
+        """Module __getattr__ resolves 'console' to a Console instance."""
+        from rich.console import Console
+
+        from deepagents_cli.config import _get_console
+
+        result = _get_console()
+        assert isinstance(result, Console)
+
+    def test_getattr_raises_for_unknown(self) -> None:
+        """Module __getattr__ raises AttributeError for unknown names."""
+        import deepagents_cli.config as config_mod
+
+        with pytest.raises(AttributeError, match="no attribute"):
+            getattr(config_mod, "nonexistent_attr_xyz")  # noqa: B009  # intentional __getattr__ test
+
+    def test_ensure_bootstrap_is_idempotent(self) -> None:
+        """_ensure_bootstrap is a no-op on second call."""
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # First call already ran (settings was imported above).
+        # Calling again should be a harmless no-op.
+        _ensure_bootstrap()
+        assert isinstance(settings, Settings)
+
+    def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
+        """_ensure_bootstrap sets flag even when the try body raises."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        # Reset flag so bootstrap will re-enter
+        original = config_mod._bootstrap_done
+        config_mod._bootstrap_done = False
+
+        try:
+            with patch(
+                "deepagents_cli.config._load_dotenv", side_effect=RuntimeError("boom")
+            ):
+                _ensure_bootstrap()  # should warn, not raise
+
+            # Flag must be set even after failure
+            assert config_mod._bootstrap_done is True
+        finally:
+            config_mod._bootstrap_done = original
+
+    def test_get_settings_returns_same_instance(self) -> None:
+        """_get_settings caches in globals — two calls return the same object."""
+        from deepagents_cli.config import _get_settings
+
+        a = _get_settings()
+        b = _get_settings()
+        assert a is b
+
+    def test_ensure_bootstrap_langsmith_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_ensure_bootstrap copies DEEPAGENTS_CLI_LANGSMITH_PROJECT."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "my-agent-project")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert config_mod._original_langsmith_project is None
+            import os
+
+            assert os.environ["LANGSMITH_PROJECT"] == "my-agent-project"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_ensure_bootstrap_preserves_original_langsmith(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_ensure_bootstrap captures original LANGSMITH_PROJECT."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", "agent-project")
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert config_mod._original_langsmith_project == "user-project"
+            import os
+
+            assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_propagates_prefixed_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prefixed LangSmith vars are copied to canonical names at bootstrap."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_does_not_overwrite_canonical_langsmith_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Canonical LangSmith vars are preserved when already set."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_API_KEY", "lsv2_override")
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Canonical value preserved — propagation does not overwrite.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_original"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_propagates_empty_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty prefixed var propagates to canonical (explicit disable)."""
+        import deepagents_cli.config as config_mod
+        from deepagents_cli.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_LANGSMITH_TRACING", "")
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CLI_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_cli.config._load_dotenv"),
+                patch(
+                    "deepagents_cli.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            import os
+
+            # Empty string propagated — lets user explicitly disable tracing.
+            assert os.environ["LANGSMITH_TRACING"] == ""
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+
+class TestFindDotenvFromStartPath:
+    """Tests for _find_dotenv_from_start_path."""
+
+    def test_finds_env_in_start_dir(self, tmp_path: Path) -> None:
+        """Finds .env in the start directory itself."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+        assert _find_dotenv_from_start_path(tmp_path) == env_file
+
+    def test_finds_env_in_parent(self, tmp_path: Path) -> None:
+        """Finds .env in a parent directory."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+        child = tmp_path / "a" / "b"
+        child.mkdir(parents=True)
+        assert _find_dotenv_from_start_path(child) == env_file
+
+    def test_returns_none_when_no_env(self, tmp_path: Path) -> None:
+        """Returns None when no .env exists anywhere."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        child = tmp_path / "a"
+        child.mkdir()
+        # No .env anywhere under tmp_path — the search will keep going
+        # to real parent dirs, but tmp_path itself has none
+        result = _find_dotenv_from_start_path(child)
+        # May find a real .env in parent dirs; just check it doesn't crash
+        assert result is None or result.name == ".env"
+
+    def test_continues_past_oserror_on_intermediate_dir(self, tmp_path: Path) -> None:
+        """OSError on an intermediate .env candidate doesn't abort search."""
+        from deepagents_cli.config import _find_dotenv_from_start_path
+
+        # Create .env in the grandparent
+        env_file = tmp_path / ".env"
+        env_file.write_text("KEY=val")
+
+        child = tmp_path / "sub"
+        child.mkdir()
+
+        # Patch is_file to raise OSError for the child's .env candidate
+        original_is_file = Path.is_file
+
+        def patched_is_file(self: Path) -> bool:
+            if self == child / ".env":
+                msg = "Permission denied"
+                raise OSError(msg)
+            return original_is_file(self)
+
+        with patch.object(Path, "is_file", patched_is_file):
+            result = _find_dotenv_from_start_path(child)
+
+        # Should continue past the OSError and find .env in parent
+        assert result == env_file

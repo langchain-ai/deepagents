@@ -71,6 +71,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents.middleware._utils import append_to_system_message
@@ -87,6 +88,11 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class CompactConversationSchema(BaseModel):
+    """Input schema for the `compact_conversation` tool."""
+
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
@@ -256,7 +262,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
             middleware = SummarizationMiddleware(
                 model="gpt-4o-mini",
-                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
@@ -724,7 +730,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -732,7 +738,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -798,7 +804,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -806,7 +812,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -1165,7 +1171,7 @@ def create_summarization_tool_middleware(
         )
         ```
     """
-    from deepagents.graph import resolve_model  # noqa: PLC0415
+    from deepagents._models import resolve_model  # noqa: PLC0415
 
     if isinstance(model, str):
         model = resolve_model(model)
@@ -1260,6 +1266,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+            # infer_schema=False,  # noqa: ERA001
+            # args_schema=CompactConversationSchema,  # noqa: ERA001
         )
 
     def _build_compact_result(
@@ -1280,8 +1288,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or `None`.
-            event: The prior `_summarization_event`, or `None`.
+            file_path: Backend path where history was offloaded, or ``None``.
+            event: The prior `_summarization_event`, or ``None``.
             cutoff: The cutoff index within the effective message list.
 
         Returns:

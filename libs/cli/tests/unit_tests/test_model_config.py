@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +19,7 @@ from deepagents_cli.model_config import (
     _get_builtin_providers,
     _get_provider_profile_modules,
     _load_provider_profiles,
+    _profile_module_from_class_path,
     clear_caches,
     clear_default_model,
     get_available_models,
@@ -108,9 +109,9 @@ class TestModelSpec:
 class TestHasProviderCredentials:
     """Tests for has_provider_credentials() function."""
 
-    def test_returns_false_for_unknown_provider(self):
-        """Returns False for unknown provider."""
-        assert has_provider_credentials("unknown") is False
+    def test_returns_none_for_unknown_provider(self):
+        """Returns None for unknown provider (let provider handle auth)."""
+        assert has_provider_credentials("unknown") is None
 
     def test_returns_true_when_env_var_set(self):
         """Returns True when provider env var is set."""
@@ -121,6 +122,15 @@ class TestHasProviderCredentials:
         """Returns False when provider env var is not set."""
         with patch.dict("os.environ", {}, clear=True):
             assert has_provider_credentials("anthropic") is False
+
+    def test_returns_true_with_prefixed_env_var(self):
+        """Returns True when only the DEEPAGENTS_CLI_ prefixed var is set."""
+        with patch.dict(
+            "os.environ",
+            {"DEEPAGENTS_CLI_ANTHROPIC_API_KEY": "sk-prefixed"},
+            clear=True,
+        ):
+            assert has_provider_credentials("anthropic") is True
 
 
 class TestThreadColumnPersistence:
@@ -251,6 +261,220 @@ class TestThreadSortOrderPersistence:
         assert data["threads"]["sort_order"] == "created_at"
 
 
+class TestThreadConfigCoalesced:
+    """Tests for the coalesced `load_thread_config()` helper."""
+
+    def test_defaults_when_no_file(self, tmp_path: Path) -> None:
+        """When the config file does not exist, defaults should be returned."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == THREAD_COLUMN_DEFAULTS
+        assert cfg.relative_time is True
+        assert cfg.sort_order == "updated_at"
+
+    def test_reads_all_sections_from_one_parse(self, tmp_path: Path) -> None:
+        """A single TOML read should populate columns, relative_time, and sort_order."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads]
+relative_time = false
+sort_order = "created_at"
+
+[threads.columns]
+thread_id = true
+messages = false
+"""
+        )
+        cfg = load_thread_config(config_path)
+        assert cfg.columns["thread_id"] is True
+        assert cfg.columns["messages"] is False
+        # unchanged defaults
+        assert cfg.columns["updated_at"] is True
+        assert cfg.relative_time is False
+        assert cfg.sort_order == "created_at"
+
+    def test_matches_individual_loaders(self, tmp_path: Path) -> None:
+        """Coalesced result should match the three individual loaders."""
+        from deepagents_cli.model_config import (
+            load_thread_columns,
+            load_thread_config,
+            load_thread_relative_time,
+            load_thread_sort_order,
+        )
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[threads]
+relative_time = false
+sort_order = "created_at"
+
+[threads.columns]
+git_branch = true
+cwd = true
+"""
+        )
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == load_thread_columns(config_path)
+        assert cfg.relative_time == load_thread_relative_time(config_path)
+        assert cfg.sort_order == load_thread_sort_order(config_path)
+
+    def test_corrupt_toml_returns_defaults(self, tmp_path: Path) -> None:
+        """A corrupt config file should return defaults without crashing."""
+        from deepagents_cli.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("this is not valid TOML {{{{")
+        cfg = load_thread_config(config_path)
+        assert cfg.columns == THREAD_COLUMN_DEFAULTS
+        assert cfg.relative_time is True
+        assert cfg.sort_order == "updated_at"
+
+    def test_default_path_uses_cache(self) -> None:
+        """Second call with default path should return cached result."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            first = load_thread_config()
+            second = load_thread_config()
+            assert first is second
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving thread config should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_columns,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            first = load_thread_config()
+            assert first is load_thread_config()
+
+            save_thread_columns(dict(THREAD_COLUMN_DEFAULTS), tmp_path / "c.toml")
+            # Cache was invalidated by save
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_relative_time_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving relative_time should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_relative_time,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            load_thread_config()
+            save_thread_relative_time(False, tmp_path / "c.toml")
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_sort_order_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving sort_order should invalidate the cached value."""
+        from deepagents_cli.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_sort_order,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            load_thread_config()
+            save_thread_sort_order("created_at", tmp_path / "c.toml")
+            from deepagents_cli.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+
+class TestResolveEnvVar:
+    """Tests for resolve_env_var prefix override."""
+
+    def test_returns_canonical_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Falls back to the canonical env var when no prefix is set."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-canonical"
+
+    def test_prefix_beats_canonical(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """DEEPAGENTS_CLI_ prefixed var takes priority over canonical."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
+        monkeypatch.setenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "sk-override")
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("ANTHROPIC_API_KEY") == "sk-override"
+
+    def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns None when neither form is set."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("ANTHROPIC_API_KEY") is None
+
+    def test_empty_string_treated_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty strings are normalized to None."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "")
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("ANTHROPIC_API_KEY") is None
+
+    def test_prefix_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Works when only the prefixed var is set."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CLI_OPENAI_API_KEY", "sk-prefixed")
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
+
+    def test_empty_prefix_blocks_canonical(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty prefix var blocks fallback to canonical (explicit disable)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real")
+        monkeypatch.setenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "")
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("ANTHROPIC_API_KEY") is None
+
+    def test_skips_double_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Names already carrying the prefix don't get double-prefixed."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_MY_KEY", "direct")
+        monkeypatch.delenv("DEEPAGENTS_CLI_DEEPAGENTS_CLI_MY_KEY", raising=False)
+        from deepagents_cli.model_config import resolve_env_var
+
+        assert resolve_env_var("DEEPAGENTS_CLI_MY_KEY") == "direct"
+
+
 class TestProviderApiKeyEnv:
     """Tests for PROVIDER_API_KEY_ENV constant."""
 
@@ -258,6 +482,7 @@ class TestProviderApiKeyEnv:
         """Contains environment variables for major providers."""
         assert PROVIDER_API_KEY_ENV["anthropic"] == "ANTHROPIC_API_KEY"
         assert PROVIDER_API_KEY_ENV["azure_openai"] == "AZURE_OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["baseten"] == "BASETEN_API_KEY"
         assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
         assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
         assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
@@ -454,6 +679,23 @@ api_key_env = "ANTHROPIC_API_KEY"
 
         with patch.dict("os.environ", {}, clear=True):
             assert config.has_credentials("anthropic") is False
+
+    def test_returns_true_with_prefixed_env_var(self, tmp_path):
+        """Returns True when only the DEEPAGENTS_CLI_ prefixed var is set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+api_key_env = "ANTHROPIC_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        with patch.dict(
+            "os.environ",
+            {"DEEPAGENTS_CLI_ANTHROPIC_API_KEY": "sk-prefixed"},
+            clear=True,
+        ):
+            assert config.has_credentials("anthropic") is True
 
 
 class TestModelConfigGetBaseUrl:
@@ -863,8 +1105,8 @@ models = ["claude-sonnet-4-5"]
 
         assert models["anthropic"].count("claude-sonnet-4-5") == 1
 
-    def test_skips_config_provider_with_no_models(self, tmp_path):
-        """Config provider with empty models list is not added."""
+    def test_skips_config_provider_with_no_models_and_no_class_path(self, tmp_path):
+        """Config provider with no models and no class_path is not added."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.empty]
@@ -880,6 +1122,512 @@ api_key_env = "SOME_KEY"
             models = get_available_models()
 
         assert "empty" not in models
+
+
+class TestDisabledProviders:
+    """Tests for provider hiding via `enabled = false`."""
+
+    def test_enabled_false_hides_registry_provider(self, tmp_path: Path) -> None:
+        """Registry provider with `enabled = false` is hidden."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" not in models
+
+    def test_enabled_false_hides_config_only_provider(self, tmp_path: Path) -> None:
+        """A config-only provider with `enabled = false` is not shown."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+enabled = false
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "custom" not in models
+
+    def test_enabled_true_preserves_provider(self, tmp_path: Path) -> None:
+        """A provider with `enabled = true` behaves normally."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = true
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" in models
+        assert "claude-sonnet-4-5" in models["anthropic"]
+
+    def test_enabled_false_excludes_from_profiles(self, tmp_path: Path) -> None:
+        """A disabled provider is excluded from get_model_profiles()."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {
+                "tool_calling": True,
+                "max_input_tokens": 200000,
+            },
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "anthropic:claude-sonnet-4-5" not in profiles
+
+    def test_enabled_false_excludes_config_only_from_profiles(
+        self, tmp_path: Path
+    ) -> None:
+        """A disabled config-only provider is excluded from profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.custom]
+enabled = false
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "custom:my-model" not in profiles
+
+    def test_disabled_provider_does_not_affect_others(self, tmp_path: Path) -> None:
+        """Disabling one provider does not affect other providers."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+
+[models.providers.custom]
+models = ["my-model"]
+api_key_env = "CUSTOM_KEY"
+""")
+        fake_profiles = {
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "anthropic" not in models
+        assert "custom" in models
+        assert "my-model" in models["custom"]
+
+
+class TestIsProviderEnabled:
+    """Tests for ModelConfig.is_provider_enabled()."""
+
+    def test_returns_true_when_not_in_config(self) -> None:
+        """Providers not in config are enabled by default."""
+        config = ModelConfig()
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_returns_true_when_enabled_not_set(self, tmp_path: Path) -> None:
+        """Provider without `enabled` field is enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_returns_false_when_enabled_false(self, tmp_path: Path) -> None:
+        """`enabled = false` disables the provider."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is False
+
+    def test_returns_true_for_nonempty_models_list(self, tmp_path: Path) -> None:
+        """Provider with models is enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is True
+
+    def test_enabled_false_takes_precedence_over_models(self, tmp_path: Path) -> None:
+        """`enabled = false` hides provider even with models listed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = false
+models = ["claude-sonnet-4-5"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.is_provider_enabled("anthropic") is False
+
+    def test_string_false_not_treated_as_disabled(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """String `"false"` is not bool `false`; provider stays enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+enabled = "false"
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.is_provider_enabled("anthropic") is True
+        assert any("non-boolean" in r.message for r in caplog.records)
+
+
+class TestProfileModuleFromClassPath:
+    """Tests for _profile_module_from_class_path() helper."""
+
+    def test_derives_module_path(self):
+        """Derives profile module from a valid class_path."""
+        result = _profile_module_from_class_path(
+            "langchain_baseten.chat_models:ChatBaseten"
+        )
+        assert result == "langchain_baseten.data._profiles"
+
+    def test_returns_none_for_missing_colon(self):
+        """Returns None when class_path has no colon separator."""
+        assert _profile_module_from_class_path("my_package.MyChatModel") is None
+
+    def test_single_segment_package(self):
+        """Works with a single-segment package name."""
+        result = _profile_module_from_class_path("mypkg:MyClass")
+        assert result == "mypkg.data._profiles"
+
+    def test_returns_none_for_empty_module_part(self):
+        """Returns None when module part before colon is empty."""
+        assert _profile_module_from_class_path(":MyClass") is None
+
+
+class TestClassPathProviderAutoDiscovery:
+    """Tests for auto-discovering models from class_path provider packages."""
+
+    FAKE_BASETEN_PROFILES: ClassVar[dict[str, dict[str, Any]]] = {
+        "deepseek-ai/DeepSeek-V3.2": {
+            "tool_calling": True,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+        "Qwen/Qwen3-Coder": {
+            "tool_calling": True,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+        "some/no-tools-model": {
+            "tool_calling": False,
+            "text_inputs": True,
+            "text_outputs": True,
+        },
+    }
+
+    def test_get_available_models_discovers_class_path_profiles(self, tmp_path):
+        """class_path provider auto-discovers models from package profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" in models
+        assert "deepseek-ai/DeepSeek-V3.2" in models["baseten"]
+        assert "Qwen/Qwen3-Coder" in models["baseten"]
+        # Filtered out: no tool_calling
+        assert "some/no-tools-model" not in models["baseten"]
+
+    def test_get_model_profiles_discovers_class_path_profiles(self, tmp_path):
+        """class_path provider profiles are included in get_model_profiles()."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert "baseten:deepseek-ai/DeepSeek-V3.2" in profiles
+        entry = profiles["baseten:deepseek-ai/DeepSeek-V3.2"]
+        assert entry["profile"]["tool_calling"] is True
+        # No config overrides, so overridden_keys should be empty
+        assert entry["overridden_keys"] == frozenset()
+        # Unlike get_available_models(), profiles include ALL models (no filter)
+        assert "baseten:some/no-tools-model" in profiles
+
+    def test_get_model_profiles_class_path_import_failure_graceful(self, tmp_path):
+        """get_model_profiles() degrades gracefully when class_path package fails."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        assert not any(key.startswith("baseten:") for key in profiles)
+
+    def test_class_path_profiles_merged_with_config_overrides(self, tmp_path):
+        """Config profile overrides are applied on top of class_path profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+
+[models.providers.baseten.profile]
+max_input_tokens = 9999
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return {
+                    "my-model": {
+                        "tool_calling": True,
+                        "max_input_tokens": 4096,
+                    },
+                }
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["baseten:my-model"]
+        assert entry["profile"]["max_input_tokens"] == 9999
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_class_path_import_failure_graceful(self, tmp_path):
+        """Gracefully handles class_path package not being installed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" not in models
+
+    def test_class_path_non_import_error_logs_warning(self, tmp_path, caplog):
+        """Non-ImportError from class_path package logs warning, not debug."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                msg = "broken profiles module"
+                raise RuntimeError(msg)
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"),
+        ):
+            models = get_available_models()
+
+        assert "baseten" not in models
+        assert any(
+            "Failed to load profiles" in record.message and "baseten" in record.message
+            for record in caplog.records
+        )
+
+    def test_explicit_models_list_skips_auto_discovery(self, tmp_path):
+        """Explicit models list bypasses auto-discovery even when profiles exist."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+class_path = "langchain_baseten.chat_models:ChatBaseten"
+api_key_env = "BASETEN_API_KEY"
+models = ["my-explicit-model"]
+""")
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_baseten.data._profiles":
+                return self.FAKE_BASETEN_PROFILES
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value={},
+            ),
+        ):
+            models = get_available_models()
+
+        assert "baseten" in models
+        assert models["baseten"] == ["my-explicit-model"]
+
+    def test_skips_builtin_registry_providers(self, tmp_path):
+        """Does not double-load profiles for providers in the built-in registry."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+class_path = "langchain_anthropic.chat_models:ChatAnthropic"
+""")
+        fake_profiles = {"claude-sonnet-4-5": {"tool_calling": True}}
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        # Should only appear once (from registry path, not double-loaded)
+        assert models["anthropic"].count("claude-sonnet-4-5") == 1
 
 
 class TestHasProviderCredentialsFallback:
@@ -923,20 +1671,43 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             assert has_provider_credentials("fireworks") is False
 
-    def test_returns_false_for_totally_unknown_provider(self):
-        """Returns False for provider not in hardcoded map, config, or langchain."""
-        assert has_provider_credentials("nonexistent_provider_xyz") is False
+    def test_class_path_provider_without_api_key_env_returns_true(self, tmp_path):
+        """Returns True for class_path provider with no api_key_env.
 
-    def test_returns_none_for_langchain_known_provider(self):
-        """Returns None for a provider known to langchain but not in config."""
-        fake_registry = {
-            "ollama": ("langchain_ollama", "ChatOllama", None),
-        }
-        with patch(
-            "deepagents_cli.model_config._get_builtin_providers",
-            return_value=fake_registry,
+        class_path providers manage their own auth (e.g., custom headers, JWT)
+        so they should be treated as having credentials available.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert has_provider_credentials("cis") is True
+
+    def test_class_path_with_api_key_env_respects_env_var(self, tmp_path):
+        """api_key_env takes precedence over class_path for credential check."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+api_key_env = "CIS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
         ):
-            assert has_provider_credentials("ollama") is None
+            assert has_provider_credentials("cis") is False
+
+    def test_returns_none_for_totally_unknown_provider(self):
+        """Returns None for provider not in hardcoded map or config.
+
+        Unknown providers are let through so the provider itself can report
+        auth failures at model-creation time.
+        """
+        assert has_provider_credentials("nonexistent_provider_xyz") is None
 
 
 class TestModelConfigGetClassPath:

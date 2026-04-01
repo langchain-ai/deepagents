@@ -9,32 +9,49 @@ import sqlite3
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
-from rich.style import Style
-from rich.text import Text
 from textual.binding import Binding, BindingType
+from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Static
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
     from textual.events import Click, Key
 
+    from deepagents_cli.sessions import ThreadInfo
+
+from deepagents_cli import theme
 from deepagents_cli.config import (
-    CharsetMode,
-    _detect_charset_mode,
     build_langsmith_thread_url,
     get_glyphs,
+    is_ascii_mode,
 )
-from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
+
+_URL_FETCH_TIMEOUT = 2.0
+"""Seconds to wait for LangSmith thread-URL resolution before giving up."""
+
+_column_widths_cache: (
+    tuple[
+        tuple[tuple[str, str | None], ...],  # (thread_id, checkpoint_id) fingerprint
+        frozenset[str],  # visible column keys
+        bool,  # relative_time
+        dict[str, int | None],  # computed widths
+    ]
+    | None
+) = None
+"""Module-level cache so repeated `/threads` opens skip column-width computation
+when the inputs (thread data + config) haven't changed."""
 
 _COL_TID = 10
 _COL_AGENT = 12
@@ -90,6 +107,35 @@ _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _CELL_PADDING_RIGHT = 1
+
+_FormatFns = tuple[
+    "Callable[[str | None], str]",  # format_path
+    "Callable[[str | None], str]",  # format_relative_timestamp
+    "Callable[[str | None], str]",  # format_timestamp
+]
+"""Cached `(format_path, format_relative_timestamp, format_timestamp)`.
+
+Resolved once on first use via `_get_format_fns()` to avoid the overhead of
+a per-call deferred import inside the hot `_format_column_value` loop.
+"""
+
+_format_fns_cache: _FormatFns | None = None
+"""Cached format functions, populated on first call to `_get_format_fns()`."""
+
+
+def _get_format_fns() -> _FormatFns:
+    """Return cached `(format_path, format_relative_timestamp, format_timestamp)`."""
+    global _format_fns_cache  # noqa: PLW0603
+    if _format_fns_cache is not None:
+        return _format_fns_cache
+    from deepagents_cli.sessions import (
+        format_path,
+        format_relative_timestamp,
+        format_timestamp,
+    )
+
+    _format_fns_cache = (format_path, format_relative_timestamp, format_timestamp)
+    return _format_fns_cache
 
 
 def _apply_column_width(
@@ -175,13 +221,8 @@ def _format_column_value(
     Returns:
         Formatted display text for the column cell.
     """
-    from deepagents_cli.sessions import (
-        format_path,
-        format_relative_timestamp,
-        format_timestamp,
-    )
-
-    fmt = format_relative_timestamp if relative_time else format_timestamp
+    format_path, format_relative_ts, format_ts = _get_format_fns()
+    fmt = format_relative_ts if relative_time else format_ts
 
     value: str
     if key == "thread_id":
@@ -243,6 +284,7 @@ class ThreadOption(Horizontal):
         selected: bool,
         current: bool,
         relative_time: bool = False,
+        cell_text: dict[tuple[str, str], str] | None = None,
         classes: str = "",
     ) -> None:
         """Initialize a thread option row.
@@ -255,6 +297,7 @@ class ThreadOption(Horizontal):
             selected: Whether the row is highlighted.
             current: Whether the row is the active thread.
             relative_time: Use relative timestamps.
+            cell_text: Pre-formatted cell values keyed by `(thread_id, key)`.
             classes: CSS classes for styling.
         """
         super().__init__(classes=classes)
@@ -266,6 +309,7 @@ class ThreadOption(Horizontal):
         self._selected = selected
         self._current = current
         self._relative_time = relative_time
+        self._cell_text = cell_text
 
     class Clicked(Message):
         """Message sent when a thread option is clicked."""
@@ -292,11 +336,16 @@ class ThreadOption(Horizontal):
             classes="thread-cell thread-cell-cursor",
             markup=False,
         )
+        tid = self.thread_id
         for key in _visible_column_keys(self._columns):
-            cell = Static(
-                _format_column_value(
+            if self._cell_text is not None and (tid, key) in self._cell_text:
+                text = self._cell_text[tid, key]
+            else:
+                text = _format_column_value(
                     self.thread, key, relative_time=self._relative_time
-                ),
+                )
+            cell = Static(
+                text,
                 classes=f"thread-cell thread-cell-{key}",
                 expand=key == "initial_prompt",
                 markup=False,
@@ -386,7 +435,10 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         """
         with Vertical(id="delete-confirm"):
             yield Static(
-                f"Delete thread [bold]{self._delete_thread_id}[/bold]?",
+                Content.from_markup(
+                    "Delete thread [bold]$tid[/bold]?",
+                    tid=self._delete_thread_id,
+                ),
                 classes="thread-confirm-text",
             )
             yield Static(
@@ -530,6 +582,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-option-selected {
         background: $primary;
+        color: $background;
         text-style: bold;
     }
 
@@ -620,9 +673,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._current_thread = current_thread
         self._thread_limit = thread_limit
         self._threads: list[ThreadInfo] = (
-            [ThreadInfo(**thread) for thread in initial_threads]
-            if initial_threads is not None
-            else []
+            list(initial_threads) if initial_threads is not None else []
         )
         self._filtered_threads: list[ThreadInfo] = list(self._threads)
         self._has_initial_threads = initial_threads is not None
@@ -633,17 +684,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
         self._filter_controls: list[Input | Checkbox] | None = None
+        self._cell_text: dict[tuple[str, str], str] = {}
 
-        from deepagents_cli.model_config import (
-            load_thread_columns,
-            load_thread_relative_time,
-            load_thread_sort_order,
-        )
+        from deepagents_cli.model_config import load_thread_config
 
-        self._columns = load_thread_columns()
-        self._relative_time = load_thread_relative_time()
-        self._sort_by_updated = load_thread_sort_order() == "updated_at"
+        cfg = load_thread_config()
+        self._columns = dict(cfg.columns)
+        self._relative_time = cfg.relative_time
+        self._sort_by_updated = cfg.sort_order == "updated_at"
 
+        # Cached threads are pre-sorted by updated_at DESC (the only sort
+        # order the cache stores).  Skip the O(n log n) re-sort when that
+        # matches the user's preference.
+        if not (self._has_initial_threads and self._sort_by_updated):
+            self._apply_sort()
         self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
 
@@ -674,7 +728,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._selected_index = i
                 break
 
-    def _build_title(self, thread_url: str | None = None) -> str | Text:
+    def _build_title(self, thread_url: str | None = None) -> str | Content:
         """Build the title, optionally with a clickable thread ID link.
 
         Args:
@@ -682,14 +736,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 rendered as a clickable hyperlink.
 
         Returns:
-            Plain string or Rich `Text` with an embedded hyperlink.
+            Plain string or `Content` with an embedded hyperlink.
         """
         if not self._current_thread:
             return "Select Thread"
         if thread_url:
-            return Text.assemble(
+            return Content.assemble(
                 "Select Thread (current: ",
-                (self._current_thread, Style(color="cyan", link=thread_url)),
+                (
+                    self._current_thread,
+                    TStyle(
+                        foreground=TColor.parse(theme.get_theme_colors(self).primary),
+                        link=thread_url,
+                    ),
+                ),
                 ")",
             )
         return f"Select Thread (current: {self._current_thread})"
@@ -796,12 +856,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                 yield from self._option_widgets
                             else:
                                 yield Static(
-                                    "[dim]No threads found[/dim]",
+                                    Content.styled("No threads found", "dim"),
                                     classes="thread-empty",
                                 )
                         else:
                             yield Static(
-                                "[dim]Loading threads...[/dim]",
+                                Content.styled("Loading threads...", "dim"),
                                 classes="thread-empty",
                                 id="thread-loading",
                             )
@@ -847,9 +907,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     async def on_mount(self) -> None:
         """Fetch threads, configure border for ASCII terminals, and build the list."""
-        if _detect_charset_mode() == CharsetMode.ASCII:
+        if is_ascii_mode():
             container = self.query_one("#thread-selector-shell", Vertical)
-            container.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
 
         filter_input = self._get_filter_input()
         self._filter_focus_order()
@@ -860,10 +921,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if self._current_thread:
                 self._resolve_thread_url()
 
-        # _load_threads replaces self._threads and schedules background
-        # enrichment (message counts, initial prompts) after load completes.
-        # Avoid eagerly scheduling enrichment on stale initial_threads that
-        # will be replaced.
+        if self._has_initial_threads:
+            # Defer by one message cycle so Textual finishes processing
+            # mount messages before we start the DB refresh.
+            self.call_after_refresh(self._start_thread_load)
+        else:
+            # _load_threads replaces self._threads and schedules background
+            # enrichment (message counts, initial prompts) after load
+            # completes.  Launch immediately when there are no cached rows
+            # to render.
+            self.run_worker(
+                self._load_threads, exclusive=True, group="thread-selector-load"
+            )
+
+    def _start_thread_load(self) -> None:
+        """Launch the thread-load worker after the initial layout pass."""
+        if not self.is_attached:
+            return
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
         )
@@ -1020,29 +1094,60 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _compute_column_widths(self) -> dict[str, int | None]:
         """Return effective widths for the current table state.
 
-        The auto-width columns stay dynamic, but they must share one width
-        across the header and all visible rows. Textual's `width: auto`
-        computes per-widget widths, so the screen computes those shared widths
-        from the visible data instead.
+        Textual's `width: auto` computes per-widget widths, so this method
+        derives shared widths from the visible data instead. Also populates
+        `self._cell_text` as a side effect so that `ThreadOption.compose()` can
+        reuse the formatted strings.
 
         Returns:
-            Dict mapping column keys to their effective pixel widths, with
+            Dict mapping column keys to their effective cell widths, with
                 `None` for flex columns.
         """
+        global _column_widths_cache  # noqa: PLW0603  # Module-level cache requires global statement
+
+        visible_keys = _visible_column_keys(self._columns)
+        visible = frozenset(visible_keys)
+        fingerprint = tuple(
+            (t["thread_id"], t.get("latest_checkpoint_id"))
+            for t in self._filtered_threads
+        )
+
+        if _column_widths_cache is not None:
+            fp, vis, rel, cached_widths = _column_widths_cache
+            if (
+                fp == fingerprint
+                and vis == visible
+                and rel == self._relative_time
+                and self._cell_text
+            ):
+                return dict(cached_widths)
+
+        # Pre-format every visible cell in one pass.
+        cell_text: dict[tuple[str, str], str] = {}
+        for thread in self._filtered_threads:
+            tid = thread["thread_id"]
+            for key in visible_keys:
+                cell_text[tid, key] = _format_column_value(
+                    thread, key, relative_time=self._relative_time
+                )
+        self._cell_text = cell_text
+
+        # Derive auto-widths from the pre-formatted values.
         widths = dict(_COLUMN_WIDTHS)
-
         for key in _AUTO_WIDTH_COLUMNS:
-            if not self._columns.get(key):
+            if key not in visible:
                 continue
-            labels = [_format_header_label(key)]
-            labels.extend(
-                _format_column_value(thread, key, relative_time=self._relative_time)
-                for thread in self._filtered_threads
+            header_len = cell_len(_format_header_label(key))
+            max_cell = max(
+                (
+                    cell_len(cell_text[t["thread_id"], key])
+                    for t in self._filtered_threads
+                ),
+                default=0,
             )
-            widths[key] = max((cell_len(label) for label in labels), default=1) + (
-                _CELL_PADDING_RIGHT
-            )
+            widths[key] = max(header_len, max_cell) + _CELL_PADDING_RIGHT
 
+        _column_widths_cache = (fingerprint, visible, self._relative_time, widths)
         return widths
 
     @staticmethod
@@ -1198,6 +1303,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             group="thread-selector-checkpoints",
         )
 
+    @staticmethod
+    def _threads_match(old: list[ThreadInfo], new: list[ThreadInfo]) -> bool:
+        """Check whether two thread lists have the same IDs and checkpoints in order.
+
+        Args:
+            old: Previous thread list.
+            new: Fresh thread list.
+
+        Returns:
+            True if both lists have identical thread/checkpoint ID pairs.
+        """
+        if len(old) != len(new):
+            return False
+        for a, b in zip(old, new, strict=True):
+            if a["thread_id"] != b["thread_id"]:
+                return False
+            if a.get("latest_checkpoint_id") != b.get("latest_checkpoint_id"):
+                return False
+        return True
+
     async def _load_threads(self) -> None:
         """Load thread rows first, then kick off background enrichment."""
         from deepagents_cli.sessions import (
@@ -1206,13 +1331,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             list_threads,
         )
 
+        old_threads = list(self._threads)
+
         try:
             limit = self._thread_limit
             if limit is None:
                 from deepagents_cli.sessions import get_thread_limit
 
                 limit = get_thread_limit()
-            self._threads = await list_threads(limit=limit, include_message_count=False)
+            sort_by = "updated" if self._sort_by_updated else "created"
+            self._threads = await list_threads(
+                limit=limit, include_message_count=False, sort_by=sort_by
+            )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))
@@ -1241,7 +1371,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._update_filtered_list()
         self._sync_selected_index()
 
-        await self._build_list()
+        # Short-circuit: when the fresh data matches what is already rendered,
+        # update widget references and cell labels without tearing down the DOM.
+        if (
+            self._has_initial_threads
+            and self._option_widgets
+            and self._threads_match(old_threads, self._filtered_threads)
+        ):
+            for widget, thread in zip(
+                self._option_widgets,
+                self._filtered_threads,
+                strict=True,
+            ):
+                widget.thread = thread
+            self._refresh_cell_labels()
+        else:
+            await self._build_list()
 
         self._schedule_checkpoint_enrichment()
 
@@ -1288,16 +1433,27 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _refresh_cell_labels(self) -> None:
         """Update visible cell text in-place without rebuilding the DOM."""
+        visible_keys = _visible_column_keys(self._columns)
+
+        # Recompute because thread data may have changed since
+        # _compute_column_widths populated the cache.
+        cell_text: dict[tuple[str, str], str] = {}
+        for thread in self._filtered_threads:
+            tid = thread["thread_id"]
+            for key in visible_keys:
+                cell_text[tid, key] = _format_column_value(
+                    thread, key, relative_time=self._relative_time
+                )
+        self._cell_text = cell_text
+
         for widget in self._option_widgets:
-            thread = widget.thread
-            for key in _visible_column_keys(self._columns):
+            tid = widget.thread_id
+            for key in visible_keys:
                 try:
                     cell = widget.query_one(f".thread-cell-{key}", Static)
                 except NoMatches:
                     continue
-                cell.update(
-                    _format_column_value(thread, key, relative_time=self._relative_time)
-                )
+                cell.update(cell_text[tid, key])
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -1312,7 +1468,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
-                timeout=2.0,
+                timeout=_URL_FETCH_TIMEOUT,
             )
         except (TimeoutError, OSError):
             logger.debug(
@@ -1350,9 +1506,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 await scroll.remove_children()
                 await scroll.mount(
                     Static(
-                        (
-                            f"[red]Failed to load threads: {detail}. "
-                            "Press Esc to close.[/red]"
+                        Content.from_markup(
+                            "[red]Failed to load threads: $detail. "
+                            "Press Esc to close.[/red]",
+                            detail=detail,
                         ),
                         classes="thread-empty",
                     )
@@ -1386,7 +1543,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     self._option_widgets = []
                     await scroll.mount(
                         Static(
-                            "[dim]No threads found[/dim]",
+                            Content.styled("No threads found", "dim"),
                             classes="thread-empty",
                         )
                     )
@@ -1425,6 +1582,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 selected=is_selected,
                 current=is_current,
                 relative_time=self._relative_time,
+                cell_text=self._cell_text or None,
                 classes=classes,
             )
             widgets.append(widget)
@@ -1641,7 +1799,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_delete_thread(self) -> None:
         """Show delete confirmation for the highlighted thread."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete:
+            return
+        if not self._filtered_threads:
+            # Nothing to delete — fall through to quit. Using exit() instead of
+            # dismiss() is intentional: dismiss() would just close the modal
+            # silently, re-swallowing ctrl+d.
+            self.app.exit()
             return
         self._confirming_delete = True
         thread = self._filtered_threads[self._selected_index]
@@ -1699,6 +1863,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
+                markup=False,
             )
             with contextlib.suppress(NoMatches):
                 self.query_one("#thread-filter", Input).focus()

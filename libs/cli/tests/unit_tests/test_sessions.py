@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -22,21 +23,62 @@ if TYPE_CHECKING:
 class TestGenerateThreadId:
     """Tests for generate_thread_id function."""
 
-    def test_length(self):
-        """Thread IDs are 8 characters."""
+    def test_length(self) -> None:
+        """Thread IDs use the canonical UUID string format."""
         tid = sessions.generate_thread_id()
-        assert len(tid) == 8
+        assert len(tid) == 36
 
-    def test_hex(self):
-        """Thread IDs are valid hex strings."""
+    def test_uuid7(self) -> None:
+        """Thread IDs are valid UUID7 strings."""
         tid = sessions.generate_thread_id()
-        # Should not raise
-        int(tid, 16)
+        assert uuid.UUID(tid).version == 7
 
-    def test_unique(self):
+    def test_monotonic_ordering(self) -> None:
+        """Thread IDs sort chronologically by creation time."""
+        ids = [sessions.generate_thread_id() for _ in range(10)]
+        assert ids == sorted(ids)
+
+    def test_unique(self) -> None:
         """Thread IDs are unique."""
         ids = {sessions.generate_thread_id() for _ in range(100)}
         assert len(ids) == 100
+
+
+class TestMixedThreadIdFormats:
+    """Old 8-char hex IDs and new UUID7 IDs coexist in the database."""
+
+    def test_list_returns_both_formats(self, tmp_path: Path) -> None:
+        """list_threads returns threads regardless of ID format."""
+        db_path = tmp_path / "mixed.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        old_id = "a1b2c3d4"
+        new_id = sessions.generate_thread_id()
+        now = datetime.now(UTC).isoformat()
+        for tid in (old_id, new_id):
+            meta = json.dumps({"agent_name": "agent", "updated_at": now})
+            conn.execute(
+                "INSERT INTO checkpoints "
+                "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                "VALUES (?, '', ?, ?)",
+                (tid, f"cp_{tid}", meta),
+            )
+        conn.commit()
+        conn.close()
+
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            threads = asyncio.run(sessions.list_threads())
+            returned_ids = {t["thread_id"] for t in threads}
+            assert old_id in returned_ids
+            assert new_id in returned_ids
 
 
 class TestThreadFunctions:
@@ -363,7 +405,7 @@ class TestTextualSessionState:
         """TextualSessionState generates ID if none provided."""
         state = TextualSessionState(thread_id=None)
         assert state.thread_id is not None
-        assert len(state.thread_id) == 8
+        assert uuid.UUID(state.thread_id).version == 7
 
     def test_reset_thread(self):
         """reset_thread generates a new thread ID."""
@@ -371,7 +413,7 @@ class TestTextualSessionState:
         old_id = state.thread_id
         new_id = state.reset_thread()
         assert new_id != old_id
-        assert len(new_id) == 8
+        assert uuid.UUID(new_id).version == 7
         assert state.thread_id == new_id
 
 
@@ -533,20 +575,22 @@ class TestListThreadsWithMessageCount:
                 ),
                 patch.object(
                     sessions,
-                    "_load_latest_checkpoint_summary",
+                    "_load_latest_checkpoint_summaries_batch",
                     new_callable=AsyncMock,
-                    return_value=sessions._CheckpointSummary(
-                        message_count=3,
-                        initial_prompt=None,
-                    ),
-                ) as mock_summary,
+                    return_value={
+                        "thread1": sessions._CheckpointSummary(
+                            message_count=3,
+                            initial_prompt=None,
+                        ),
+                    },
+                ) as mock_batch,
             ):
                 first = asyncio.run(sessions.list_threads(include_message_count=True))
                 second = asyncio.run(sessions.list_threads(include_message_count=True))
 
                 assert first[0]["message_count"] == 3
                 assert second[0]["message_count"] == 3
-                assert mock_summary.await_count == 1
+                assert mock_batch.await_count == 1
         finally:
             sessions._message_count_cache.clear()
 
@@ -555,6 +599,7 @@ class TestListThreadsWithMessageCount:
     ) -> None:
         """A newer checkpoint should invalidate cached message count."""
         sessions._message_count_cache.clear()
+        call_count = 0
         try:
             with (
                 patch.object(
@@ -566,44 +611,52 @@ class TestListThreadsWithMessageCount:
                     new_callable=AsyncMock,
                     return_value=object(),
                 ),
-                patch.object(
-                    sessions,
-                    "_load_latest_checkpoint_summary",
-                    new_callable=AsyncMock,
-                    side_effect=[
-                        sessions._CheckpointSummary(
-                            message_count=3,
-                            initial_prompt=None,
-                        ),
-                        sessions._CheckpointSummary(
-                            message_count=4,
-                            initial_prompt=None,
-                        ),
-                    ],
-                ) as mock_summary,
             ):
-                first = asyncio.run(sessions.list_threads(include_message_count=True))
-                assert first[0]["message_count"] == 3
+                results = [
+                    {"thread1": sessions._CheckpointSummary(3, None)},
+                    {"thread1": sessions._CheckpointSummary(4, None)},
+                ]
 
-                conn = sqlite3.connect(str(temp_db_with_messages))
-                type_str, checkpoint_blob, metadata = conn.execute(
-                    "SELECT type, checkpoint, metadata FROM checkpoints "
-                    "WHERE thread_id = ? AND checkpoint_id = ?",
-                    ("thread1", "cp_1"),
-                ).fetchone()
-                conn.execute(
-                    "INSERT INTO checkpoints "
-                    "(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, "
-                    "metadata) "
-                    "VALUES (?, '', ?, ?, ?, ?)",
-                    ("thread1", "cp_2", type_str, checkpoint_blob, metadata),
-                )
-                conn.commit()
-                conn.close()
+                def _batch_side_effect(
+                    *_args: object, **_kwargs: object
+                ) -> dict[str, sessions._CheckpointSummary]:
+                    nonlocal call_count
+                    idx = min(call_count, len(results) - 1)
+                    call_count += 1
+                    return results[idx]
 
-                second = asyncio.run(sessions.list_threads(include_message_count=True))
-                assert second[0]["message_count"] == 4
-                assert mock_summary.await_count == 2
+                with patch.object(
+                    sessions,
+                    "_load_latest_checkpoint_summaries_batch",
+                    new_callable=AsyncMock,
+                    side_effect=_batch_side_effect,
+                ) as mock_batch:
+                    first = asyncio.run(
+                        sessions.list_threads(include_message_count=True)
+                    )
+                    assert first[0]["message_count"] == 3
+
+                    conn = sqlite3.connect(str(temp_db_with_messages))
+                    type_str, checkpoint_blob, metadata = conn.execute(
+                        "SELECT type, checkpoint, metadata FROM checkpoints "
+                        "WHERE thread_id = ? AND checkpoint_id = ?",
+                        ("thread1", "cp_1"),
+                    ).fetchone()
+                    conn.execute(
+                        "INSERT INTO checkpoints "
+                        "(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, "
+                        "metadata) "
+                        "VALUES (?, '', ?, ?, ?, ?)",
+                        ("thread1", "cp_2", type_str, checkpoint_blob, metadata),
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    second = asyncio.run(
+                        sessions.list_threads(include_message_count=True)
+                    )
+                    assert second[0]["message_count"] == 4
+                    assert mock_batch.await_count == 2
         finally:
             sessions._message_count_cache.clear()
 
@@ -612,7 +665,7 @@ class TestPopulateThreadCheckpointDetails:
     """Tests for combined checkpoint-detail enrichment."""
 
     async def test_shared_summary_populates_count_and_prompt_once(self) -> None:
-        """One summary lookup should fill both fields for a thread row."""
+        """One batch lookup should fill both fields for a thread row."""
         threads: list[sessions.ThreadInfo] = [
             {
                 "thread_id": "thread-a",
@@ -631,13 +684,15 @@ class TestPopulateThreadCheckpointDetails:
             ),
             patch.object(
                 sessions,
-                "_load_latest_checkpoint_summary",
+                "_load_latest_checkpoint_summaries_batch",
                 new_callable=AsyncMock,
-                return_value=sessions._CheckpointSummary(
-                    message_count=4,
-                    initial_prompt="hello world",
-                ),
-            ) as mock_summary,
+                return_value={
+                    "thread-a": sessions._CheckpointSummary(
+                        message_count=4,
+                        initial_prompt="hello world",
+                    ),
+                },
+            ) as mock_batch,
         ):
             await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
                 cast(
@@ -651,7 +706,7 @@ class TestPopulateThreadCheckpointDetails:
 
         assert threads[0]["message_count"] == 4
         assert threads[0]["initial_prompt"] == "hello world"
-        assert mock_summary.await_count == 1
+        assert mock_batch.await_count == 1
 
 
 class TestApplyCachedThreadMessageCounts:
@@ -861,6 +916,8 @@ class TestPrewarmThreadMessageCounts:
 
     async def test_prewarm_respects_visible_thread_columns(self) -> None:
         """Prewarm should only fetch checkpoint fields for visible columns."""
+        from deepagents_cli.model_config import ThreadConfig
+
         threads: list[sessions.ThreadInfo] = [
             {
                 "thread_id": "thread-a",
@@ -877,16 +934,20 @@ class TestPrewarmThreadMessageCounts:
                 return_value=threads,
             ),
             patch(
-                "deepagents_cli.model_config.load_thread_columns",
-                return_value={
-                    "thread_id": False,
-                    "messages": True,
-                    "created_at": True,
-                    "updated_at": True,
-                    "git_branch": False,
-                    "initial_prompt": False,
-                    "agent_name": False,
-                },
+                "deepagents_cli.model_config.load_thread_config",
+                return_value=ThreadConfig(
+                    columns={
+                        "thread_id": False,
+                        "messages": True,
+                        "created_at": True,
+                        "updated_at": True,
+                        "git_branch": False,
+                        "initial_prompt": False,
+                        "agent_name": False,
+                    },
+                    relative_time=True,
+                    sort_order="updated_at",
+                ),
             ),
             patch.object(
                 sessions,
@@ -1532,3 +1593,140 @@ class TestDeleteThreadCommandJson:
 
         result = json.loads(buf.getvalue())
         assert result["data"]["deleted"] is False
+
+
+class TestBatchCheckpointSummaries:
+    """Tests for _load_latest_checkpoint_summaries_batch."""
+
+    async def test_batch_returns_summaries_for_multiple_threads(self) -> None:
+        """Batch query should return summaries keyed by thread_id."""
+        serde = JsonPlusSerializer()
+        from langchain_core.messages import HumanMessage
+
+        checkpoint_data = {
+            "channel_values": {"messages": [HumanMessage(content="hello")]},
+        }
+        blob = serde.dumps_typed(checkpoint_data)
+
+        import aiosqlite
+
+        db_path = ":memory:"
+        async with aiosqlite.connect(db_path) as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "type TEXT, checkpoint BLOB, metadata TEXT)"
+            )
+            for tid, cpid in [("t1", "cp_1"), ("t1", "cp_2"), ("t2", "cp_1")]:
+                await conn.execute(
+                    "INSERT INTO checkpoints VALUES (?, '', ?, ?, ?, '{}')",
+                    (tid, cpid, blob[0], blob[1]),
+                )
+            await conn.commit()
+
+            results = await sessions._load_latest_checkpoint_summaries_batch(
+                conn, ["t1", "t2"], serde
+            )
+
+        assert "t1" in results
+        assert "t2" in results
+        assert results["t1"].message_count == 1
+        assert results["t1"].initial_prompt == "hello"
+        assert results["t2"].message_count == 1
+
+    async def test_batch_chunking_returns_all_results(self) -> None:
+        """Chunking across multiple batches should merge all results."""
+        serde = JsonPlusSerializer()
+        from langchain_core.messages import HumanMessage
+
+        checkpoint_data = {
+            "channel_values": {"messages": [HumanMessage(content="hi")]},
+        }
+        blob = serde.dumps_typed(checkpoint_data)
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "type TEXT, checkpoint BLOB, metadata TEXT)"
+            )
+            thread_ids = [f"t{i}" for i in range(5)]
+            for tid in thread_ids:
+                await conn.execute(
+                    "INSERT INTO checkpoints VALUES (?, '', 'cp1', ?, ?, '{}')",
+                    (tid, blob[0], blob[1]),
+                )
+            await conn.commit()
+
+            with patch.object(sessions, "_SQLITE_MAX_VARIABLE_NUMBER", 2):
+                results = await sessions._load_latest_checkpoint_summaries_batch(
+                    conn, thread_ids, serde
+                )
+
+        assert set(results.keys()) == set(thread_ids)
+        for tid in thread_ids:
+            assert results[tid].message_count == 1
+
+    async def test_batch_empty_ids_returns_empty_dict(self) -> None:
+        """Empty thread_ids list should return empty dict without querying."""
+        serde = JsonPlusSerializer()
+        result = await sessions._load_latest_checkpoint_summaries_batch(
+            None,  # type: ignore[arg-type]  # connection not used
+            [],
+            serde,
+        )
+        assert result == {}
+
+    async def test_batch_populate_fills_multiple_threads(self) -> None:
+        """_populate_checkpoint_fields should batch-fill uncached threads."""
+        sessions._message_count_cache.clear()
+        sessions._initial_prompt_cache.clear()
+        try:
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "t1",
+                    "agent_name": "a",
+                    "updated_at": "2025-01-01",
+                    "latest_checkpoint_id": "cp_1",
+                },
+                {
+                    "thread_id": "t2",
+                    "agent_name": "b",
+                    "updated_at": "2025-01-02",
+                    "latest_checkpoint_id": "cp_2",
+                },
+            ]
+            with (
+                patch.object(
+                    sessions,
+                    "_get_jsonplus_serializer",
+                    new_callable=AsyncMock,
+                    return_value=object(),
+                ),
+                patch.object(
+                    sessions,
+                    "_load_latest_checkpoint_summaries_batch",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "t1": sessions._CheckpointSummary(3, "prompt1"),
+                        "t2": sessions._CheckpointSummary(7, "prompt2"),
+                    },
+                ) as mock_batch,
+            ):
+                await sessions._populate_checkpoint_fields(
+                    cast("aiosqlite.Connection", object()),
+                    threads,
+                    include_message_count=True,
+                    include_initial_prompt=True,
+                )
+
+            assert threads[0]["message_count"] == 3
+            assert threads[0]["initial_prompt"] == "prompt1"
+            assert threads[1]["message_count"] == 7
+            assert threads[1]["initial_prompt"] == "prompt2"
+            mock_batch.assert_awaited_once()
+        finally:
+            sessions._message_count_cache.clear()
+            sessions._initial_prompt_cache.clear()

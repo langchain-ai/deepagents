@@ -8,10 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.backends.utils import perform_string_replacement
-
-from deepagents_cli.config import settings
-
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -140,6 +136,8 @@ def resolve_physical_path(
         return None
     try:
         if assistant_id and path_str.startswith("/memories/"):
+            from deepagents_cli.config import settings
+
             agent_dir = settings.get_agent_dir(assistant_id)
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()
@@ -229,6 +227,8 @@ def build_approval_preview(
         old_string = str(args.get("old_string", ""))
         new_string = str(args.get("new_string", ""))
         replace_all = bool(args.get("replace_all"))
+        from deepagents.backends.utils import perform_string_replacement
+
         replacement = perform_string_replacement(
             before, old_string, new_string, replace_all
         )

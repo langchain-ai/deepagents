@@ -6,32 +6,26 @@ completion), async subagents return a task ID immediately, allowing the main
 agent to monitor progress and send updates while the subagent works.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
-from langchain.tools import ToolRuntime  # noqa: TC002
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
+from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
+from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from langchain.agents.middleware.types import ModelRequest
-    from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
-    from langgraph_sdk.schema import Run
 
 
 class AsyncSubAgent(TypedDict):

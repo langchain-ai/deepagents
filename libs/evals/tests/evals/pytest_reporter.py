@@ -159,11 +159,14 @@ def pytest_sessionstart(session: pytest.Session) -> None:
                     **({"public_url": public_url} if public_url else {}),
                 }
             )
-            display = public_url or url
             terminal = session.config.pluginmanager.getplugin("terminalreporter")
             if terminal is not None:
                 terminal.write_line(f"LangSmith experiment: {experiment.name}")
-                terminal.write_line(f"  View results at: {display}")
+                if public_url:
+                    terminal.write_line(f"  Public:   {public_url}")
+                    terminal.write_line(f"  Internal: {url}")
+                else:
+                    terminal.write_line(f"  View results at: {url}")
                 terminal.write_line("")
     except Exception as exc:  # noqa: BLE001
         msg = f"warning: could not pre-create LangSmith experiment: {exc!r}"
@@ -360,7 +363,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if _EXPERIMENT_LINKS:
             terminal_reporter.write_sep("-", "langsmith experiments")
             for link in _EXPERIMENT_LINKS:
-                terminal_reporter.write_line(f"  {link['name']}: {link['url']}")
+                public_url = link.get("public_url")
+                if public_url:
+                    terminal_reporter.write_line(f"  {link['name']}:")
+                    terminal_reporter.write_line(f"    Public:   {public_url}")
+                    terminal_reporter.write_line(f"    Internal: {link['url']}")
+                else:
+                    terminal_reporter.write_line(f"  {link['name']}: {link['url']}")
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:

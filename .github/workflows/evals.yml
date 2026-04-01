@@ -112,6 +112,11 @@ on:
         required: false
         default: ""
         type: string
+      openrouter_provider:
+        description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -237,6 +242,12 @@ jobs:
             flags="$flags --eval-category $cat"
           done
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+
+      - name: "🔒 Apply OpenRouter provider pin"
+        if: inputs.openrouter_provider != ''
+        env:
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+        run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals

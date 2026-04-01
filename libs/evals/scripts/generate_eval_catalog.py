@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import json
 from pathlib import Path
 
@@ -160,11 +161,22 @@ def main() -> None:
     if args.check:
         if not _OUTPUT.exists():
             print(f"MISSING: {_OUTPUT}")
+            print("Run `make eval-catalog` from libs/evals/ to regenerate.")
             raise SystemExit(1)
         actual = _OUTPUT.read_text(encoding="utf-8")
         if actual != expected:
-            print(f"STALE: {_OUTPUT}")
-            print("Run `make eval-catalog` from libs/evals/ to regenerate.")
+            diff = difflib.unified_diff(
+                actual.splitlines(),
+                expected.splitlines(),
+                fromfile="EVAL_CATALOG.md (on disk)",
+                tofile="EVAL_CATALOG.md (expected)",
+                lineterm="",
+            )
+            print(f"STALE: {_OUTPUT}\n")
+            print("\n".join(diff))
+            print(
+                "\nRun `make eval-catalog` from libs/evals/ to regenerate."
+            )
             raise SystemExit(1)
         print(f"OK: {_OUTPUT} is up-to-date")
     else:

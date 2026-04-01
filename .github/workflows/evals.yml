@@ -239,23 +239,7 @@ jobs:
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
-        run: |
-          # Print LangSmith link for monitoring results as they arrive
-          tenant_id=$(curl -sf \
-            -H "x-api-key: $LANGSMITH_API_KEY" \
-            "https://api.smith.langchain.com/sessions?limit=1" \
-            | python3 -c "import sys, json; d = json.load(sys.stdin); print(d[0]['tenant_id'] if d else '')" \
-            2>/dev/null) || true
-          if [ -n "$tenant_id" ]; then
-            echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
-            echo "  View results at: https://smith.langchain.com/o/${tenant_id}/testing"
-            echo ""
-          else
-            echo "::warning::Could not resolve LangSmith tenant ID for experiment URL"
-          fi
-
-          # Run evals
-          make evals
+        run: make evals
 
       - name: "🔍 Check eval report"
         if: "!cancelled()"

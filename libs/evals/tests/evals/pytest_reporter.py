@@ -100,6 +100,76 @@ def pytest_configure(config: pytest.Config) -> None:
     _evals_utils._on_efficiency_result = _EFFICIENCY_RESULTS.append
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Pre-create the LangSmith experiment so the comparison URL is known upfront.
+
+    Hydrates `_LangSmithTestSuite._instances` before any test runs. When the
+    langsmith pytest plugin calls `from_test` during the first test, it finds
+    the pre-created instance and reuses it instead of creating a new session.
+
+    This is the same private API that `_collect_experiment_links` already
+    depends on.
+    """
+    test_suite_name = os.environ.get("LANGSMITH_TEST_SUITE")
+    if not test_suite_name:
+        return
+
+    try:
+        from langsmith import client as ls_client  # noqa: I001
+        from langsmith.testing._internal import (
+            _LangSmithTestSuite,
+            _get_test_suite,
+            _start_experiment,
+        )
+    except ImportError:
+        return
+
+    try:
+        client = ls_client.Client()
+        dataset = _get_test_suite(client, test_suite_name)
+
+        model_opt = session.config.getoption("--model", default=None)
+        model_name = model_opt or str(get_default_model().model)
+        experiment_metadata = {
+            "model": model_name,
+            "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
+            "deepagents_version": __version__,
+        }
+
+        experiment = _start_experiment(client, dataset, experiment_metadata)
+
+        with _LangSmithTestSuite._lock:
+            if not _LangSmithTestSuite._instances:
+                _LangSmithTestSuite._instances = {}
+            _LangSmithTestSuite._instances[test_suite_name] = _LangSmithTestSuite(
+                client, experiment, dataset, experiment_metadata
+            )
+
+        dataset_url = getattr(dataset, "url", None)
+        experiment_id = experiment.id
+        if dataset_url and experiment_id:
+            url = f"{dataset_url}/compare?selectedSessions={experiment_id}"
+            public_url = _get_public_experiment_url(
+                _LangSmithTestSuite._instances[test_suite_name], experiment_id
+            )
+            _EXPERIMENT_LINKS.append(
+                {
+                    "name": experiment.name,
+                    "url": url,
+                    **({"public_url": public_url} if public_url else {}),
+                }
+            )
+            display = public_url or url
+            terminal = session.config.pluginmanager.getplugin("terminalreporter")
+            if terminal is not None:
+                terminal.write_line(f"LangSmith experiment: {experiment.name}")
+                terminal.write_line(f"  View results at: {display}")
+                terminal.write_line("")
+    except Exception as exc:  # noqa: BLE001
+        msg = f"warning: could not pre-create LangSmith experiment: {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config,  # noqa: ARG001
     items: list[pytest.Item],
@@ -232,7 +302,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if session.exitstatus == 1:
         session.exitstatus = 0
 
-    _EXPERIMENT_LINKS.extend(_collect_experiment_links())
+    if not _EXPERIMENT_LINKS:
+        _EXPERIMENT_LINKS.extend(_collect_experiment_links())
 
     correctness = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
     step_ratio = _micro_step_ratio()

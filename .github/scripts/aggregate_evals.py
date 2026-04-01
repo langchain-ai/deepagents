@@ -152,7 +152,7 @@ def main() -> None:
         lines.extend(cat_table)
 
     # --- LangSmith experiment links ---
-    experiment_entries: list[tuple[str, str, str]] = []  # (model, name, url)
+    experiment_entries: list[tuple[str, str, str, str]] = []  # (model, name, url, public_url)
     for r in rows:
         model = str(r.get("model", ""))
         # Prefer rich experiment_links (name + url); fall back to bare experiment_urls
@@ -163,19 +163,23 @@ def main() -> None:
                 if isinstance(link, dict):
                     name = str(link.get("name", ""))
                     url = str(link.get("url", ""))
+                    public_url = str(link.get("public_url", ""))
                     if url:
-                        experiment_entries.append((model, name or url, url))
+                        experiment_entries.append((model, name or url, url, public_url))
         else:
             raw_urls = r.get("experiment_urls") or []
             if isinstance(raw_urls, list):
                 for url in raw_urls:
-                    experiment_entries.append((model, str(url), str(url)))
+                    experiment_entries.append((model, str(url), str(url), ""))
     if experiment_entries:
         lines.append("")
         lines.append("## LangSmith experiments")
         lines.append("")
-        for model, name, url in experiment_entries:
-            lines.append(f"- **{model}**: [{name}]({url})")
+        for model, name, url, public_url in experiment_entries:
+            if public_url:
+                lines.append(f"- **{model}**: [{name}]({public_url}) ([internal]({url}))")
+            else:
+                lines.append(f"- **{model}**: [{name}]({url})")
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:

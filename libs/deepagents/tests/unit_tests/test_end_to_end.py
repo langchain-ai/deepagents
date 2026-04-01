@@ -1,11 +1,12 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import json
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
@@ -1885,3 +1886,568 @@ class TestStateBackendConfigKeys:
         dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
         factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
         assert len(factory_warnings) >= 1
+
+
+class TestAsyncSubagentEndToEnd:
+    """End-to-end tests for async (non-blocking) subagent tools.
+
+    These tests wire up ``create_deep_agent`` with ``AsyncSubAgent`` specs and
+    mock the LangGraph SDK client to verify the full agent loop: model emits a
+    tool call → tool executes against the (mocked) remote server → state is
+    updated with ``async_tasks`` → model sees the result and responds.
+    """
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_async_task(self, mock_get_client: MagicMock) -> None:
+        """Agent launches an async subagent and receives a task ID."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_001"}
+        mock_client.runs.create.return_value = {"run_id": "run_001"}
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Research quantum computing",
+                                    "subagent_type": "researcher",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I've launched the researcher. Task ID: thread_001"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics in depth.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Research quantum computing")]})
+
+        assert "messages" in result
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("thread_001" in m.content for m in tool_messages)
+
+        async_tasks = result.get("async_tasks", {})
+        assert "thread_001" in async_tasks
+        task = async_tasks["thread_001"]
+        assert task["agent_name"] == "researcher"
+        assert task["status"] == "running"
+        assert task["run_id"] == "run_001"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_check_completed_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then checks it after completion."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_002"}
+        mock_client.runs.create.return_value = {"run_id": "run_002"}
+        mock_client.runs.get.return_value = {"run_id": "run_002", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "assistant", "content": "Quantum computing uses qubits."},
+                ]
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Research quantum computing",
+                                    "subagent_type": "researcher",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "thread_002"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The research is complete: Quantum computing uses qubits."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Research quantum computing")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        check_msg = next(m for m in tool_messages if m.tool_call_id == "call_check")
+        parsed = json.loads(check_msg.content)
+        assert parsed["status"] == "success"
+        assert "qubits" in parsed["result"]
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_002"]["status"] == "success"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_cancel_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then cancels it."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_003"}
+        mock_client.runs.create.return_value = {"run_id": "run_003"}
+        mock_client.runs.cancel.return_value = None
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Long running analysis",
+                                    "subagent_type": "analyst",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "cancel_async_task",
+                                "args": {"task_id": "thread_003"},
+                                "id": "call_cancel",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The analysis task has been cancelled."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "analyst",
+                    "description": "Performs data analysis.",
+                    "graph_id": "analysis_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Cancel the analysis")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        cancel_msg = next(m for m in tool_messages if m.tool_call_id == "call_cancel")
+        assert "Cancelled" in cancel_msg.content
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_003"]["status"] == "cancelled"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_update_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then sends an update message."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_004"}
+        mock_client.runs.create.side_effect = [
+            {"run_id": "run_004"},
+            {"run_id": "run_004_updated"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Write a report on AI trends",
+                                    "subagent_type": "writer",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "update_async_task",
+                                "args": {
+                                    "task_id": "thread_004",
+                                    "message": "Focus specifically on LLM trends",
+                                },
+                                "id": "call_update",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I've updated the writer with new instructions."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "writer",
+                    "description": "Writes reports.",
+                    "graph_id": "writer_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Update the report")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        update_msg = next(m for m in tool_messages if m.tool_call_id == "call_update")
+        assert "Updated" in update_msg.content
+
+        async_tasks = result.get("async_tasks", {})
+        task = async_tasks["thread_004"]
+        assert task["run_id"] == "run_004_updated"
+        assert task["status"] == "running"
+
+        mock_client.runs.create.assert_any_call(
+            thread_id="thread_004",
+            assistant_id="writer_graph",
+            input={"messages": [{"role": "user", "content": "Focus specifically on LLM trends"}]},
+            multitask_strategy="interrupt",
+        )
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_list_async_tasks(self, mock_get_client: MagicMock) -> None:
+        """Agent starts two tasks, then lists them."""
+        mock_client = MagicMock()
+        mock_client.threads.create.side_effect = [
+            {"thread_id": "thread_A"},
+            {"thread_id": "thread_B"},
+        ]
+        mock_client.runs.create.side_effect = [
+            {"run_id": "run_A"},
+            {"run_id": "run_B"},
+        ]
+        mock_client.runs.get.side_effect = [
+            {"run_id": "run_A", "status": "running"},
+            {"run_id": "run_B", "status": "success"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Task A",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_start_a",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Task B",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_start_b",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "list_async_tasks",
+                                "args": {},
+                                "id": "call_list",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Here are the task statuses."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "General worker.",
+                    "graph_id": "worker_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Start two tasks and list them")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        list_msg = next(m for m in tool_messages if m.tool_call_id == "call_list")
+        assert "2 tracked task(s)" in list_msg.content
+        assert "thread_A" in list_msg.content
+        assert "thread_B" in list_msg.content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_invalid_subagent_type(self, mock_get_client: MagicMock) -> None:
+        """Agent tries to start a subagent with an invalid type and gets an error."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Do something",
+                                    "subagent_type": "nonexistent",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="That subagent type doesn't exist."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Use a nonexistent agent")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "Unknown async subagent type" in tool_messages[0].content
+        assert "`researcher`" in tool_messages[0].content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_nonexistent_task(self, mock_get_client: MagicMock) -> None:
+        """Agent tries to check a task that doesn't exist."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "nonexistent_thread"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="That task doesn't exist."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Check a nonexistent task")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "No tracked task found" in tool_messages[0].content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_async_subagents_coexist_with_sync_subagents(self, mock_get_client: MagicMock) -> None:
+        """Async and sync subagent tools are both available on the same agent."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_async"}
+        mock_client.runs.create.return_value = {"run_id": "run_async"}
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Remote research",
+                                    "subagent_type": "remote-researcher",
+                                },
+                                "id": "call_async",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Launched the remote researcher."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "remote-researcher",
+                    "description": "Researches remotely.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                },
+            ],
+        )
+
+        tool_names = set(agent.nodes["tools"].bound._tools_by_name.keys())
+        assert "task" in tool_names
+        assert "start_async_task" in tool_names
+        assert "check_async_task" in tool_names
+        assert "update_async_task" in tool_names
+        assert "cancel_async_task" in tool_names
+        assert "list_async_tasks" in tool_names
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do remote research")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("thread_async" in m.content for m in tool_messages)
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_check_errored_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task that errors, then checks it and sees the error."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_err"}
+        mock_client.runs.create.return_value = {"run_id": "run_err"}
+        mock_client.runs.get.return_value = {
+            "run_id": "run_err",
+            "status": "error",
+            "error": "Out of memory",
+        }
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Heavy computation",
+                                    "subagent_type": "compute",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "thread_err"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The task failed with an out of memory error."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "compute",
+                    "description": "Runs heavy computations.",
+                    "graph_id": "compute_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Run heavy computation")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        check_msg = next(m for m in tool_messages if m.tool_call_id == "call_check")
+        parsed = json.loads(check_msg.content)
+        assert parsed["status"] == "error"
+        assert "Out of memory" in parsed["error"]
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_err"]["status"] == "error"

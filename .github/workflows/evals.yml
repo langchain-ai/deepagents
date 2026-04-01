@@ -20,6 +20,8 @@
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
 name: "📊 Evals"
+run-name: >-
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ inputs.eval_categories && format(' [{0}]', inputs.eval_categories) || '' }}
 
 on:
   workflow_dispatch:
@@ -145,22 +147,27 @@ jobs:
           else
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # Build eval_categories — bullet list for multiple, inline for single/(all)
+          # Show eval categories as both comma-separated and bulleted list
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-            if [ "${#cats[@]}" -eq 1 ]; then
-              cat=$(echo "${cats[0]}" | xargs)
-              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              bullets=""
-              for cat in "${cats[@]}"; do
-                cat=$(echo "$cat" | xargs)
-                bullets="${bullets}<li><code>${cat}</code></li>"
-              done
-              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
-            fi
+            # Comma-separated row
+            comma_list=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
+            done
+            echo "| \`eval_categories\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+            # Bulleted list row
+            bulleted=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
+              bulleted="${bulleted}• <code>${cat}</code>"
+            done
+            echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -239,36 +246,6 @@ jobs:
             echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
             exit 1
           fi
-
-      - name: "📝 Write workflow summary"
-        if: "!cancelled()"
-        run: |
-          {
-            echo "## Eval run"
-            echo ""
-            echo "- Model: ${{ matrix.model }}"
-            links=$(python -c "
-            import json, sys
-            try:
-                with open('evals_report.json') as f:
-                    data = json.load(f)
-                for link in data.get('experiment_links', []):
-                    name = link.get('name', '')
-                    url = link.get('url', '')
-                    if name and url:
-                        print(f'- [{name}]({url})')
-                    elif url:
-                        print(f'- {url}')
-            except Exception as exc:
-                print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
-            ")
-            if [ -n "$links" ]; then
-              echo ""
-              echo "### LangSmith experiments"
-              echo ""
-              echo "$links"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📤 Upload eval report"
         if: "!cancelled()"

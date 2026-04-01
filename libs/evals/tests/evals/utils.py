@@ -940,10 +940,14 @@ def run_agent(
         thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Build clean inputs for the LangSmith dataset example. This replaces the
-    # auto-captured fixture params (e.g. tmp_path) that @pytest.mark.langsmith
-    # picks up via inspect.signature. We must update both t.log_inputs (test case)
-    # AND run_tree.inputs (used by sync_example) for the override to stick.
+    # Build clean inputs for the LangSmith dataset example. The
+    # @pytest.mark.langsmith decorator auto-captures all test function params
+    # (e.g. tmp_path) via inspect.signature into run_tree.inputs. Calling
+    # t.log_inputs() only *merges* into run_tree.inputs (via add_inputs),
+    # so the unwanted auto-captured keys persist. We also assign
+    # run_tree.inputs directly to fully replace them, since _end_run passes
+    # run_tree.inputs (not _TestCase.inputs) to sync_example when
+    # creating/updating the dataset example.
     run_tree = get_current_run_tree()
     model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
     logged_inputs: dict[str, Any] = {

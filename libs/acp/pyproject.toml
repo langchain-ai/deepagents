@@ -57,6 +57,9 @@ Twitter = "https://x.com/LangChain"
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
 [tool.ty.environment]
 python-version = "3.11"
 

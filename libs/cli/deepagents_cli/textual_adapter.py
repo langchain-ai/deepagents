@@ -8,12 +8,12 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
+    from typing import Protocol
 
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -22,12 +22,26 @@ if TYPE_CHECKING:
         RejectDecision,
     )
     from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableConfig
     from langgraph.types import Command, Interrupt
+    from pydantic import TypeAdapter
     from rich.console import Console
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
-from pydantic import TypeAdapter, ValidationError
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
+
+    class _TokensUpdateCallback(Protocol):
+        """Callback signature for `_on_tokens_update`."""
+
+        def __call__(self, count: int, *, approximate: bool = False) -> None: ...
+
+    class _TokensShowCallback(Protocol):
+        """Callback signature for `_on_tokens_show`."""
+
+        def __call__(self, *, approximate: bool = False) -> None: ...
+
 
 from deepagents_cli._ask_user_types import AskUserRequest
 from deepagents_cli._cli_context import CLIContext  # noqa: TC001
@@ -38,7 +52,9 @@ from deepagents_cli._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.formatting import format_duration
 from deepagents_cli.hooks import dispatch_hook
 from deepagents_cli.input import MediaTracker, parse_file_mentions
 from deepagents_cli.media_utils import create_multimodal_content
@@ -53,9 +69,6 @@ from deepagents_cli.widgets.messages import (
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
-
-_git_branch_cache: dict[str, str | None] = {}
-"""Cache git-branch lookups by current working directory."""
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -75,27 +88,10 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """
     global _hitl_adapter_cache  # noqa: PLW0603
     if _hitl_adapter_cache is None:
+        from pydantic import TypeAdapter
+
         _hitl_adapter_cache = TypeAdapter(hitl_request_type)
     return _hitl_adapter_cache
-
-
-def _format_duration(seconds: float) -> str:
-    """Format a duration in seconds into a human-readable string.
-
-    Args:
-        seconds: Duration in seconds.
-
-    Returns:
-        Formatted string like `"2.3s"`, `"5m 12s"`, or `"1h 23m 4s"`.
-    """
-    rounded = round(seconds, 1)
-    if rounded < 60:  # noqa: PLR2004
-        return f"{rounded:.1f}s"
-    minutes, secs = divmod(int(rounded), 60)
-    if minutes < 60:  # noqa: PLR2004
-        return f"{minutes}m {secs}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m {secs}s"
 
 
 def print_usage_table(
@@ -163,95 +159,28 @@ def print_usage_table(
     if has_time:
         console.print()
         console.print(
-            f"Agent active  {_format_duration(wall_time)}",
+            f"Agent active  {format_duration(wall_time)}",
             style="dim",
             highlight=False,
         )
 
 
-if TYPE_CHECKING:
-    # Type alias matching HITLResponse["decisions"] element type
-    HITLDecision = ApproveDecision | EditDecision | RejectDecision
-
-_ASK_USER_INTERRUPT_ADAPTER = TypeAdapter(AskUserRequest)
-"""Validator for incoming `ask_user` interrupt payloads."""
+_ask_user_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the `ask_user` interrupt validator."""
 
 
-def _get_git_branch() -> str | None:
-    """Return the current git branch name, or None if not in a repo."""
-    import subprocess  # noqa: S404
-
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
-        return None
-    if cwd in _git_branch_cache:
-        return _git_branch_cache[cwd]
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
-
-
-def _build_stream_config(
-    thread_id: str,
-    assistant_id: str | None,
-    *,
-    sandbox_type: str | None = None,
-) -> dict[str, Any]:
-    """Build the LangGraph stream config dict.
-
-    The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`),
-    git branch, and sandbox type in metadata when available.
-
-    Args:
-        thread_id: The CLI session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
-        sandbox_type: Sandbox provider name for trace metadata, or `None`
-            if no sandbox is active.
+def _get_ask_user_adapter() -> TypeAdapter:
+    """Return a cached `TypeAdapter(AskUserRequest)`.
 
     Returns:
-        Config dict with `configurable` and `metadata` keys.
+        Shared `TypeAdapter` instance.
     """
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
-    if assistant_id:
-        metadata.update(
-            {
-                "assistant_id": assistant_id,
-                "agent_name": assistant_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
+    global _ask_user_adapter_cache  # noqa: PLW0603
+    if _ask_user_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
+    return _ask_user_adapter_cache
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -280,49 +209,6 @@ class TextualUIAdapter:
     Textual UI, allowing streaming output to be rendered as widgets.
     """
 
-    _mount_message: Callable[..., Awaitable[None]]
-    """Async callback to mount a message widget to the chat."""
-
-    _update_status: Callable[[str], None]
-    """Callback to update the status bar text."""
-
-    _request_approval: Callable[..., Awaitable[Any]]
-    """Async callback that returns a Future for HITL approval."""
-
-    _on_auto_approve_enabled: Callable[[], None] | None
-    """Callback invoked when auto-approve is enabled via the HITL approval menu.
-
-    Fired when the user selects "Auto-approve all" from an approval dialog,
-    allowing the app to sync its status bar and session state.
-    """
-
-    _request_ask_user: (
-        Callable[
-            [list[Question]],
-            Awaitable[asyncio.Future[AskUserWidgetResult] | None],
-        ]
-        | None
-    )
-    """Async callback for `ask_user` interrupts.
-
-    When awaited, returns a `Future` that resolves to user answers.
-    """
-
-    _set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None
-    """Callback to show/hide loading spinner."""
-
-    _set_active_message: Callable[[str | None], None] | None
-    """Callback to set the active streaming message ID (pass `None` to clear)."""
-
-    _sync_message_content: Callable[[str, str], None] | None
-    """Callback to sync final message content back to the store after streaming."""
-
-    _current_tool_messages: dict[str, ToolCallMessage]
-    """Map of tool call IDs to their message widgets."""
-
-    _token_tracker: Any
-    """Token usage tracker for displaying counts."""
-
     def __init__(
         self,
         mount_message: Callable[..., Awaitable[None]],
@@ -340,39 +226,52 @@ class TextualUIAdapter:
             | None
         ) = None,
     ) -> None:
-        """Initialize the adapter.
-
-        Args:
-            mount_message: Async callable to mount a message widget.
-            update_status: Callable to update the status bar message.
-            request_approval: Async callable that returns a Future for HITL approval.
-            on_auto_approve_enabled: Callback fired when the user selects
-                "Auto-approve all" from an approval dialog.
-
-                Used by the app to sync the status bar indicator and session state.
-            set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
-            set_active_message: Callback to set the active streaming message ID.
-            sync_message_content: Callback to sync final content back to the
-                message store after streaming completes.
-            request_ask_user: Async callable that displays an `ask_user` widget
-                and returns a `Future` resolving to user answers.
-        """
+        """Initialize the adapter."""
         self._mount_message = mount_message
+        """Async callback to mount a message widget to the chat."""
+
         self._update_status = update_status
+        """Callback to update the status bar text."""
+
         self._request_approval = request_approval
+        """Async callback that returns a Future for HITL approval."""
+
         self._on_auto_approve_enabled = on_auto_approve_enabled
+        """Callback invoked when auto-approve is enabled via the HITL approval
+        menu.
+
+        Fired when the user selects "Auto-approve all" from an approval dialog,
+        allowing the app to sync its status bar and session state.
+        """
+
         self._set_spinner = set_spinner
+        """Callback to show/hide loading spinner."""
+
         self._set_active_message = set_active_message
+        """Callback to set the active streaming message ID (pass `None` to clear)."""
+
         self._sync_message_content = sync_message_content
+        """Callback to sync final message content back to the store after streaming."""
+
         self._request_ask_user = request_ask_user
+        """Async callback for `ask_user` interrupts.
+
+        When awaited, returns a `Future` that resolves to user answers.
+        """
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
-        self._token_tracker: Any = None
+        """Map of tool call IDs to their message widgets."""
 
-    def set_token_tracker(self, tracker: Any) -> None:  # noqa: ANN401  # Dynamic tracker type from Textual
-        """Set the token tracker for usage tracking."""
-        self._token_tracker = tracker
+        # Token display callbacks (set by the app after construction)
+        self._on_tokens_update: _TokensUpdateCallback | None = None
+        """Called with total context tokens after each LLM response."""
+
+        self._on_tokens_hide: Callable[[], None] | None = None
+        """Called to hide the token display during streaming."""
+
+        self._on_tokens_show: _TokensShowCallback | None = None
+        """Called to restore the token display with the cached value."""
 
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
@@ -464,6 +363,8 @@ async def execute_task_textual(
     context: CLIContext | None = None,
     *,
     sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
+    turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -482,6 +383,15 @@ async def execute_task_textual(
             to the graph via `context=`.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
+        turn_stats: Pre-created `SessionStats` to accumulate into.
+
+            When the caller holds a reference to the same object, stats are
+            available even if this coroutine is cancelled before it can return.
+
+            If `None`, a new instance is created internally.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -497,8 +407,10 @@ async def execute_task_textual(
     )
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
+    from pydantic import ValidationError
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+    ask_user_adapter = _get_ask_user_adapter()
 
     # Parse file mentions and inject content if any — offload blocking I/O
     prompt_text, mentioned_files = await asyncio.to_thread(
@@ -539,22 +451,39 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = _build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    turn_stats = SessionStats()
+    if turn_stats is None:
+        turn_stats = SessionStats()
     start_time = time.monotonic()
+
+    # Warn if token display callbacks are only partially wired — all three
+    # should be set together to avoid inconsistent status-bar behavior.
+    token_cbs = (
+        adapter._on_tokens_update,
+        adapter._on_tokens_hide,
+        adapter._on_tokens_show,
+    )
+    if any(token_cbs) and not all(token_cbs):
+        logger.warning(
+            "Token callbacks partially wired (update=%s, hide=%s, show=%s); "
+            "token display may behave inconsistently",
+            adapter._on_tokens_update is not None,
+            adapter._on_tokens_hide is not None,
+            adapter._on_tokens_show is not None,
+        )
 
     # Show spinner
     if adapter._set_spinner:
         await adapter._set_spinner("Thinking")
 
     # Hide token display during streaming (will be shown with accurate count at end)
-    if adapter._token_tracker:
-        adapter._token_tracker.hide()
+    if adapter._on_tokens_hide:
+        adapter._on_tokens_hide()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
@@ -569,9 +498,10 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {
-        "messages": [{"role": "user", "content": message_content}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -622,9 +552,7 @@ async def execute_task_textual(
                                 ):
                                     try:
                                         validated_ask_user = (
-                                            _ASK_USER_INTERRUPT_ADAPTER.validate_python(
-                                                iv
-                                            )
+                                            ask_user_adapter.validate_python(iv)
                                         )
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user
@@ -1229,107 +1157,169 @@ async def execute_task_textual(
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
-    except asyncio.CancelledError:
-        # Clear active message immediately so it won't block pruning
-        # If we don't do this, the store still thinks it's actice and protects
-        # from pruning, which breaks get_messages_to_prune(), potentially
-        # blocking all future pruning
-        if adapter._set_active_message:
-            adapter._set_active_message(None)
-
-        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
-        if adapter._set_spinner:
-            await adapter._set_spinner(None)
-
-        await adapter._mount_message(AppMessage("Interrupted by user"))
-
-        # Save accumulated state before marking tools as rejected (best-effort)
-        # State update failures shouldn't prevent cleanup
-        try:
-            interrupted_msg = _build_interrupted_ai_message(
-                pending_text_by_namespace,
-                adapter._current_tool_messages,
-            )
-            if interrupted_msg:
-                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
-
-            cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. "
-                "Previous operation was cancelled."
-            )
-            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
-        except Exception:
-            logger.debug("Failed to save interrupted state", exc_info=True)
-
-        # Mark tools as rejected AFTER saving state
-        for tool_msg in list(adapter._current_tool_messages.values()):
-            tool_msg.set_rejected()
-        adapter._current_tool_messages.clear()
-
-        # Report tokens even on interrupt (or restore display if none captured)
-        turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if adapter._token_tracker:
-            if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(
-                    captured_input_tokens, captured_output_tokens
-                )
-            else:
-                adapter._token_tracker.show()  # Restore previous value
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace=pending_text_by_namespace,
+            captured_input_tokens=captured_input_tokens,
+            captured_output_tokens=captured_output_tokens,
+            turn_stats=turn_stats,
+            start_time=start_time,
+        )
         return turn_stats
 
-    except KeyboardInterrupt:
-        # Clear active message immediately so it won't block pruning
-        # If we don't do this, the store still thinks it's actice and protects
-        # from pruning, which breaks get_messages_to_prune(), potentially
-        # blocking all future pruning
-        if adapter._set_active_message:
-            adapter._set_active_message(None)
-
-        # Hide spinner (may still show "Offloading" if interrupted mid-offload)
-        if adapter._set_spinner:
-            await adapter._set_spinner(None)
-
-        await adapter._mount_message(AppMessage("Interrupted by user"))
-
-        # Save accumulated state before marking tools as rejected (best-effort)
-        # State update failures shouldn't prevent cleanup
-        try:
-            interrupted_msg = _build_interrupted_ai_message(
-                pending_text_by_namespace,
-                adapter._current_tool_messages,
-            )
-            if interrupted_msg:
-                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
-
-            cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. "
-                "Previous operation was cancelled."
-            )
-            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
-        except Exception:
-            logger.debug("Failed to save interrupted state", exc_info=True)
-
-        # Mark tools as rejected AFTER saving state
-        for tool_msg in list(adapter._current_tool_messages.values()):
-            tool_msg.set_rejected()
-        adapter._current_tool_messages.clear()
-
-        # Report tokens even on interrupt (or restore display if none captured)
-        turn_stats.wall_time_seconds = time.monotonic() - start_time
-        if adapter._token_tracker:
-            if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(
-                    captured_input_tokens, captured_output_tokens
-                )
-            else:
-                adapter._token_tracker.show()  # Restore previous value
-        return turn_stats
-
-    # Update token tracker and return stats
+    # Update token count and return stats
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
-        adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+    await _report_and_persist_tokens(
+        adapter,
+        agent,
+        config,
+        captured_input_tokens,
+        captured_output_tokens,
+    )
     return turn_stats
+
+
+async def _handle_interrupt_cleanup(
+    *,
+    adapter: TextualUIAdapter,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    pending_text_by_namespace: dict[tuple, str],
+    captured_input_tokens: int,
+    captured_output_tokens: int,
+    turn_stats: SessionStats,
+    start_time: float,
+) -> None:
+    """Shared cleanup for CancelledError and KeyboardInterrupt.
+
+    Args:
+        adapter: UI adapter with display callbacks.
+        agent: The LangGraph agent.
+        config: Runnable config with `thread_id`.
+        pending_text_by_namespace: Accumulated text per namespace.
+        captured_input_tokens: Input tokens captured before interrupt.
+        captured_output_tokens: Output tokens captured before interrupt.
+        turn_stats: Stats for the current turn.
+        start_time: Monotonic timestamp when the turn began.
+    """
+    from langchain_core.messages import HumanMessage
+
+    # Clear active message immediately so it won't block pruning.
+    # If we don't do this, the store still thinks it's active and protects
+    # from pruning, which breaks get_messages_to_prune(), potentially
+    # blocking all future pruning.
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
+
+    # Hide spinner (may still show "Offloading" if interrupted mid-offload)
+    if adapter._set_spinner:
+        await adapter._set_spinner(None)
+
+    await adapter._mount_message(AppMessage("Interrupted by user"))
+
+    interrupted_msg = _build_interrupted_ai_message(
+        pending_text_by_namespace,
+        adapter._current_tool_messages,
+    )
+
+    # Save accumulated state before marking tools as rejected (best-effort).
+    # State update failures shouldn't prevent cleanup.
+    try:
+        if interrupted_msg:
+            await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
+        cancellation_msg = HumanMessage(
+            content="[SYSTEM] Task interrupted by user. "
+            "Previous operation was cancelled."
+        )
+        await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    except Exception:
+        logger.warning("Failed to save interrupted state", exc_info=True)
+
+    # Mark tools as rejected AFTER saving state
+    for tool_msg in list(adapter._current_tool_messages.values()):
+        tool_msg.set_rejected()
+    adapter._current_tool_messages.clear()
+
+    # Keep the token count marked stale whenever interrupted state was captured,
+    # including tool-only turns after assistant text was already flushed.
+    approximate = interrupted_msg is not None
+
+    turn_stats.wall_time_seconds = time.monotonic() - start_time
+    await _report_and_persist_tokens(
+        adapter,
+        agent,
+        config,
+        captured_input_tokens,
+        captured_output_tokens,
+        shield=True,
+        approximate=approximate,
+    )
+
+
+async def _persist_context_tokens(
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    tokens: int,
+) -> None:
+    """Best-effort persist of the context token count into graph state.
+
+    Args:
+        agent: The LangGraph agent (must support `aupdate_state`).
+        config: Runnable config with `thread_id`.
+        tokens: Total context tokens to persist.
+    """
+    try:
+        await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except Exception:  # non-critical; stale count on resume is acceptable
+        logger.warning(
+            "Failed to persist _context_tokens=%d; token count may be stale on resume",
+            tokens,
+            exc_info=True,
+        )
+
+
+async def _report_and_persist_tokens(
+    adapter: TextualUIAdapter,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    captured_input_tokens: int,
+    captured_output_tokens: int,
+    *,
+    shield: bool = False,
+    approximate: bool = False,
+) -> None:
+    """Update the token display and best-effort persist to graph state.
+
+    Args:
+        adapter: UI adapter with token callbacks.
+        agent: The LangGraph agent.
+        config: Runnable config with `thread_id` in its configurable dict.
+        captured_input_tokens: Total input tokens captured during the turn.
+        captured_output_tokens: Total output tokens captured during the turn.
+        shield: When `True`, suppress exceptions and `CancelledError` from the
+            persist call so that interrupt handlers can safely await this.
+        approximate: When `True`, signal to the UI that the count is stale
+            (e.g. after an interrupted generation) by appending "+".
+    """
+    if captured_input_tokens or captured_output_tokens:
+        if adapter._on_tokens_update:
+            adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
+        if shield:
+            try:
+                await _persist_context_tokens(agent, config, captured_input_tokens)
+            except (Exception, asyncio.CancelledError):
+                logger.debug(
+                    "Token persist suppressed during interrupt cleanup",
+                    exc_info=True,
+                )
+        else:
+            await _persist_context_tokens(agent, config, captured_input_tokens)
+    elif adapter._on_tokens_show:
+        adapter._on_tokens_show(approximate=approximate)
 
 
 async def _flush_assistant_text_ns(

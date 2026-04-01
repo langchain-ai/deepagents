@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -59,6 +59,20 @@ SUMMARY_JSON ?= evals_summary.json
 
 radar-from-summary: ## Generate radar chart from evals_summary.json
 	uv run --extra charts python scripts/generate_radar.py --summary $(SUMMARY_JSON) -o $(RADAR_OUTPUT)
+
+######################
+# MODEL GROUPS
+######################
+
+model-groups: ## Regenerate MODEL_GROUPS.md from the canonical registry
+	uv run python scripts/generate_model_groups.py
+
+######################
+# EVAL CATALOG
+######################
+
+eval-catalog: ## Regenerate EVAL_CATALOG.md from eval test files
+	uv run python scripts/generate_eval_catalog.py
 
 ######################
 # LINTING AND FORMATTING

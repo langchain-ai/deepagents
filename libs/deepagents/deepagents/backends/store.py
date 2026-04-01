@@ -7,10 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
-from langgraph.config import get_config
-
-if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
+from langgraph.config import get_config, get_store
+from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item
 from langgraph.typing import ContextT, StateT
 
@@ -41,7 +39,6 @@ from deepagents.backends.utils import (
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
     from langgraph.runtime import Runtime
 
 
@@ -113,15 +110,22 @@ class StoreBackend(BackendProtocol):
 
     def __init__(
         self,
-        runtime: "ToolRuntime",
+        runtime: object = None,
         *,
+        store: BaseStore | None = None,
         namespace: NamespaceFactory | None = None,
         file_format: FileFormat = "v2",
     ) -> None:
-        r"""Initialize StoreBackend with runtime.
+        r"""Initialize StoreBackend.
 
         Args:
-            runtime: The ToolRuntime instance providing store access and configuration.
+            runtime: Deprecated - accepted for backward compatibility but
+                ignored.  Store and context are now obtained via
+                ``get_store()`` / ``get_runtime()``.
+            store: Optional ``BaseStore`` instance.  When provided, this store
+                is used directly.  When ``None`` (the default), the store is
+                obtained at call time via ``get_store()``, which requires
+                a LangGraph graph execution context.
             namespace: Optional callable that takes a BackendContext and returns
                 a namespace tuple. This provides full flexibility for namespace resolution.
                 We forbid * which is a wild card for now.
@@ -140,24 +144,36 @@ class StoreBackend(BackendProtocol):
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
-        self.runtime = runtime
+        if runtime is not None:
+            warnings.warn(
+                "Passing `runtime` to StoreBackend is deprecated and will be "
+                "removed in v0.7. StoreBackend now obtains store "
+                "and context via `get_store()` / `get_runtime()`. Simply use "
+                "`StoreBackend()` or `StoreBackend(store=my_store)` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._store = store
         self._namespace = namespace
         self._file_format = file_format
 
     def _get_store(self) -> BaseStore:
-        """Get the store instance.
+        """Return the store instance.
 
-        Returns:
-            BaseStore instance from the runtime.
-
-        Raises:
-            ValueError: If no store is available in the runtime.
+        Uses the store passed at init if available, otherwise falls back to
+        ``get_store()`` which reads from the LangGraph execution context.
         """
-        store = self.runtime.store
-        if store is None:
-            msg = "Store is required but not available in runtime"
-            raise ValueError(msg)
-        return store
+        if self._store is not None:
+            return self._store
+        try:
+            return get_store()
+        except (RuntimeError, KeyError):
+            msg = (
+                "StoreBackend must be used inside a LangGraph graph execution "
+                "(e.g. via create_deep_agent), or initialized with an explicit "
+                "store: StoreBackend(store=my_store)"
+            )
+            raise RuntimeError(msg) from None
 
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
@@ -166,8 +182,11 @@ class StoreBackend(BackendProtocol):
         Otherwise, uses legacy assistant_id detection from metadata (deprecated).
         """
         if self._namespace is not None:
-            state = getattr(self.runtime, "state", None)
-            ctx = BackendContext(state=state, runtime=self.runtime)  # ty: ignore[invalid-argument-type]
+            try:
+                runtime = get_runtime()
+            except RuntimeError:
+                runtime = None
+            ctx = BackendContext(state=None, runtime=runtime)  # type: ignore[arg-type]
             return _validate_namespace(self._namespace(ctx))
 
         return self._get_namespace_legacy()
@@ -175,34 +194,20 @@ class StoreBackend(BackendProtocol):
     def _get_namespace_legacy(self) -> tuple[str, ...]:
         """Legacy namespace resolution: check metadata for assistant_id.
 
-        Preference order:
-        1) Use `self.runtime.config` if present (tests pass this explicitly).
-        2) Fallback to `langgraph.config.get_config()` if available.
-        3) Default to ("filesystem",).
-
-        If an assistant_id is available in the config metadata, return
-        (assistant_id, "filesystem") to provide per-assistant isolation.
+        Uses ``get_config()`` to find assistant_id in metadata.
+        Defaults to ``("filesystem",)``.
 
         .. deprecated::
             Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
         warnings.warn(
-            "StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            "StoreBackend without explicit `namespace` is deprecated and will be removed in v0.7. "
+            "Pass `namespace=lambda ctx: (...)` to StoreBackend.",
             DeprecationWarning,
             stacklevel=3,
         )
         namespace = "filesystem"
 
-        # Prefer the runtime-provided config when present
-        runtime_cfg = getattr(self.runtime, "config", None)
-        if isinstance(runtime_cfg, dict):
-            assistant_id = runtime_cfg.get("metadata", {}).get("assistant_id")
-            if assistant_id:
-                return (assistant_id, namespace)
-            return (namespace,)
-
-        # Fallback to langgraph's context, but guard against errors when
-        # called outside of a runnable context
         try:
             cfg = get_config()
         except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
@@ -224,10 +229,8 @@ class StoreBackend(BackendProtocol):
             store_item: The store Item containing file data.
 
         Returns:
-            FileData dict with content, encoding, created_at, and modified_at fields.
-
-        Raises:
-            ValueError: If required fields are missing or have incorrect types.
+            FileData dict with content and encoding. Includes created_at and
+            modified_at when present in the store item.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
@@ -237,7 +240,7 @@ class StoreBackend(BackendProtocol):
         # BACKWARDS COMPAT: legacy list[str] format
         if isinstance(raw_content, list):
             warnings.warn(
-                "Store item with list[str] content is deprecated. Content should be stored as a plain str.",
+                "Store item with list[str] content is deprecated and will be removed in v0.7. Content should be stored as a plain str.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -248,18 +251,15 @@ class StoreBackend(BackendProtocol):
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise TypeError(msg)
 
-        if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
-            msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        if "modified_at" not in store_item.value or not isinstance(store_item.value["modified_at"], str):
-            msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        return {
-            "content": content,
-            "encoding": store_item.value.get("encoding", "utf-8"),
-            "created_at": store_item.value["created_at"],
-            "modified_at": store_item.value["modified_at"],
-        }
+        result = FileData(
+            content=content,
+            encoding=store_item.value.get("encoding", "utf-8"),
+        )
+        if "created_at" in store_item.value and isinstance(store_item.value["created_at"], str):
+            result["created_at"] = store_item.value["created_at"]
+        if "modified_at" in store_item.value and isinstance(store_item.value["modified_at"], str):
+            result["modified_at"] = store_item.value["modified_at"]
+        return result
 
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
@@ -271,16 +271,20 @@ class StoreBackend(BackendProtocol):
             file_data: The FileData to convert.
 
         Returns:
-            Dictionary with content, encoding, created_at, and modified_at fields.
+            Dictionary with content and encoding. Includes created_at and
+            modified_at when present in the FileData.
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
-        return {
+        result: dict[str, Any] = {
             "content": file_data["content"],
             "encoding": file_data["encoding"],
-            "created_at": file_data["created_at"],
-            "modified_at": file_data["modified_at"],
         }
+        if "created_at" in file_data:
+            result["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            result["modified_at"] = file_data["modified_at"]
+        return result
 
     def _search_store_paginated(
         self,
@@ -424,14 +428,15 @@ class StoreBackend(BackendProtocol):
         sliced = slice_read_response(file_data, offset, limit)
         if isinstance(sliced, ReadResult):
             return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
         )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     async def aread(
         self,
@@ -461,14 +466,15 @@ class StoreBackend(BackendProtocol):
         sliced = slice_read_response(file_data, offset, limit)
         if isinstance(sliced, ReadResult):
             return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
         )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     def write(
         self,
@@ -477,7 +483,7 @@ class StoreBackend(BackendProtocol):
     ) -> WriteResult:
         """Create a new file with content.
 
-        Returns WriteResult. External storage sets files_update=None.
+        Returns WriteResult on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -491,7 +497,7 @@ class StoreBackend(BackendProtocol):
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     async def awrite(
         self,
@@ -514,7 +520,7 @@ class StoreBackend(BackendProtocol):
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -525,7 +531,7 @@ class StoreBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        Returns EditResult. External storage sets files_update=None.
+        Returns EditResult on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -552,7 +558,7 @@ class StoreBackend(BackendProtocol):
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
-        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+        return EditResult(path=file_path, occurrences=int(occurrences))
 
     async def aedit(
         self,
@@ -590,7 +596,7 @@ class StoreBackend(BackendProtocol):
         # Update file in store using async method
         store_value = self._convert_file_data_to_store_value(new_file_data)
         await store.aput(namespace, file_path, store_value)
-        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+        return EditResult(path=file_path, occurrences=int(occurrences))
 
     # Removed legacy grep() convenience to keep lean surface
 

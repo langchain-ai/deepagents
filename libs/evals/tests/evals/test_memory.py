@@ -1,3 +1,13 @@
+"""Eval tests for memory recall and persistence.
+
+Tests whether the agent can load context from seeded memory files,
+use that context to guide behavior (naming conventions, code style),
+handle missing memory files gracefully, and correctly distinguish
+durable preferences from transient information.
+
+Written internally for the deepagents eval suite.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -19,7 +29,6 @@ from tests.evals.utils import (
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("memory")]
@@ -310,13 +319,12 @@ def test_memory_middleware_composite_backend(model: BaseChatModel) -> None:
         },
     )
 
-    def sample_backend(rt: ToolRuntime) -> CompositeBackend:
-        return CompositeBackend(
-            default=StateBackend(rt),
-            routes={
-                "/memories/": StoreBackend(rt),
-            },
-        )
+    sample_backend = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/memories/": StoreBackend(store=store),
+        },
+    )
 
     agent = create_deep_agent(
         model=model,

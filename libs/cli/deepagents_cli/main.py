@@ -317,24 +317,39 @@ def parse_args() -> argparse.Namespace:
         parents=help_parent(_lazy_help("show_help")),
     )
 
-    subparsers.add_parser(
+    agents_parser = subparsers.add_parser(
+        "agents",
+        help="Manage agents",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_agents_help")),
+    )
+    add_json_output_arg(agents_parser)
+    agents_sub = agents_parser.add_subparsers(dest="agents_command")
+
+    agents_list = agents_sub.add_parser(
         "list",
-        help="List all available agents",
+        aliases=["ls"],
+        help="List all agents",
         add_help=False,
         parents=help_parent(_lazy_help("show_list_help")),
     )
-    add_json_output_arg(subparsers.choices["list"])
+    add_json_output_arg(agents_list)
 
-    reset_parser = subparsers.add_parser(
+    agents_reset = agents_sub.add_parser(
         "reset",
-        help="Reset an agent",
+        help="Reset an agent's prompt to default",
         add_help=False,
         parents=help_parent(_lazy_help("show_reset_help")),
     )
-    add_json_output_arg(reset_parser)
-    reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
-    reset_parser.add_argument(
+    add_json_output_arg(agents_reset)
+    agents_reset.add_argument("--agent", required=True, help="Name of agent to reset")
+    agents_reset.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
+    )
+    agents_reset.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
     )
 
     setup_skills_parser(
@@ -403,6 +418,19 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
+    threads_delete.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
+    )
+
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Check for and install CLI updates",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_update_help")),
+    )
+    add_json_output_arg(update_parser)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -501,6 +529,12 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read input from stdin explicitly (instead of auto-detection)",
+    )
+
     add_json_output_arg(parser, default="text")
 
     parser.add_argument(
@@ -517,13 +551,13 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "modal", "daytona", "runloop", "langsmith"],
+        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
         default="none",
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution "
             "(default: none - local only; langsmith is included, "
-            "modal/daytona/runloop require downloading extras)"
+            "agentcore/modal/daytona/runloop require downloading extras)"
         ),
     )
 
@@ -628,7 +662,7 @@ async def run_textual_cli_async(
         assistant_id: Agent identifier for memory storage
         auto_approve: Whether to auto-approve tool usage
         sandbox_type: Type of sandbox
-            ("none", "modal", "runloop", "daytona", "langsmith")
+            ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
@@ -678,9 +712,11 @@ async def run_textual_cli_async(
     try:
         resolved_spec = model_name or _get_default_model_spec()
     except ModelConfigError as e:
+        from rich.markup import escape
+
         from deepagents_cli.config import console
 
-        console.print(f"[bold red]Error:[/bold red] {e}", highlight=False)
+        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
     parsed = ModelSpec.try_parse(resolved_spec)
@@ -697,12 +733,15 @@ async def run_textual_cli_async(
         "profile_overrides": profile_override,
     }
 
-    # Build kwargs for deferred server startup (runs inside the TUI)
+    # Build kwargs for deferred server startup (runs inside the TUI).
+    # Never pass auto_approve to the server — the interactive server must
+    # always configure full HITL interrupts so that Shift+Tab can toggle
+    # approval mode mid-session. The -y flag is handled client-side via
+    # session_state.auto_approve in textual_adapter.py.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name,
         "model_params": model_params,
-        "auto_approve": auto_approve,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,
@@ -780,7 +819,7 @@ async def _run_acp_cli_async(
     from deepagents_cli.agent import create_cli_agent, load_async_subagents
     from deepagents_cli.config import create_model, settings
     from deepagents_cli.model_config import ModelConfigError, save_recent_model
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, web_search
 
     try:
         model_result = create_model(
@@ -797,7 +836,7 @@ async def _run_acp_cli_async(
     # Persist the resolved model so [models].recent is always populated.
     save_recent_model(f"{model_result.provider}:{model_result.model_name}")
 
-    tools: list[Any] = [http_request, fetch_url]
+    tools: list[Any] = [fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
 
@@ -903,15 +942,36 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     """
     from deepagents_cli.config import console
 
+    explicit_stdin = args.stdin
+
     if sys.stdin is None:
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "is not available."
+            )
+            sys.exit(1)
         return
 
     try:
         is_tty = sys.stdin.isatty()
     except (ValueError, OSError):
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "state could not be determined."
+            )
+            sys.exit(1)
         return
 
     if is_tty:
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "is a terminal. Pipe input or use -n instead.\n"
+                "  cat prompt.txt | deepagents --stdin -q"
+            )
+            sys.exit(1)
         return
 
     max_stdin_bytes = 10 * 1024 * 1024  # 10 MiB
@@ -923,8 +983,12 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
     except (OSError, ValueError) as exc:
-        msg = f"Failed to read piped input: {exc}"
-        console.print(f"[bold red]Error:[/bold red] {msg}")
+        from rich.markup import escape
+
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to read piped input: "
+            f"{escape(str(exc))}"
+        )
         sys.exit(1)
 
     if len(stdin_text) > max_stdin_bytes:
@@ -1090,7 +1154,7 @@ def cli_main() -> None:
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
-    # This ensures agent traces use DEEPAGENTS_LANGSMITH_PROJECT while
+    # This ensures agent traces use DEEPAGENTS_CLI_LANGSMITH_PROJECT while
     # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
@@ -1170,7 +1234,12 @@ def cli_main() -> None:
                 sys.exit(1)
 
             if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
-                msg = "Error: --no-mcp and --mcp-config are mutually exclusive\n"
+                msg = (
+                    "Error: --no-mcp and --mcp-config are mutually exclusive."
+                    " Use one or the other.\n"
+                    "  deepagents --mcp-config path/to/config.json\n"
+                    "  deepagents --no-mcp\n"
+                )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
                 sys.exit(2)
@@ -1203,7 +1272,9 @@ def cli_main() -> None:
 
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
-                "are mutually exclusive"
+                "are mutually exclusive. Use one or the other.\n"
+                "  deepagents --mcp-config path/to/config.json\n"
+                "  deepagents --no-mcp"
             )
             sys.exit(2)
 
@@ -1221,12 +1292,13 @@ def cli_main() -> None:
             flag = " and ".join(flags)
             _Console(stderr=True).print(
                 f"[bold red]Error:[/bold red] {flag} requires "
-                "--non-interactive (-n) or piped stdin"
+                "--non-interactive (-n) or piped stdin\n"
+                "  deepagents -n 'summarize README.md' --quiet"
             )
             sys.exit(2)
 
-        # Handle --update (headless, no session)
-        if args.update:
+        # Handle --update flag or `update` subcommand (headless, no session)
+        if args.update or args.command == "update":
             try:
                 from rich.markup import escape
 
@@ -1329,14 +1401,22 @@ def cli_main() -> None:
             from deepagents_cli.ui import show_help
 
             show_help()
-        elif args.command == "list":
-            from deepagents_cli.agent import list_agents
+        elif args.command == "agents":
+            from deepagents_cli.agent import list_agents, reset_agent
+            from deepagents_cli.ui import show_agents_help
 
-            list_agents(output_format=output_format)
-        elif args.command == "reset":
-            from deepagents_cli.agent import reset_agent
-
-            reset_agent(args.agent, args.source_agent, output_format=output_format)
+            # "ls" is an argparse alias for "list"
+            if args.agents_command in {"list", "ls"}:
+                list_agents(output_format=output_format)
+            elif args.agents_command == "reset":
+                reset_agent(
+                    args.agent,
+                    args.source_agent,
+                    dry_run=args.dry_run,
+                    output_format=output_format,
+                )
+            else:
+                show_agents_help()
         elif args.command == "skills":
             from deepagents_cli.skills import execute_skills_command
 
@@ -1364,7 +1444,11 @@ def cli_main() -> None:
                 )
             elif args.threads_command == "delete":
                 asyncio.run(
-                    delete_thread_command(args.thread_id, output_format=output_format)
+                    delete_thread_command(
+                        args.thread_id,
+                        dry_run=args.dry_run,
+                        output_format=output_format,
+                    )
                 )
             else:
                 # No subcommand provided, show threads help screen
@@ -1397,7 +1481,9 @@ def cli_main() -> None:
                 try:
                     verify_sandbox_deps(args.sandbox)
                 except ImportError as exc:
-                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    from rich.markup import escape
+
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
             # Non-interactive mode - execute single task and exit
@@ -1449,7 +1535,9 @@ def cli_main() -> None:
                 try:
                     verify_sandbox_deps(args.sandbox)
                 except ImportError as exc:
-                    console.print(f"[bold red]Error:[/bold red] {exc}")
+                    from rich.markup import escape
+
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
             # Check project MCP trust before launching TUI
@@ -1520,7 +1608,10 @@ def cli_main() -> None:
             # Warn about available update on exit
             try:
                 if result.update_available[0]:
-                    from deepagents_cli.update_check import upgrade_command
+                    from deepagents_cli.update_check import (
+                        is_auto_update_enabled,
+                        upgrade_command,
+                    )
 
                     latest = result.update_available[1]
                     console.print()
@@ -1530,6 +1621,10 @@ def cli_main() -> None:
                     cmd_hint = Text("Run: ", style="dim")
                     cmd_hint.append(upgrade_command(), style="cyan")
                     console.print(cmd_hint)
+                    if not is_auto_update_enabled():
+                        auto_hint = Text("Enable auto-updates: ", style="dim")
+                        auto_hint.append("/auto-update", style="cyan")
+                        console.print(auto_hint)
             except Exception:
                 logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:

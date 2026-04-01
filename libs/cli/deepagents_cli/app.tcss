@@ -6,6 +6,11 @@ Screen {
     layers: base autocomplete;
 }
 
+/* Thin scrollbars app-wide */
+* {
+    scrollbar-size-vertical: 1;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */
@@ -67,12 +72,6 @@ Screen {
     margin-bottom: 0;
 }
 
-.approval-menu .approval-command {
-    height: auto;
-    margin: 0 0 1 0;
-    padding: 0 1;
-}
-
 .approval-menu .approval-info {
     height: auto;
     color: $text-muted;
@@ -108,45 +107,80 @@ Screen {
     height: auto;
 }
 
-.approval-file-path {
-    color: $primary;
-    text-style: bold;
-}
-
 .approval-description {
     color: $text-muted;
 }
 
-/* Diff styling */
-.diff-header {
-    height: auto;
-    color: $text-muted;
-}
-
+/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
 .diff-removed {
     height: auto;
-    color: #ff8787;
-    background: #4a2020;
+    color: $text-error;
+    background: $error-muted;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
-    color: #8ce99a;
-    background: #1e4620;
+    color: $text-success;
+    background: $success-muted;
     padding: 0 1;
-}
-
-.diff-range {
-    height: auto;
-    color: $primary;
-    text-style: bold;
 }
 
 .diff-context {
     height: auto;
     color: $text-muted;
     padding: 0 1;
+}
+
+/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+.diff-line-removed {
+    background: $error-muted;
+}
+
+.diff-line-added {
+    background: $success-muted;
+}
+
+/* Mode-specific borders for UserMessage */
+UserMessage.-mode-shell {
+    border-left: wide $mode-bash;
+}
+
+UserMessage.-mode-command {
+    border-left: wide $mode-command;
+}
+
+/* ASCII border overrides */
+UserMessage.-ascii {
+    border-left: ascii $primary;
+}
+
+UserMessage.-ascii.-mode-shell {
+    border-left: ascii $mode-bash;
+}
+
+UserMessage.-ascii.-mode-command {
+    border-left: ascii $mode-command;
+}
+
+QueuedUserMessage.-ascii {
+    border-left: ascii $panel;
+}
+
+ToolCallMessage.-ascii {
+    border-left: ascii $panel;
+}
+
+ToolCallMessage.-ascii:hover {
+    border-left: ascii $secondary;
+}
+
+/* Approval command — warning color for shell commands */
+.approval-menu .approval-command {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: $warning;
 }
 
 /* Separator line between tool details and options */
@@ -218,6 +252,11 @@ Screen {
     padding-left: 2;
 }
 
+.ask-user-menu .ask-user-question-text {
+    margin: 0 0 0 2;
+    padding: 0;
+}
+
 .ask-user-menu .ask-user-choice {
     height: 1;
     padding: 0 1;
@@ -231,6 +270,19 @@ Screen {
     margin: 1 1 0 1;
 }
 
+/* ChatTextArea: override TextArea's built-in $surface background */
+ChatTextArea {
+    background: transparent;
+
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
 /* Completion popup styling (used by ChatInput) - appears BELOW input */
 #completion-popup {
     height: auto;
@@ -239,6 +291,5 @@ Screen {
     margin-left: 3;
     margin-top: 0;
     padding: 0;
-    background: $background;
     color: $text;
 }

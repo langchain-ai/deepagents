@@ -1,3 +1,12 @@
+"""Unit tests for skill discovery and execution.
+
+Verifies that the agent can discover skill files via configured skill
+paths, read SKILL.md content, select the correct skill by name,
+combine information from multiple skills, and edit skill files.
+
+These are SDK integration tests, not model capability evals.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -18,7 +27,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("skills")]
+pytestmark = [pytest.mark.eval_category("unit_test")]
 
 
 def _skill_content(name: str, description: str, body: str) -> str:

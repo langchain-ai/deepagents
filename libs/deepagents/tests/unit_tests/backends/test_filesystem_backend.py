@@ -206,6 +206,21 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
     assert empty.entries == []
 
 
+def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
+    """FilesystemBackend.read should return an error result, not raise, for non-UTF-8 text files."""
+    root = tmp_path
+    # Write a file with GBK-encoded bytes that are invalid UTF-8 (e.g. 0x87)
+    gbk_file = root / "chinese.txt"
+    gbk_file.write_bytes("中文内容".encode("gbk"))
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.read(str(gbk_file))
+
+    assert isinstance(result, ReadResult)
+    assert result.error is not None
+    assert "chinese.txt" in result.error
+
+
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
     root = tmp_path
@@ -218,7 +233,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)  # noqa: ARG005  # Lambda signature matches backend factory pattern
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
@@ -602,3 +617,67 @@ class TestWindowsPathHandling:
         assert infos is not None
         for info in infos:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
+
+
+class TestEditCrlfNormalization:
+    """Tests for CRLF normalization in edit(). See #2247."""
+
+    def test_edit_normalizes_crlf_in_old_string(self, tmp_path: Path):
+        """edit() should succeed when old_string contains CRLF but file has LF.
+
+        Addresses a bug where download_files() returns raw bytes (binary
+        mode) that may contain CRLF, the caller decodes them and passes
+        to edit(), but edit() reads the file in text mode (LF-normalized).
+        """
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        content = "line1\nline2\nline3\n"
+        be.write("/test.txt", content)
+
+        result = be.edit("/test.txt", "line1\r\nline2\r\n", "replaced\n")
+        assert result.error is None
+        assert result.occurrences == 1
+        assert (tmp_path / "test.txt").read_text() == "replaced\nline3\n"
+
+    def test_edit_normalizes_crlf_in_new_string(self, tmp_path: Path):
+        """edit() should normalize CRLF in new_string too."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        be.write("/test.txt", "hello world\n")
+
+        result = be.edit("/test.txt", "hello", "goodbye\r\n")
+        assert result.error is None
+        raw = (tmp_path / "test.txt").read_bytes()
+        assert b"\r" not in raw
+
+    def test_edit_crlf_with_replace_all(self, tmp_path: Path):
+        """edit() should normalize CRLF when replace_all=True."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        be.write("/test.txt", "foo\nbar\nfoo\n")
+
+        result = be.edit("/test.txt", "foo\r\n", "baz\n", replace_all=True)
+        assert result.error is None
+        assert result.occurrences == 2
+        assert (tmp_path / "test.txt").read_text() == "baz\nbar\nbaz\n"
+
+    def test_edit_with_download_roundtrip_crlf(self, tmp_path: Path):
+        """Simulate a download-then-edit flow where downloaded content has CRLF.
+
+        1. write() creates a file
+        2. Simulate download_files() returning CRLF bytes (binary-mode read)
+        3. edit() with the CRLF-decoded content as old_string should succeed
+        """
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        original = "## Summary\n\nHuman: hello\nAI: hi\n\n"
+        be.write("/history.md", original)
+
+        crlf_content = original.replace("\n", "\r\n")
+
+        appended = "## Summary 2\n\nHuman: next\nAI: ok\n\n"
+        combined = crlf_content + appended
+
+        result = be.edit("/history.md", crlf_content, combined)
+        assert result.error is None
+        assert result.occurrences == 1
+
+        final = (tmp_path / "history.md").read_text()
+        assert "## Summary 2" in final
+        assert "Human: next" in final

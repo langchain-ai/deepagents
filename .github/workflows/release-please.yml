@@ -14,6 +14,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -24,7 +27,7 @@ jobs:
       cli-release: ${{ steps.check-cli-release.outputs.is-release }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         id: release
         with:
           config-file: release-please-config.json
@@ -62,7 +65,7 @@ jobs:
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
 
       - name: Update lockfiles
         run: |

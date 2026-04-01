@@ -200,18 +200,6 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             pattern = _sanitize_display_value(tool_args["pattern"], max_length=80)
             return f'{prefix} {tool_name}("{pattern}")'
 
-    elif tool_name == "http_request":
-        # HTTP: show method and URL
-        parts = []
-        if "method" in tool_args:
-            method = _sanitize_display_value(tool_args["method"], max_length=16)
-            parts.append(method.upper())
-        if "url" in tool_args:
-            url = _sanitize_display_value(tool_args["url"], max_length=80)
-            parts.append(url)
-        if parts:
-            return f"{prefix} {tool_name}({' '.join(parts)})"
-
     elif tool_name == "fetch_url":
         # Fetch URL: show the URL being fetched
         if "url" in tool_args:
@@ -219,10 +207,12 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{url}")'
 
     elif tool_name == "task":
-        # Task: show the task description
-        if "description" in tool_args:
-            desc = _sanitize_display_value(tool_args["description"], max_length=100)
-            return f'{prefix} {tool_name}("{desc}")'
+        # Task: show subagent type badge
+        agent_type = tool_args.get("subagent_type", "")
+        if agent_type:
+            agent_type = _sanitize_display_value(agent_type, max_length=40)
+            return f"{prefix} {tool_name} [{agent_type}]"
+        return f"{prefix} {tool_name}"
 
     elif tool_name == "ask_user":
         if "questions" in tool_args and isinstance(tool_args["questions"], list):

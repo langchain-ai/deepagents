@@ -24,8 +24,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -781,8 +779,8 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
-        sandbox_type: Type of sandbox (`'none'`, `'modal'`,
-            `'runloop'`, `'daytona'`, `'langsmith'`).
+        sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
+            `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
@@ -823,30 +821,11 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {
-        "assistant_id": assistant_id,
-        "agent_name": assistant_id,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    if cwd:
-        metadata["cwd"] = cwd
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
-    from deepagents_cli.textual_adapter import _get_git_branch
+    from deepagents_cli.config import build_stream_config
 
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
+    config: RunnableConfig = build_stream_config(
+        thread_id, assistant_id, sandbox_type=sandbox_type
+    )
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
@@ -880,7 +859,18 @@ async def run_non_interactive(
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
         )
+        # Currently, non-shell tools have no HITL handler in non-interactive
+        # mode, so interrupting on them just fragments LangSmith traces
+        # without adding value. Gate only shell execution via middleware.
         use_auto_approve = not enable_shell or shell_is_unrestricted
+        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        # Extract the concrete allow-list to forward to the server subprocess.
+        # settings.shell_allow_list is already validated at this point.
+        restrictive_allow_list: list[str] | None = (
+            list(settings.shell_allow_list)
+            if use_interrupt_shell_only and settings.shell_allow_list
+            else None
+        )
 
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
@@ -890,6 +880,8 @@ async def run_non_interactive(
             model_name=model_name,
             model_params=model_params,
             auto_approve=use_auto_approve,
+            interrupt_shell_only=use_interrupt_shell_only,
+            shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,

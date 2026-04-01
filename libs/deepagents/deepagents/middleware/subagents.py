@@ -2,18 +2,18 @@
 
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
+from typing import Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
-from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -125,6 +125,19 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 #    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
 #    SkillsMiddleware).
 _EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+
+
+class TaskToolSchema(BaseModel):
+    """Input schema for the `task` tool."""
+
+    description: str = Field(
+        description=(
+            "A detailed description of the task for the subagent to perform autonomously. "
+            "Include all necessary context and specify the expected output format."
+        )
+    )
+    subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
+
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -428,11 +441,8 @@ def _build_task_tool(  # noqa: C901
         return subagent, subagent_state
 
     def task(
-        description: Annotated[
-            str,
-            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
-        ],
-        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
+        description: str,
+        subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
@@ -446,11 +456,8 @@ def _build_task_tool(  # noqa: C901
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
-        description: Annotated[
-            str,
-            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
-        ],
-        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
+        description: str,
+        subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
@@ -468,6 +475,8 @@ def _build_task_tool(  # noqa: C901
         func=task,
         coroutine=atask,
         description=description,
+        infer_schema=False,
+        args_schema=TaskToolSchema,
     )
 
 
@@ -642,9 +651,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 raise ValueError(msg)
 
             # Resolve model if string
-            model = spec["model"]
-            if isinstance(model, str):
-                model = init_chat_model(model)
+            from deepagents._models import resolve_model  # noqa: PLC0415
+
+            model = resolve_model(spec["model"])
 
             # Use middleware as provided (caller is responsible for building full stack)
             middleware: list[AgentMiddleware] = list(spec.get("middleware", []))

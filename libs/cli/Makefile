@@ -18,7 +18,7 @@ PYTEST_EXTRA ?=
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
+	uv run --group test pytest -n auto --benchmark-disable --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
 		$(COV_ARGS)
 
 coverage: ## Run unit tests with coverage
@@ -30,7 +30,7 @@ coverage: ## Run unit tests with coverage
 
 integration_test: ## Run integration tests
 integration_test integration_tests:
-	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
+	uv run --group test pytest -n auto --benchmark-disable -vvv --timeout 30 $(TEST_FILE)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)

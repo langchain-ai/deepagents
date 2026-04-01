@@ -151,6 +151,35 @@ def _apply_initial_state(db: FlightDB, initial_state: dict[str, Any]) -> None:
             setattr(obj, final_key, value)
 
 
+def _diff_db(actual_db: FlightDB, expected_db: FlightDB) -> list[str]:
+    """Compute human-readable diffs between two DB states."""
+    actual = actual_db.model_dump()
+    expected = expected_db.model_dump()
+    diffs: list[str] = []
+
+    def _recurse(a: object, e: object, path: str) -> None:
+        if isinstance(a, dict) and isinstance(e, dict):
+            all_keys = set(a) | set(e)
+            for k in sorted(all_keys):
+                if k not in e:
+                    diffs.append(f"  + {path}.{k} (extra in actual)")
+                elif k not in a:
+                    diffs.append(f"  - {path}.{k} (missing in actual)")
+                else:
+                    _recurse(a[k], e[k], f"{path}.{k}")
+        elif isinstance(a, list) and isinstance(e, list):
+            if len(a) != len(e):
+                diffs.append(f"  {path}: len {len(a)} vs expected {len(e)}")
+            for i in range(min(len(a), len(e))):
+                _recurse(a[i], e[i], f"{path}[{i}]")
+            diffs.extend(f"  + {path}[{i}] (extra in actual)" for i in range(len(e), len(a)))
+        elif a != e:
+            diffs.append(f"  {path}: {a!r} != expected {e!r}")
+
+    _recurse(actual, expected, "db")
+    return diffs
+
+
 def check_db_state(actual_db: FlightDB, task: dict[str, Any]) -> float:
     """Compare actual DB state against expected state after replaying actions.
 
@@ -166,9 +195,14 @@ def check_db_state(actual_db: FlightDB, task: dict[str, Any]) -> float:
     expected_hash = _hash_db(expected_db)
     match = actual_hash == expected_hash
     if not match:
+        diffs = _diff_db(actual_db, expected_db)
         logger.info(
             "DB state mismatch: actual=%s expected=%s", actual_hash[:12], expected_hash[:12]
         )
+        for line in diffs[:30]:
+            logger.info(line)
+        if len(diffs) > 30:
+            logger.info("  ... and %d more diffs", len(diffs) - 30)
     return 1.0 if match else 0.0
 
 

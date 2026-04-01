@@ -162,18 +162,18 @@ class TestSubcommandHelpFlags:
         assert must_contain in output
         assert must_not_contain not in output
 
-    def test_list_help(self) -> None:
-        """Running `deepagents list -h` should show list-specific help."""
+    def test_agents_list_help(self) -> None:
+        """Running `deepagents agents list -h` should show list-specific help."""
         self._run_help(
-            ["deepagents", "list", "-h"],
+            ["deepagents", "agents", "list", "-h"],
             must_contain="List all agents",
             must_not_contain="--sandbox",
         )
 
-    def test_reset_help(self) -> None:
-        """Running `deepagents reset -h` should show reset-specific help."""
+    def test_agents_reset_help(self) -> None:
+        """Running `deepagents agents reset -h` should show reset-specific help."""
         self._run_help(
-            ["deepagents", "reset", "-h"],
+            ["deepagents", "agents", "reset", "-h"],
             must_contain="--agent",
             must_not_contain="Start interactive thread",
         )
@@ -408,16 +408,16 @@ class TestJsonArg:
 
     def test_json_before_subcommand(self) -> None:
         """Verify --json works before a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "--json", "list"]):
+        with patch.object(sys, "argv", ["deepagents", "--json", "agents", "list"]):
             args = parse_args()
-        assert args.command == "list"
+        assert args.command == "agents"
         assert args.output_format == "json"
 
     def test_json_after_subcommand(self) -> None:
         """Verify --json works after a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "list", "--json"]):
+        with patch.object(sys, "argv", ["deepagents", "agents", "list", "--json"]):
             args = parse_args()
-        assert args.command == "list"
+        assert args.command == "agents"
         assert args.output_format == "json"
 
     def test_output_format_flag_removed(self) -> None:

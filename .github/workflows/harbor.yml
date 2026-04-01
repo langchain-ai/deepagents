@@ -307,6 +307,7 @@ jobs:
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -315,6 +316,12 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"

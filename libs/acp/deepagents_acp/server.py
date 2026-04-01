@@ -589,7 +589,9 @@ class AgentServerACP(ACPAgent):
             self._reset_agent(session_id)
 
             if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = MemorySaver()  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
+                self._agent.checkpointer = (
+                    MemorySaver()
+                )  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
 
         if self._agent is None:
             msg = "Agent initialization failed"
@@ -940,7 +942,7 @@ class AgentServerACP(ACPAgent):
 
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
-    from dotenv import load_dotenv  # noqa: PLC0415  # Lazy import for dev-only entry point
+    from dotenv import load_dotenv  # Lazy import for dev-only entry point
 
     load_dotenv()
 

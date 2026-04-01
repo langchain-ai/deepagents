@@ -152,6 +152,7 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -185,6 +186,9 @@ jobs:
               done
               echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
+          fi
+          if [ -n "${OPENROUTER_PROVIDER}" ]; then
+            echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"

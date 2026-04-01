@@ -585,14 +585,12 @@ class TestSummaryMessageFormat:
         # Get the summary message (first in modified messages list)
         summary_msg = modified_request.messages[0]
 
-        # Should include the file path reference
-        assert "full conversation history has been saved to" in summary_msg.content
+        # Should include the file path reference (as transcript path)
         assert "/conversation_history/test-thread.md" in summary_msg.content
+        assert "read the full transcript" in summary_msg.content
 
-        # Should include the summary in XML tags
-        assert "<summary>" in summary_msg.content
+        # Should include the summary content (formatted, XML tags stripped)
         assert "Test summary content" in summary_msg.content
-        assert "</summary>" in summary_msg.content
 
     def test_summary_has_lc_source_marker(self) -> None:
         """Test that summary message has `lc_source=summarization` marker."""
@@ -694,14 +692,12 @@ class TestSummaryMessageFormat:
         # The summary message should be the first message
         summary_msg = modified_request.messages[0]
 
-        # Should include the file path reference
-        assert "full conversation history has been saved to" in summary_msg.content
+        # Should include the file path reference (as transcript path)
         assert "/conversation_history/multi-summarize-thread.md" in summary_msg.content
+        assert "read the full transcript" in summary_msg.content
 
-        # Should include the summary in XML tags
-        assert "<summary>" in summary_msg.content
+        # Should include the summary content (formatted, XML tags stripped)
         assert "Second summary content" in summary_msg.content
-        assert "</summary>" in summary_msg.content
 
         # Should have lc_source marker
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
@@ -2401,8 +2397,8 @@ def test_profile_inference_triggers_summary() -> None:
     assert modified_request is not None
     summary_message = modified_request.messages[0]
     assert isinstance(summary_message, HumanMessage)
-    assert "summarized" in summary_message.content.lower()
-    assert "<summary>" in summary_message.content
+    # The continuation message starts with the compaction preamble
+    assert "continued from a previous conversation" in summary_message.content.lower()
 
     # Should preserve last 2 messages (keep=0.5 * 1000 = 500 tokens, 500/200 = 2.5 messages)
     preserved_messages = modified_request.messages[1:]

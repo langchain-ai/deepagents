@@ -268,6 +268,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
+        # Use the structured compaction prompt when the caller hasn't
+        # provided a custom summary_prompt (i.e. is using the default).
+        if summary_prompt is DEFAULT_SUMMARY_PROMPT:
+            from deepagents.middleware.structured_compaction import get_compact_prompt  # noqa: PLC0415
+
+            summary_prompt = get_compact_prompt()
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -445,19 +452,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         Returns:
             List containing the summary `HumanMessage`.
         """
-        if file_path is not None:
-            content = f"""\
-You are in the middle of a conversation that has been summarized.
+        from deepagents.middleware.structured_compaction import (  # noqa: PLC0415
+            get_compact_continuation_message,
+        )
 
-The full conversation history has been saved to {file_path} should you need to refer back to it for details.
-
-A condensed summary follows:
-
-<summary>
-{summary}
-</summary>"""
-        else:
-            content = f"Here is a summary of the conversation to date:\n\n{summary}"
+        content = get_compact_continuation_message(
+            summary,
+            suppress_follow_up_questions=True,
+            transcript_path=file_path,
+            recent_messages_preserved=True,
+        )
 
         return [
             HumanMessage(

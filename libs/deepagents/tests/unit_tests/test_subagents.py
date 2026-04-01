@@ -645,6 +645,10 @@ class TestSubAgents:
         assert captured_config["tags"] == ["hello"]
         assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
 
+    @pytest.mark.xfail(
+        reason="callbacks in parent config are not forwarded to subagent invocations (see #2315)",
+        strict=True,
+    )
     def test_subagent_propagates_callbacks_to_model_calls(self) -> None:
         """Test that callbacks in parent config are forwarded to subagent model invocations.
 
@@ -709,8 +713,8 @@ class TestSubAgents:
         )
 
         # All three LLM calls (2 parent + 1 subagent) should trigger the callback
-        assert len(llm_start_agent_names) >= 2, (
-            f"Expected callbacks from both parent and subagent LLM calls, but only got {len(llm_start_agent_names)}: {llm_start_agent_names}"
+        assert len(llm_start_agent_names) == 3, (
+            f"Expected callbacks from 2 parent + 1 subagent LLM calls, but only got {len(llm_start_agent_names)}: {llm_start_agent_names}"
         )
         # The subagent name should be identifiable in at least one callback
         assert any(name == "callback-check-subagent" for name in llm_start_agent_names), (

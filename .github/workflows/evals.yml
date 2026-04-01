@@ -160,14 +160,16 @@ jobs:
               comma_list="${comma_list}\`${cat}\`"
             done
             echo "| \`eval_categories\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
-            # Bulleted list row
-            bulleted=""
-            for cat in "${cats[@]}"; do
-              cat=$(echo "$cat" | xargs)
-              [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
-              bulleted="${bulleted}• <code>${cat}</code>"
-            done
-            echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
+            # Bulleted list row (only when more than one category)
+            if [ ${#cats[@]} -gt 1 ]; then
+              bulleted=""
+              for cat in "${cats[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
+                bulleted="${bulleted}• <code>${cat}</code>"
+              done
+              echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"

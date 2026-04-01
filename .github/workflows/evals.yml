@@ -145,22 +145,18 @@ jobs:
           else
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # Build eval_categories — bullet list for multiple, inline for single/(all)
+          # Show each category on its own line within the table cell
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
+            formatted=""
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-            if [ "${#cats[@]}" -eq 1 ]; then
-              cat=$(echo "${cats[0]}" | xargs)
-              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              bullets=""
-              for cat in "${cats[@]}"; do
-                cat=$(echo "$cat" | xargs)
-                bullets="${bullets}<li><code>${cat}</code></li>"
-              done
-              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
-            fi
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$formatted" ] && formatted="${formatted}<br>"
+              formatted="${formatted}<code>${cat}</code>"
+            done
+            echo "| \`eval_categories\` | ${formatted} |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -247,7 +243,6 @@ jobs:
             echo "## Eval run"
             echo ""
             echo "- Model: ${{ matrix.model }}"
-            echo "- Categories: ${{ inputs.eval_categories || 'all' }}"
             links=$(python -c "
           import json, sys
           try:
@@ -256,7 +251,10 @@ jobs:
               for link in data.get('experiment_links', []):
                   name = link.get('name', '')
                   url = link.get('url', '')
-                  if name and url:
+                  public_url = link.get('public_url', '')
+                  if name and public_url:
+                      print(f'- [{name}]({public_url}) ([private]({url}))')
+                  elif name and url:
                       print(f'- [{name}]({url})')
                   elif url:
                       print(f'- {url}')

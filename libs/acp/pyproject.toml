@@ -30,7 +30,7 @@ dependencies = [
 
 [dependency-groups]
 examples = [
-    "langchain-openai>=1.1.11",
+    "langchain-openai>=1.1.11"
 ]
 test = [
     "pytest>=8.3.4",
@@ -56,6 +56,9 @@ Twitter = "https://x.com/LangChain"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"

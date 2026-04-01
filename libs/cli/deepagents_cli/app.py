@@ -640,6 +640,13 @@ class DeepAgentsApp(App):
 
         self._agent_running = False
 
+        self._server_startup_error: str | None = None
+        """Set when the background server fails to start; persists for the
+        session lifetime (server failure is terminal).
+
+        Shown in place of the generic 'Agent not configured' message.
+        """
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -1341,11 +1348,12 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         self._connecting = False
+        self._server_startup_error = f"{type(event.error).__name__}: {event.error}"
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
         # Update banner to show persistent failure state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_failed(str(event.error))
+            banner.set_failed(self._server_startup_error)
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
 
@@ -3242,6 +3250,10 @@ class DeepAgentsApp(App):
             self._agent_worker = self.run_worker(
                 self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
+            )
+        elif self._server_startup_error:
+            await self._mount_message(
+                ErrorMessage(f"Server failed to start: {self._server_startup_error}")
             )
         else:
             await self._mount_message(

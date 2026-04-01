@@ -118,7 +118,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   UV_NO_SYNC: "true"

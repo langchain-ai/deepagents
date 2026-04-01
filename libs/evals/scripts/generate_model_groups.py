@@ -42,24 +42,34 @@ def generate() -> str:
     """Return the full markdown content for MODEL_GROUPS.md."""
     mod = _import_models()
     registry: tuple = mod.REGISTRY
-    presets: dict[str, str | None] = mod._EVAL_PRESETS  # noqa: SLF001
+    sections: list[tuple[str | None, list[tuple[str, str | None]]]] = (
+        mod._PRESET_SECTIONS  # noqa: SLF001
+    )
 
     lines: list[str] = [_HEADER]
 
-    for preset_name, tag in presets.items():
-        if tag is not None:
-            models = [m.spec for m in registry if tag in m.groups]
-        else:
-            # "all" — every model with any eval: tag
-            models = [
-                m.spec for m in registry if any(g.startswith("eval:") for g in m.groups)
-            ]
+    for section_name, presets in sections:
+        if section_name is not None:
+            lines.append(f"## {section_name}\n")
 
-        count = len(models)
-        label = "model" if count == 1 else "models"
-        lines.append(f"## `{preset_name}` ({count} {label})\n")
-        lines.extend(f"- `{spec}`" for spec in models)
-        lines.append("")
+        for preset_name, tag_suffix in presets:
+            if tag_suffix is not None:
+                tag = f"eval:{tag_suffix}"
+                models = [m.spec for m in registry if tag in m.groups]
+            else:
+                # "all" — every model with any eval: tag
+                models = [
+                    m.spec
+                    for m in registry
+                    if any(g.startswith("eval:") for g in m.groups)
+                ]
+
+            count = len(models)
+            label = "model" if count == 1 else "models"
+            heading = "##" if section_name is None else "###"
+            lines.append(f"{heading} `{preset_name}` ({count} {label})\n")
+            lines.extend(f"- `{spec}`" for spec in models)
+            lines.append("")
 
     return "\n".join(lines)
 

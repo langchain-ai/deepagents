@@ -59,7 +59,6 @@ if TYPE_CHECKING:
 
     from acp.interfaces import Client
     from deepagents.graph import Checkpointer
-    from langchain.tools import ToolRuntime
     from langchain_core.runnables import RunnableConfig
 
 from deepagents_acp.utils import (
@@ -951,20 +950,19 @@ async def _serve_test_agent() -> None:
         """Agent factory based in the given root directory."""
         agent_root_dir = context.cwd
 
-        def create_backend(run_time: ToolRuntime) -> CompositeBackend:
-            ephemeral_backend = StateBackend(run_time)
-            return CompositeBackend(
-                default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
-                routes={
-                    "/memories/": ephemeral_backend,
-                    "/conversation_history/": ephemeral_backend,
-                },
-            )
+        ephemeral_backend = StateBackend()
+        backend = CompositeBackend(
+            default=FilesystemBackend(root_dir=agent_root_dir, virtual_mode=True),
+            routes={
+                "/memories/": ephemeral_backend,
+                "/conversation_history/": ephemeral_backend,
+            },
+        )
 
         return create_deep_agent(
             model="openai:gpt-5.2",
             checkpointer=checkpointer,
-            backend=create_backend,
+            backend=backend,
         )
 
     acp_agent = AgentServerACP(agent=build_agent)

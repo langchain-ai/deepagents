@@ -106,7 +106,7 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
+        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Full eval listing: libs/evals/EVAL_CATALOG.md. Leave empty to run all."
         required: false
         default: ""
         type: string
@@ -239,6 +239,36 @@ jobs:
             echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
             exit 1
           fi
+
+      - name: "📝 Write workflow summary"
+        if: "!cancelled()"
+        run: |
+          {
+            echo "## Eval run"
+            echo ""
+            echo "- Model: ${{ matrix.model }}"
+            links=$(python -c "
+            import json, sys
+            try:
+                with open('evals_report.json') as f:
+                    data = json.load(f)
+                for link in data.get('experiment_links', []):
+                    name = link.get('name', '')
+                    url = link.get('url', '')
+                    if name and url:
+                        print(f'- [{name}]({url})')
+                    elif url:
+                        print(f'- {url}')
+            except Exception as exc:
+                print(f'warning: could not extract experiment links: {exc}', file=sys.stderr)
+            ")
+            if [ -n "$links" ]; then
+              echo ""
+              echo "### LangSmith experiments"
+              echo ""
+              echo "$links"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📤 Upload eval report"
         if: "!cancelled()"

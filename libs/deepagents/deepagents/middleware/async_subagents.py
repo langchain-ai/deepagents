@@ -6,32 +6,26 @@ completion), async subagents return a task ID immediately, allowing the main
 agent to monitor progress and send updates while the subagent works.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelResponse, ResponseT
-from langchain.tools import ToolRuntime  # noqa: TC002
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
+from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
+from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from langchain.agents.middleware.types import ModelRequest
-    from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
-    from langgraph_sdk.schema import Run
 
 
 class AsyncSubAgent(TypedDict):
@@ -103,7 +97,7 @@ class AsyncTask(TypedDict):
     """
 
     last_updated_at: str
-    """ISO-8601 timestamp (UTC) when the task was last updated with a new message.
+    """ISO-8601 timestamp (UTC) when the task status changes or when a follow-up message is sent via the update tool.
 
     Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
@@ -391,6 +385,7 @@ def _build_check_command(
 ) -> Command:
     """Build the `Command` update for a check result."""
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    last_updated_at = now if task["status"] != result["status"] else task["last_updated_at"]
     updated_task = AsyncTask(
         task_id=task["task_id"],
         agent_name=task["agent_name"],
@@ -399,7 +394,7 @@ def _build_check_command(
         status=result["status"],
         created_at=task["created_at"],
         last_checked_at=now,
-        last_updated_at=task["last_updated_at"],
+        last_updated_at=last_updated_at,
     )
     return Command(
         update={
@@ -621,7 +616,7 @@ def _build_cancel_tool(
             status="cancelled",
             created_at=tracked["created_at"],
             last_checked_at=now,
-            last_updated_at=tracked["last_updated_at"],
+            last_updated_at=now,
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -653,7 +648,7 @@ def _build_cancel_tool(
             status="cancelled",
             created_at=tracked["created_at"],
             last_checked_at=now,
-            last_updated_at=tracked["last_updated_at"],
+            last_updated_at=now,
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -760,6 +755,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         for task in filtered:
             status = _fetch_live_status(clients, task)
             entries.append(_format_task_entry(task, status))
+            last_updated_at = now if status != task["status"] else task["last_updated_at"]
             updated_tasks[task["task_id"]] = AsyncTask(
                 task_id=task["task_id"],
                 agent_name=task["agent_name"],
@@ -768,7 +764,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
                 status=status,
                 created_at=task["created_at"],
                 last_checked_at=now,
-                last_updated_at=task["last_updated_at"],
+                last_updated_at=last_updated_at,
             )
         msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
         return Command(
@@ -792,6 +788,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for task, status in zip(filtered, statuses, strict=True):
             entries.append(_format_task_entry(task, status))
+            last_updated_at = now if status != task["status"] else task["last_updated_at"]
             updated_tasks[task["task_id"]] = AsyncTask(
                 task_id=task["task_id"],
                 agent_name=task["agent_name"],
@@ -800,7 +797,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
                 status=status,
                 created_at=task["created_at"],
                 last_checked_at=now,
-                last_updated_at=task["last_updated_at"],
+                last_updated_at=last_updated_at,
             )
         msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
         return Command(

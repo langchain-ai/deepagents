@@ -48,7 +48,7 @@ env:
   UV_FROZEN: "true"
 
 permissions:
-  contents: write # Required for creating GitHub releases
+  contents: read # Job-level overrides grant write only where needed
 
 jobs:
   # Determine working directory from package input

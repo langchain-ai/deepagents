@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from deepagents_cli.sessions import ThreadInfo
 
 import pytest
@@ -22,6 +24,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
@@ -1218,6 +1221,82 @@ class TestAskUserLifecycle:
 
             assert app._pending_ask_user_widget is None
             widget.remove.assert_awaited_once()
+
+
+class TestLoadingSpinnerLifecycle:
+    """Tests for loading spinner timer cleanup in app flows."""
+
+    async def test_hide_stops_spinner_before_remove_completes(self) -> None:
+        """Hiding the spinner should stop animation before DOM pruning finishes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.15)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                hide_task = asyncio.create_task(app._set_spinner(None))
+                await asyncio.sleep(0.15)
+                assert widget._spinner._position == frozen_position
+                await hide_task
+
+            assert app._loading_widget is None
+
+    async def test_reposition_stops_spinner_before_remove_completes(self) -> None:
+        """Repositioning should stop animation before delayed removal completes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            messages = app.query_one("#messages", Container)
+            queued_widget = QueuedUserMessage("queued")
+            await messages.mount(queued_widget, before=widget)
+            app._queued_widgets.append(queued_widget)
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.15)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
+                await asyncio.sleep(0.15)
+                assert widget._spinner._position == frozen_position
+                await reposition_task
+
+            children = list(messages.children)
+            assert children.index(widget) == children.index(queued_widget) - 1
 
 
 class TestTraceCommand:

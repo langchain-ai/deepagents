@@ -14,6 +14,7 @@ from deepagents_cli.formatting import format_duration
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.await_remove import AwaitRemove
     from textual.timer import Timer
 
 
@@ -129,6 +130,15 @@ class LoadingWidget(Static):
     def on_unmount(self) -> None:
         """Stop the animation timer when the widget leaves the DOM."""
         self._stop_timer()
+
+    def remove(self) -> AwaitRemove:
+        """Stop animation before delegating DOM removal to Textual.
+
+        Returns:
+            Textual's awaitable removal handle.
+        """
+        self._stop_timer()
+        return super().remove()
 
     def _stop_timer(self) -> None:
         """Stop the animation timer if it is running."""

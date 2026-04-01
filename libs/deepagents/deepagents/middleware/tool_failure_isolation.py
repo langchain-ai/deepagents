@@ -1,9 +1,9 @@
 """Middleware to isolate tool failures during parallel execution.
 
-When LangGraph's ``ToolNode`` runs multiple tool calls via ``asyncio.gather``,
+When LangGraph's `ToolNode` runs multiple tool calls via `asyncio.gather`,
 a single unhandled exception cancels **all** sibling tool calls. This
 middleware catches tool exceptions and converts them into
-``ToolMessage(status="error")`` responses so sibling tools can complete
+`ToolMessage(status="error")` responses so sibling tools can complete
 normally.
 
 Example::
@@ -14,8 +14,8 @@ Example::
         middleware=[ToolFailureIsolationMiddleware()],
     )
 
-See `GitHub issue #694 <https://github.com/langchain-ai/deepagents/issues/694>`_
-for the motivation behind this middleware.
+See https://github.com/langchain-ai/deepagents/issues/694 for the motivation
+behind this middleware.
 """
 
 import logging
@@ -25,6 +25,7 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
+from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
@@ -32,13 +33,13 @@ logger = logging.getLogger(__name__)
 
 
 class ToolFailureIsolationMiddleware(AgentMiddleware):
-    """Catch tool execution errors and convert them to error ``ToolMessage`` responses.
+    """Catch tool execution errors and convert them to error `ToolMessage` responses.
 
     Without this middleware, a single tool failure during parallel execution
-    (via ``asyncio.gather`` in ``ToolNode``) propagates as an unhandled
+    (via `asyncio.gather` in `ToolNode`) propagates as an unhandled
     exception, cancelling all sibling tool calls. This middleware wraps each
     tool invocation so that failures are reported back to the LLM as
-    ``ToolMessage(status="error")`` instead of raising, allowing other tools
+    `ToolMessage(status="error")` instead of raising, allowing other tools
     to finish.
 
     Args:
@@ -99,11 +100,13 @@ class ToolFailureIsolationMiddleware(AgentMiddleware):
             handler: The next handler in the middleware chain.
 
         Returns:
-            The original tool result on success, or a ``ToolMessage`` with
-            ``status="error"`` on failure.
+            The original tool result on success, or a `ToolMessage` with
+            `status="error"` on failure.
         """
         try:
             return handler(request)
+        except GraphBubbleUp:
+            raise
         except Exception as exc:  # noqa: BLE001  # intentional catch-all to isolate tool failures
             tool_name = request.tool_call["name"]
             tool_call_id = request.tool_call["id"]
@@ -132,11 +135,13 @@ class ToolFailureIsolationMiddleware(AgentMiddleware):
             handler: The next async handler in the middleware chain.
 
         Returns:
-            The original tool result on success, or a ``ToolMessage`` with
-            ``status="error"`` on failure.
+            The original tool result on success, or a `ToolMessage` with
+            `status="error"` on failure.
         """
         try:
             return await handler(request)
+        except GraphBubbleUp:
+            raise
         except Exception as exc:  # noqa: BLE001  # intentional catch-all to isolate tool failures
             tool_name = request.tool_call["name"]
             tool_call_id = request.tool_call["id"]

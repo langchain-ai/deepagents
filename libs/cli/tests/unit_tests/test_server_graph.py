@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
+from deepagents_cli.mcp_tools import MCPSessionManager
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -130,3 +131,58 @@ class TestServerGraph:
             async_subagents=None,
         )
         assert module.graph is graph_obj
+
+
+class TestBuildToolsMCPSessionLifetime:
+    """Regression tests for the ClosedResourceError bug in MCP tool loading.
+
+    When `_build_tools` used `asyncio.run()` to load MCP tools, the temporary
+    event loop was torn down after loading, closing any anyio streams bound to
+    it. Stdio MCP sessions (which hold persistent subprocess streams) were
+    closed before tool invocation, causing `ClosedResourceError`.
+
+    The fix has two parts:
+    1. Remote (HTTP/SSE) tools now use per-call sessions (no persistent stream).
+    2. Stdio session managers are stored at module level so they outlive
+       `asyncio.run()`.
+    """
+
+    def test_stdio_session_manager_stored_at_module_level(self) -> None:
+        """Stdio session manager must be held at module level after _build_tools.
+
+        Stdio MCP servers require a persistent subprocess session. If the
+        MCPSessionManager is garbage-collected when `asyncio.run()` exits,
+        the subprocess streams are closed and subsequent tool calls fail.
+        Storing the manager at module level keeps it alive for the server
+        process lifetime.
+        """
+        cleanup_called = False
+
+        async def fake_cleanup() -> None:
+            nonlocal cleanup_called
+            cleanup_called = True
+
+        manager = MCPSessionManager()
+        manager.cleanup = fake_cleanup  # type: ignore[method-assign]
+
+        mcp_tool = MagicMock(name="stdio-tool")
+
+        resolve_mcp = AsyncMock(return_value=([mcp_tool], manager, []))
+
+        from deepagents_cli._server_config import ServerConfig
+        from deepagents_cli.server_graph import _build_tools
+
+        config = ServerConfig(no_mcp=False)
+
+        import deepagents_cli.server_graph as sg
+
+        with patch("deepagents_cli.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp):
+            tools, _info = _build_tools(config, project_context=None)
+
+        assert mcp_tool in tools
+        assert not cleanup_called, (
+            "Session manager must NOT be cleaned up inside _build_tools"
+        )
+        assert sg._mcp_session_manager is manager, (
+            "Stdio session manager must be stored at module level"
+        )

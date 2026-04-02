@@ -427,17 +427,25 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
 
 async def _load_tools_from_config(
     config: dict[str, Any],
-) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
     This is the shared implementation used by both `get_mcp_tools` (explicit
     path) and `resolve_and_load_mcp_tools` (auto-discovery).
+
+    Remote servers (HTTP/SSE) use connection-based per-call sessions so that
+    tools remain functional across event loop boundaries (e.g. when the server
+    graph is loaded via `asyncio.run()` and requests are served on a different
+    loop). Stdio servers use persistent sessions because the subprocess must
+    stay alive between calls.
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
 
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)`.
+        `session_manager` is `None` when only remote servers are configured,
+        since those tools create per-call sessions and need no persistent state.
 
     Raises:
         RuntimeError: If MCP server fails to spawn or connect.
@@ -468,8 +476,7 @@ async def _load_tools_from_config(
         )
         raise RuntimeError(msg)
 
-    # Create connections dict for MultiServerMCPClient
-    # Convert Claude Desktop format to langchain-mcp-adapters format
+    # Build a connection object for each server.
     connections: dict[str, Connection] = {}
     for server_name, server_config in config["mcpServers"].items():
         server_type = _resolve_server_type(server_config)
@@ -490,7 +497,6 @@ async def _load_tools_from_config(
                 conn["headers"] = server_config["headers"]
             connections[server_name] = conn
         else:
-            # stdio server connection (default)
             connections[server_name] = StdioConnection(
                 command=server_config["command"],
                 args=server_config.get("args", []),
@@ -498,66 +504,116 @@ async def _load_tools_from_config(
                 transport="stdio",
             )
 
-    # Create session manager to track persistent sessions
-    manager = MCPSessionManager()
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
 
-    try:
-        client = MultiServerMCPClient(connections=connections)
-        manager.client = client
-    except Exception as e:
-        await manager.cleanup()
-        error_msg = f"Failed to initialize MCP client: {e}"
-        raise RuntimeError(error_msg) from e
-
-    try:
-        all_tools: list[BaseTool] = []
-        server_infos: list[MCPServerInfo] = []
-        for server_name, server_config in config["mcpServers"].items():
-            session = await manager.exit_stack.enter_async_context(
-                client.session(server_name)
-            )
+    # Remote (HTTP/SSE) servers: pass `connection` to `load_mcp_tools` so each
+    # tool invocation opens a fresh session. This avoids binding the tool to a
+    # specific event loop, which would cause `ClosedResourceError` when tools
+    # are loaded in one loop (e.g. `asyncio.run()` during server startup) and
+    # invoked in another (e.g. the LangGraph API server's loop).
+    remote_server_names = [
+        name
+        for name, srv in config["mcpServers"].items()
+        if _resolve_server_type(srv) in _SUPPORTED_REMOTE_TYPES
+    ]
+    for server_name in remote_server_names:
+        server_config = config["mcpServers"][server_name]
+        conn = connections[server_name]
+        try:
             tools = await load_mcp_tools(
-                session, server_name=server_name, tool_name_prefix=True
+                None,
+                connection=conn,
+                server_name=server_name,
+                tool_name_prefix=True,
             )
-            all_tools.extend(tools)
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=_resolve_server_type(server_config),
-                    tools=[
-                        MCPToolInfo(name=t.name, description=t.description or "")
-                        for t in tools
-                    ],
-                )
+        except Exception as e:
+            error_msg = (
+                f"Failed to load tools from MCP server '{server_name}': {e}\n"
+                "For sse/http servers: Check that the URL is correct"
+                " and the server is running."
             )
-    except Exception as e:
-        await manager.cleanup()
-        error_msg = (
-            f"Failed to load tools from MCP server '{server_name}': {e}\n"
-            "For stdio servers: Check that the command and args are correct,"
-            " and that the MCP server is installed"
-            " (e.g., run 'npx -y <package>' manually to test).\n"
-            "For sse/http servers: Check that the URL is correct"
-            " and the server is running."
+            raise RuntimeError(error_msg) from e
+        all_tools.extend(tools)
+        server_infos.append(
+            MCPServerInfo(
+                name=server_name,
+                transport=_resolve_server_type(server_config),
+                tools=[
+                    MCPToolInfo(name=t.name, description=t.description or "")
+                    for t in tools
+                ],
+            )
         )
-        raise RuntimeError(error_msg) from e
+
+    # Stdio servers: use a persistent session via MCPSessionManager so the
+    # subprocess stays alive between tool calls.
+    stdio_server_names = [
+        name
+        for name, srv in config["mcpServers"].items()
+        if _resolve_server_type(srv) == "stdio"
+    ]
+    manager: MCPSessionManager | None = None
+    if stdio_server_names:
+        stdio_connections = {name: connections[name] for name in stdio_server_names}
+        manager = MCPSessionManager()
+        try:
+            client = MultiServerMCPClient(connections=stdio_connections)
+            manager.client = client
+        except Exception as e:
+            await manager.cleanup()
+            error_msg = f"Failed to initialize MCP client: {e}"
+            raise RuntimeError(error_msg) from e
+
+        try:
+            for server_name in stdio_server_names:
+                server_config = config["mcpServers"][server_name]
+                session = await manager.exit_stack.enter_async_context(
+                    client.session(server_name)
+                )
+                tools = await load_mcp_tools(
+                    session, server_name=server_name, tool_name_prefix=True
+                )
+                all_tools.extend(tools)
+                server_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=_resolve_server_type(server_config),
+                        tools=[
+                            MCPToolInfo(name=t.name, description=t.description or "")
+                            for t in tools
+                        ],
+                    )
+                )
+        except Exception as e:
+            await manager.cleanup()
+            error_msg = (
+                f"Failed to load tools from MCP server '{server_name}': {e}\n"
+                "For stdio servers: Check that the command and args are correct,"
+                " and that the MCP server is installed"
+                " (e.g., run 'npx -y <package>' manually to test)."
+            )
+            raise RuntimeError(error_msg) from e
 
     return all_tools, manager, server_infos
 
 
 async def get_mcp_tools(
     config_path: str,
-) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
     """Load MCP tools from configuration file with stateful sessions.
 
     Supports multiple server types:
     - stdio: Spawns MCP servers as subprocesses with persistent sessions
-    - sse/http: Connects to remote MCP servers via URL
+    - sse/http: Connects to remote MCP servers via per-call sessions
 
-    For stdio servers, this creates persistent sessions that remain active
+    For stdio servers, persistent sessions are created that remain active
     across tool calls, avoiding server restarts. Sessions are managed by
     `MCPSessionManager` and should be cleaned up with
     `session_manager.cleanup()` when done.
+
+    For remote (HTTP/SSE) servers, tools create a fresh session per invocation,
+    so `session_manager` will be `None` when only remote servers are configured.
 
     Args:
         config_path: Path to MCP JSON configuration file.
@@ -565,8 +621,8 @@ async def get_mcp_tools(
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)` where:
             - tools_list: List of LangChain `BaseTool` objects
-            - session_manager: `MCPSessionManager` instance
-                (call `cleanup()` when done)
+            - session_manager: `MCPSessionManager` instance for stdio servers
+                (call `cleanup()` when done), or `None` for remote-only configs
             - server_infos: List of `MCPServerInfo` with per-server metadata
     """
     config = load_mcp_config(config_path)

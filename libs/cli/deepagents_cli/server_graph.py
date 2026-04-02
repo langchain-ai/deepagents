@@ -23,9 +23,21 @@ from deepagents_cli.project_utils import ProjectContext, get_server_project_cont
 
 logger = logging.getLogger(__name__)
 
-# Module-level sandbox state kept alive for the server process lifetime.
+# Module-level state kept alive for the server process lifetime.
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
+_mcp_session_manager: Any = None
+"""MCP session manager held at module level so its sessions stay open.
+
+MCP tools capture a reference to a live `ClientSession`. That session is tied
+to an async exit stack inside `MCPSessionManager`. If the manager is garbage-
+collected (or its event loop torn down), the underlying stream is closed and
+every subsequent tool call raises `ClosedResourceError`.
+
+Keeping the manager here ensures it outlives the `asyncio.run()` call used to
+bootstrap it and is only cleaned up at process exit via the registered atexit
+handler.
+"""
 
 
 def _build_tools(
@@ -39,7 +51,8 @@ def _build_tools(
 
     MCP discovery runs synchronously via `asyncio.run` because this function is
     called during module-level graph construction (before the server's async
-    event loop is available).
+    event loop is available). The returned `MCPSessionManager` is stored at
+    module level so its sessions remain open for the server process lifetime.
 
     Args:
         config: Deserialized server configuration.
@@ -52,6 +65,8 @@ def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
+    global _mcp_session_manager  # noqa: PLW0603  # Module-level lifetime management requires global
+
     from deepagents_cli.config import settings
     from deepagents_cli.tools import fetch_url, web_search
 
@@ -66,7 +81,7 @@ def _build_tools(
         from deepagents_cli.mcp_tools import resolve_and_load_mcp_tools
 
         try:
-            mcp_tools, _, mcp_server_info = asyncio.run(
+            mcp_tools, mcp_session_manager, mcp_server_info = asyncio.run(
                 resolve_and_load_mcp_tools(
                     explicit_config_path=config.mcp_config_path,
                     no_mcp=config.no_mcp,
@@ -82,6 +97,15 @@ def _build_tools(
                 "Failed to load MCP tools (config: %s)", config.mcp_config_path
             )
             raise
+
+        if mcp_session_manager is not None:
+            _mcp_session_manager = mcp_session_manager
+
+            def _cleanup_mcp() -> None:
+                if _mcp_session_manager is not None:
+                    asyncio.run(_mcp_session_manager.cleanup())
+
+            atexit.register(_cleanup_mcp)
 
         tools.extend(mcp_tools)
         if mcp_tools:

@@ -815,15 +815,16 @@ class TestGetMCPTools:
         await manager.cleanup()
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_headers_passed_for_sse(
         self,
-        mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
     ) -> None:
-        """Test that headers are correctly passed to SSE MCP client."""
+        """Test that headers are correctly passed for SSE MCP servers.
+
+        Remote (SSE/HTTP) servers use connection-based per-call sessions.
+        Headers must be present in the connection dict passed to load_mcp_tools.
+        """
         path = write_config(
             {
                 "mcpServers": {
@@ -839,32 +840,29 @@ class TestGetMCPTools:
             }
         )
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
         _, manager, _ = await get_mcp_tools(path)
 
-        # Verify headers were passed correctly
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["api"]["transport"] == "sse"
-        assert connections["api"]["headers"]["Authorization"] == "Bearer token123"
-        assert connections["api"]["headers"]["X-API-Key"] == "key456"
-
-        # Clean up
-        await manager.cleanup()
+        # Remote servers use load_mcp_tools(None, connection=conn, ...)
+        call_kwargs = mock_load_tools.call_args.kwargs
+        conn = call_kwargs["connection"]
+        assert conn["transport"] == "sse"
+        assert conn["headers"]["Authorization"] == "Bearer token123"
+        assert conn["headers"]["X-API-Key"] == "key456"
+        assert manager is None
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_headers_passed_for_http(
         self,
-        mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
     ) -> None:
-        """Test that headers are correctly passed to HTTP MCP client."""
+        """Test that headers are correctly passed for HTTP MCP servers.
+
+        Remote (SSE/HTTP) servers use connection-based per-call sessions.
+        Headers must be present in the connection dict passed to load_mcp_tools.
+        """
         path = write_config(
             {
                 "mcpServers": {
@@ -877,29 +875,21 @@ class TestGetMCPTools:
             }
         )
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
         _, manager, _ = await get_mcp_tools(path)
 
-        # Verify headers were passed and transport is correct
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["api"]["transport"] == "streamable_http"
-        assert connections["api"]["headers"]["Authorization"] == "Bearer secret"
-
-        # Clean up
-        await manager.cleanup()
+        call_kwargs = mock_load_tools.call_args.kwargs
+        conn = call_kwargs["connection"]
+        assert conn["transport"] == "streamable_http"
+        assert conn["headers"]["Authorization"] == "Bearer secret"
+        assert manager is None
 
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_no_headers_when_not_provided(
         self,
-        mock_client_class: MagicMock,
         mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
     ) -> None:
         """Test that headers key is not added when not provided in config."""
         path = write_config(
@@ -913,19 +903,14 @@ class TestGetMCPTools:
             }
         )
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
         _, manager, _ = await get_mcp_tools(path)
 
-        # Verify headers key is not present
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert "headers" not in connections["api"]
-
-        # Clean up
-        await manager.cleanup()
+        call_kwargs = mock_load_tools.call_args.kwargs
+        conn = call_kwargs["connection"]
+        assert "headers" not in conn
+        assert manager is None
 
 
 class TestDiscoverMcpConfigs:

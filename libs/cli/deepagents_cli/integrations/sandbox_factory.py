@@ -471,12 +471,6 @@ class _TensorlakeProvider(SandboxProvider):
     """Tensorlake sandbox provider — lifecycle management for Tensorlake sandboxes."""
 
     def __init__(self) -> None:
-        tensorlake_module = _import_provider_module(
-            "tensorlake",
-            provider="tensorlake",
-            package="langchain-tensorlake",
-        )
-
         from deepagents_cli.model_config import resolve_env_var
 
         api_key = resolve_env_var("TENSORLAKE_API_KEY")
@@ -487,16 +481,18 @@ class _TensorlakeProvider(SandboxProvider):
             )
             raise ValueError(msg)
 
-        self._organization_id = resolve_env_var("TENSORLAKE_ORGANIZATION_ID")
-        self._project_id = resolve_env_var("TENSORLAKE_PROJECT_ID")
-        self._api_url = resolve_env_var("TENSORLAKE_API_URL")
+        self._api_key = api_key
 
-        self._client = tensorlake_module.SandboxClient.for_cloud(
-            api_key=api_key,
-            organization_id=self._organization_id,
-            project_id=self._project_id,
-            api_url=self._api_url or "https://api.tensorlake.ai",
-        )
+        try:
+            from tensorlake.sandbox import SandboxClient
+        except ImportError as exc:
+            msg = (
+                "The 'tensorlake' sandbox provider requires the 'langchain-tensorlake' package. "
+                "Install it with: pip install 'deepagents-cli[tensorlake]'"
+            )
+            raise ImportError(msg) from exc
+
+        self._client = SandboxClient.for_cloud(api_key=api_key)
 
     def get_or_create(
         self,
@@ -532,13 +528,9 @@ class _TensorlakeProvider(SandboxProvider):
                 msg = f"Tensorlake sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        sandbox = tensorlake_module.sandbox.Sandbox(
-            sandbox_id=create_id,
-            api_key=self._client._api_key,
-            organization_id=self._organization_id,
-            project_id=self._project_id,
-            proxy_url=self._client._resolve_proxy_url(),
-        )
+        from tensorlake.sandbox import Sandbox
+
+        sandbox = Sandbox(sandbox_id=create_id, api_key=self._api_key)
         return tensorlake_backend.TensorlakeSandbox(sandbox=sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002

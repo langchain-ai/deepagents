@@ -77,6 +77,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
     "runloop": "/home/user",
+    "tensorlake": "/home/user",
 }
 """Map of sandbox provider names to their default working directories."""
 
@@ -466,6 +467,85 @@ class _DaytonaProvider(SandboxProvider):
         self._client.delete(sandbox)
 
 
+class _TensorlakeProvider(SandboxProvider):
+    """Tensorlake sandbox provider — lifecycle management for Tensorlake sandboxes."""
+
+    def __init__(self) -> None:
+        tensorlake_module = _import_provider_module(
+            "tensorlake",
+            provider="tensorlake",
+            package="langchain-tensorlake",
+        )
+
+        from deepagents_cli.model_config import resolve_env_var
+
+        api_key = resolve_env_var("TENSORLAKE_API_KEY")
+        if not api_key:
+            msg = (
+                "No Tensorlake API key found. Set TENSORLAKE_API_KEY "
+                "or DEEPAGENTS_CLI_TENSORLAKE_API_KEY."
+            )
+            raise ValueError(msg)
+
+        self._organization_id = resolve_env_var("TENSORLAKE_ORGANIZATION_ID")
+        self._project_id = resolve_env_var("TENSORLAKE_PROJECT_ID")
+        self._api_url = resolve_env_var("TENSORLAKE_API_URL")
+
+        self._client = tensorlake_module.SandboxClient.for_cloud(
+            api_key=api_key,
+            organization_id=self._organization_id,
+            project_id=self._project_id,
+            api_url=self._api_url or "https://api.tensorlake.ai",
+        )
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Get or create a Tensorlake sandbox."""
+        tensorlake_backend = _import_provider_module(
+            "langchain_tensorlake",
+            provider="tensorlake",
+            package="langchain-tensorlake",
+        )
+
+        if sandbox_id:
+            try:
+                self._client.get(sandbox_id)
+            except Exception as e:
+                raise SandboxNotFoundError(sandbox_id) from e
+            create_id = sandbox_id
+        else:
+            response = self._client.create()
+            create_id = response.sandbox_id
+            for _ in range(timeout // 2):
+                status = self._client.get(create_id)
+                if status.status == "running":
+                    break
+                time.sleep(2)
+            else:
+                with contextlib.suppress(Exception):
+                    self._client.delete(create_id)
+                msg = f"Tensorlake sandbox failed to start within {timeout} seconds"
+                raise RuntimeError(msg)
+
+        sandbox = tensorlake_module.sandbox.Sandbox(
+            sandbox_id=create_id,
+            api_key=self._client._api_key,
+            organization_id=self._organization_id,
+            project_id=self._project_id,
+            proxy_url=self._client._resolve_proxy_url(),
+        )
+        return tensorlake_backend.TensorlakeSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Delete a Tensorlake sandbox by id."""
+        self._client.delete(sandbox_id)
+
+
 class _ModalProvider(SandboxProvider):
     """Modal sandbox provider — lifecycle management for Modal sandboxes."""
 
@@ -810,6 +890,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return _ModalProvider()
     if provider_name == "runloop":
         return _RunloopProvider()
+    if provider_name == "tensorlake":
+        return _TensorlakeProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"
@@ -842,6 +924,7 @@ def verify_sandbox_deps(provider: str) -> None:
         "daytona": ("langchain_daytona", "daytona"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),
+        "tensorlake": ("langchain_tensorlake", "tensorlake"),
     }
 
     entry = backend_modules.get(provider)

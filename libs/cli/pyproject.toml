@@ -104,8 +104,9 @@ agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
 daytona = ["langchain-daytona>=0.0.4"]
 modal = ["langchain-modal>=0.0.2"]
 runloop = ["langchain-runloop>=0.0.3"]
+tensorlake = ["langchain-tensorlake>=0.0.1"]
 all-sandboxes = [
-    "deepagents-cli[agentcore,daytona,modal,runloop]",
+    "deepagents-cli[agentcore,daytona,modal,runloop,tensorlake]",
 ]
 
 all-providers = [
@@ -158,6 +159,7 @@ deepagents = { path = "../deepagents", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
+langchain-tensorlake = { path = "../partners/tensorlake", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"

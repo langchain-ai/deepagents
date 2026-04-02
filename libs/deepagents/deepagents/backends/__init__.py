@@ -11,6 +11,7 @@ from deepagents.backends.store import (
     NamespaceFactory,
     StoreBackend,
 )
+from deepagents.backends.tensorlake import TensorlakeSandbox
 
 __all__ = [
     "DEFAULT_EXECUTE_TIMEOUT",
@@ -23,4 +24,5 @@ __all__ = [
     "NamespaceFactory",
     "StateBackend",
     "StoreBackend",
+    "TensorlakeSandbox",
 ]

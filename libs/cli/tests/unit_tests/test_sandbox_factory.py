@@ -21,6 +21,7 @@ from deepagents_cli.integrations.sandbox_factory import (
         ("daytona", "langchain-daytona"),
         ("modal", "langchain-modal"),
         ("runloop", "langchain-runloop"),
+        ("tensorlake", "langchain-tensorlake"),
     ],
 )
 def test_get_provider_raises_helpful_error_for_missing_optional_dependency(
@@ -244,6 +245,7 @@ def test_agentcore_delete_untracked_session() -> None:
         ("langsmith", "/tmp"),
         ("modal", "/workspace"),
         ("runloop", "/home/user"),
+        ("tensorlake", "/home/user"),
     ],
 )
 def test_get_default_working_dir(provider: str, expected: str) -> None:
@@ -261,6 +263,7 @@ class TestVerifySandboxDeps:
             ("daytona", "langchain_daytona"),
             ("modal", "langchain_modal"),
             ("runloop", "langchain_runloop"),
+            ("tensorlake", "langchain_tensorlake"),
         ],
     )
     def test_raises_import_error_when_backend_missing(

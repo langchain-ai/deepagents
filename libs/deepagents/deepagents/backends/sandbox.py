@@ -206,6 +206,13 @@ files cannot be read.
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os, sys, base64, json
 
+MAX_OUTPUT_BYTES = 500 * 1024
+TRUNCATION_MSG = chr(10) + chr(10) + (
+    '[Output was truncated due to size limits. '
+    'This paginated read result exceeded the sandbox stdout limit. '
+    'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'
+)
+
 path = base64.b64decode('{path_b64}').decode('utf-8')
 
 if not os.path.isfile(path):
@@ -233,7 +240,25 @@ if file_type == 'text':
     if offset >= len(lines):
         print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(len(lines)) + ' lines)'}}))
         sys.exit(0)
-    text = chr(10).join(lines[offset:offset + limit])
+    selected_lines = lines[offset:offset + limit]
+    truncated = False
+    parts = []
+    current_bytes = 0
+    for i, line in enumerate(selected_lines):
+        piece = line if i == 0 else chr(10) + line
+        piece_bytes = len(piece.encode('utf-8'))
+        if current_bytes + piece_bytes > MAX_OUTPUT_BYTES:
+            truncated = True
+            break
+        parts.append(piece)
+        current_bytes += piece_bytes
+    text = ''.join(parts)
+    if truncated:
+        msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+        while parts and current_bytes + msg_bytes > MAX_OUTPUT_BYTES:
+            removed = parts.pop()
+            current_bytes -= len(removed.encode('utf-8'))
+        text = ''.join(parts) + TRUNCATION_MSG
 
 print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
 " 2>&1"""
@@ -330,7 +355,11 @@ except PermissionError:
 
         Runs a Python script on the sandbox via `execute()` that reads the
         file, detects encoding, and applies offset/limit pagination for text
-        files.  Only the requested page is returned over the wire.
+        files. Only the requested page is returned over the wire, and text
+        output is capped to about 500 KiB to avoid backend stdout/log transport
+        failures. When that cap is exceeded, the returned content is truncated
+        with guidance to continue pagination using a different `offset` or
+        smaller `limit`.
 
         Binary files (non-UTF-8) are returned base64-encoded without
         pagination.

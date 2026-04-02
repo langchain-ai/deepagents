@@ -47,7 +47,7 @@ class BackendContext(Generic[StateT, ContextT]):
     """Context passed to namespace factory functions.
 
     .. deprecated::
-        ``BackendContext`` is deprecated and will be removed in v0.7.
+        `BackendContext` is deprecated and will be removed in v0.7.
         Namespace factories now receive a ``Runtime`` instance directly.
         Migrate from ``lambda ctx: (ctx.runtime.context.user_id, "fs")``
         to ``lambda rt: (rt.context.user_id, "fs")``.

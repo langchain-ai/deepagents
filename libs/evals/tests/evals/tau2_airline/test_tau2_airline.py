@@ -22,6 +22,7 @@ from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
+from langsmith.run_helpers import get_current_run_tree
 
 from tests.evals.tau2_airline.domain import (
     create_airline_tools,
@@ -92,6 +93,14 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         "model": str(getattr(model, "model", None) or getattr(model, "model_name", "")),
     }
     t.log_inputs(_clean_inputs)
+    run_tree = get_current_run_tree()
+    if run_tree is not None:
+        run_tree.inputs = _clean_inputs
+    else:
+        logger.warning(
+            "get_current_run_tree() returned None in @pytest.mark.langsmith test; "
+            "dataset example inputs will not be overridden"
+        )
 
     task = load_task(task_id)
     policy = load_policy()

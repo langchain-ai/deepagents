@@ -137,4 +137,9 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
             "only": [provider],
             "allow_fallbacks": False,
         }
+    if model_name.startswith("openrouter:"):
+        # OpenRouter SDK passes timeout=None to httpx, disabling its default
+        # 5s read timeout. This causes indefinite hangs on TCP stalls.
+        # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
+        kwargs["timeout"] = 120_000  # ms
     return init_chat_model(model_name, **kwargs)

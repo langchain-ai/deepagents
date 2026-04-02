@@ -93,7 +93,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 - `baseten:zai-org/GLM-5`
 - `ollama:minimax-m2.7:cloud`
-- `ollama:nemotron-3-super`
+- `openrouter:nvidia/nemotron-3-super-120b-a12b`
 
 ## Provider groups
 

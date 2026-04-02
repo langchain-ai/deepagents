@@ -207,6 +207,7 @@ _READ_COMMAND_TEMPLATE = """python3 -c "
 import os, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
+MAX_BINARY_BYTES = 500 * 1024
 TRUNCATION_MSG = chr(10) + chr(10) + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -223,42 +224,70 @@ if os.path.getsize(path) == 0:
     print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
     sys.exit(0)
 
-with open(path, 'rb') as f:
-    raw = f.read()
-
-try:
-    text = raw.decode('utf-8')
-except UnicodeDecodeError:
+file_type = '{file_type}'
+if file_type != 'text':
+    file_size = os.path.getsize(path)
+    if file_size > MAX_BINARY_BYTES:
+        print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
+        sys.exit(0)
+    with open(path, 'rb') as f:
+        raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
     sys.exit(0)
 
-file_type = '{file_type}'
-if file_type == 'text':
-    lines = text.splitlines()
-    offset = {offset}
-    limit = {limit}
-    if offset >= len(lines):
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(len(lines)) + ' lines)'}}))
-        sys.exit(0)
-    selected_lines = lines[offset:offset + limit]
-    truncated = False
-    parts = []
-    current_bytes = 0
-    for i, line in enumerate(selected_lines):
-        piece = line if i == 0 else chr(10) + line
-        piece_bytes = len(piece.encode('utf-8'))
-        if current_bytes + piece_bytes > MAX_OUTPUT_BYTES:
-            truncated = True
+with open(path, 'rb') as f:
+    raw_prefix = f.read(8192)
+
+try:
+    raw_prefix.decode('utf-8')
+except UnicodeDecodeError:
+    with open(path, 'rb') as f:
+        raw = f.read()
+    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+    sys.exit(0)
+
+offset = {offset}
+limit = {limit}
+line_count = 0
+returned_lines = 0
+truncated = False
+parts = []
+current_bytes = 0
+msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+
+with open(path, 'r', encoding='utf-8', newline=None) as f:
+    for raw_line in f:
+        line_count += 1
+        if line_count <= offset:
+            continue
+        if returned_lines >= limit:
             break
+
+        line = raw_line.rstrip('\\n').rstrip('\\r')
+        piece = line if returned_lines == 0 else '\\n' + line
+        piece_bytes = len(piece.encode('utf-8'))
+        if current_bytes + piece_bytes > effective_limit:
+            truncated = True
+            remaining_bytes = effective_limit - current_bytes
+            if remaining_bytes > 0:
+                prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                if prefix:
+                    parts.append(prefix)
+                    current_bytes += len(prefix.encode('utf-8'))
+            break
+
         parts.append(piece)
         current_bytes += piece_bytes
-    text = ''.join(parts)
-    if truncated:
-        msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
-        while parts and current_bytes + msg_bytes > MAX_OUTPUT_BYTES:
-            removed = parts.pop()
-            current_bytes -= len(removed.encode('utf-8'))
-        text = ''.join(parts) + TRUNCATION_MSG
+        returned_lines += 1
+
+if returned_lines == 0 and not truncated:
+    print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+    sys.exit(0)
+
+text = ''.join(parts)
+if truncated:
+    text += TRUNCATION_MSG
 
 print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
 " 2>&1"""

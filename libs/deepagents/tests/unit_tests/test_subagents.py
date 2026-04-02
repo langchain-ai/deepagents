@@ -802,7 +802,6 @@ class TestSubAgents:
         assert len(tool_messages) == 1
         assert tool_messages[0].content == "tool completed"
 
-
     @pytest.mark.xfail(
         reason="callbacks in parent config are not forwarded to subagent invocations (see #2315)",
         strict=True,

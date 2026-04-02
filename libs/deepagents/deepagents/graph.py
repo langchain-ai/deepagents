@@ -206,9 +206,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
               `interrupt_on`; configure human-in-the-loop behavior inside the
               compiled runnable itself.
             - Remote `AsyncSubAgent` specs do not inherit top-level
-              `interrupt_on`; their execution happens on the remote/background
-              subagent side rather than through local
-              `HumanInTheLoopMiddleware` wrapping.
+              `interrupt_on`; configure any approval behavior on the remote
+              subagent itself.
 
             Example: `interrupt_on={"edit_file": True}` pauses before every
             edit.

@@ -98,9 +98,7 @@ def _filter_by_marker(
     if not values:
         return
 
-    known = {
-        m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args
-    }
+    known = {m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args}
     unknown = set(values) - known
     if unknown:
         msg = (

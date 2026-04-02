@@ -39,16 +39,12 @@ _BFCL_V3_HILLCLIMB = {
 }
 
 
-def _tiered_params(
-    cases: list[dict[str, Any]], hillclimb_ids: set[str]
-) -> list[Any]:
+def _tiered_params(cases: list[dict[str, Any]], hillclimb_ids: set[str]) -> list[Any]:
     """Wrap each case in `pytest.param` with the appropriate eval_tier mark."""
     return [
         pytest.param(
             c,
-            marks=pytest.mark.eval_tier(
-                "hillclimb" if c["id"] in hillclimb_ids else "baseline"
-            ),
+            marks=pytest.mark.eval_tier("hillclimb" if c["id"] in hillclimb_ids else "baseline"),
             id=c["id"],
         )
         for c in cases

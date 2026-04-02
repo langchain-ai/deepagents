@@ -738,7 +738,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if file_type != "text":
                 mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(
-                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
+                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type, "name": Path(validated_path).stem}]),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},

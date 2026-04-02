@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import asyncio
 import uuid
 import warnings
 from typing import TYPE_CHECKING
@@ -217,6 +218,90 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         timeout: int | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
+    async def aexecute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+    ) -> ExecuteResponse:
+        """Async version of execute - runs shell command asynchronously.
+
+        This method provides the same functionality as execute() but runs
+        asynchronously using asyncio.create_subprocess_shell().
+
+        !!! danger "Unrestricted Execution"
+            Same security warnings apply as for execute().
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for this command.
+                If None, uses the default timeout set at init.
+
+        Returns:
+            ExecuteResponse containing output, exit_code, and truncated flag.
+        """
+        # Use instance timeout if not specified
+        if timeout is None:
+            timeout = self._execute_timeout
+        
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"Timeout must be positive, got {timeout}")
+        
+        # Prepare environment
+        env = self._env.copy() if self._env is not None else None
+        
+        try:
+            # Create async subprocess
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=self._root_dir,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                shell=True,
+            )
+            
+            # Wait for process completion with timeout
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout
+                )
+                exit_code = process.returncode
+                output = stdout.decode('utf-8', errors='replace') if stdout else ''
+                
+            except asyncio.TimeoutError:
+                # Timeout occurred, kill the process
+                try:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass  # Process already terminated
+                
+                output = f"Command timed out after {timeout} seconds"
+                exit_code = -1
+            
+            # Check for output truncation (same logic as execute)
+            truncated = False
+            if len(output) > self._output_limit:
+                output = output[:self._output_limit] + f"\n[Output truncated. Limit: {self._output_limit} characters]"
+                truncated = True
+            
+            return ExecuteResponse(
+                output=output,
+                exit_code=exit_code,
+                truncated=truncated,
+            )
+            
+        except Exception as e:
+            # Handle other exceptions
+            error_msg = f"Command execution failed: {str(e)}"
+            return ExecuteResponse(
+                output=error_msg,
+                exit_code=-1,
+                truncated=False,
+            )
+
 
         !!! danger "Unrestricted Execution"
 

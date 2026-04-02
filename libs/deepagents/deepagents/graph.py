@@ -3,9 +3,9 @@
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
-from langchain.agents import create_agent
+from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -16,6 +16,7 @@ from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
+from langgraph.typing import ContextT
 
 from deepagents._models import resolve_model
 from deepagents._version import __version__
@@ -89,8 +90,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    response_format: ResponseFormat | None = None,
-    context_schema: type[Any] | None = None,
+    response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
+    context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
@@ -98,7 +99,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph:
+) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a deep agent.
 
     !!! warning "Deep agents require a LLM that supports tool calling!"
@@ -188,7 +189,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         store: Optional store for persistent storage (required if backend uses `StoreBackend`).
         backend: Optional backend for file storage and execution.
 
-            Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
+            Pass a `Backend` instance (e.g. `StateBackend()`).
             For execution support, use a backend that implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
@@ -219,7 +220,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         A configured deep agent.
     """
     model = get_default_model() if model is None else resolve_model(model)
-    backend = backend if backend is not None else (StateBackend)
+    backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [

@@ -421,7 +421,7 @@ except PermissionError:
         if responses[0].error:
             return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -494,7 +494,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
@@ -560,7 +559,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 

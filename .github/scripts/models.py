@@ -309,10 +309,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set2",
-                "eval:open",
                 "eval:ollama",
                 "harbor:set2",
-                "harbor:open",
                 "harbor:ollama",
             }
         ),
@@ -430,7 +428,9 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:nvidia/nemotron-3-super-120b-a12b",
         frozenset(
             {
+                "eval:open",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:openrouter",
             }
         ),
@@ -448,51 +448,55 @@ REGISTRY: tuple[Model, ...] = (
 
 # ---------------------------------------------------------------------------
 # Preset definitions — map preset names to tag filters per workflow.
-# None means "any tag with the workflow prefix" (i.e. the "all" preset).
+#
+# _PRESET_SECTIONS is the single source of truth for preset names, doc
+# ordering, and section grouping.
+# Each entry is (section_name, [(preset_name, tag_suffix | None), ...]).
+#   - section_name = None  → no heading is emitted for that group.
+#   - tag_suffix = None    → matches any tag with the workflow prefix
+#                            (i.e. the "all" preset).
 # ---------------------------------------------------------------------------
-_EVAL_PRESETS: dict[str, str | None] = {
-    "all": None,
-    # -- Model groups --
-    "set0": "eval:set0",
-    "set1": "eval:set1",
-    "set2": "eval:set2",
-    "frontier": "eval:frontier",
-    "fast": "eval:fast",
-    "open": "eval:open",
-    # -- Provider groups --
-    "anthropic": "eval:anthropic",
-    "openai": "eval:openai",
-    "google_genai": "eval:google_genai",
-    "openrouter": "eval:openrouter",
-    "baseten": "eval:baseten",
-    "fireworks": "eval:fireworks",
-    "ollama": "eval:ollama",
-    "groq": "eval:groq",
-    "xai": "eval:xai",
-    "nvidia": "eval:nvidia",
-}
+_PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
+    ("Model groups", [
+        ("set0", "set0"),
+        ("set1", "set1"),
+        ("set2", "set2"),
+        ("frontier", "frontier"),
+        ("fast", "fast"),
+        ("open", "open"),
+    ]),
+    ("Provider groups", [
+        ("anthropic", "anthropic"),
+        ("baseten", "baseten"),
+        ("fireworks", "fireworks"),
+        ("google_genai", "google_genai"),
+        ("groq", "groq"),
+        ("nvidia", "nvidia"),
+        ("ollama", "ollama"),
+        ("openai", "openai"),
+        ("openrouter", "openrouter"),
+        ("xai", "xai"),
+    ]),
+    (None, [
+        ("all", None),
+    ]),
+]
 
-_HARBOR_PRESETS: dict[str, str | None] = {
-    "all": None,
-    # -- Model groups (mirror eval sets) --
-    "set0": "harbor:set0",
-    "set1": "harbor:set1",
-    "set2": "harbor:set2",
-    "frontier": "harbor:frontier",
-    "fast": "harbor:fast",
-    "open": "harbor:open",
-    # -- Provider groups --
-    "anthropic": "harbor:anthropic",
-    "openai": "harbor:openai",
-    "google_genai": "harbor:google_genai",
-    "openrouter": "harbor:openrouter",
-    "baseten": "harbor:baseten",
-    "fireworks": "harbor:fireworks",
-    "ollama": "harbor:ollama",
-    "groq": "harbor:groq",
-    "xai": "harbor:xai",
-    "nvidia": "harbor:nvidia",
-}
+
+def _build_presets(prefix: str) -> dict[str, str | None]:
+    """Derive a flat preset lookup dict from `_PRESET_SECTIONS`."""
+    return {
+        name: f"{prefix}:{suffix}" if suffix is not None else None
+        for _, presets in _PRESET_SECTIONS
+        for name, suffix in presets
+    }
+
+
+_EVAL_PRESETS: dict[str, str | None] = _build_presets("eval")
+"""Flat preset name → `eval:{tag}` mapping for the evals workflow."""
+
+_HARBOR_PRESETS: dict[str, str | None] = _build_presets("harbor")
+"""Flat preset name → `harbor:{tag}` mapping for the Harbor workflow."""
 
 _WORKFLOW_CONFIG: dict[str, tuple[str, dict[str, str | None]]] = {
     "eval": ("EVAL_MODELS", _EVAL_PRESETS),
@@ -551,7 +555,11 @@ def main() -> None:
     env_var, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
-    matrix = {"model": models}
+    matrix = {
+        "include": [
+            {"model": m, "provider": m.split(":")[0]} for m in models
+        ],
+    }
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     line = f"matrix={json.dumps(matrix, separators=(',', ':'))}"

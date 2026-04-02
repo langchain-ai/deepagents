@@ -162,7 +162,7 @@ jobs:
                 const info = await h.getContributorInfo(contributorCache, author, issue.user.type);
 
                 const labels = [info.isExternal ? 'external' : 'internal'];
-                if (info.isExternal && info.mergedCount != null && info.mergedCount >= config.trustedThreshold) {
+                if (info.isExternal && info.mergedCount != null && info.mergedCount >= h.trustedThreshold) {
                   labels.push('trusted-contributor');
                 }
 

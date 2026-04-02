@@ -1,10 +1,12 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import json
+import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
@@ -22,7 +24,7 @@ from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
-from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -61,39 +63,28 @@ def sample_tool(sample_input: str) -> str:
     return sample_input
 
 
-def make_runtime(tid: str = "tc") -> ToolRuntime:
-    """Create a ToolRuntime for testing."""
-    return ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id=tid,
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
+@pytest.fixture(params=["filesystem_virtual", "state", "store"])
+def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
+    """Create a backend for parametrized tests."""
+    if request.param == "filesystem_virtual":
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    if request.param == "state":
+        return StateBackend()
+    return StoreBackend(store=InMemoryStore())
 
 
-def create_filesystem_backend_virtual(tmp_path: Path) -> BackendProtocol:
-    """Create a FilesystemBackend in virtual mode."""
-    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
+    """Write a file to the backend, returning starter ``files`` for StateBackend.
 
-
-def create_state_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
-    """Create a StateBackend."""
-    return StateBackend(make_runtime())
-
-
-def create_store_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
-    """Create a StoreBackend."""
-    return StoreBackend(make_runtime())
-
-
-# Backend factories for parametrization
-BACKEND_FACTORIES = [
-    pytest.param(create_filesystem_backend_virtual, id="filesystem_virtual"),
-    pytest.param(create_state_backend, id="state"),
-    pytest.param(create_store_backend, id="store"),
-]
+    For external backends (filesystem, store) the write happens immediately.
+    For StateBackend, the file data is returned as a dict that should be
+    passed via ``agent.invoke({"files": ...})`` since StateBackend requires
+    a LangGraph execution context.
+    """
+    if isinstance(backend, StateBackend):
+        return {file_path: {**create_file_data(content)}}
+    backend.write(file_path, content)
+    return None
 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -412,8 +403,7 @@ class TestDeepAgentEndToEnd:
             assert "messages" in result
             assert len(result["messages"]) > 0
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test line count limiting in read_file tool with very long lines."""
         # Create a file with a very long line (18,000 chars) that will be split into continuation lines
         # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
@@ -430,12 +420,9 @@ class TestDeepAgentEndToEnd:
         content = "\n".join(lines)
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/my_file"
-        res = backend.write(file_path, content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, content)
 
         # Create a fake model that calls read_file with limit=3
         # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
@@ -464,7 +451,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -493,16 +483,12 @@ class TestDeepAgentEndToEnd:
         # This includes continuation lines as separate lines
         assert len(output_lines) <= 3
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
         # Create backend and write empty file
-        backend = backend_factory(tmp_path)
 
         file_path = "/my_file"
-        res = backend.write(file_path, "")
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, "")
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -530,7 +516,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -675,14 +664,7 @@ class TestDeepAgentEndToEnd:
         become corrupted into a list instead of a dict, causing AttributeError
         when tools try to access .items().
         """
-        # Create a StateBackend with an explicitly initialized runtime
-        runtime = make_runtime()
-
-        # IMPORTANT: Initialize files as empty dict, not missing
-        # This is key to potentially trigger the reducer issue
-        runtime.state["files"] = {}
-
-        backend = StateBackend(runtime)
+        backend = StateBackend()
 
         # Create a model that writes then globs
         model = FixedGenericFakeChatModel(
@@ -829,14 +811,7 @@ class TestDeepAgentEndToEnd:
         This async test specifically targets the edge case where concurrent async operations
         might cause the files state to become corrupted into a list instead of a dict.
         """
-        # Create a StateBackend with an explicitly initialized runtime
-        runtime = make_runtime()
-
-        # IMPORTANT: Initialize files as empty dict, not missing
-        # This is key to potentially trigger the reducer issue
-        runtime.state["files"] = {}
-
-        backend = StateBackend(runtime)
+        backend = StateBackend()
 
         # Create a model that writes then globs
         model = FixedGenericFakeChatModel(
@@ -901,20 +876,16 @@ class TestDeepAgentEndToEnd:
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files and provides pagination guidance."""
         # Create a file with content that exceeds the truncation threshold
         # Default token_limit_before_evict is 20000, so threshold is 4 * 20000 = 80000 chars
         large_content = "x" * 85000  # 85k chars exceeds the 80k threshold
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/large_file.txt"
-        res = backend.write(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -942,7 +913,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -960,19 +934,15 @@ class TestDeepAgentEndToEnd:
         # Verify the content stays under threshold (including truncation message)
         assert len(file_content) <= 80000
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file does NOT truncate small files."""
         # Create a small file that doesn't exceed the truncation threshold
         small_content = "Hello, world!\n" * 100  # Much smaller than 80k chars
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/small_file.txt"
-        res = backend.write(file_path, small_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, small_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -1000,7 +970,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1015,8 +988,7 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated" not in file_content
         assert "Hello, world!" in file_content
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncation message includes correct offset for pagination."""
         # Create a large file with many lines (each line is 500 chars + newline)
         # 500 lines total, we'll read lines 50-250 (200 lines)
@@ -1024,12 +996,9 @@ class TestDeepAgentEndToEnd:
         large_content = "\n".join(["y" * 500 for _ in range(500)])
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/large_file_offset.txt"
-        res = backend.write(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file with a non-zero offset
         model = FixedGenericFakeChatModel(
@@ -1057,7 +1026,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1072,19 +1044,15 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated due to size limits" in file_content
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files in async mode."""
         # Create a large file
         large_content = "z" * 85000
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/large_file_async.txt"
-        res = await backend.awrite(file_path, large_content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, large_content)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -1112,7 +1080,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent (async)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = await agent.ainvoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1130,8 +1101,7 @@ class TestDeepAgentEndToEnd:
         # Verify the content is actually truncated
         assert len(file_content) < 85000
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test the behavior with a single very long line.
 
         When a file has a single very long line (e.g., 85,000 chars), it gets split
@@ -1152,12 +1122,9 @@ class TestDeepAgentEndToEnd:
         single_long_line = "x" * 85000
 
         # Create backend and write file
-        backend = backend_factory(tmp_path)
 
         file_path = "/single_long_line.txt"
-        res = backend.write(file_path, single_long_line)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
+        starter_files = prepopulate_file(backend, file_path, single_long_line)
 
         # Create a fake model that calls read_file with limit=1
         # This should return just 1 formatted line (the first chunk of the long line)
@@ -1186,7 +1153,10 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -1267,11 +1237,8 @@ class TestDeepAgentEndToEnd:
             f"A single-line file should not cause token overflow."
         )
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_file_invalid_args_returns_tool_message(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test invalid read_file arguments still produce a ToolMessage."""
-        backend = backend_factory(tmp_path)
-
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1301,19 +1268,16 @@ class TestDeepAgentEndToEnd:
         assert tool_message.status == "error"
         assert "Error invoking tool 'read_file' with kwargs " in tool_message.content
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_read_image_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+    def test_deep_agent_read_image_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that reading an image returns a ToolMessage with content blocks."""
-        backend = backend_factory(tmp_path)
         img_bytes = b"\x89PNG\r\n\x1a\n fake image data"
 
+        starter_files = None
         if isinstance(backend, FilesystemBackend):
             (tmp_path / "photo.png").write_bytes(img_bytes)
         else:
             encoded = base64.b64encode(img_bytes).decode("ascii")
-            res = backend.write("/photo.png", encoded)
-            if isinstance(backend, StateBackend):
-                backend.runtime.state["files"].update(res.files_update)
+            starter_files = prepopulate_file(backend, "/photo.png", encoded)
 
         fake_model = FixedGenericFakeChatModel(
             messages=iter(
@@ -1335,7 +1299,10 @@ class TestDeepAgentEndToEnd:
         )
 
         agent = create_deep_agent(model=fake_model, backend=backend)
-        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
@@ -1616,3 +1583,871 @@ class TestCompactConversationTool:
         assert len(compact_msgs) == 1
         assert "compacted" in compact_msgs[0].content.lower() or "summarized" in compact_msgs[0].content.lower()
         assert "conversation that has been summarized" in agent_model.call_history[1]["messages"][1].content
+
+
+class TestStateBackendConfigKeys:
+    """Test that StateBackend reads/writes via CONFIG_KEY_READ/CONFIG_KEY_SEND."""
+
+    def test_write_then_read(self) -> None:
+        """Write a file via tool call, then read it back in the same turn."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/hello.txt", "content": "hello world"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/hello.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # write should succeed
+        assert any("Updated file" in m.content for m in tool_msgs)
+        # read should return the content
+        assert any("hello world" in m.content for m in tool_msgs)
+
+    def test_write_then_edit_then_read(self) -> None:
+        """Write, edit, then read a file across tool calls."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/doc.txt", "content": "foo bar baz"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "edit_file",
+                                "args": {
+                                    "file_path": "/doc.txt",
+                                    "old_string": "bar",
+                                    "new_string": "qux",
+                                },
+                                "id": "call_e",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/doc.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # The read should reflect the edit
+        read_msg = next(m for m in tool_msgs if m.tool_call_id == "call_r")
+        assert "foo qux baz" in read_msg.content
+
+    def test_write_then_ls(self) -> None:
+        """Write a file, then ls to verify it appears."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/data/notes.md", "content": "# Notes"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": {"path": "/data/"},
+                                "id": "call_ls",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
+        assert "/data/notes.md" in ls_msg.content
+
+    def test_backward_compat_lambda_factory(self) -> None:
+        """The old ``lambda rt: StateBackend(rt)`` factory pattern still works."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/compat.txt", "content": "works"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/compat.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            agent = create_deep_agent(
+                model=model,
+                backend=StateBackend,
+            )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("works" in m.content for m in tool_msgs)
+
+    def test_state_backend_runtime_deprecation(self) -> None:
+        """Passing runtime to StateBackend emits a DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            StateBackend("ignored_runtime_value")
+
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "runtime" in str(deprecations[0].message).lower()
+
+    def test_store_backend_runtime_deprecation(self) -> None:
+        """Passing runtime to StoreBackend emits a DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            StoreBackend("ignored_runtime_value")
+
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "runtime" in str(deprecations[0].message).lower()
+
+    def test_store_backend_explicit_store_works(self) -> None:
+        """StoreBackend(store=my_store) works without a graph context."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/note.txt", "content": "stored"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/note.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        mem_store = InMemoryStore()
+        agent = create_deep_agent(
+            model=model,
+            backend=StoreBackend(store=mem_store),
+            store=mem_store,
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("stored" in m.content for m in tool_msgs)
+
+    def test_store_backend_get_store_fallback(self) -> None:
+        """StoreBackend() without explicit store works inside a graph via get_store()."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/auto.txt", "content": "via get_store"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/auto.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            backend=StoreBackend(),  # No explicit store
+            store=InMemoryStore(),  # Passed to graph — get_store() picks it up
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        assert any("via get_store" in m.content for m in tool_msgs)
+
+    def test_backend_factory_deprecation(self) -> None:
+        """Passing a callable factory as backend emits a DeprecationWarning."""
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            agent = create_deep_agent(
+                model=model,
+                backend=StateBackend,
+            )
+            agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
+        assert len(factory_warnings) >= 1
+
+
+class TestAsyncSubagentEndToEnd:
+    """End-to-end tests for async (non-blocking) subagent tools.
+
+    These tests wire up ``create_deep_agent`` with ``AsyncSubAgent`` specs and
+    mock the LangGraph SDK client to verify the full agent loop: model emits a
+    tool call → tool executes against the (mocked) remote server → state is
+    updated with ``async_tasks`` → model sees the result and responds.
+    """
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_async_task(self, mock_get_client: MagicMock) -> None:
+        """Agent launches an async subagent and receives a task ID."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_001"}
+        mock_client.runs.create.return_value = {"run_id": "run_001"}
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Research quantum computing",
+                                    "subagent_type": "researcher",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I've launched the researcher. Task ID: thread_001"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics in depth.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Research quantum computing")]})
+
+        assert "messages" in result
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("thread_001" in m.content for m in tool_messages)
+
+        async_tasks = result.get("async_tasks", {})
+        assert "thread_001" in async_tasks
+        task = async_tasks["thread_001"]
+        assert task["agent_name"] == "researcher"
+        assert task["status"] == "running"
+        assert task["run_id"] == "run_001"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_check_completed_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then checks it after completion."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_002"}
+        mock_client.runs.create.return_value = {"run_id": "run_002"}
+        mock_client.runs.get.return_value = {"run_id": "run_002", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "assistant", "content": "Quantum computing uses qubits."},
+                ]
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Research quantum computing",
+                                    "subagent_type": "researcher",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "thread_002"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The research is complete: Quantum computing uses qubits."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Research quantum computing")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        check_msg = next(m for m in tool_messages if m.tool_call_id == "call_check")
+        parsed = json.loads(check_msg.content)
+        assert parsed["status"] == "success"
+        assert "qubits" in parsed["result"]
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_002"]["status"] == "success"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_cancel_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then cancels it."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_003"}
+        mock_client.runs.create.return_value = {"run_id": "run_003"}
+        mock_client.runs.cancel.return_value = None
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Long running analysis",
+                                    "subagent_type": "analyst",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "cancel_async_task",
+                                "args": {"task_id": "thread_003"},
+                                "id": "call_cancel",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The analysis task has been cancelled."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "analyst",
+                    "description": "Performs data analysis.",
+                    "graph_id": "analysis_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Cancel the analysis")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        cancel_msg = next(m for m in tool_messages if m.tool_call_id == "call_cancel")
+        assert "Cancelled" in cancel_msg.content
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_003"]["status"] == "cancelled"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_update_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task, then sends an update message."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_004"}
+        mock_client.runs.create.side_effect = [
+            {"run_id": "run_004"},
+            {"run_id": "run_004_updated"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Write a report on AI trends",
+                                    "subagent_type": "writer",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "update_async_task",
+                                "args": {
+                                    "task_id": "thread_004",
+                                    "message": "Focus specifically on LLM trends",
+                                },
+                                "id": "call_update",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I've updated the writer with new instructions."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "writer",
+                    "description": "Writes reports.",
+                    "graph_id": "writer_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Update the report")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        update_msg = next(m for m in tool_messages if m.tool_call_id == "call_update")
+        assert "Updated" in update_msg.content
+
+        async_tasks = result.get("async_tasks", {})
+        task = async_tasks["thread_004"]
+        assert task["run_id"] == "run_004_updated"
+        assert task["status"] == "running"
+
+        mock_client.runs.create.assert_any_call(
+            thread_id="thread_004",
+            assistant_id="writer_graph",
+            input={"messages": [{"role": "user", "content": "Focus specifically on LLM trends"}]},
+            multitask_strategy="interrupt",
+        )
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_list_async_tasks(self, mock_get_client: MagicMock) -> None:
+        """Agent starts two tasks, then lists them."""
+        mock_client = MagicMock()
+        mock_client.threads.create.side_effect = [
+            {"thread_id": "thread_A"},
+            {"thread_id": "thread_B"},
+        ]
+        mock_client.runs.create.side_effect = [
+            {"run_id": "run_A"},
+            {"run_id": "run_B"},
+        ]
+        mock_client.runs.get.side_effect = [
+            {"run_id": "run_A", "status": "running"},
+            {"run_id": "run_B", "status": "success"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Task A",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_start_a",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Task B",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_start_b",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "list_async_tasks",
+                                "args": {},
+                                "id": "call_list",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Here are the task statuses."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "General worker.",
+                    "graph_id": "worker_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Start two tasks and list them")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        list_msg = next(m for m in tool_messages if m.tool_call_id == "call_list")
+        assert "2 tracked task(s)" in list_msg.content
+        assert "thread_A" in list_msg.content
+        assert "thread_B" in list_msg.content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_invalid_subagent_type(self, mock_get_client: MagicMock) -> None:
+        """Agent tries to start a subagent with an invalid type and gets an error."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Do something",
+                                    "subagent_type": "nonexistent",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="That subagent type doesn't exist."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Use a nonexistent agent")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "Unknown async subagent type" in tool_messages[0].content
+        assert "`researcher`" in tool_messages[0].content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_nonexistent_task(self, mock_get_client: MagicMock) -> None:
+        """Agent tries to check a task that doesn't exist."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "nonexistent_thread"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="That task doesn't exist."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Researches topics.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Check a nonexistent task")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "No tracked task found" in tool_messages[0].content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_async_subagents_coexist_with_sync_subagents(self, mock_get_client: MagicMock) -> None:
+        """Async and sync subagent tools are both available on the same agent."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_async"}
+        mock_client.runs.create.return_value = {"run_id": "run_async"}
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Remote research",
+                                    "subagent_type": "remote-researcher",
+                                },
+                                "id": "call_async",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Launched the remote researcher."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "remote-researcher",
+                    "description": "Researches remotely.",
+                    "graph_id": "research_graph",
+                    "url": "http://localhost:8123",
+                },
+            ],
+        )
+
+        tool_names = set(agent.nodes["tools"].bound._tools_by_name.keys())
+        assert "task" in tool_names
+        assert "start_async_task" in tool_names
+        assert "check_async_task" in tool_names
+        assert "update_async_task" in tool_names
+        assert "cancel_async_task" in tool_names
+        assert "list_async_tasks" in tool_names
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do remote research")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("thread_async" in m.content for m in tool_messages)
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_start_then_check_errored_task(self, mock_get_client: MagicMock) -> None:
+        """Agent starts a task that errors, then checks it and sees the error."""
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_err"}
+        mock_client.runs.create.return_value = {"run_id": "run_err"}
+        mock_client.runs.get.return_value = {
+            "run_id": "run_err",
+            "status": "error",
+            "error": "Out of memory",
+        }
+        mock_get_client.return_value = mock_client
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "start_async_task",
+                                "args": {
+                                    "description": "Heavy computation",
+                                    "subagent_type": "compute",
+                                },
+                                "id": "call_start",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "check_async_task",
+                                "args": {"task_id": "thread_err"},
+                                "id": "call_check",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The task failed with an out of memory error."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            subagents=[
+                {
+                    "name": "compute",
+                    "description": "Runs heavy computations.",
+                    "graph_id": "compute_graph",
+                    "url": "http://localhost:8123",
+                }
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Run heavy computation")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        check_msg = next(m for m in tool_messages if m.tool_call_id == "call_check")
+        parsed = json.loads(check_msg.content)
+        assert parsed["status"] == "error"
+        assert "Out of memory" in parsed["error"]
+
+        async_tasks = result.get("async_tasks", {})
+        assert async_tasks["thread_err"]["status"] == "error"

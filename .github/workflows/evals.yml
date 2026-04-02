@@ -20,6 +20,8 @@
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
 name: "📊 Evals"
+run-name: >-
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}
 
 on:
   workflow_dispatch:
@@ -106,17 +108,32 @@ on:
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,tool_use,retrieval'). Categories defined in libs/evals/deepagents_evals/categories.json. Leave empty to run all."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - conversation
+          - file_operations
+          - memory
+          - retrieval
+          - summarization
+          - tool_use
+          - unit_test
+      eval_categories_override:
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        required: false
+        default: ""
+        type: string
+      openrouter_provider:
+        description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
         required: false
         default: ""
         type: string
 
 permissions:
   contents: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
-  cancel-in-progress: true
 
 env:
   UV_NO_SYNC: "true"
@@ -134,7 +151,8 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -145,24 +163,36 @@ jobs:
           else
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # Build eval_categories — bullet list for multiple, inline for single/(all)
+          # Show eval categories as both comma-separated and bulleted list
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-            if [ "${#cats[@]}" -eq 1 ]; then
-              cat=$(echo "${cats[0]}" | xargs)
-              echo "| \`eval_categories\` | \`${cat}\` |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              bullets=""
+            # Comma-separated row
+            comma_list=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
+            done
+            echo "| \`eval_categories\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+            # Bulleted list row (only when more than one category)
+            if [ ${#cats[@]} -gt 1 ]; then
+              bulleted=""
               for cat in "${cats[@]}"; do
                 cat=$(echo "$cat" | xargs)
-                bullets="${bullets}<li><code>${cat}</code></li>"
+                [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
+                bulleted="${bulleted}• <code>${cat}</code>"
               done
-              echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+          if [ -n "${OPENROUTER_PROVIDER}" ]; then
+            echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
@@ -179,6 +209,11 @@ jobs:
     needs: prep
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
+    # jobs on different providers run in parallel.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.provider }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
@@ -219,15 +254,23 @@ jobs:
         run: uv sync --group test
 
       - name: "🏷️ Apply category filter"
-        if: inputs.eval_categories != ''
+        if: inputs.eval_categories_override != '' || inputs.eval_categories != ''
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories }}
         run: |
           flags=""
-          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
           for cat in "${cats[@]}"; do
             cat=$(echo "$cat" | xargs)
             flags="$flags --eval-category $cat"
           done
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+
+      - name: "🔒 Apply OpenRouter provider pin"
+        if: inputs.openrouter_provider != ''
+        env:
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+        run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals

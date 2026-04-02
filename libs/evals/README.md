@@ -164,6 +164,10 @@ eval_categories: "memory,tool_use,retrieval"
 
 Omit to run all categories.
 
+### CI concurrency
+
+Eval jobs use per-provider concurrency groups. Two jobs hitting the same provider (e.g. both `openai`) queue — the second waits for the first to finish. Jobs on different providers run in parallel, so dispatching `frontier` (anthropic + google_genai + openai) alongside a solo `openrouter` run won't block either side.
+
 ### Per-category reporting
 
 CI runs produce a per-category correctness table in the GitHub Actions step summary, plus a JSON summary artifact (`evals-summary`) for offline analysis.
@@ -182,6 +186,18 @@ python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.pn
 # Generate with toy data for experimentation
 python scripts/generate_radar.py --toy -o charts/radar.png
 ```
+
+### Eval catalog
+
+[`EVAL_CATALOG.md`](EVAL_CATALOG.md) is an auto-generated quick reference listing every eval grouped by category, with links to the source definition on GitHub and the local file path.
+
+Regenerate after adding or removing evals:
+
+```bash
+make eval-catalog
+```
+
+A drift test (`tests/unit_tests/test_eval_catalog.py`) fails CI if the file is stale.
 
 ### Adding a new category
 

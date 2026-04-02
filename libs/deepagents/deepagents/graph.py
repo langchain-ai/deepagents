@@ -151,7 +151,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
             override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`.
+            `skills`. See `interrupt_on` below for inheritance and override
+            behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -191,9 +192,26 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             For execution support, use a backend that implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
-            Pass to pause agent execution at specified tool calls for human approval or modification.
+            Pass to pause agent execution at specified tool calls for human
+            approval or modification.
 
-            Example: `interrupt_on={"edit_file": True}` pauses before every edit.
+            This config always applies to the main agent.
+
+            For subagents:
+            - Declarative `SubAgent` specs inherit the top-level
+              `interrupt_on` config by default.
+            - If a declarative `SubAgent` provides its own `interrupt_on`, that
+              subagent-specific config overrides the inherited top-level config.
+            - `CompiledSubAgent` runnables do not inherit top-level
+              `interrupt_on`; configure human-in-the-loop behavior inside the
+              compiled runnable itself.
+            - Remote `AsyncSubAgent` specs do not inherit top-level
+              `interrupt_on`; their execution happens on the remote/background
+              subagent side rather than through local
+              `HumanInTheLoopMiddleware` wrapping.
+
+            Example: `interrupt_on={"edit_file": True}` pauses before every
+            edit.
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.

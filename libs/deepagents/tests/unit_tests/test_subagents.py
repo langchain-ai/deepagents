@@ -644,6 +644,163 @@ class TestSubAgents:
         assert captured_config["tags"] == ["hello"]
         assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
 
+    def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
+        interrupt_payloads: list[Any] = []
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should trigger HITL."""
+            return "approved"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Use the approval-gated tool.",
+                                    "subagent_type": "specialist",
+                                },
+                                "id": "call_interrupt_inherited",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "requires_approval",
+                                "args": {},
+                                "id": "call_requires_approval",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            subagents=[
+                {
+                    "name": "specialist",
+                    "description": "Uses an approval-gated tool.",
+                    "system_prompt": "Use the approval-gated tool.",
+                    "model": subagent_chat_model,
+                    "tools": [requires_approval],
+                }
+            ],
+        )
+
+        for chunk in parent_agent.stream(
+            {"messages": [HumanMessage(content="Delegate to the specialist.")]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+            stream_mode="updates",
+        ):
+            if "__interrupt__" in chunk:
+                interrupt_payloads.extend(chunk["__interrupt__"])
+
+        assert len(interrupt_payloads) == 1
+        interrupt_value = interrupt_payloads[0].value
+        assert len(interrupt_value["action_requests"]) == 1
+        action_request = interrupt_value["action_requests"][0]
+        assert action_request["name"] == "requires_approval"
+        assert action_request["args"] == {}
+        assert "requires_approval" in action_request["description"]
+        assert interrupt_value["review_configs"][0]["action_name"] == "requires_approval"
+
+    def test_subagent_interrupt_on_override_disables_parent_interrupt(self) -> None:
+        called = False
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should not trigger HITL when overridden."""
+            nonlocal called
+            called = True
+            return "approved"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Use the approval-gated tool.",
+                                    "subagent_type": "specialist",
+                                },
+                                "id": "call_interrupt_override",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "requires_approval",
+                                "args": {},
+                                "id": "call_requires_approval_override",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="tool completed"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            subagents=[
+                {
+                    "name": "specialist",
+                    "description": "Uses an approval-gated tool.",
+                    "system_prompt": "Use the approval-gated tool.",
+                    "model": subagent_chat_model,
+                    "tools": [requires_approval],
+                    "interrupt_on": {"requires_approval": False},
+                }
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Delegate to the specialist.")]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        )
+
+        assert called is True
+        assert "__interrupt__" not in result
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "tool completed"
+
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.
 

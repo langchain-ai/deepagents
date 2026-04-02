@@ -1168,10 +1168,14 @@ def create_cli_agent(
             routes={},
         )
 
+    from deepagents.middleware.micro_compaction import MicroCompactionMiddleware
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
-    agent_middleware.append(
-        create_summarization_tool_middleware(model, composite_backend)
+    agent_middleware.extend(
+        [
+            MicroCompactionMiddleware(),
+            create_summarization_tool_middleware(model, composite_backend),
+        ]
     )
 
     # Create the agent

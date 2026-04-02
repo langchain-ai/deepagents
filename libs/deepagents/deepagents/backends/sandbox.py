@@ -118,9 +118,6 @@ print(json.dumps({{'count': count}}))
 {payload_b64}
 __DEEPAGENTS_EDIT_EOF__
 """
-# Make sure to maintain a new line at the end of DEEPAGENTS_EDIT_EOF to denote end of
-# feed. This may not matter for some integrations.
-
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
@@ -387,6 +384,9 @@ except PermissionError:
     ) -> WriteResult:
         """Create a new file, failing if it already exists.
 
+        Runs a small preflight command to check existence and create parent
+        directories, then transfers content via `upload_files()`.
+
         Args:
             file_path: Absolute path for the new file.
             content: UTF-8 text content to write.
@@ -395,23 +395,31 @@ except PermissionError:
             `WriteResult` with `path` on success or `error` on failure.
         """
         # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below - a concurrent process could create the file in
+        # and the upload below — a concurrent process could create the file in
         # between. This is an inherent limitation of splitting the operation;
+        # the risk is minimal in single-agent sandbox environments.
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
+        try:
+            result = self.execute(check_cmd)
+        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass execute()
+            msg = f"Failed to write file '{file_path}': {exc}"
+            return WriteResult(error=msg)
+
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
-        responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        # Transfer content via upload_files()
+        try:
+            responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass upload_files()
+            msg = f"Failed to write file '{file_path}': {exc}"
+            return WriteResult(error=msg)
         if not responses:
-            # An unreachable condition was reached
-            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
-            raise AssertionError(msg)
-        response = responses[0]
-        if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
+            return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
+        if responses[0].error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
 
         return WriteResult(path=file_path)
 
@@ -670,9 +678,6 @@ except PermissionError:
 
         Implementations must support partial success - catch exceptions per-file
         and return errors in `FileUploadResponse` objects rather than raising.
-
-        Upload files is responsible for ensuring that the parent path exists
-        (if user permissions allow the user to write to the given directory)
         """
 
     @abstractmethod

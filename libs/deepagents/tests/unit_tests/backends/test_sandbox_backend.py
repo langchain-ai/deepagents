@@ -688,7 +688,17 @@ def test_sandbox_write_returns_correct_result_on_success() -> None:
 
     assert result.error is None
     assert result.path == "/test/file.txt"
-    assert result.files_update is None
+
+
+def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
+    """Test that write() handles upload_files returning an empty list."""
+    sandbox = MockSandbox()
+    sandbox.upload_files = lambda _files: []  # type: ignore[assignment]
+
+    result = sandbox.write("/test/file.txt", "content")
+
+    assert result.error is not None
+    assert "no response" in result.error
 
 
 def test_sandbox_edit_upload_returns_error_on_empty_upload_response() -> None:

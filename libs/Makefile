@@ -1,5 +1,7 @@
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(patsubst $(MAKEFILE_DIR)%,%,$(wildcard $(MAKEFILE_DIR)*/Makefile $(MAKEFILE_DIR)partners/*/Makefile)))))
+LIB_PACKAGE_DIRS := $(patsubst %/,%,$(dir $(patsubst $(MAKEFILE_DIR)%,%,$(wildcard $(MAKEFILE_DIR)*/Makefile $(MAKEFILE_DIR)partners/*/Makefile))))
+EXAMPLE_PACKAGE_DIRS := $(patsubst %/,%,$(patsubst $(MAKEFILE_DIR)%,%,$(dir $(wildcard $(MAKEFILE_DIR)../examples/*/pyproject.toml))))
+PACKAGE_DIRS := $(sort $(LIB_PACKAGE_DIRS) $(EXAMPLE_PACKAGE_DIRS))
 
 # Map package dirs to their required Python version
 # acp requires 3.14, everything else uses 3.12

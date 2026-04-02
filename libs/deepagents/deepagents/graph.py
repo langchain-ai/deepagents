@@ -80,120 +80,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def _build_base_middleware(
-    model: BaseChatModel,
-    backend: BackendProtocol | BackendFactory,
-    *,
-    skills: list[str] | None = None,
-) -> list[AgentMiddleware[Any, Any, Any]]:
-    stack: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        stack.append(SkillsMiddleware(backend=backend, sources=skills))
-    stack.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    return stack
-
-
-def _build_general_purpose_subagent(
-    model: BaseChatModel,
-    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-    backend: BackendProtocol | BackendFactory,
-    skills: list[str] | None,
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-) -> SubAgent:
-    spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-        **GENERAL_PURPOSE_SUBAGENT,
-        "model": model,
-        "tools": tools or [],
-        "middleware": _build_base_middleware(model, backend, skills=skills),
-    }
-    if interrupt_on is not None:
-        spec["interrupt_on"] = interrupt_on
-    return spec
-
-
-def _split_subagents(
-    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None,
-    *,
-    model: BaseChatModel,
-    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-    backend: BackendProtocol | BackendFactory,
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-) -> tuple[list[SubAgent | CompiledSubAgent], list[AsyncSubAgent]]:
-    inline_subagents: list[SubAgent | CompiledSubAgent] = []
-    async_subagents: list[AsyncSubAgent] = []
-    for spec in subagents or []:
-        if "graph_id" in spec:
-            async_subagents.append(cast("AsyncSubAgent", spec))
-            continue
-        if "runnable" in spec:
-            inline_subagents.append(spec)
-            continue
-
-        subagent_model = resolve_model(spec.get("model", model))
-        subagent_middleware = _build_base_middleware(subagent_model, backend, skills=spec.get("skills"))
-        subagent_middleware.extend(spec.get("middleware", []))
-        subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
-
-        processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-            **spec,
-            "model": subagent_model,
-            "tools": spec.get("tools", tools or []),
-            "middleware": subagent_middleware,
-        }
-        if subagent_interrupt_on is not None:
-            processed_spec["interrupt_on"] = subagent_interrupt_on
-        inline_subagents.append(processed_spec)
-    return inline_subagents, async_subagents
-
-
-def _build_main_middleware(
-    model: BaseChatModel,
-    backend: BackendProtocol | BackendFactory,
-    *,
-    inline_subagents: list[SubAgent | CompiledSubAgent],
-    async_subagents: list[AsyncSubAgent],
-    skills: list[str] | None,
-    middleware: Sequence[AgentMiddleware],
-    memory: list[str] | None,
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-) -> list[AgentMiddleware[Any, Any, Any]]:
-    stack: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
-    if skills is not None:
-        stack.append(SkillsMiddleware(backend=backend, sources=skills))
-    stack.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SubAgentMiddleware(backend=backend, subagents=inline_subagents),
-            create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
-        ]
-    )
-    if async_subagents:
-        stack.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
-    if middleware:
-        stack.extend(middleware)
-    stack.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if memory is not None:
-        stack.append(MemoryMiddleware(backend=backend, sources=memory))
-    if interrupt_on is not None:
-        stack.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-    return stack
-
-
-def _build_system_prompt(system_prompt: str | SystemMessage | None) -> str | SystemMessage:
-    if system_prompt is None:
-        return BASE_AGENT_PROMPT
-    if isinstance(system_prompt, SystemMessage):
-        return SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
-    return system_prompt + "\n\n" + BASE_AGENT_PROMPT
-
-
-def create_deep_agent(
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -315,30 +202,115 @@ def create_deep_agent(
         A configured deep agent.
     """
     model = get_default_model() if model is None else resolve_model(model)
-    backend = backend if backend is not None else StateBackend
+    backend = backend if backend is not None else (StateBackend)
 
-    general_purpose_spec = _build_general_purpose_subagent(model, tools, backend, skills, interrupt_on)
-    inline_subagents, async_subagents = _split_subagents(
-        subagents,
-        model=model,
-        tools=tools,
-        backend=backend,
-        interrupt_on=interrupt_on,
-    )
+    # Build general-purpose subagent with default middleware stack
+    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+        create_summarization_middleware(model, backend),
+        PatchToolCallsMiddleware(),
+    ]
+    if skills is not None:
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+        **GENERAL_PURPOSE_SUBAGENT,
+        "model": model,
+        "tools": tools or [],
+        "middleware": gp_middleware,
+    }
+    if interrupt_on is not None:
+        general_purpose_spec["interrupt_on"] = interrupt_on
+
+    # Set up subagent middleware
+    inline_subagents: list[SubAgent | CompiledSubAgent] = []
+    async_subagents: list[AsyncSubAgent] = []
+    for spec in subagents or []:
+        if "graph_id" in spec:
+            # Then spec is an AsyncSubAgent
+            async_subagents.append(cast("AsyncSubAgent", spec))
+            continue
+        if "runnable" in spec:
+            # CompiledSubAgent - use as-is
+            inline_subagents.append(spec)
+        else:
+            # SubAgent - fill in defaults and prepend base middleware
+            subagent_model = spec.get("model", model)
+            subagent_model = resolve_model(subagent_model)
+
+            # Build middleware: base stack + skills (if specified) + user's middleware
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=backend),
+                create_summarization_middleware(subagent_model, backend),
+                PatchToolCallsMiddleware(),
+            ]
+            subagent_skills = spec.get("skills")
+            if subagent_skills:
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            subagent_middleware.extend(spec.get("middleware", []))
+            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+
+            subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+
+            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+                **spec,
+                "model": subagent_model,
+                "tools": spec.get("tools", tools or []),
+                "middleware": subagent_middleware,
+            }
+            if subagent_interrupt_on is not None:
+                processed_spec["interrupt_on"] = subagent_interrupt_on
+            inline_subagents.append(processed_spec)
+
+    # If an agent with general purpose name already exists in subagents, then don't add it
+    # This is how you overwrite/configure general purpose subagent
     if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+        # Add a general purpose subagent if it doesn't exist yet
         inline_subagents.insert(0, general_purpose_spec)
 
-    deepagent_middleware = _build_main_middleware(
-        model,
-        backend,
-        inline_subagents=inline_subagents,
-        async_subagents=async_subagents,
-        skills=skills,
-        middleware=middleware,
-        memory=memory,
-        interrupt_on=interrupt_on,
+    # Build main agent middleware stack
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+    ]
+    if skills is not None:
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    deepagent_middleware.extend(
+        [
+            FilesystemMiddleware(backend=backend),
+            SubAgentMiddleware(
+                backend=backend,
+                subagents=inline_subagents,
+            ),
+            create_summarization_middleware(model, backend),
+            PatchToolCallsMiddleware(),
+        ]
     )
-    final_system_prompt = _build_system_prompt(system_prompt)
+
+    if async_subagents:
+        # Async here means that we run these subagents in a non-blocking manner.
+        # Currently this supports agents deployed via LangSmith deployments.
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+
+    if middleware:
+        deepagent_middleware.extend(middleware)
+    # Caching + memory after all other middleware so memory updates don't
+    # invalidate the Anthropic prompt cache prefix.
+    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if memory is not None:
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
+    if interrupt_on is not None:
+        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    # Combine system_prompt with BASE_AGENT_PROMPT
+    if system_prompt is None:
+        final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
+    elif isinstance(system_prompt, SystemMessage):
+        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
+    else:
+        # String: simple concatenation
+        final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
     return create_agent(
         model,

@@ -98,6 +98,7 @@ class LoadingWidget(Static):
         self._hint_widget: Static | None = None
         self._paused = False
         self._paused_elapsed: int = 0
+        self._animation_timer: object | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the loading widget layout.
@@ -122,7 +123,7 @@ class LoadingWidget(Static):
     def on_mount(self) -> None:
         """Start animation on mount."""
         self._start_time = time()
-        self.set_interval(0.1, self._update_animation)
+        self._animation_timer = self.set_interval(0.1, self._update_animation)
 
     def _update_animation(self) -> None:
         """Update spinner and elapsed time."""
@@ -175,3 +176,14 @@ class LoadingWidget(Static):
 
     def stop(self) -> None:
         """Stop the animation (widget will be removed by caller)."""
+        self._stop_timer()
+
+    def _stop_timer(self) -> None:
+        """Stop the animation timer to prevent leaks."""
+        if self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
+
+    def on_unmount(self) -> None:
+        """Ensure timer is stopped when widget is unmounted."""
+        self._stop_timer()

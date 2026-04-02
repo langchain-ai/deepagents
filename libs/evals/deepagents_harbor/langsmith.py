@@ -13,8 +13,10 @@ import datetime
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any
@@ -24,12 +26,44 @@ import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClientFactory
 from langsmith import Client
-from langsmith.utils import LangSmithNotFoundError
+from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
-HEADERS = {
-    "x-api-key": os.getenv("LANGSMITH_API_KEY"),
-}
+
+
+def _get_git_remote_url() -> str:
+    """Return a sanitized `origin` remote URL via `git`, or empty string if unavailable.
+
+    Strips any embedded credentials (userinfo) from HTTPS URLs to avoid
+    leaking tokens when the URL is included in external API payloads.
+    """
+    try:
+        raw = (
+            subprocess.check_output(  # noqa: S603
+                ["git", "remote", "get-url", "origin"],  # noqa: S607
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    # Strip embedded credentials (e.g. https://token@github.com/owner/repo.git)
+    if raw.startswith(("https://", "http://")):
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.username or parsed.password:
+            raw = urllib.parse.urlunparse(parsed._replace(netloc=parsed.hostname or ""))
+    return raw
+
+
+def _headers() -> dict[str, str | None]:
+    """Build request headers with the current API key.
+
+    Reading the env var at call time (not import time) avoids stale `None`
+    values when `dotenv.load_dotenv()` runs after this module is imported.
+    """
+    return {"x-api-key": os.getenv("LANGSMITH_API_KEY")}
 
 
 # ============================================================================
@@ -170,7 +204,11 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"\nFound {len(examples)} tasks")
 
     print(f"\nCreating LangSmith dataset: {dataset_name}")
-    dataset = langsmith_client.create_dataset(dataset_name=dataset_name)
+    description = "Harbor dataset"
+    remote = _get_git_remote_url()
+    if remote:
+        description += f" for {remote}"
+    dataset = langsmith_client.create_dataset(dataset_name=dataset_name, description=description)
 
     print(f"Dataset created with ID: {dataset.id}")
 
@@ -224,7 +262,7 @@ async def _create_experiment_session(
     """
     async with session.post(
         f"{LANGSMITH_API_URL}/sessions",
-        headers=HEADERS,
+        headers=_headers(),
         json={
             "start_time": datetime.datetime.now(datetime.UTC).isoformat(),
             "reference_dataset_id": dataset_id,
@@ -257,7 +295,7 @@ async def _get_dataset_by_name(dataset_name: str, session: aiohttp.ClientSession
     """
     async with session.get(
         f"{LANGSMITH_API_URL}/datasets",
-        headers=HEADERS,
+        headers=_headers(),
         params={"name": dataset_name, "limit": "1"},
     ) as response:
         if response.status == 200:  # noqa: PLR2004
@@ -276,7 +314,7 @@ async def create_experiment_async(
     *,
     model: str | None = None,
     metadata: dict[str, str] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Create a LangSmith experiment session for the given dataset.
 
     Args:
@@ -291,10 +329,18 @@ async def create_experiment_async(
             name collisions.
         metadata: Optional metadata to attach to the experiment session.
 
+    Diagnostic output is printed to stderr.
+
     Returns:
-        The experiment name.
-            Diagnostic output is printed to stderr; the returned name is the
-            only value intended for stdout capture.
+        A `(name, url)` tuple.
+
+            The *name* is the experiment session name (suitable for
+            `LANGSMITH_EXPERIMENT`); the *url* is the comparison URL on
+            smith.langchain.com.
+
+    Raises:
+        LookupError: If the dataset is not found.
+        RuntimeError: If the API request fails.
     """
     async with aiohttp.ClientSession() as session:
         dataset = await _get_dataset_by_name(dataset_name, session)
@@ -317,17 +363,15 @@ async def create_experiment_async(
         )
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
+        experiment_url = f"https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
 
         print("Experiment created successfully!", file=sys.stderr)
         print(f"  Session ID: {session_id}", file=sys.stderr)
-        print(
-            f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}",
-            file=sys.stderr,
-        )
+        print(f"  View at: {experiment_url}", file=sys.stderr)
         print("\nTo run Harbor with this experiment, use:", file=sys.stderr)
         print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...", file=sys.stderr)
 
-        return experiment_name
+        return experiment_name, experiment_url
 
 
 def create_experiment(
@@ -337,8 +381,16 @@ def create_experiment(
     model: str | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
-    """Synchronous wrapper for `create_experiment_async`."""
-    return asyncio.run(
+    """Synchronous wrapper for `create_experiment_async`.
+
+    Returns:
+        The experiment name.
+
+    Raises:
+        LookupError: If the dataset is not found.
+        RuntimeError: If the API request fails.
+    """
+    name, _url = asyncio.run(
         create_experiment_async(
             dataset_name,
             experiment_name,
@@ -346,6 +398,7 @@ def create_experiment(
             metadata=metadata,
         )
     )
+    return name
 
 
 # ============================================================================
@@ -423,7 +476,7 @@ def _process_trial(
                 is_root=True,
             )
         )
-    except Exception as e:  # noqa: BLE001  # LangSmith API; any failure → error status
+    except (LangSmithError, ValueError) as e:  # ValueError: SDK validation (e.g. bad filter)
         return {"status": "error", "message": f"Failed to fetch trace: {e}"}
 
     if not runs:
@@ -445,7 +498,7 @@ def _process_trial(
         feedback_list = list(client.list_feedback(run_ids=[run_id]))
         if any(fb.key == "harbor_reward" for fb in feedback_list):
             return {"status": "skipped", "message": "Feedback already exists"}
-    except Exception as exc:  # noqa: BLE001  # dedup check is best-effort
+    except LangSmithError as exc:  # dedup check is best-effort
         print(
             f"  Warning: feedback dedup check failed ({type(exc).__name__}: {exc}), proceeding anyway",
             file=sys.stderr,
@@ -466,7 +519,7 @@ def _process_trial(
                 score=reward,
                 comment=comment,
             )
-        except Exception as exc:  # noqa: BLE001  # LangSmith API; any failure → error status
+        except (LangSmithError, ValueError) as exc:  # ValueError: invalid ID args
             return {
                 "status": "error",
                 "message": f"Failed to submit feedback: {exc}",

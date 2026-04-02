@@ -559,7 +559,7 @@ def test_edit_command_template_format() -> None:
 
 def test_edit_command_template_ends_with_newline() -> None:
     """Test that _EDIT_COMMAND_TEMPLATE preserves the trailing newline after EOF."""
-    assert _EDIT_COMMAND_TEMPLATE.endswith("\n\"\"\"")
+    assert _EDIT_COMMAND_TEMPLATE.endswith("\n")
 
 
 def test_edit_tmpfile_template_format() -> None:

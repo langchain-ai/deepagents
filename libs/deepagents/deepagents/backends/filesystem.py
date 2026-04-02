@@ -343,7 +343,7 @@ class FilesystemBackend(BackendProtocol):
 
             selected_lines = lines[start_idx:end_idx]
             return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
@@ -359,7 +359,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `WriteResult` with path on success, or error message if the file
-                already exists or write fails. External storage sets `files_update=None`.
+                already exists or write fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -378,7 +378,7 @@ class FilesystemBackend(BackendProtocol):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            return WriteResult(path=file_path, files_update=None)
+            return WriteResult(path=file_path)
         except (OSError, UnicodeEncodeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
@@ -400,8 +400,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `EditResult` with path and occurrence count on success, or error
-                message if file not found or replacement fails. External storage sets
-                `files_update=None`.
+                message if file not found or replacement fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -438,7 +437,7 @@ class FilesystemBackend(BackendProtocol):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+            return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 

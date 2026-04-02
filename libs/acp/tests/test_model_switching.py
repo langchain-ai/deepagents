@@ -39,7 +39,7 @@ def agent_factory():
         return create_deep_agent(
             model=model,
             checkpointer=MemorySaver(),
-            backend=lambda tr: FilesystemBackend(root_dir=context.cwd, virtual_mode=True),
+            backend=FilesystemBackend(root_dir=context.cwd, virtual_mode=True),
         )
 
     return build_agent
@@ -238,7 +238,7 @@ async def test_default_model_when_none_configured():
         return create_deep_agent(
             model=model,
             checkpointer=MemorySaver(),
-            backend=lambda tr: FilesystemBackend(root_dir=context.cwd, virtual_mode=True),
+            backend=FilesystemBackend(root_dir=context.cwd, virtual_mode=True),
         )
 
     server = AgentServerACP(agent=build_agent)

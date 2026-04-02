@@ -3,9 +3,9 @@
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
-from langchain.agents import create_agent
+from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -16,6 +16,7 @@ from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
+from langgraph.typing import ContextT
 
 from deepagents._models import resolve_model
 from deepagents._version import __version__
@@ -80,7 +81,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -89,8 +90,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    response_format: ResponseFormat | None = None,
-    context_schema: type[Any] | None = None,
+    response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
+    context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
@@ -98,7 +99,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph:
+) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a deep agent.
 
     !!! warning "Deep agents require a LLM that supports tool calling!"
@@ -151,7 +152,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
             override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`.
+            `skills`. See `interrupt_on` below for inheritance and override
+            behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -187,13 +189,29 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         store: Optional store for persistent storage (required if backend uses `StoreBackend`).
         backend: Optional backend for file storage and execution.
 
-            Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
+            Pass a `Backend` instance (e.g. `StateBackend()`).
             For execution support, use a backend that implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
-            Pass to pause agent execution at specified tool calls for human approval or modification.
+            Pass to pause agent execution at specified tool calls for human
+            approval or modification.
 
-            Example: `interrupt_on={"edit_file": True}` pauses before every edit.
+            This config always applies to the main agent.
+
+            For subagents:
+            - Declarative `SubAgent` specs inherit the top-level
+              `interrupt_on` config by default.
+            - If a declarative `SubAgent` provides its own `interrupt_on`, that
+              subagent-specific config overrides the inherited top-level config.
+            - `CompiledSubAgent` runnables do not inherit top-level
+              `interrupt_on`; configure human-in-the-loop behavior inside the
+              compiled runnable itself.
+            - Remote `AsyncSubAgent` specs do not inherit top-level
+              `interrupt_on`; configure any approval behavior on the remote
+              subagent itself.
+
+            Example: `interrupt_on={"edit_file": True}` pauses before every
+            edit.
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
@@ -202,7 +220,7 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         A configured deep agent.
     """
     model = get_default_model() if model is None else resolve_model(model)
-    backend = backend if backend is not None else (StateBackend)
+    backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -214,15 +232,14 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if interrupt_on is not None:
-        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
         "tools": tools or [],
         "middleware": gp_middleware,
     }
+    if interrupt_on is not None:
+        general_purpose_spec["interrupt_on"] = interrupt_on
 
     # Set up subagent middleware
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -253,12 +270,16 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
             subagent_middleware.extend(spec.get("middleware", []))
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
+            subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
                 "middleware": subagent_middleware,
             }
+            if subagent_interrupt_on is not None:
+                processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it

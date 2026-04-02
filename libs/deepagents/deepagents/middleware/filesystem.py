@@ -3,6 +3,7 @@
 
 import asyncio
 import concurrent.futures
+import contextvars
 import mimetypes
 import uuid
 import warnings
@@ -38,9 +39,6 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
-    GlobResult,
-    GrepResult,
-    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -603,8 +601,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (StateBackend)
+        # Use provided backend or default to StateBackend instance
+        self.backend = backend if backend is not None else StateBackend()
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -633,6 +631,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
+            warnings.warn(
+                "Passing a callable (factory) as `backend` is deprecated and "
+                "will be removed in v0.7. Pass a `BackendProtocol` instance "
+                "directly instead (e.g. `StateBackend()`).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
@@ -651,19 +656,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             ls_result = resolved_backend.ls(validated_path)
-            if isinstance(ls_result, LsResult):
-                if ls_result.error:
-                    return f"Error: {ls_result.error}"
-                infos = ls_result.entries or []
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.ls_info()` is deprecated. "
-                    "Return an `LsResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                infos = ls_result
+            if ls_result.error:
+                return f"Error: {ls_result.error}"
+            infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -679,19 +674,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             ls_result = await resolved_backend.als(validated_path)
-            if isinstance(ls_result, LsResult):
-                if ls_result.error:
-                    return f"Error: {ls_result.error}"
-                infos = ls_result.entries or []
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.als_info()` is deprecated. "
-                    "Return an `LsResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                infos = ls_result
+            if ls_result.error:
+                return f"Error: {ls_result.error}"
+            infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -734,7 +719,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 warnings.warn(
                     "Returning a plain `str` from `backend.read()` is deprecated. "
                     "Return a `ReadResult` instead. Returning `str` will not be "
-                    "supported in a future version.",
+                    "supported in v0.7.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
@@ -817,7 +802,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
+        ) -> str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -827,26 +812,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Updated file {res.path}"
 
         async def async_write_file(
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
+        ) -> str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -856,19 +828,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Updated file {res.path}"
 
         return StructuredTool.from_function(
@@ -891,7 +850,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> Command | str:
+        ) -> str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -901,18 +860,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
         async def async_edit_file(
@@ -922,7 +869,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> Command | str:
+        ) -> str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -932,18 +879,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
         return StructuredTool.from_function(
@@ -955,7 +890,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
+    def _create_glob_tool(self) -> BaseTool:
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -970,25 +905,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob, pattern, path=validated_path)
+                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
                 try:
                     glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
-            if isinstance(glob_result, GlobResult):
-                if glob_result.error:
-                    return f"Error: {glob_result.error}"
-                infos = glob_result.matches or []
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
-                    "Return a `GlobResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                infos = glob_result
+            if glob_result.error:
+                return f"Error: {glob_result.error}"
+            infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -1011,19 +937,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
-            if isinstance(glob_result, GlobResult):
-                if glob_result.error:
-                    return f"Error: {glob_result.error}"
-                infos = glob_result.matches or []
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.glob_info()` is deprecated. "
-                    "Return a `GlobResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                infos = glob_result
+            if glob_result.error:
+                return f"Error: {glob_result.error}"
+            infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -1054,28 +970,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
             grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
-            if isinstance(grep_result, GrepResult):
-                if grep_result.error:
-                    return grep_result.error
-                matches = grep_result.matches or []
-            elif isinstance(grep_result, str):
-                warnings.warn(
-                    "Returning a plain `str` from `backend.grep_raw()` is deprecated. "
-                    "Return a `GrepResult` instead. Returning `str` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                return grep_result
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.grep_raw()` is deprecated. "
-                    "Return a `GrepResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                matches = grep_result
+            if grep_result.error:
+                return grep_result.error
+            matches = grep_result.matches or []
             formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
@@ -1092,28 +989,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
             grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
-            if isinstance(grep_result, GrepResult):
-                if grep_result.error:
-                    return grep_result.error
-                matches = grep_result.matches or []
-            elif isinstance(grep_result, str):
-                warnings.warn(
-                    "Returning a plain `str` from `backend.agrep_raw()` is deprecated. "
-                    "Return a `GrepResult` instead. Returning `str` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                return grep_result
-            else:
-                warnings.warn(
-                    "Returning a plain `list` from `backend.agrep_raw()` is deprecated. "
-                    "Return a `GrepResult` instead. Returning `list` will not be "
-                    "supported in a future version.",
-                    DeprecationWarning,
-                    stacklevel=1,
-                )
-                matches = grep_result
+            if grep_result.error:
+                return grep_result.error
+            matches = grep_result.matches or []
             formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
@@ -1381,7 +1259,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
-    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+    ) -> tuple[ToolMessage, bool]:
         """Process a large ToolMessage by evicting its content to filesystem.
 
         Args:
@@ -1389,9 +1267,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend: The filesystem backend to write the content to.
 
         Returns:
-            A tuple of (processed_message, files_update):
+            A tuple of (processed_message, evicted):
             - processed_message: New ToolMessage with truncated content and file reference
-            - files_update: Dict of file updates to apply to state, or None if eviction failed
+            - evicted: Whether the content was evicted to the filesystem
 
         Note:
             Text is extracted from all text content blocks, joined, and used for both the
@@ -1401,20 +1279,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
-            return message, None
+            return message, False
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -1435,13 +1313,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             additional_kwargs=dict(message.additional_kwargs),
             response_metadata=dict(message.response_metadata),
         )
-        return processed_message, result.files_update
+        return processed_message, True
 
     async def _aprocess_large_message(
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
-    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+    ) -> tuple[ToolMessage, bool]:
         """Async version of _process_large_message.
 
         Uses async backend methods to avoid sync calls in async context.
@@ -1449,19 +1327,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
-            return message, None
+            return message, False
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -1482,7 +1360,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             additional_kwargs=dict(message.additional_kwargs),
             response_metadata=dict(message.response_metadata),
         )
-        return processed_message, result.files_update
+        return processed_message, True
 
     def _get_backend_from_runtime(
         self,
@@ -1568,10 +1446,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     }
                 }
             )
-            update: dict[str, Any] = {"messages": [tagged]}
-            if write_result.files_update is not None:
-                update["files"] = write_result.files_update
-            state_command = Command(update=update)
+            state_command = Command(update={"messages": [tagged]})
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
@@ -1648,8 +1523,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: The tool runtime providing access to the filesystem backend.
 
         Returns:
-            Either the original result (if small enough) or a Command with evicted
-            content written to filesystem and truncated message.
+            Either the original result (if small enough) or a processed result with
+            evicted content written to filesystem and truncated message.
 
         Note:
             Handles both single ToolMessage results and Command objects containing
@@ -1658,27 +1533,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = self._process_large_message(
+            processed_message, _evicted = self._process_large_message(
                 tool_result,
                 resolved_backend,
             )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            return processed_message
 
         if isinstance(tool_result, Command):
             update = tool_result.update
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            accumulated_file_updates = dict(update.get("files", {}))
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -1686,14 +1551,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     processed_messages.append(message)
                     continue
 
-                processed_message, files_update = self._process_large_message(
+                processed_message, _evicted = self._process_large_message(
                     message,
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-                if files_update is not None:
-                    accumulated_file_updates.update(files_update)
-            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+            return Command(update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
@@ -1705,27 +1568,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = await self._aprocess_large_message(
+            processed_message, _evicted = await self._aprocess_large_message(
                 tool_result,
                 resolved_backend,
             )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            return processed_message
 
         if isinstance(tool_result, Command):
             update = tool_result.update
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            accumulated_file_updates = dict(update.get("files", {}))
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -1733,14 +1586,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     processed_messages.append(message)
                     continue
 
-                processed_message, files_update = await self._aprocess_large_message(
+                processed_message, _evicted = await self._aprocess_large_message(
                     message,
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-                if files_update is not None:
-                    accumulated_file_updates.update(files_update)
-            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+            return Command(update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 

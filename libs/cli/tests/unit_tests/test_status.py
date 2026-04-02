@@ -131,3 +131,80 @@ class TestResizePriority:
             model.model = "claude-sonnet-4-5"
             await pilot.pause()
             assert model.display is True
+
+
+class TestTokenDisplay:
+    """Tests for the token count display in the status bar."""
+
+    async def test_set_tokens_updates_display(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert "5.0K" in str(display.render())
+
+    async def test_hide_tokens_clears_display(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.hide_tokens()
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == ""
+
+    async def test_set_tokens_after_hide_restores_display(self) -> None:
+        """Regression: set_tokens must refresh even when value is unchanged.
+
+        hide_tokens clears the widget text without updating the reactive,
+        so a subsequent set_tokens with the same value must still re-render.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.hide_tokens()
+            await pilot.pause()
+            # Same value — previously skipped by reactive dedup
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert "5.0K" in str(display.render())
+
+    async def test_approximate_appends_plus(self) -> None:
+        """approximate=True should append '+' to the token count."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000, approximate=True)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            rendered = str(display.render())
+            assert "5.0K+" in rendered
+
+    async def test_approximate_after_hide_restores_with_plus(self) -> None:
+        """Interrupted restore: same value + approximate should show count with '+'."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.hide_tokens()
+            await pilot.pause()
+            bar.set_tokens(5000, approximate=True)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            rendered = str(display.render())
+            assert "5.0K+" in rendered
+
+    async def test_exact_count_clears_plus(self) -> None:
+        """A non-approximate set_tokens after an approximate one should drop '+'."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000, approximate=True)
+            await pilot.pause()
+            bar.set_tokens(8000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            rendered = str(display.render())
+            assert "8.0K" in rendered
+            assert "+" not in rendered

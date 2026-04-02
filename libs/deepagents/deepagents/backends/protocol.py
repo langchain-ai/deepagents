@@ -11,7 +11,7 @@ import inspect
 import logging
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
@@ -174,6 +174,13 @@ class ReadResult:
     file_data: FileData | None = None
 
 
+class _Unset:
+    """Sentinel type for detecting explicit parameter usage."""
+
+
+_FILES_UPDATE_UNSET = _Unset()
+
+
 @dataclass
 class WriteResult:
     """Result from backend write operations.
@@ -181,22 +188,23 @@ class WriteResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of written file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
 
     Examples:
-        >>> # Checkpoint storage
-        >>> WriteResult(path="/f.txt", files_update={"/f.txt": {...}})
-        >>> # External storage
-        >>> WriteResult(path="/f.txt", files_update=None)
-        >>> # Error
+        >>> WriteResult(path="/f.txt")
         >>> WriteResult(error="File exists")
     """
 
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
+    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
+
+    def __post_init__(self) -> None:  # noqa: D105
+        if not isinstance(self.files_update, _Unset):
+            warnings.warn(
+                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass
@@ -206,24 +214,25 @@ class EditResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of edited file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
         occurrences: Number of replacements made, None on failure.
 
     Examples:
-        >>> # Checkpoint storage
-        >>> EditResult(path="/f.txt", files_update={"/f.txt": {...}}, occurrences=1)
-        >>> # External storage
-        >>> EditResult(path="/f.txt", files_update=None, occurrences=2)
-        >>> # Error
+        >>> EditResult(path="/f.txt", occurrences=1)
         >>> EditResult(error="File not found")
     """
 
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
+    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
     occurrences: int | None = None
+
+    def __post_init__(self) -> None:  # noqa: D105
+        if not isinstance(self.files_update, _Unset):
+            warnings.warn(
+                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 @dataclass
@@ -298,11 +307,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).ls_info is not BackendProtocol.ls_info:
             warnings.warn(
-                "`ls_info` is deprecated; rename to `ls` instead.",
+                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.ls_info(path)
+            return LsResult(entries=self.ls_info(path))
 
         raise NotImplementedError
 
@@ -383,11 +392,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
             warnings.warn(
-                "`grep_raw` is deprecated; rename to `grep` instead.",
+                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.grep_raw(pattern, path, glob)
+            result = self.grep_raw(pattern, path, glob)
+            if isinstance(result, str):
+                return GrepResult(error=result)
+            return GrepResult(matches=result)
 
         raise NotImplementedError
 
@@ -424,11 +436,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         if type(self).glob_info is not BackendProtocol.glob_info:
             warnings.warn(
-                "`glob_info` is deprecated; rename to `glob` instead.",
+                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return self.glob_info(pattern, path)
+            return GlobResult(matches=self.glob_info(pattern, path))
 
         raise NotImplementedError
 
@@ -555,7 +567,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
     # -- deprecated methods --------------------------------------------------
 
-    def ls_info(self, path: str) -> "LsResult":
+    def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
         !!! warning "Deprecated"
@@ -563,13 +575,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `ls` instead.
         """
         warnings.warn(
-            "`ls_info` is deprecated; use `ls` instead.",
+            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.ls(path)
+        result = self.ls(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `ls` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
 
-    async def als_info(self, path: str) -> "LsResult":
+    async def als_info(self, path: str) -> list["FileInfo"]:
         """Async version of `ls_info`.
 
         !!! warning "Deprecated"
@@ -577,13 +593,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `als` instead.
         """
         warnings.warn(
-            "`als_info` is deprecated; use `als` instead.",
+            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.als(path)
+        result = await self.als(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `als` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
 
         !!! warning "Deprecated"
@@ -591,13 +611,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `glob` instead.
         """
         warnings.warn(
-            "`glob_info` is deprecated; use `glob` instead.",
+            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.glob(pattern, path)
+        result = self.glob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `glob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Async version of `glob_info`.
 
         !!! warning "Deprecated"
@@ -605,18 +629,22 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `aglob` instead.
         """
         warnings.warn(
-            "`aglob_info` is deprecated; use `aglob` instead.",
+            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.aglob(pattern, path)
+        result = await self.aglob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `aglob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
 
     def grep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> "GrepResult":
+    ) -> list["GrepMatch"] | str:
         """Search for a literal text pattern in files.
 
         !!! warning "Deprecated"
@@ -624,18 +652,21 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `grep` instead.
         """
         warnings.warn(
-            "`grep_raw` is deprecated; use `grep` instead.",
+            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.grep(pattern, path, glob)
+        result = self.grep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
     async def agrep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> "GrepResult":
+    ) -> list["GrepMatch"] | str:
         """Async version of `grep_raw`.
 
         !!! warning "Deprecated"
@@ -643,11 +674,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             Use `agrep` instead.
         """
         warnings.warn(
-            "`agrep_raw` is deprecated; use `agrep` instead.",
+            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return await self.agrep(pattern, path, glob)
+        result = await self.agrep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
 
 @dataclass

@@ -242,7 +242,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             except OSError:
                 logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def write(
         self,
@@ -310,7 +310,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
                     raise
                 return EditResult(error=f"Error editing file '{file_path}': {error}")
 
-        return EditResult(path=file_path, files_update=None, occurrences=count)
+        return EditResult(path=file_path, occurrences=count)
 
     def edit(
         self,

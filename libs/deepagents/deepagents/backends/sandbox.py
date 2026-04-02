@@ -124,7 +124,7 @@ __DEEPAGENTS_EDIT_EOF__
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
-sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
+sandbox. The payload (path, old/new strings, replace_all flag) is passed as
 base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
 
 Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
@@ -132,6 +132,9 @@ on failure.
 
 Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
 to `_edit_via_upload()` which transfers old/new strings as temp files.
+
+Keeps a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
+detect end-of-input on a newline-delimited heredoc feed can observe completion.
 """
 
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
@@ -410,7 +413,7 @@ except PermissionError:
         if response.error:
             return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -483,7 +486,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
@@ -549,7 +551,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 

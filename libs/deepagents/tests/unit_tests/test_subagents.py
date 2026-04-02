@@ -15,6 +15,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
@@ -643,6 +644,239 @@ class TestSubAgents:
         # config instead of replacing it wholesale.
         assert captured_config["tags"] == ["hello"]
         assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
+
+    def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
+        interrupt_payloads: list[Any] = []
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should trigger HITL."""
+            return "approved"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Use the approval-gated tool.",
+                                    "subagent_type": "specialist",
+                                },
+                                "id": "call_interrupt_inherited",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "requires_approval",
+                                "args": {},
+                                "id": "call_requires_approval",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            subagents=[
+                {
+                    "name": "specialist",
+                    "description": "Uses an approval-gated tool.",
+                    "system_prompt": "Use the approval-gated tool.",
+                    "model": subagent_chat_model,
+                    "tools": [requires_approval],
+                }
+            ],
+        )
+
+        for chunk in parent_agent.stream(
+            {"messages": [HumanMessage(content="Delegate to the specialist.")]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+            stream_mode="updates",
+        ):
+            if "__interrupt__" in chunk:
+                interrupt_payloads.extend(chunk["__interrupt__"])
+
+        assert len(interrupt_payloads) == 1
+        interrupt_value = interrupt_payloads[0].value
+        assert len(interrupt_value["action_requests"]) == 1
+        action_request = interrupt_value["action_requests"][0]
+        assert action_request["name"] == "requires_approval"
+        assert action_request["args"] == {}
+        assert "requires_approval" in action_request["description"]
+        assert interrupt_value["review_configs"][0]["action_name"] == "requires_approval"
+
+    def test_subagent_interrupt_on_override_disables_parent_interrupt(self) -> None:
+        called = False
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should not trigger HITL when overridden."""
+            nonlocal called
+            called = True
+            return "approved"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Use the approval-gated tool.",
+                                    "subagent_type": "specialist",
+                                },
+                                "id": "call_interrupt_override",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "requires_approval",
+                                "args": {},
+                                "id": "call_requires_approval_override",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="tool completed"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            subagents=[
+                {
+                    "name": "specialist",
+                    "description": "Uses an approval-gated tool.",
+                    "system_prompt": "Use the approval-gated tool.",
+                    "model": subagent_chat_model,
+                    "tools": [requires_approval],
+                    "interrupt_on": {"requires_approval": False},
+                }
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Delegate to the specialist.")]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        )
+
+        assert called is True
+        assert "__interrupt__" not in result
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "tool completed"
+
+    @pytest.mark.xfail(
+        reason="callbacks in parent config are not forwarded to subagent invocations (see #2315)",
+        strict=True,
+    )
+    def test_subagent_propagates_callbacks_to_model_calls(self) -> None:
+        """Test that callbacks in parent config are forwarded to subagent model invocations.
+
+        Regression test for https://github.com/langchain-ai/deepagents/issues/2315.
+        """
+        llm_start_agent_names: list[str] = []
+
+        class CapturingCallback(BaseCallbackHandler):
+            def on_llm_start(self, serialized: dict, prompts: list, **kwargs: Any) -> None:
+                llm_start_agent_names.append(kwargs.get("name", "unknown"))
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do something.",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_subagent_callback",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content="Subagent done.")]))
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            name="callback-check-subagent",
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        callback = CapturingCallback()
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the callback check.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                "callbacks": [callback],
+            },
+            durability="exit",
+        )
+
+        # All three LLM calls (2 parent + 1 subagent) should trigger the callback
+        assert len(llm_start_agent_names) == 3, (
+            f"Expected callbacks from 2 parent + 1 subagent LLM calls, but only got {len(llm_start_agent_names)}: {llm_start_agent_names}"
+        )
+        # The subagent name should be identifiable in at least one callback
+        assert any(name == "callback-check-subagent" for name in llm_start_agent_names), (
+            f"Subagent LLM call should have triggered callback with correct name, got: {llm_start_agent_names}"
+        )
 
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.

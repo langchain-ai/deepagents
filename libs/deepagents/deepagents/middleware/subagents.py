@@ -1,11 +1,15 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import dataclasses
+import json
+import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -85,6 +89,34 @@ class SubAgent(TypedDict):
 
     Rules are evaluated in declaration order; the first match wins.
     ``_PermissionMiddleware`` is appended last in the middleware stack.
+    """
+
+    response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
+    """Structured output response format for the subagent.
+
+    When specified, the subagent will produce a `structured_response` conforming to the
+    given schema. The structured response is JSON-serialized and returned as the
+    ToolMessage content to the parent agent, replacing the default last-message extraction.
+
+    Accepts any format supported by `create_agent`.
+
+    Example:
+        ```python
+        from pydantic import BaseModel
+
+        class Findings(BaseModel):
+            findings: str
+            confidence: float
+
+        analyzer: SubAgent = {
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "system_prompt": "Analyze the data and return your findings.",
+            "model": "openai:gpt-4o",
+            "tools": [],
+            "response_format": Findings,
+        }
+        ```
     """
 
 
@@ -306,6 +338,100 @@ class _SubagentSpec(TypedDict):
     runnable: Runnable
 
 
+def _get_subagents_legacy(
+    *,
+    default_model: str | BaseChatModel,
+    default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
+    default_middleware: list[AgentMiddleware] | None,
+    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    subagents: Sequence[SubAgent | CompiledSubAgent],
+    general_purpose_agent: bool,
+) -> list[_SubagentSpec]:
+    """Create subagent instances from specifications.
+
+    Args:
+        default_model: Default model for subagents that don't specify one.
+        default_tools: Default tools for subagents that don't specify tools.
+        default_middleware: Middleware to apply to all subagents. If `None`,
+            no default middleware is applied.
+        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
+            are also the fallback for any subagents that don't specify their own tool configs.
+        subagents: List of agent specifications or pre-compiled agents.
+        general_purpose_agent: Whether to include a general-purpose subagent.
+
+    Returns:
+        List of subagent specs containing name, description, and runnable.
+    """
+    # Use empty list if None (no default middleware)
+    default_subagent_middleware = default_middleware or []
+
+    specs: list[_SubagentSpec] = []
+
+    # Create general-purpose agent if enabled
+    if general_purpose_agent:
+        general_purpose_middleware = [*default_subagent_middleware]
+        if default_interrupt_on:
+            general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
+        general_purpose_subagent = create_agent(
+            default_model,
+            system_prompt=DEFAULT_SUBAGENT_PROMPT,
+            tools=default_tools,
+            middleware=general_purpose_middleware,
+            name="general-purpose",
+        )
+        specs.append(
+            {
+                "name": "general-purpose",
+                "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+                "runnable": general_purpose_subagent,
+            }
+        )
+
+    # Process custom subagents
+    for agent_ in subagents:
+        if "runnable" in agent_:
+            custom_agent = cast("CompiledSubAgent", agent_)
+            specs.append(
+                {
+                    "name": custom_agent["name"],
+                    "description": custom_agent["description"],
+                    "runnable": custom_agent["runnable"],
+                }
+            )
+            continue
+        _tools = agent_.get("tools", list(default_tools))
+
+        subagent_model = agent_.get("model", default_model)
+
+        _middleware = [*default_subagent_middleware, *agent_["middleware"]] if "middleware" in agent_ else [*default_subagent_middleware]
+
+        interrupt_on = agent_.get("interrupt_on", default_interrupt_on)
+        if interrupt_on:
+            _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+        create_agent_kwargs: dict[str, Any] = {}
+        if "response_format" in agent_:
+            create_agent_kwargs["response_format"] = agent_["response_format"]
+
+        specs.append(
+            {
+                "name": agent_["name"],
+                "description": agent_["description"],
+                "runnable": create_agent(
+                    subagent_model,
+                    system_prompt=agent_["system_prompt"],
+                    tools=_tools,
+                    middleware=_middleware,
+                    name=agent_["name"],
+                    **create_agent_kwargs,
+                ),
+            }
+        )
+
+    return specs
+
+
+
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
@@ -343,12 +469,18 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        structured = result.get("structured_response")
+        if structured is not None:
+            content: str = structured.model_dump_json() if hasattr(structured, "model_dump_json") else json.dumps(structured)
+        else:
+            # Strip trailing whitespace to prevent API errors with Anthropic
+            content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
             }
         )
 
@@ -512,6 +644,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+            create_agent_kwargs: dict[str, Any] = {}
+            if "response_format" in spec:
+                create_agent_kwargs["response_format"] = spec["response_format"]
+
             specs.append(
                 {
                     "name": spec["name"],
@@ -522,6 +658,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
+                        **create_agent_kwargs,
                     ),
                 }
             )

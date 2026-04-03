@@ -593,7 +593,7 @@ User: "Can you research the latest developments in quantum computing?"
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
-Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!"""
+Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!""" # noqa: E501
 
 
 class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):

@@ -98,7 +98,15 @@ class SubAgent(TypedDict):
     given schema. The structured response is JSON-serialized and returned as the
     ToolMessage content to the parent agent, replacing the default last-message extraction.
 
-    Accepts any format supported by `create_agent`.
+    Accepted formats (from `langchain.agents.structured_output`):
+
+    - `ToolStrategy(schema)`: Use tool calling to extract structured output from the model.
+    - `ProviderStrategy(schema)`: Use the model provider's native structured output mode.
+    - `AutoStrategy(schema)`: Automatically select the best strategy.
+    - A bare Python `type`: A Pydantic `BaseModel` subclass, `dataclass`, or `TypedDict`
+      class. Equivalent to `AutoStrategy(schema)`.
+    - `dict[str, Any]`: A JSON schema dictionary (e.g.,
+      `{"type": "object", "properties": {...}, "required": [...]}`).
 
     Example:
         ```python
@@ -472,7 +480,12 @@ def _build_task_tool(  # noqa: C901
 
         structured = result.get("structured_response")
         if structured is not None:
-            content: str = structured.model_dump_json() if hasattr(structured, "model_dump_json") else json.dumps(structured)
+            if hasattr(structured, "model_dump_json"):
+                content: str = structured.model_dump_json()
+            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+                content = json.dumps(dataclasses.asdict(structured))
+            else:
+                content = json.dumps(structured)
         else:
             # Strip trailing whitespace to prevent API errors with Anthropic
             content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""

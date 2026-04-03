@@ -2261,3 +2261,18 @@ class TestFindDotenvFromStartPath:
 
         # Should continue past the OSError and find .env in parent
         assert result == env_file
+
+class TestDefaultCodingInstructions:
+    """Tests for bundled default coding instructions loading."""
+
+    def test_reads_default_prompt_as_utf8(self) -> None:
+        """Should read the bundled default prompt with explicit UTF-8."""
+        from deepagents_cli.config import get_default_coding_instructions
+
+        with patch.object(
+            Path, "read_text", return_value="default instructions"
+        ) as mock_read:
+            result = get_default_coding_instructions()
+
+        assert result == "default instructions"
+        mock_read.assert_called_once_with(encoding="utf-8")

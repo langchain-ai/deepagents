@@ -504,7 +504,7 @@ def get_system_prompt(
         ... {CONDITIONAL SECTIONS} ...
         ```
     """
-    template = (Path(__file__).parent / "system_prompt.md").read_text()
+    template = (Path(__file__).parent / "system_prompt.md").read_text(encoding="utf-8")
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 

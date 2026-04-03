@@ -696,11 +696,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         token_limit = self._tool_token_limit_before_evict
 
         def _truncate(content: str, file_path: str, limit: int) -> str:
-            lines = content.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                content = "".join(lines)
-
             if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)

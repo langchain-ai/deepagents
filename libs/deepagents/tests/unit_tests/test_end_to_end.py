@@ -1167,14 +1167,78 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify behavior: with limit=1, we get only the first formatted line
-        # (not all continuation markers)
-        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
-        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
-        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+        # Verify behavior: limit=1 selects one logical line, and formatting can
+        # still expand that line into continuation rows. Size-based truncation
+        # remains in effect for very large outputs.
+        assert len(file_content) <= TOOL_RESULT_TOKEN_LIMIT * NUM_CHARS_PER_TOKEN
+        assert "     1\t" in file_content
+        assert "1.1" in file_content
+        assert "Output was truncated" in file_content
 
-        # To get more of the line, the model would need to increase limit, not offset
-        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+    def test_read_file_pagination_does_not_skip_source_lines_after_wrapping(self) -> None:
+        """Wrapped long lines should not cause unseen source lines to be skipped."""
+        backend = StateBackend()
+        file_path = "/wrapped.txt"
+        long_line = "x" * 15000
+        content = "\n".join(
+            [
+                "line1",
+                long_line,
+                "important instruction",
+                "line4",
+                "line5",
+            ]
+        )
+        starter_files = prepopulate_file(backend, file_path, content)
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 3},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 3, "limit": 3},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend)
+
+        invoke_input: dict[str, Any] = {
+            "messages": [HumanMessage(content=f"Read {file_path} in two pages")],
+        }
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+
+        first_page = tool_messages[0].content
+        second_page = tool_messages[1].content
+        combined = f"{first_page}\n{second_page}"
+
+        assert "line1" in combined
+        assert "important instruction" in combined
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

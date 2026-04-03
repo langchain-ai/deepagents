@@ -208,7 +208,7 @@ import os, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
-TRUNCATION_MSG = chr(10) + chr(10) + (
+TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
     'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'

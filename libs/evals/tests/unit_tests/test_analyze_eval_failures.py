@@ -43,9 +43,7 @@ class TestFormatMarkdown:
         assert "2 failures" in md
 
     def test_empty_category_omitted(self):
-        results = [
-            {"test_name": "test_x", "category": "", "failure_message": "f", "analysis": "a"}
-        ]
+        results = [{"test_name": "test_x", "category": "", "failure_message": "f", "analysis": "a"}]
         md = _format_markdown(results)
         assert "**Category:**" not in md
 

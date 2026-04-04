@@ -236,11 +236,13 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _RESULTS[outcome] += 1
 
     if outcome == "failed":
-        _FAILURES.append({
-            "test_name": report.nodeid,
-            "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
-            "failure_message": report.longreprtext,
-        })
+        _FAILURES.append(
+            {
+                "test_name": report.nodeid,
+                "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
+                "failure_message": report.longreprtext,
+            }
+        )
 
     category = _NODEID_TO_CATEGORY.get(report.nodeid)
     if category and outcome in {"passed", "failed"}:

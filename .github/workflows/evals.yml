@@ -283,6 +283,20 @@ jobs:
             exit 1
           fi
 
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled()"
+        env:
+          ANALYSIS_MODEL: "anthropic:claude-haiku-4-5-20251001"
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
+
       - name: "📤 Upload eval report"
         if: "!cancelled()"
         uses: actions/upload-artifact@v7

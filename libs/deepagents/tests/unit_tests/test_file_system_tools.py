@@ -599,3 +599,63 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_read_file_pagination_keeps_lines_after_wrapped_long_line() -> None:
+    long_line = "x" * 15000
+    file_content = f"line1\n{long_line}\nimportant instruction\nline4"
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/wrapped.txt", "content": file_content},
+                            "id": "call_write_wrapped",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/wrapped.txt", "offset": 0, "limit": 3},
+                            "id": "call_read_wrapped_page_1",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/wrapped.txt", "offset": 3, "limit": 3},
+                            "id": "call_read_wrapped_page_2",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I have read both pages."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        checkpointer=InMemorySaver(),
+        backend=StateBackend(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Write and paginate the wrapped file")]},
+        config={"configurable": {"thread_id": "test_thread_wrapped_read_file"}},
+    )
+
+    tool_messages = [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert any("important instruction" in str(message) for message in tool_messages)

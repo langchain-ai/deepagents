@@ -1899,6 +1899,14 @@ class TestCreateModelViaInitImportError:
         ):
             _create_model_via_init("model", "dotted.provider", {})
 
+    def test_codex_provider_returns_codex_chat_model(self) -> None:
+        """Codex provider should use the local Codex chat-model wrapper."""
+        from deepagents_cli.providers.codex import CodexChatModel
+
+        model = _create_model_via_init("o4-mini", "codex", {})
+        assert isinstance(model, CodexChatModel)
+        assert model.model == "o4-mini"
+
 
 class TestDetectProvider:
     """Tests for detect_provider() auto-detection from model names."""
@@ -1911,6 +1919,8 @@ class TestDetectProvider:
             ("o1-preview", "openai"),
             ("o3-mini", "openai"),
             ("o4-mini", "openai"),
+            ("codex", "codex"),
+            ("codex:o4-mini", "codex"),
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
             ("gemini-3.1-pro-preview", "google_genai"),
@@ -1970,8 +1980,48 @@ class TestDetectProvider:
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("GPT-4o") == "openai"
+            assert detect_provider("CODEX:O4-MINI") == "codex"
         finally:
             settings.anthropic_api_key = None
+
+
+class TestDefaultModelSpec:
+    """Tests for `_get_default_model_spec` credential fallback order."""
+
+    def test_uses_codex_when_no_api_keys_and_logged_in(self) -> None:
+        """Falls back to Codex when no API-key credentials are configured."""
+        from deepagents_cli.config import _get_default_model_spec
+        from deepagents_cli.model_config import ModelConfig
+
+        empty_config = ModelConfig(default_model=None, recent_model=None)
+        with (
+            patch("deepagents_cli.model_config.ModelConfig.load", return_value=empty_config),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", None),
+            patch.object(settings, "nvidia_api_key", None),
+            patch("deepagents_cli.model_config.has_codex_credentials", return_value=True),
+        ):
+            assert _get_default_model_spec() == "codex:o4-mini"
+
+    def test_error_mentions_codex_login_when_no_credentials(self) -> None:
+        """Missing credentials error should mention `codex login`."""
+        from deepagents_cli.config import _get_default_model_spec
+        from deepagents_cli.model_config import ModelConfig
+
+        empty_config = ModelConfig(default_model=None, recent_model=None)
+        with (
+            patch("deepagents_cli.model_config.ModelConfig.load", return_value=empty_config),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", None),
+            patch.object(settings, "nvidia_api_key", None),
+            patch("deepagents_cli.model_config.has_codex_credentials", return_value=False),
+            pytest.raises(ModelConfigError, match="codex login"),
+        ):
+            _get_default_model_spec()
 
 
 class TestLazyModuleAttributes:

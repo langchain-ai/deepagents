@@ -4763,6 +4763,13 @@ class DeepAgentsApp(App):
             # Check credentials
             has_creds = has_provider_credentials(provider) if provider else None
             if has_creds is False and provider is not None:
+                if provider == "codex":
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Codex session not found. Run `codex login` and try again."
+                        )
+                    )
+                    return
                 env_var = get_credential_env_var(provider)
                 detail = (
                     f"{env_var} is not set or is empty"

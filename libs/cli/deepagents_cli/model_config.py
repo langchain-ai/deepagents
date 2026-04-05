@@ -255,6 +255,9 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+CODEX_PROVIDER_NAME = "codex"
+"""Provider name for Codex CLI session-based authentication."""
+
 
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
@@ -727,6 +730,9 @@ def has_provider_credentials(provider: str) -> bool | None:
             False if confirmed missing, or None if credential status cannot
             be determined.
     """
+    if provider == CODEX_PROVIDER_NAME:
+        return has_codex_credentials()
+
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     provider_config = config.providers.get(provider)
@@ -767,11 +773,36 @@ def get_credential_env_var(provider: str) -> str | None:
     Returns:
         Environment variable name, or None if unknown.
     """
+    if provider == CODEX_PROVIDER_NAME:
+        return None
+
     config = ModelConfig.load()
     config_env = config.get_api_key_env(provider)
     if config_env:
         return config_env
     return PROVIDER_API_KEY_ENV.get(provider)
+
+
+def has_codex_credentials() -> bool | None:
+    """Check whether the user has an active Codex CLI session.
+
+    Runs `codex login status` as a subprocess. Returns `True` if the session
+    is active, `False` if `codex` is installed but not logged in, and `None`
+    if the `codex` binary is unavailable or the check times out.
+    """
+    import subprocess  # noqa: S404
+
+    try:
+        result = subprocess.run(
+            ["codex", "login", "status"],  # noqa: S603, S607
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
 
 
 @dataclass(frozen=True)

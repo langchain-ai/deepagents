@@ -1,6 +1,7 @@
 """Tests for model_config module."""
 
 import logging
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -10,6 +11,7 @@ import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
+    CODEX_PROVIDER_NAME,
     PROVIDER_API_KEY_ENV,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
@@ -22,8 +24,10 @@ from deepagents_cli.model_config import (
     _profile_module_from_class_path,
     clear_caches,
     clear_default_model,
+    get_credential_env_var,
     get_available_models,
     get_model_profiles,
+    has_codex_credentials,
     has_provider_credentials,
     is_warning_suppressed,
     load_thread_columns,
@@ -131,6 +135,73 @@ class TestHasProviderCredentials:
             clear=True,
         ):
             assert has_provider_credentials("anthropic") is True
+
+    def test_codex_delegates_to_codex_credential_check(self) -> None:
+        """Codex provider should use Codex session check, not env vars."""
+        with patch(
+            "deepagents_cli.model_config.has_codex_credentials", return_value=True
+        ) as mock_check:
+            assert has_provider_credentials(CODEX_PROVIDER_NAME) is True
+        mock_check.assert_called_once_with()
+
+
+class TestCodexCredentials:
+    """Tests for Codex session-based credential checks."""
+
+    def test_returns_true_when_codex_status_succeeds(self) -> None:
+        """Return True when `codex login status` exits with zero."""
+        completed = subprocess.CompletedProcess(
+            args=["codex", "login", "status"],
+            returncode=0,
+            stdout="Logged in",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=completed):
+            assert has_codex_credentials() is True
+
+    def test_returns_false_when_codex_status_fails(self) -> None:
+        """Return False when `codex login status` exits non-zero."""
+        completed = subprocess.CompletedProcess(
+            args=["codex", "login", "status"],
+            returncode=1,
+            stdout="",
+            stderr="Not logged in",
+        )
+        with patch("subprocess.run", return_value=completed):
+            assert has_codex_credentials() is False
+
+    def test_returns_none_when_codex_missing(self) -> None:
+        """Return None when the Codex binary is not present."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert has_codex_credentials() is None
+
+    def test_returns_none_when_codex_times_out(self) -> None:
+        """Return None when `codex login status` times out."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 5)):
+            assert has_codex_credentials() is None
+
+    def test_get_credential_env_var_returns_none_for_codex(self) -> None:
+        """Codex does not use an API key env var."""
+        assert get_credential_env_var(CODEX_PROVIDER_NAME) is None
+
+    def test_codex_status_invokes_expected_command(self) -> None:
+        """Codex credential check invokes `codex login status` with timeout."""
+        completed = subprocess.CompletedProcess(
+            args=["codex", "login", "status"],
+            returncode=0,
+            stdout="Logged in",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            has_codex_credentials()
+
+        mock_run.assert_called_once_with(
+            ["codex", "login", "status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
 
 
 class TestThreadColumnPersistence:

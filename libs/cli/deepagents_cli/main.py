@@ -457,8 +457,9 @@ def parse_args() -> argparse.Namespace:
         "-M",
         "--model",
         metavar="MODEL",
-        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2). "
-        "Provider is auto-detected from model name.",
+        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2, codex:o4-mini). "
+        "Provider is auto-detected from model name. Codex requires `codex login` "
+        "session auth (no API key env var).",
     )
 
     parser.add_argument(
@@ -710,7 +711,7 @@ async def run_textual_cli_async(
     # (~560ms) is deferred to a background worker.
 
     try:
-        resolved_spec = model_name or _get_default_model_spec()
+        resolved_spec = model_name or _get_default_model_spec(allow_codex_probe=False)
     except ModelConfigError as e:
         from rich.markup import escape
 

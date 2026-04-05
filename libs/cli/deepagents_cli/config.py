@@ -1132,6 +1132,13 @@ class Settings:
         return self.nvidia_api_key is not None
 
     @property
+    def has_codex(self) -> bool:
+        """Check if an active Codex CLI session is available."""
+        from deepagents_cli.model_config import has_codex_credentials
+
+        return has_codex_credentials() is True
+
+    @property
     def has_vertex_ai(self) -> bool:
         """Check if VertexAI is available (Google Cloud project set, no API key).
 
@@ -1786,6 +1793,9 @@ def detect_provider(model_name: str) -> str | None:
     """
     model_lower = model_name.lower()
 
+    if model_lower == "codex" or model_lower.startswith("codex:"):
+        return "codex"
+
     if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
         return "openai"
 
@@ -1807,14 +1817,17 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
-def _get_default_model_spec() -> str:
+def _get_default_model_spec(*, allow_codex_probe: bool = True) -> str:
     """Get default model specification based on available credentials.
 
     Checks in order:
 
     1. `[models].default` in config file (user's intentional preference).
     2. `[models].recent` in config file (last `/model` switch).
-    3. Auto-detection based on available API credentials.
+    3. Auto-detection based on available API credentials and Codex session.
+
+    The Codex session check is intentionally optional so startup codepaths can
+    defer the subprocess probe to a background worker.
 
     Returns:
         Model specification in provider:model format.
@@ -1822,7 +1835,11 @@ def _get_default_model_spec() -> str:
     Raises:
         ModelConfigError: If no credentials are configured.
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+    from deepagents_cli.model_config import (
+        ModelConfig,
+        ModelConfigError,
+        has_codex_credentials,
+    )
 
     config = ModelConfig.load()
     if config.default_model:
@@ -1842,9 +1859,16 @@ def _get_default_model_spec() -> str:
         return "google_vertexai:gemini-3.1-pro-preview"
     if s.has_nvidia:
         return "nvidia:nvidia/nemotron-3-super-120b-a12b"
+    if allow_codex_probe:
+        if has_codex_credentials() is True:
+            return "codex:o4-mini"
+    else:
+        return "codex:o4-mini"
 
     msg = (
-        "No credentials configured. Please set one of: "
+        "No credentials configured. You have no API key environment variables set "
+        "and are not logged in to Codex. Run `codex login` to authenticate, "
+        "or set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
         "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
     )
@@ -2025,6 +2049,11 @@ def _create_model_via_init(
     Raises:
         ModelConfigError: On import, value, or runtime errors.
     """
+    if provider == "codex":
+        from deepagents_cli.providers.codex import CodexChatModel
+
+        return CodexChatModel(model=model_name, **kwargs)
+
     from langchain.chat_models import init_chat_model
 
     from deepagents_cli.model_config import ModelConfigError

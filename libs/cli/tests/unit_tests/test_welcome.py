@@ -306,6 +306,10 @@ class TestBuildWelcomeFooter:
         assert "Tip: " in plain
         assert any(tip in plain for tip in _TIPS)
 
+    def test_contains_codex_tip(self) -> None:
+        """Tips list should include Codex login guidance."""
+        assert any("codex login" in tip for tip in _TIPS)
+
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""
         seen = {build_welcome_footer().plain for _ in range(50)}

@@ -180,6 +180,37 @@ class TestModelSwitchErrorHandling:
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
         assert app._model_switching is False
 
+    async def test_codex_missing_session_shows_codex_specific_error(self) -> None:
+        """Codex provider shows a targeted login-session error."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=False,
+            ),
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("codex:o4-mini")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_errors) == 1
+        assert "Codex session not found" in captured_errors[0]
+        assert "codex login" in captured_errors[0]
+        assert app._model_switching is False
+
     async def test_save_recent_model_failure_shows_warning(self) -> None:
         """Permission error saving recent model shows error, no success message."""
         app = DeepAgentsApp()

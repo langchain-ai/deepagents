@@ -69,7 +69,13 @@ def show_help() -> None:
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
     console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
-    console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
+    console.print(
+        "  -M, --model MODEL          Model to use (e.g., gpt-4o, codex:o4-mini)"
+    )
+    console.print(
+        "                             Codex uses `codex login` session auth"
+        " (no API key env var)"
+    )
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )

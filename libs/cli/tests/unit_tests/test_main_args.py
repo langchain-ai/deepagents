@@ -265,6 +265,23 @@ class TestProfileOverrideArgument:
         assert exc_info.value.code == 1
 
 
+class TestModelArgumentHelp:
+    """Tests for `--model` help text."""
+
+    def test_model_help_mentions_codex_login(self, mock_argv: MockArgvType) -> None:
+        """`--model` help should describe Codex session auth."""
+        with (
+            mock_argv("--help"),
+            patch("sys.stdout", new_callable=io.StringIO) as stdout_buf,
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+        help_text = stdout_buf.getvalue()
+        assert "codex:o4-mini" in help_text
+        assert "codex login" in help_text
+
+
 def _make_args(
     *,
     non_interactive_message: str | None = None,

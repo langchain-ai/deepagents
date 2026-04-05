@@ -50,9 +50,9 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
             ),
         },
         query="What magic number do i need for explore analysing using lunar?",
-        # Step 1: read_file to get the skill content.
+        # Step 1: load_skill to get the full managed skill content.
         # Step 2: answer with the magic number.
-        # 1 tool call request: read_file.
+        # 1 tool call request: load_skill.
         scorer=(
             TrajectoryScorer()
             .expect(
@@ -60,9 +60,9 @@ def test_read_skill_full_content(model: BaseChatModel) -> None:
                 tool_call_requests=1,
                 tool_calls=[
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/user/data-analysis/SKILL.md"},
+                        args_contains={"skill_name": "data-analysis"},
                     )
                 ],
             )
@@ -93,9 +93,9 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
             ),
         },
         query="Read only the code-review skill and tell me the code it contains. Do not read the deployment skill.",
-        # Step 1: read_file for code-review only.
+        # Step 1: load_skill for code-review only.
         # Step 2: answer with the code.
-        # 1 tool call request: read_file (code-review only).
+        # 1 tool call request: load_skill (code-review only).
         scorer=(
             TrajectoryScorer()
             .expect(
@@ -103,9 +103,9 @@ def test_read_skill_by_name(model: BaseChatModel) -> None:
                 tool_call_requests=1,
                 tool_calls=[
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/user/code-review/SKILL.md"},
+                        args_contains={"skill_name": "code-review"},
                     )
                 ],
             )
@@ -139,9 +139,9 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
         query=(
             "What ports do the front and backend deploys use? List them as 'frontend: X, backend: Y'."
         ),
-        # Step 1: read_file for both skills in parallel.
+        # Step 1: load_skill for both skills in parallel.
         # Step 2: answer combining both ports.
-        # 2 tool call requests: read_file (frontend-deploy) + read_file (backend-deploy).
+        # 2 tool call requests: load_skill (frontend-deploy) + load_skill (backend-deploy).
         scorer=(
             TrajectoryScorer()
             .expect(
@@ -149,14 +149,14 @@ def test_combine_two_skills(model: BaseChatModel) -> None:
                 tool_call_requests=2,
                 tool_calls=[
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/user/frontend-deploy/SKILL.md"},
+                        args_contains={"skill_name": "frontend-deploy"},
                     ),
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/user/backend-deploy/SKILL.md"},
+                        args_contains={"skill_name": "backend-deploy"},
                     ),
                 ],
             )
@@ -226,10 +226,10 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
         query=(
             "There is a misspelled word somewhere in /skills/user/testing/SKILL.md. Read the file, identify the typo, and fix it."
         ),
-        # Step 1: read_file to discover the typo.
+        # Step 1: load_skill to discover the typo.
         # Step 2: edit_file to fix it.
         # Step 3: confirm.
-        # 2 tool call requests: read_file + edit_file.
+        # 2 tool call requests: load_skill + edit_file.
         scorer=(
             TrajectoryScorer()
             .expect(
@@ -237,9 +237,9 @@ def test_update_skill_typo_fix_requires_read(model: BaseChatModel) -> None:
                 tool_call_requests=2,
                 tool_calls=[
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/user/testing/SKILL.md"},
+                        args_contains={"skill_name": "testing"},
                     ),
                     tool_call(
                         name="edit_file",
@@ -291,9 +291,9 @@ def test_find_skill_in_correct_path(model: BaseChatModel) -> None:
                 tool_call_requests=2,
                 tool_calls=[
                     tool_call(
-                        name="read_file",
+                        name="load_skill",
                         step=1,
-                        args_contains={"file_path": "/skills/project/deployment/SKILL.md"},
+                        args_contains={"skill_name": "deployment"},
                     ),
                     tool_call(
                         name="edit_file",

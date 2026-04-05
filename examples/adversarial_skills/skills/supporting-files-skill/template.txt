@@ -1,0 +1,5 @@
+RESULT TEMPLATE
+headline: <one short line>
+evidence: <comma-separated facts>
+token: <helper token>
+status: SUPPORTING-FILES-CONFIRMED

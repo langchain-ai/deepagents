@@ -90,19 +90,23 @@ middleware = SkillsMiddleware(
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
+    from langgraph.types import Command
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
@@ -116,7 +120,9 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langgraph.prebuilt import ToolRuntime
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents.backends.protocol import LsResult
 from deepagents.middleware._utils import append_to_system_message
@@ -125,6 +131,7 @@ logger = logging.getLogger(__name__)
 
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
+MAX_INLINE_SKILL_BODY_BYTES = 64 * 1024
 
 # Agent Skills specification constraints (https://agentskills.io/specification)
 MAX_SKILL_NAME_LENGTH = 64
@@ -204,6 +211,85 @@ class SkillsStateUpdate(TypedDict):
 
     skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata to merge into state."""
+
+
+class SkillSectionManifestEntry(TypedDict):
+    """Metadata describing a markdown section in a skill body."""
+
+    section_id: str
+    title: str
+    level: int
+    start_line: int
+    end_line: int
+    required: bool
+
+
+class LoadSkillPayload(TypedDict):
+    """Structured response returned by the `load_skill` tool."""
+
+    skill_name: str
+    source_path: str
+    root_path: str
+    is_complete: bool
+    truncated: bool
+    byte_count: int
+    line_count: int
+    content_sha256: str
+    frontmatter: SkillMetadata
+    content: str
+    section_manifest: list[SkillSectionManifestEntry]
+    supporting_files_manifest: list[dict[str, Any]]
+    requires_sectional_loading: bool
+    missing_section_ids: list[str]
+
+
+class LoadedSkillSection(TypedDict):
+    """A fully loaded section returned by `get_skill_sections`."""
+
+    section_id: str
+    title: str
+    level: int
+    start_line: int
+    end_line: int
+    content: str
+    content_sha256: str
+
+
+class GetSkillSectionsPayload(TypedDict):
+    """Structured response returned by the `get_skill_sections` tool."""
+
+    skill_name: str
+    source_path: str
+    root_path: str
+    loaded_sections: list[LoadedSkillSection]
+    loaded_section_ids: list[str]
+    missing_section_ids: list[str]
+    is_complete: bool
+    content_sha256: str
+
+
+class LoadSkillSchema(BaseModel):
+    """Input schema for the `load_skill` tool."""
+
+    skill_name: str = Field(
+        description="Canonical skill name from the available skills list.",
+    )
+    purpose: str | None = Field(
+        default=None,
+        description="Optional short explanation of why this skill is being activated.",
+    )
+
+
+class GetSkillSectionsSchema(BaseModel):
+    """Input schema for the `get_skill_sections` tool."""
+
+    skill_name: str = Field(
+        description="Canonical skill name from the available skills list.",
+    )
+    section_ids: list[str] = Field(
+        description="Section identifiers from `load_skill(...).section_manifest` to load in full.",
+        min_length=1,
+    )
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -557,6 +643,175 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
+def _split_frontmatter_and_body(content: str) -> tuple[str, str]:
+    """Split raw `SKILL.md` content into YAML frontmatter and markdown body."""
+    frontmatter_pattern = r"^---\s*\n(.*?)\n---\s*\n?"
+    match = re.match(frontmatter_pattern, content, re.DOTALL)
+    if not match:
+        return "", content
+    return match.group(1), content[match.end() :]
+
+
+def _slugify_heading(title: str) -> str:
+    """Convert a markdown heading into a stable section identifier."""
+    slug = title.strip().lower()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug or "section"
+
+
+def _build_section_manifest(body: str) -> list[SkillSectionManifestEntry]:
+    """Build a section manifest from markdown headings in a skill body."""
+    lines = body.splitlines()
+    headings: list[tuple[int, int, str]] = []
+    for idx, line in enumerate(lines, start=1):
+        match = re.match(r"^(#{1,6})\s+(.*\S)\s*$", line)
+        if match:
+            headings.append((idx, len(match.group(1)), match.group(2).strip()))
+
+    if not headings:
+        line_count = len(lines)
+        return [
+            SkillSectionManifestEntry(
+                section_id="full-document",
+                title="Full Document",
+                level=1,
+                start_line=1,
+                end_line=max(1, line_count),
+                required=True,
+            )
+        ]
+
+    manifest: list[SkillSectionManifestEntry] = []
+    for i, (start_line, level, title) in enumerate(headings):
+        end_line = len(lines)
+        if i + 1 < len(headings):
+            end_line = headings[i + 1][0] - 1
+        manifest.append(
+            SkillSectionManifestEntry(
+                section_id=_slugify_heading(title),
+                title=title,
+                level=level,
+                start_line=start_line,
+                end_line=max(start_line, end_line),
+                required=True,
+            )
+        )
+    return manifest
+
+
+def _extract_section_contents(
+    body: str,
+    section_manifest: list[SkillSectionManifestEntry],
+    section_ids: list[str],
+) -> tuple[list[LoadedSkillSection], list[str]]:
+    """Extract the requested sections from a skill body."""
+    lines = body.splitlines()
+    sections_by_id = {section["section_id"]: section for section in section_manifest}
+
+    loaded_sections: list[LoadedSkillSection] = []
+    missing_section_ids: list[str] = []
+    for section_id in section_ids:
+        section = sections_by_id.get(section_id)
+        if section is None:
+            missing_section_ids.append(section_id)
+            continue
+
+        start_idx = max(0, section["start_line"] - 1)
+        end_idx = max(start_idx, section["end_line"])
+        content = "\n".join(lines[start_idx:end_idx])
+        loaded_sections.append(
+            LoadedSkillSection(
+                section_id=section["section_id"],
+                title=section["title"],
+                level=section["level"],
+                start_line=section["start_line"],
+                end_line=section["end_line"],
+                content=content,
+                content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            )
+        )
+
+    return loaded_sections, missing_section_ids
+
+
+def _build_supporting_files_manifest(
+    backend: BackendProtocol,
+    skill_root: str,
+) -> list[dict[str, Any]]:
+    """List supporting files that live alongside `SKILL.md`."""
+    ls_result = backend.ls(skill_root)
+    entries = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
+    manifest: list[dict[str, Any]] = []
+    for entry in entries or []:
+        path = str(entry.get("path", ""))
+        if not path or PurePosixPath(path).name == "SKILL.md":
+            continue
+        manifest.append(
+            {
+                "path": path,
+                "is_dir": bool(entry.get("is_dir", False)),
+                "size": entry.get("size"),
+                "modified_at": entry.get("modified_at"),
+            }
+        )
+    return manifest
+
+
+async def _abuild_supporting_files_manifest(
+    backend: BackendProtocol,
+    skill_root: str,
+) -> list[dict[str, Any]]:
+    """Async version of `_build_supporting_files_manifest`."""
+    ls_result = await backend.als(skill_root)
+    entries = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
+    manifest: list[dict[str, Any]] = []
+    for entry in entries or []:
+        path = str(entry.get("path", ""))
+        if not path or PurePosixPath(path).name == "SKILL.md":
+            continue
+        manifest.append(
+            {
+                "path": path,
+                "is_dir": bool(entry.get("is_dir", False)),
+                "size": entry.get("size"),
+                "modified_at": entry.get("modified_at"),
+            }
+        )
+    return manifest
+
+
+def _build_load_skill_payload(
+    *,
+    skill: SkillMetadata,
+    raw_content: str,
+    supporting_files_manifest: list[dict[str, Any]],
+) -> LoadSkillPayload:
+    """Build the structured payload returned by the `load_skill` tool."""
+    _frontmatter, body = _split_frontmatter_and_body(raw_content)
+    root_path = str(PurePosixPath(skill["path"]).parent)
+    body_bytes = body.encode("utf-8")
+    section_manifest = _build_section_manifest(body)
+    requires_sectional_loading = len(body_bytes) > MAX_INLINE_SKILL_BODY_BYTES
+    return LoadSkillPayload(
+        skill_name=skill["name"],
+        source_path=skill["path"],
+        root_path=root_path,
+        is_complete=not requires_sectional_loading,
+        truncated=requires_sectional_loading,
+        byte_count=len(body_bytes),
+        line_count=max(1, len(body.splitlines())),
+        content_sha256=hashlib.sha256(body_bytes).hexdigest(),
+        frontmatter=skill,
+        content="" if requires_sectional_loading else body,
+        section_manifest=section_manifest,
+        supporting_files_manifest=supporting_files_manifest,
+        requires_sectional_loading=requires_sectional_loading,
+        missing_section_ids=[section["section_id"] for section in section_manifest] if requires_sectional_loading else [],
+    )
+
+
 SKILLS_SYSTEM_PROMPT = """
 
 ## Skills System
@@ -571,27 +826,37 @@ You have access to a skills library that provides specialized capabilities and d
 
 **How to Use Skills (Progressive Disclosure):**
 
-Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
+Skills follow a **progressive disclosure** pattern - you see their name and description above, but only load full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
-3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
+2. **Load the skill's full instructions**: Call `load_skill(skill_name=...)` before acting on that skill
+3. **Only treat a skill as fully loaded when the tool returns `is_complete: true`**
+4. **If `load_skill` returns `requires_sectional_loading: true`**: Call `get_skill_sections(...)` with the section IDs from `missing_section_ids`
+5. **Follow the skill's instructions**: The loaded skill content contains step-by-step workflows, constraints, and examples
+6. **Access supporting files**: Skills may include helper scripts, configs,
+   or reference docs - use the returned `root_path` and
+   `supporting_files_manifest`
 
 **When to Use Skills:**
 - User's request matches a skill's domain (e.g., "research X" -> web-research skill)
 - You need specialized knowledge or structured workflows
 - A skill provides proven patterns for complex tasks
 
+**Important Rules:**
+- Do NOT use `read_file` to load a skill's `SKILL.md` for execution. Use `load_skill`.
+- For very large skills, complete the loading flow with `get_skill_sections` before acting.
+- Use normal file tools for supporting files or direct skill edits only when the task is about modifying files, not loading skill instructions.
+- If a skill is relevant, load it first and then act.
+
 **Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
+Skills may contain Python scripts or other executable files. Always use absolute paths returned by `load_skill`.
 
 **Example Workflow:**
 
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
+2. Call `load_skill(skill_name="web-research")`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
@@ -642,6 +907,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self._backend = backend
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+        self._skill_content_cache: dict[tuple[str, str], LoadSkillPayload] = {}
+        self._cached_backend: BackendProtocol | None = None
+        self._cached_skills_metadata: list[SkillMetadata] = []
+        self.tools = [
+            self._create_load_skill_tool(),
+            self._create_get_skill_sections_tool(),
+        ]
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -698,9 +970,278 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             lines.append(desc_line)
             if skill["allowed_tools"]:
                 lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
-            lines.append(f"  -> Read `{skill['path']}` for full instructions")
+            lines.append(f"  -> Call `load_skill(skill_name=\"{skill['name']}\")` to load full instructions")
+            lines.append(f"  -> Managed file: `{skill['path']}`")
 
         return "\n".join(lines)
+
+    def _resolve_tool_backend(self, runtime: ToolRuntime | None) -> BackendProtocol:
+        """Resolve a backend for tool execution, even if runtime injection fails."""
+        if runtime is not None:
+            backend = self._get_backend(runtime.state, runtime, runtime.config)
+            self._cached_backend = backend
+            return backend
+
+        if self._cached_backend is not None:
+            return self._cached_backend
+
+        if callable(self._backend):
+            msg = "SkillsMiddleware requires ToolRuntime for backend factories"
+            raise ValueError(msg)
+
+        self._cached_backend = self._backend
+        return self._backend
+
+    def _resolve_tool_skills_metadata(self, runtime: ToolRuntime | None) -> list[SkillMetadata]:
+        """Resolve skill metadata for tool execution, with a middleware-level fallback."""
+        if runtime is not None:
+            skills_metadata = runtime.state.get("skills_metadata", [])
+            if skills_metadata:
+                self._cached_skills_metadata = skills_metadata
+            return skills_metadata
+
+        return self._cached_skills_metadata
+
+    @staticmethod
+    def _find_skill_by_name(skills_metadata: list[SkillMetadata], skill_name: str) -> SkillMetadata | None:
+        """Return the metadata for a named skill."""
+        return next((skill for skill in skills_metadata if skill["name"] == skill_name), None)
+
+    def _cache_key(self, skill: SkillMetadata, raw_content: str) -> tuple[str, str]:
+        """Build a cache key for a fully loaded skill."""
+        return (skill["path"], hashlib.sha256(raw_content.encode("utf-8")).hexdigest())
+
+    def _download_skill_body(
+        self,
+        backend: BackendProtocol,
+        skill: SkillMetadata,
+    ) -> tuple[str, str] | str:
+        """Download and decode a skill body."""
+        response = backend.download_files([skill["path"]])[0]
+        if response.error or response.content is None:
+            return f"Error: could not load skill '{skill['name']}' from {skill['path']}: {response.error or 'no content'}"
+
+        try:
+            raw_content = response.content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return f"Error: could not decode skill '{skill['name']}' as UTF-8: {exc}"
+
+        _frontmatter, body = _split_frontmatter_and_body(raw_content)
+        return raw_content, body
+
+    async def _adownload_skill_body(
+        self,
+        backend: BackendProtocol,
+        skill: SkillMetadata,
+    ) -> tuple[str, str] | str:
+        """Async version of `_download_skill_body`."""
+        response = (await backend.adownload_files([skill["path"]]))[0]
+        if response.error or response.content is None:
+            return f"Error: could not load skill '{skill['name']}' from {skill['path']}: {response.error or 'no content'}"
+
+        try:
+            raw_content = response.content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return f"Error: could not decode skill '{skill['name']}' as UTF-8: {exc}"
+
+        _frontmatter, body = _split_frontmatter_and_body(raw_content)
+        return raw_content, body
+
+    def _load_skill_payload(
+        self,
+        backend: BackendProtocol,
+        skills_metadata: list[SkillMetadata],
+        skill_name: str,
+    ) -> LoadSkillPayload | str:
+        """Synchronously load a full skill payload."""
+        skill = self._find_skill_by_name(skills_metadata, skill_name)
+        if skill is None:
+            return f"Error: unknown skill '{skill_name}'. Choose one of the advertised skill names."
+
+        downloaded = self._download_skill_body(backend, skill)
+        if isinstance(downloaded, str):
+            return downloaded
+        raw_content, _body = downloaded
+
+        cache_key = self._cache_key(skill, raw_content)
+        cached = self._skill_content_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        payload = _build_load_skill_payload(
+            skill=skill,
+            raw_content=raw_content,
+            supporting_files_manifest=_build_supporting_files_manifest(
+                backend,
+                str(PurePosixPath(skill["path"]).parent),
+            ),
+        )
+        self._skill_content_cache[cache_key] = payload
+        return payload
+
+    async def _aload_skill_payload(
+        self,
+        backend: BackendProtocol,
+        skills_metadata: list[SkillMetadata],
+        skill_name: str,
+    ) -> LoadSkillPayload | str:
+        """Asynchronously load a full skill payload."""
+        skill = self._find_skill_by_name(skills_metadata, skill_name)
+        if skill is None:
+            return f"Error: unknown skill '{skill_name}'. Choose one of the advertised skill names."
+
+        downloaded = await self._adownload_skill_body(backend, skill)
+        if isinstance(downloaded, str):
+            return downloaded
+        raw_content, _body = downloaded
+
+        cache_key = self._cache_key(skill, raw_content)
+        cached = self._skill_content_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        payload = _build_load_skill_payload(
+            skill=skill,
+            raw_content=raw_content,
+            supporting_files_manifest=await _abuild_supporting_files_manifest(
+                backend,
+                str(PurePosixPath(skill["path"]).parent),
+            ),
+        )
+        self._skill_content_cache[cache_key] = payload
+        return payload
+
+    def _create_load_skill_tool(self) -> BaseTool:
+        """Create the `load_skill` tool."""
+
+        def sync_load_skill(
+            skill_name: str,
+            runtime: ToolRuntime = None,  # type: ignore[assignment]
+            purpose: str | None = None,  # noqa: ARG001  # intentional context for the model
+        ) -> LoadSkillPayload | str:
+            """Synchronously load a skill's full verified instructions."""
+            backend = self._resolve_tool_backend(runtime)
+            skills_metadata = self._resolve_tool_skills_metadata(runtime)
+            return self._load_skill_payload(backend, skills_metadata, skill_name)
+
+        async def async_load_skill(
+            skill_name: str,
+            runtime: ToolRuntime = None,  # type: ignore[assignment]
+            purpose: str | None = None,  # noqa: ARG001  # intentional context for the model
+        ) -> LoadSkillPayload | str:
+            """Asynchronously load a skill's full verified instructions."""
+            backend = self._resolve_tool_backend(runtime)
+            skills_metadata = self._resolve_tool_skills_metadata(runtime)
+            return await self._aload_skill_payload(backend, skills_metadata, skill_name)
+
+        return StructuredTool.from_function(
+            name="load_skill",
+            description="Load the full verified instructions for a skill. Use this tool instead of read_file when a skill applies.",
+            func=sync_load_skill,
+            coroutine=async_load_skill,
+            infer_schema=False,
+            args_schema=LoadSkillSchema,
+        )
+
+    def _get_skill_sections_payload(
+        self,
+        backend: BackendProtocol,
+        skills_metadata: list[SkillMetadata],
+        skill_name: str,
+        section_ids: list[str],
+    ) -> GetSkillSectionsPayload | str:
+        """Synchronously load the requested skill sections."""
+        skill = self._find_skill_by_name(skills_metadata, skill_name)
+        if skill is None:
+            return f"Error: unknown skill '{skill_name}'. Choose one of the advertised skill names."
+
+        downloaded = self._download_skill_body(backend, skill)
+        if isinstance(downloaded, str):
+            return downloaded
+        raw_content, body = downloaded
+        section_manifest = _build_section_manifest(body)
+        loaded_sections, missing_section_ids = _extract_section_contents(body, section_manifest, section_ids)
+        return GetSkillSectionsPayload(
+            skill_name=skill["name"],
+            source_path=skill["path"],
+            root_path=str(PurePosixPath(skill["path"]).parent),
+            loaded_sections=loaded_sections,
+            loaded_section_ids=[section["section_id"] for section in loaded_sections],
+            missing_section_ids=missing_section_ids,
+            is_complete=not missing_section_ids,
+            content_sha256=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+        )
+
+    async def _aget_skill_sections_payload(
+        self,
+        backend: BackendProtocol,
+        skills_metadata: list[SkillMetadata],
+        skill_name: str,
+        section_ids: list[str],
+    ) -> GetSkillSectionsPayload | str:
+        """Async version of `_get_skill_sections_payload`."""
+        skill = self._find_skill_by_name(skills_metadata, skill_name)
+        if skill is None:
+            return f"Error: unknown skill '{skill_name}'. Choose one of the advertised skill names."
+
+        downloaded = await self._adownload_skill_body(backend, skill)
+        if isinstance(downloaded, str):
+            return downloaded
+        raw_content, body = downloaded
+        section_manifest = _build_section_manifest(body)
+        loaded_sections, missing_section_ids = _extract_section_contents(body, section_manifest, section_ids)
+        return GetSkillSectionsPayload(
+            skill_name=skill["name"],
+            source_path=skill["path"],
+            root_path=str(PurePosixPath(skill["path"]).parent),
+            loaded_sections=loaded_sections,
+            loaded_section_ids=[section["section_id"] for section in loaded_sections],
+            missing_section_ids=missing_section_ids,
+            is_complete=not missing_section_ids,
+            content_sha256=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+        )
+
+    def _create_get_skill_sections_tool(self) -> BaseTool:
+        """Create the `get_skill_sections` tool."""
+
+        def sync_get_skill_sections(
+            skill_name: str,
+            section_ids: list[str],
+            runtime: ToolRuntime = None,  # type: ignore[assignment]
+        ) -> GetSkillSectionsPayload | str:
+            """Synchronously load specific sections from a skill."""
+            backend = self._resolve_tool_backend(runtime)
+            skills_metadata = self._resolve_tool_skills_metadata(runtime)
+            return self._get_skill_sections_payload(
+                backend,
+                skills_metadata,
+                skill_name,
+                section_ids,
+            )
+
+        async def async_get_skill_sections(
+            skill_name: str,
+            section_ids: list[str],
+            runtime: ToolRuntime = None,  # type: ignore[assignment]
+        ) -> GetSkillSectionsPayload | str:
+            """Asynchronously load specific sections from a skill."""
+            backend = self._resolve_tool_backend(runtime)
+            skills_metadata = self._resolve_tool_skills_metadata(runtime)
+            return await self._aget_skill_sections_payload(
+                backend,
+                skills_metadata,
+                skill_name,
+                section_ids,
+            )
+
+        return StructuredTool.from_function(
+            name="get_skill_sections",
+            description="Load specific sections from a large skill after `load_skill` indicates sectional loading is required.",
+            func=sync_get_skill_sections,
+            coroutine=async_get_skill_sections,
+            infer_schema=False,
+            args_schema=GetSkillSectionsSchema,
+        )
 
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
@@ -748,6 +1289,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         # Resolve backend (supports both direct instances and factory functions)
         backend = self._get_backend(state, runtime, config)
+        self._cached_backend = backend
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each source in order
@@ -758,6 +1300,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
+        self._cached_skills_metadata = skills
         return SkillsStateUpdate(skills_metadata=skills)
 
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
@@ -784,6 +1327,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         # Resolve backend (supports both direct instances and factory functions)
         backend = self._get_backend(state, runtime, config)
+        self._cached_backend = backend
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each source in order
@@ -794,6 +1338,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
+        self._cached_skills_metadata = skills
         return SkillsStateUpdate(skills_metadata=skills)
 
     def wrap_model_call(
@@ -829,6 +1374,62 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """
         modified_request = self.modify_request(request)
         return await handler(modified_request)
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Redirect direct `read_file` access for skill bodies to `load_skill`."""
+        if request.tool_call["name"] != "read_file":
+            return handler(request)
+
+        args = request.tool_call.get("args", {})
+        file_path = args.get("file_path") if isinstance(args, dict) else None
+        if not isinstance(file_path, str):
+            return handler(request)
+
+        skills_metadata = request.runtime.state.get("skills_metadata", [])
+        skill = next((item for item in skills_metadata if item["path"] == file_path), None)
+        if skill is None:
+            return handler(request)
+
+        return ToolMessage(
+            tool_call_id=request.tool_call["id"],
+            content=(
+                f"Error: `{file_path}` is a managed skill file. "
+                f"Use load_skill(skill_name='{skill['name']}') instead of read_file "
+                "when you need the skill's execution instructions."
+            ),
+        )
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Async version of `wrap_tool_call`."""
+        if request.tool_call["name"] != "read_file":
+            return await handler(request)
+
+        args = request.tool_call.get("args", {})
+        file_path = args.get("file_path") if isinstance(args, dict) else None
+        if not isinstance(file_path, str):
+            return await handler(request)
+
+        skills_metadata = request.runtime.state.get("skills_metadata", [])
+        skill = next((item for item in skills_metadata if item["path"] == file_path), None)
+        if skill is None:
+            return await handler(request)
+
+        return ToolMessage(
+            tool_call_id=request.tool_call["id"],
+            content=(
+                f"Error: `{file_path}` is a managed skill file. "
+                f"Use load_skill(skill_name='{skill['name']}') instead of read_file "
+                "when you need the skill's execution instructions."
+            ),
+        )
 
 
 __all__ = ["SkillMetadata", "SkillsMiddleware"]

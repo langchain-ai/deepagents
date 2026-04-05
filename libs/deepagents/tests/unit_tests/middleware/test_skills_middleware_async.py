@@ -5,12 +5,16 @@ This module contains async versions of skills middleware tests.
 
 from pathlib import Path
 
+import pytest
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+pytestmark = pytest.mark.anyio
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -32,6 +36,18 @@ description: {description}
 
 Instructions go here.
 """
+
+
+def _tool_runtime(state: dict | None = None) -> ToolRuntime:
+    """Create a ToolRuntime for async skill tool tests."""
+    return ToolRuntime(
+        state=state or {},
+        context=None,
+        tool_call_id="tc-skill-async",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
 
 
 async def test_alist_skills_from_backend_single_skill(tmp_path: Path) -> None:
@@ -372,6 +388,7 @@ async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Pat
 
     assert "base-skill" in content
     assert "user-skill" in content
+    assert "load_skill" in content
 
 
 async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) -> None:
@@ -404,3 +421,136 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
 
     assert "Skills System" in content
     assert "No skills available" in content
+
+
+async def test_load_skill_tool_async_returns_structured_payload(tmp_path: Path) -> None:
+    """Test that async `load_skill` returns the full skill body."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "async-research" / "SKILL.md")
+    skill_content = """---
+name: async-research
+description: Async research workflow
+---
+
+# Async Research
+
+## Workflow
+1. Search
+2. Validate
+
+## Final Check
+Token: BRAVO-LIMA
+"""
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    load_skill_tool = next(tool for tool in middleware.tools if tool.name == "load_skill")
+    assert load_skill_tool.coroutine is not None
+    result = await load_skill_tool.coroutine(
+        runtime=_tool_runtime(state_update),
+        skill_name="async-research",
+    )
+
+    assert isinstance(result, dict)
+    assert result["is_complete"] is True
+    assert result["truncated"] is False
+    assert "BRAVO-LIMA" in result["content"]
+
+
+async def test_load_skill_tool_async_requires_sectional_loading(tmp_path: Path) -> None:
+    """Test that async `load_skill` returns sectional-loading metadata for large skills."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "huge-async-skill" / "SKILL.md")
+    large_body = "\n".join(
+        [
+            "# Huge Async Skill",
+            "",
+            "## Setup",
+            "A" * 40_000,
+            "",
+            "## Workflow",
+            "B" * 40_000,
+        ]
+    )
+    backend.upload_files(
+        [
+            (
+                skill_path,
+                make_skill_content(
+                    "huge-async-skill",
+                    "Large async skill",
+                ).replace("Instructions go here.\n", f"{large_body}\n").encode("utf-8"),
+            )
+        ]
+    )
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    load_skill_tool = next(tool for tool in middleware.tools if tool.name == "load_skill")
+    assert load_skill_tool.coroutine is not None
+    result = await load_skill_tool.coroutine(
+        runtime=_tool_runtime(state_update),
+        skill_name="huge-async-skill",
+    )
+
+    assert isinstance(result, dict)
+    assert result["is_complete"] is False
+    assert result["requires_sectional_loading"] is True
+    assert result["content"] == ""
+
+
+async def test_get_skill_sections_tool_async_returns_requested_sections(tmp_path: Path) -> None:
+    """Test async `get_skill_sections` for large skills."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "async-sectioned-skill" / "SKILL.md")
+    backend.upload_files(
+        [
+            (
+                skill_path,
+                b"""---
+name: async-sectioned-skill
+description: Async sectioned skill
+---
+
+# Async Sectioned Skill
+
+## Setup
+Prepare.
+
+## Workflow
+Run workflow.
+
+## Validation
+Check DELTA-42.
+""",
+            )
+        ]
+    )
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    get_sections_tool = next(
+        tool for tool in middleware.tools if tool.name == "get_skill_sections"
+    )
+    assert get_sections_tool.coroutine is not None
+    result = await get_sections_tool.coroutine(
+        runtime=_tool_runtime(state_update),
+        skill_name="async-sectioned-skill",
+        section_ids=["workflow", "validation"],
+    )
+
+    assert isinstance(result, dict)
+    assert result["is_complete"] is True
+    assert result["loaded_section_ids"] == ["workflow", "validation"]
+    assert "Run workflow." in result["loaded_sections"][0]["content"]
+    assert "DELTA-42" in result["loaded_sections"][1]["content"]

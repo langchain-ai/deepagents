@@ -10,8 +10,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
@@ -68,6 +70,18 @@ description: {description}
 
 Instructions go here.
 """
+
+
+def _tool_runtime(state: dict | None = None) -> ToolRuntime:
+    """Create a ToolRuntime for middleware tool tests."""
+    return ToolRuntime(
+        state=state or {},
+        context=None,
+        tool_call_id="tc-skill",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
 
 
 def test_validate_skill_name_valid() -> None:
@@ -1092,6 +1106,187 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     content = system_message.text
     assert "Skills System" in content, "System prompt should contain 'Skills System' section"
     assert "test-skill" in content, "System prompt should mention the skill name"
+    assert "load_skill" in content, "System prompt should instruct the model to use load_skill"
+
+
+def test_load_skill_tool_returns_full_verified_payload(tmp_path: Path) -> None:
+    """Test that `load_skill` returns the full structured skill payload."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "data-analysis" / "SKILL.md")
+    skill_content = """---
+name: data-analysis
+description: Analyze data with explicit validation
+---
+
+# Data Analysis
+
+## Workflow
+1. Load data
+2. Validate data
+
+## Final Check
+Always report token ALPHA-7-ZULU.
+"""
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    load_skill_tool = next(tool for tool in middleware.tools if tool.name == "load_skill")
+    assert load_skill_tool.func is not None
+    result = load_skill_tool.func(
+        runtime=_tool_runtime(state_update),
+        skill_name="data-analysis",
+    )
+
+    assert isinstance(result, dict)
+    assert result["skill_name"] == "data-analysis"
+    assert result["is_complete"] is True
+    assert result["truncated"] is False
+    assert result["source_path"] == skill_path
+    assert result["root_path"].endswith("/data-analysis")
+    assert result["line_count"] >= 1
+    assert result["byte_count"] > 0
+    assert len(result["content_sha256"]) == 64
+    assert "ALPHA-7-ZULU" in result["content"]
+    section_ids = {section["section_id"] for section in result["section_manifest"]}
+    assert "workflow" in section_ids
+    assert "final-check" in section_ids
+
+
+def test_wrap_tool_call_blocks_read_file_for_skill_md(tmp_path: Path) -> None:
+    """Test that direct `read_file` access to `SKILL.md` is redirected."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "research" / "SKILL.md")
+    skill_content = make_skill_content("research", "Research with explicit workflow")
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    request = SimpleNamespace(
+        tool_call={
+            "id": "tc-read-skill",
+            "name": "read_file",
+            "args": {"file_path": skill_path},
+            "type": "tool_call",
+        },
+        runtime=_tool_runtime(state_update),
+    )
+
+    called = False
+
+    def _handler(_: object) -> ToolMessage:
+        nonlocal called
+        called = True
+        return ToolMessage(tool_call_id="tc-read-skill", content="should not run")
+
+    result = middleware.wrap_tool_call(request, _handler)
+
+    assert isinstance(result, ToolMessage)
+    assert "Use load_skill" in result.text
+    assert called is False
+
+
+def test_load_skill_tool_requires_sectional_loading_for_large_skill(tmp_path: Path) -> None:
+    """Test that large skills return a manifest instead of a truncated body."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "large-skill" / "SKILL.md")
+    large_body = "\n".join(
+        [
+            "# Large Skill",
+            "",
+            "## Setup",
+            "A" * 40_000,
+            "",
+            "## Workflow",
+            "B" * 40_000,
+        ]
+    )
+    backend.upload_files(
+        [
+                (
+                    skill_path,
+                    make_skill_content(
+                        name="large-skill",
+                        description="Large skill that must be loaded by sections",
+                    ).replace("Instructions go here.\n", f"{large_body}\n").encode("utf-8"),
+                )
+            ]
+        )
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    load_skill_tool = next(tool for tool in middleware.tools if tool.name == "load_skill")
+    assert load_skill_tool.func is not None
+    result = load_skill_tool.func(
+        runtime=_tool_runtime(state_update),
+        skill_name="large-skill",
+    )
+
+    assert isinstance(result, dict)
+    assert result["is_complete"] is False
+    assert result["truncated"] is True
+    assert result["requires_sectional_loading"] is True
+    assert result["content"] == ""
+    assert result["missing_section_ids"] == [
+        section["section_id"] for section in result["section_manifest"]
+    ]
+
+
+def test_get_skill_sections_tool_returns_requested_sections(tmp_path: Path) -> None:
+    """Test that `get_skill_sections` loads only the requested sections."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "sectioned-skill" / "SKILL.md")
+    backend.upload_files(
+        [
+                (
+                    skill_path,
+                    make_skill_content(
+                        name="sectioned-skill",
+                        description="Skill with multiple sections",
+                    ).replace(
+                        "Instructions go here.\n",
+                        (
+                            "# Sectioned Skill\n\n"
+                            "## Setup\nPrepare inputs.\n\n"
+                            "## Workflow\nRun the workflow.\n\n"
+                            "## Validation\nCheck FINAL-CHECK-927.\n"
+                        ),
+                    ).encode("utf-8"),
+                )
+            ]
+        )
+
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    state_update = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert state_update is not None
+
+    get_sections_tool = next(
+        tool for tool in middleware.tools if tool.name == "get_skill_sections"
+    )
+    assert get_sections_tool.func is not None
+    result = get_sections_tool.func(
+        runtime=_tool_runtime(state_update),
+        skill_name="sectioned-skill",
+        section_ids=["workflow", "validation"],
+    )
+
+    assert isinstance(result, dict)
+    assert result["is_complete"] is True
+    assert result["missing_section_ids"] == []
+    assert result["loaded_section_ids"] == ["workflow", "validation"]
+    assert len(result["loaded_sections"]) == 2
+    assert "Run the workflow." in result["loaded_sections"][0]["content"]
+    assert "FINAL-CHECK-927" in result["loaded_sections"][1]["content"]
 
 
 def test_skills_middleware_with_state_backend() -> None:
@@ -1134,6 +1329,7 @@ def test_skills_middleware_with_store_backend_instance() -> None:
     assert middleware.sources[0] == "/skills/user"
 
 
+@pytest.mark.anyio
 async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     """Test that skills middleware works with async agent invocation."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -1540,6 +1736,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     assert result_2["skills_metadata"][0]["description"] == "Shared namespace skill"
 
 
+@pytest.mark.anyio
 async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
     store = InMemoryStore()

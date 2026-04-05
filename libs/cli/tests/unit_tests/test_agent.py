@@ -600,7 +600,8 @@ class TestGetSystemPromptNonInteractive:
         with patch("deepagents_cli.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
 
-        assert "Wait for the user's response before marking the first todo" not in prompt
+        wait_for_user = "Wait for the user's response before marking the first todo"
+        assert wait_for_user not in prompt
         assert "do NOT ask the user to approve your plan" in prompt
         assert "mark the first item `in_progress` immediately" in prompt
 

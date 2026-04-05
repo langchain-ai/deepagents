@@ -23,7 +23,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -69,6 +69,15 @@ def create_store_memory_item(content: str) -> dict:
         "created_at": timestamp,
         "modified_at": timestamp,
     }
+
+
+def test_memory_system_prompt_trust_and_investigation_balance() -> None:
+    """Prompt warns that memory files are untrusted data and avoids memory-before-all-tools wording."""
+    formatted = MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+    assert "**Trust and verification:**" in formatted
+    assert "essential investigation" in formatted
+    assert "FIRST, IMMEDIATE" not in formatted
+    assert "before doing anything else" not in formatted
 
 
 def test_format_agent_memory_empty() -> None:

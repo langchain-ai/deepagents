@@ -40,6 +40,8 @@ The fastest way to start using Deep Agents. `deepagents-cli` is a pre-built codi
 
 **What the CLI adds on top of the SDK:**
 
+- **Default system instructions** — The CLI loads [`system_prompt.md`](deepagents_cli/system_prompt.md) (mode, working directory, model identity, git/shell conventions, and more) and passes it as `system_prompt` into `create_deep_agent()`. The SDK always **appends** its shared base harness prompt after that string, so the full default is **CLI template + base**, not the base alone. Library code with `system_prompt=None` only gets the base unless you supply your own instructions.
+
 - **Interactive TUI** — rich terminal interface with streaming responses
 - **Conversation resume** — pick up where you left off across sessions
 - **Web search** — ground responses in live information

@@ -71,6 +71,10 @@ agent = create_deep_agent(
 
 MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters).
 
+### Default prompts: library vs CLI
+
+Calling `create_deep_agent()` from Python with `system_prompt=None` uses the SDK **base harness prompt** only (plus whatever middleware injects). The **Deep Agents CLI** is different by default: it supplies a longer coding-terminal template from [`system_prompt.md`](libs/cli/deepagents_cli/system_prompt.md) (via `get_system_prompt()`), and the SDK **still appends** the same base harness prompt afterward. So you get **CLI template + base** in the terminal, but **base only** (unless you pass `system_prompt`) in typical library code. Extra CLI rules cover things like brevity, git safety, and workspace paths. To mirror CLI behavior in code, pass an equivalent `system_prompt` or reuse the CLI helper; see the [CLI README](libs/cli/README.md).
+
 ## Deep Agents CLI
 
 A pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM. One install command and you're up and running.

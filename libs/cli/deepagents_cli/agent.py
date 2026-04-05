@@ -480,7 +480,7 @@ def get_system_prompt(
 
     Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path, execution mode).
+    skills path, execution mode, and todo-list guidance for interactive vs headless).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -520,6 +520,13 @@ def get_system_prompt(
             "- If the request is ambiguous, ask questions before acting.\n"
             "- If asked how to approach something, explain first, then act."
         )
+        todo_guidance = (
+            "6. When first creating a todo list for a task, ALWAYS ask the user if the plan looks good before starting work\n"
+            '   - Create the todos, let them render, then ask: "Does this plan look good?" or similar\n'
+            "   - Wait for the user's response before marking the first todo as in_progress\n"
+            "   - If they want changes, adjust the plan accordingly\n"
+            "7. Update todo status promptly as you complete each item"
+        )
     else:
         mode_description = (
             "non-interactive (headless) mode — there is no human operator "
@@ -541,6 +548,12 @@ def get_system_prompt(
             "`npm init`, `apt-get install -y` not `apt-get install`, "
             "`yes |` or `--no-input`/`--non-interactive` flags where "
             "available. Never run commands that block waiting for stdin."
+        )
+        todo_guidance = (
+            "6. There is no human operator in this mode — do NOT ask the user to approve your plan or wait for a reply.\n"
+            "   After you create todos for a multi-step task, mark the first item `in_progress` immediately and start work.\n"
+            "   If the plan needs adjustment, revise the todo list yourself; do not block on human confirmation.\n"
+            "7. Update todo status promptly as you complete each item"
         )
 
     model_identity_section = build_model_identity_section(
@@ -598,6 +611,7 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)

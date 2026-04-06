@@ -69,6 +69,66 @@ class TestInitialPromptOnMount:
 
         assert submitted == ["hello world"]
 
+    async def test_initial_skill_triggers_invoke_skill(self) -> None:
+        """When `--skill` is set, startup should invoke that skill."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_prompt="  keep leading whitespace",
+            initial_skill="code-review",
+        )
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == [("code-review", "  keep leading whitespace", None)]
+
+    async def test_initial_skill_runs_after_server_ready(self) -> None:
+        """Deferred startup should invoke the requested skill after connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="review this diff",
+            initial_skill="code-review",
+        )
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        app.on_deep_agents_app_server_ready(
+            app.ServerReady(
+                agent=MagicMock(),
+                server_proc=None,
+                mcp_server_info=[],
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert submitted == [("code-review", "review this diff", None)]
+
 
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""

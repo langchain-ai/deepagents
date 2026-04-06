@@ -290,18 +290,18 @@ def _render_function_stub(
     with contextlib.suppress(TypeError, ValueError, NameError):
         inspected_signature = inspect.signature(target)
         resolved_hints = get_type_hints(target)
-        parameter_parts = [
-            (
-                f"({param.name} "
-                f"{
-                    _format_annotation(resolved_hints.get(param.name, param.annotation))
-                })"
-            )
-            if param.annotation is not inspect.Signature.empty
-            or param.name in resolved_hints
-            else f"({param.name} any)"
-            for param in inspected_signature.parameters.values()
-        ]
+        parameter_parts: list[str] = []
+        for param in inspected_signature.parameters.values():
+            if (
+                param.annotation is not inspect.Signature.empty
+                or param.name in resolved_hints
+            ):
+                annotation = _format_annotation(
+                    resolved_hints.get(param.name, param.annotation)
+                )
+                parameter_parts.append(f"({param.name} {annotation})")
+            else:
+                parameter_parts.append(f"({param.name} any)")
         if parameter_parts:
             rendered_args = " ".join(parameter_parts)
         return_annotation = resolved_hints.get(

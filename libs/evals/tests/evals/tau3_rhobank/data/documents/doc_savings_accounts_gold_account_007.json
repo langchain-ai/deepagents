@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_gold_account_007",
+  "title": "Troubleshooting: transfer delays",
+  "content": "## Check instant transfer status\n- Instant transfers are Yes. If a transfer is not posting as expected, review the steps below.\n\n## Common causes\n- Temporary maintenance windows that pause posting.\n- Security reviews triggered by unusual activity.\n- Connectivity issues during submission that interrupted confirmation.\n- Incorrect destination details causing manual review.\n\n## What you can do\n- Refresh the activity feed and confirm the transaction status.\n- Verify account details and re-submit the transfer if it does not appear.\n- Wait a short period and try again if there is a maintenance banner.\n- Contact support with the date, amount, and reference ID if the transfer remains pending.\n\n## Prevent future delays\n- Save trusted recipients to reduce keying errors.\n- Submit transfers during regular processing hours to minimize review queues."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_management_dashboard_002",
+  "title": "BNPL Management Dashboard: Tracking Overdue Plans and Due Dates",
+  "content": "## Monitoring overdue plans\n- Overdue count: The dashboard shows the number of plans with at least one overdue installment as [value not available]. Use this to prioritize follow-up.\n\n## Earliest upcoming due date\n- The earliest upcoming installment due date across all active plans is shown as [value not available]. This date helps you focus on the next required payment.\n\n## Visual highlighting of overdue plans\n- If [value not available] is true, overdue plans are visually emphasized (for example, with color or badges) to make them easy to spot.\n- If [value not available] is false, overdue plans appear without special emphasis; use the overdue count and status columns to identify them.\n\n### Workflow suggestions\n- Start by reviewing the overdue count [value not available].\n- Then scan for items due on or before [value not available] and take action to minimize additional overdue items.\n- If highlighting is disabled, consider sorting or filtering by status to quickly surface overdue entries."
+}

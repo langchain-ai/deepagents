@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_diamond_004",
+  "title": "BNPL Diamond: 12-Month Standard Term and Flexible Repayment Options",
+  "content": "## Standard term\n- If you do not choose a custom schedule, your plan defaults to a 12-month repayment term.\n\n## Flexible term range\n- You may select a custom term between 7 and 18 months, in whole-month increments.\n\n### Term summary\n| Option | Allowed length (months) |\n| --- | --- |\n| Standard term | 12 |\n| Flexible term | 7 to 18 |\n\n### Choosing your term\n- Align the term with your cash flow forecast and purchasing cycle.\n- Longer terms reduce monthly installment amounts but extend the repayment horizon.\n- If no selection is made at setup, the plan proceeds at 12 months.\n\n### Implementation notes\n- Your installment schedule is calculated at plan creation based on the selected term length.\n- Changing the term after activation may not be available; choose carefully during setup."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_diamond_vault_007",
+  "title": "Diamond Vault Account: Adding authorized users",
+  "content": "## Access capacity\n- Maximum number of authorized users: -1.\n- This value indicates no cap on the number of users you can authorize for this account tier.\n\n## Adding users\n- Assign roles that align with each person’s responsibilities, limiting access to the functions they need.\n- Capture approvals through your standard corporate governance workflow before granting access.\n- Review permissions immediately after provisioning to confirm accuracy.\n\n## Ongoing governance\n- Conduct periodic access audits to remove users who no longer require account privileges.\n- Separate initiation and approval duties among distinct users to strengthen internal controls.\n- Maintain an access register documenting roles, scopes, and last review dates."
+}

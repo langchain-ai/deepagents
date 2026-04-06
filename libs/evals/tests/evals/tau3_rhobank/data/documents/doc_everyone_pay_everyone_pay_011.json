@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_everyone_pay_011",
+  "title": "Why can't I send money to this contact?",
+  "content": "## Common reasons\n- The contact has not been verified and your account requires verification before the first transaction: Yes.\n- You have blocked this user or they have blocked you.\n- The contact information is invalid or no longer active.\n- The recipient’s account cannot receive payments at this time.\n- A security review is temporarily restricting the transfer.\n\n## What you can do\n- Open the contact card and complete verification if required.\n- Confirm the contact’s username, email, or mobile number via a trusted channel.\n- Check your block list and unblock the user if appropriate.\n- Try again later if you see a temporary restriction message.\n- If the issue persists, contact support from the failed transaction details."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_qr_transfers_004",
+  "title": "Troubleshooting: QR not scanning",
+  "content": "## Quick checks\n- Confirm the QR code is still valid. If it was generated longer ago than 17, ask for a new code and try again.\n- Increase screen brightness on the device displaying the QR to reduce glare and improve contrast.\n- Wipe your camera lens and hold the device steady; adjust distance to bring the code into focus.\n\n## Environment and device settings\n- Avoid reflections from glossy screens; tilt the display slightly to remove hotspots.\n- Ensure camera permissions are enabled for the app.\n- Close other apps that may be using the camera and retry.\n\n## QR quality\n- If scanning from a printed code, verify it is not smudged, folded, or low-resolution.\n- If scanning from a screen, disable any color inversion or display filters that reduce contrast.\n\n## When to regenerate\n- If the QR has been open for longer than 17 or has been shared as a screenshot and delayed, regenerate a fresh code and scan immediately."
+}

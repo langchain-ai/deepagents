@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_checking_accounts_beige_008",
+  "title": "API Rate Limits and Technical Specifications",
+  "content": "## Monthly call allocation\n- Your integration is allocated $100,000 API calls per month. Track consumption and design polling strategies that respect this limit.\n\n## Real-time behavior\n- Balance updates are Yes. Favor event-driven or on-change sync patterns to reduce unnecessary calls while maintaining current data.\n\n## Design recommendations\n- Cache reference data and only request deltas for transactions and balances.\n- Implement exponential backoff and idempotency for retried calls to prevent duplication and wasted consumption.\n- Monitor error rates and throttle proactively if you approach your monthly call allocation.\n\n## Observability\n- Instrument your integration with counters for successful calls, error responses, and retries so you can tune usage before limits are reached.\n"
+}

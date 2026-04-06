@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_platinum_reserve_account_006",
+  "title": "Platinum Reserve Account: Integration with Enterprise Treasury Tools",
+  "content": "## Integration patterns supported\n- Direct file exchange with structured layouts for balances and transactions\n- API-based connections for near-real-time synchronization with treasury workstations and ERPs\n- Secure upload workflows for manual updates when automation is not yet in place\n\n## Implementation support\n- You are assigned 2 dedicated relationship managers who coordinate technical scoping, timelines, and stakeholder alignment\n- Expect guided mapping of data fields to your internal chart of accounts and liquidity taxonomy\n\n## Testing and validation\n- Establish a controlled test cycle that mirrors production workflows\n- Validate record counts, amounts, and categorizations against source data before promoting changes\n\n## Ongoing change management\n- Maintain a documented runbook for integration dependencies and escalation paths\n- Schedule periodic reviews with your assigned managers to assess performance and adjust mappings as your treasury model evolves"
+}

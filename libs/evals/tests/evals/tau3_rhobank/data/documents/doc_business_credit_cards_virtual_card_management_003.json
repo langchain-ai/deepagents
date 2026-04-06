@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_virtual_card_management_003",
+  "title": "Virtual Card Management: Revoking and Canceling Virtual Cards",
+  "content": "## Choosing between revoke and cancel\n- **Revoke**: Immediately disables the card, preventing further purchases. Use this for temporary or urgent risk scenarios.\n- **Cancel**: Permanently closes the card. Use this when a card is no longer needed (e.g., project completed).\n\n## Revoke a virtual card\n1. Locate the card in **Virtual Cards** and open its details.\n2. Select **Revoke**.\n3. Confirm the action. The card becomes unusable within 3 seconds.\n\n## Cancel a virtual card\n1. Open the card details.\n2. Select **Cancel** and confirm.\n3. The card is permanently closed; any attempted authorization is blocked within 3 seconds.\n\n## Verification and recordkeeping\n- After revocation or cancellation, refresh the card list to verify the updated status.\n- Document the reason for revocation or cancellation in your internal records for audit tracking.\n- If you revoked a card for temporary reasons, you can create a replacement card and distribute new details once the risk subsides."
+}

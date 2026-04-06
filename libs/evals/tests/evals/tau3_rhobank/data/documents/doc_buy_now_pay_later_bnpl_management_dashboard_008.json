@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_management_dashboard_008",
+  "title": "BNPL Management Dashboard: Sorting and Highlighting Plans for Better Tracking",
+  "content": "## Sorting your plans\n- Primary sort order: [value not available]. This determines how plans are arranged (for example, by due date, balance, or status) to surface the most relevant items first.\n- Adjust the sort to align with your workflow—for instance, set [value not available] to prioritize near-term due dates during cash planning, or to larger balances when managing exposure.\n\n## Highlighting overdue plans\n- Overdue highlighting setting: [value not available]. If true, overdue plans are visually emphasized to draw attention; if false, they appear without special styling.\n\n### Tips for better tracking\n- Combine a due-date-oriented [value not available] with [value not available] set to true to quickly identify urgent items.\n- When reviewing historical trends rather than urgent tasks, consider a balance-based [value not available] and disable highlighting for a cleaner view."
+}

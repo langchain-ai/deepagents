@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_split-the-bill_007",
+  "title": "Why can't I create a split payment?",
+  "content": "## Hard limits that block creation\n- Group size exceeds the maximum of 30. Reduce the participant list or create multiple groups.\n- Total amount exceeds $5,500. Lower the total or split it into separate requests.\n\n### Other common blockers\n- Missing required details for one or more participants, such as contact information.\n- The description or allocations are incomplete or do not add up to the total.\n- You are attempting to add the same participant multiple times.\n\n### How to proceed\n- Trim the participant list to stay within 30.\n- Adjust the total so it does not exceed $5,500 and ensure all shares reconcile to that total.\n- Recheck participant details, then try creating the split again."
+}

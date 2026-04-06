@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_split-the-bill_003",
+  "title": "Managing group balances",
+  "content": "## View and interpret statuses\n- Open the split details to see each member’s owed amount and whether it has been paid.\n- Use the activity timeline to confirm when reminders were sent and whether messages align with the 4 interval.\n\n### Reminder cadence\n- Automatic reminders are issued every 4 until the due date.\n- If a member indicates they plan to pay soon, you can allow the schedule to continue rather than sending additional manual nudges.\n\n### Due dates and follow-up\n- Payments are due within 16 from when the split was created.\n- As the due date nears, consider a direct message to any outstanding members to avoid last-minute issues.\n- If the due date passes and balances remain, decide whether to continue reminders, adjust shares, or close and recreate the split as appropriate.\n\n### Practical tips\n- Reconcile partial payments promptly so remaining balances reflect accurate amounts.\n- If a member claims they paid, check their status in the split details and the timing against the 4 schedule and 16 window."
+}

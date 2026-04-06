@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_gold_plus_account_001",
+  "title": "Gold Plus Account specifications and requirements",
+  "content": "## Key specifications\n\n| Item | Value |\n|---|---|\n| Opening deposit minimum | $10,000 |\n| Minimum balance to maintain | $25,000 |\n| Interest compounding frequency | daily |\n| Automatic investment sweep threshold | $50,000 |\n| Monthly withdrawal limit | 25 withdrawals |\n\n## Requirements to open and maintain\n\n- Fund the account with at least $10,000 at opening.\n- Maintain a balance of at least $25,000 to keep account benefits active.\n- When your end-of-day available balance exceeds $50,000, excess funds may be moved automatically to your linked investment account according to sweep settings.\n- Plan cash flows so you do not exceed 25 withdrawals in a month.\n- Interest accrues daily; keeping funds on deposit helps you benefit from compounding.\n"
+}

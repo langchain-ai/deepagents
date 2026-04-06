@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_everyone_pay_010",
+  "title": "Common security questions for Everyone Pay",
+  "content": "## Do I need to verify contacts before sending?\n- Contact verification before the first transaction: Yes. Verification helps ensure you are paying the intended person.\n\n## How do I reduce the risk of sending to the wrong person?\n- Send only to saved contacts you recognize.\n- Review the final confirmation screen before submitting.\n- Look for a verified indicator on the contact profile when available.\n\n## How does Rho handle suspicious activity?\n- We use risk checks and monitoring to identify unusual patterns.\n- Transactions may be paused for review if something looks abnormal.\n\n## What should I do if I suspect fraud?\n- Cancel the payment if it is still pending and eligible for cancellation.\n- Report the issue from the transaction details and include all relevant information.\n- Consider blocking the user to prevent further contact."
+}

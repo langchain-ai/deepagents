@@ -26,8 +26,8 @@ from langsmith.run_helpers import get_current_run_tree
 
 from tests.evals.tau3_rhobank.domain import (
     create_rhobank_tools,
+    get_documents_dir,
     load_db,
-    load_required_docs,
     load_task,
 )
 from tests.evals.tau3_rhobank.evaluation import evaluate_task, score_tau3_episode
@@ -44,16 +44,20 @@ logger = logging.getLogger(__name__)
 TASK_IDS = ["017", "041", "080", "081"]
 
 AGENT_SYSTEM_PROMPT = """\
-You are a customer service agent for Rho-Bank. Help the user according to \
-the knowledge base documents provided below.
+You are a customer service agent for Rho-Bank.
+
+Rho-Bank's knowledge base of policy and procedure documents is available as \
+JSON files in the following directory:
+
+  {documents_dir}
+
+Each file is a JSON object with "id", "title", and "content" fields. Use your \
+file-search and reading tools to locate the relevant policies before taking \
+action. Do NOT guess policies -- always verify by reading the documents first.
 
 Use the available tools to look up information, verify identity, and take actions.
 When the knowledge base tells you to unlock a tool, use unlock_discoverable_agent_tool.
-When the knowledge base tells you to give a tool to the user, use give_discoverable_user_tool.
-
-<knowledge_base>
-{required_documents}
-</knowledge_base>\
+When the knowledge base tells you to give a tool to the user, use give_discoverable_user_tool.\
 """
 
 USER_SIM_MODEL = "gpt-4.1-mini"
@@ -62,21 +66,6 @@ USER_SIM_MODEL = "gpt-4.1-mini"
 def _task_id_label(task_id: str) -> str:
     """Generate a readable pytest ID."""
     return f"task_{task_id}"
-
-
-def _format_docs_for_prompt(docs: dict) -> str:
-    """Format knowledge base documents for inclusion in the system prompt.
-
-    Args:
-        docs: Dictionary of document ID to Document objects.
-
-    Returns:
-        Formatted string with all documents.
-    """
-    parts: list[str] = []
-    for doc_id, doc in sorted(docs.items()):
-        parts.append(f'<document id="{doc_id}" title="{doc.title}">\n{doc.content}\n</document>')
-    return "\n\n".join(parts)
 
 
 @pytest.mark.langsmith
@@ -117,14 +106,10 @@ def test_tau3_rhobank(model: BaseChatModel, task_id: str) -> None:
 
     agent_tools, agent_tool_log, user_tools, user_tool_log = create_rhobank_tools(db)
 
-    required_doc_ids = task.get("required_documents", [])
-    docs = load_required_docs(required_doc_ids)
-    docs_text = _format_docs_for_prompt(docs)
-
     agent = create_deep_agent(
         model=model,
         tools=agent_tools,
-        system_prompt=AGENT_SYSTEM_PROMPT.format(required_documents=docs_text),
+        system_prompt=AGENT_SYSTEM_PROMPT.format(documents_dir=get_documents_dir()),
         checkpointer=MemorySaver(),
     )
 

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_scheduled_payments_008",
+  "title": "How do I stop a recurring payment?",
+  "content": "## Cancel the schedule\n\n- Open the scheduled payment and choose Cancel.\n- Confirm the cancellation to stop future occurrences.\n\n## Timing considerations\n\n- If you cancel close to the scheduled time, the next occurrence may still process if it has already begun. Editing is locked within 13 hours, and cancellation requests made very close to processing time may not stop the imminent occurrence.\n\n## Verify the outcome\n\n- Check your list of schedules to ensure the status is canceled.\n- Monitor your activity around the scheduled date to confirm whether the imminent occurrence processed, then confirm that no further occurrences are set.\n\n## Restarting later\n\n- When you are ready to resume, create a new schedule with your preferred amount and timing."
+}

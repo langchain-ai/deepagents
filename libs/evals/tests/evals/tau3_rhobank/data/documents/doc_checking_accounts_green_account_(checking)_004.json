@@ -1,0 +1,5 @@
+{
+  "id": "doc_checking_accounts_green_account_(checking)_004",
+  "title": "How Green Account (checking) prevents overdrafts",
+  "content": "## Authorization flow that stops negative balances\n- Real-time authorization checks your available balance before each transaction.\n- A small buffer of up to 5 may be considered during authorization to account for minor final-amount differences; beyond that threshold, the transaction is declined.\n- There are no automatic overdraft transfers; the overdraft protection transfer fee is $0.00.\n\n### What this means for you\n- If a transaction would exceed your balance by more than 5, it is declined rather than creating a negative balance.\n- Because there are no overdraft transfers, you do not incur transfer fees; the fee amount is $0.00."
+}

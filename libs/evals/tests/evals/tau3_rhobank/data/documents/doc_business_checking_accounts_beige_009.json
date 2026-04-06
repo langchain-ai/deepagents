@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_checking_accounts_beige_009",
+  "title": "Wire Transfers and Payment Processing on Beige",
+  "content": "## Domestic wire transfers\n- The domestic wire transfer fee is $0.00. Confirm fee applicability before scheduling large volumes.\n- For high-value payments, dual authorization is required for amounts above $10,000. Ensure approvers are available before cutoffs to avoid delays.\n\n## Mobile deposits\n- The daily mobile check deposit limit is $100,000. Plan deposit batches accordingly and consider earlier submission to allow for review.\n\n## Incoming wires\n- You have 50 incoming domestic wires included per month. Use this allocation to reduce transaction costs for receivables.\n\n## ATM fee rebates\n- Out-of-network ATM fee rebates are available up to 50 per month. Submit receipts if required by your account terms.\n\n## Operational tips\n- Set payment templates for recurring beneficiaries to reduce manual entry risk.\n- Use approval queues to align release timing with internal controls.\n- Reconcile processed payments against confirmations and bank statements to close the loop each cycle.\n"
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_virtual_card_management_008",
+  "title": "Virtual Card Management: Single-Use vs Multi-Use Virtual Cards",
+  "content": "## Single-use cards\n- Availability: Yes.\n- Ideal for one-time purchases, trials, and vendors with limited trust.\n- Minimizes risk by invalidating the number after one authorization.\n\n## Multi-use cards\n- Designed for ongoing vendor relationships and recurring purchases.\n- Enhance security by rotating the number on a schedule set to monthly.\n- Best for subscriptions where stable credentials are required but periodic refresh is desirable.\n\n## Choosing the right type\n- Use single-use when vendor trust is uncertain or the transaction is unique.\n- Use multi-use when continuity is essential, supplemented with scheduled refresh via monthly.\n\n## Practical setup tips\n- If Yes, keep a small pool of single-use cards ready for ad-hoc team needs.\n- For multi-use cards, document the refresh cadence (e.g., monthly) alongside vendor billing terms to avoid interruptions."
+}

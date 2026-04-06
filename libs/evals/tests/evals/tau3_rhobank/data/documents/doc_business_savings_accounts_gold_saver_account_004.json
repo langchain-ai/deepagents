@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_gold_saver_account_004",
+  "title": "Gold Saver Account: Integration with Business Checking",
+  "content": "## How integration supports automated movement\nLinking your business checking enables automatic movement of eligible funds into savings when criteria are met, helping you keep operating funds available while capturing interest on surplus balances.\n\n### Fees and thresholds specific to integration\n- Monthly maintenance fee: $10.00.\n- Minimum amount required to trigger a sweep transfer: $100.\n- Automatic sweep transfer fee: $0.00.\n\n### How sweep initiation works\n- A sweep is considered only when the amount available to move meets or exceeds $100.\n- If activity in checking reduces available funds below the amount needed, no sweep occurs.\n\n### Practical tips\n- Leave headroom in checking for pending transactions so that only true excess is moved.\n- Review sweep activity and the monthly maintenance fee line item to reconcile your cash management strategy with actual results."
+}

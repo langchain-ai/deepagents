@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_gold_account_003",
+  "title": "Gold Account specifications and requirements",
+  "content": "## Account requirements\n- Opening deposit minimum: $5,000\n- Ongoing minimum balance: $10,000\n\n## Transaction and usage limits\n- Monthly withdrawal limit: 20\n\n## Interest characteristics\n- Interest is compounded daily.\n\n## Alerts and rebates\n- Large balance alert threshold: $50,000\n- ATM fee rebate cap per month: $30\n\n## Summary table\n| Specification | Value |\n| --- | --- |\n| Opening deposit minimum | $5,000 |\n| Minimum balance | $10,000 |\n| Monthly withdrawal limit | 20 |\n| Interest compounding | daily |\n| Large balance alert threshold | $50,000 |\n| ATM fee rebate per month | $30 |"
+}

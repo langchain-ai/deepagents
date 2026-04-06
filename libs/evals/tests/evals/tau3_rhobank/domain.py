@@ -158,23 +158,13 @@ def load_task(task_id: str) -> dict[str, Any]:
         return json.load(fp)
 
 
-def load_required_docs(doc_ids: list[str]) -> dict[str, Document]:
-    """Load specific knowledge base documents by ID.
+def get_documents_dir() -> Path:
+    """Return the absolute path to the vendored knowledge-base documents folder.
 
-    Args:
-        doc_ids: List of document IDs to load.
-
-    Returns:
-        Dictionary mapping document ID to Document.
+    The folder contains 698 JSON documents (one per policy/procedure) that the
+    agent can search at runtime using its built-in tools.
     """
-    docs: dict[str, Document] = {}
-    for doc_id in doc_ids:
-        path = _DATA_DIR / "documents" / f"{doc_id}.json"
-        if path.exists():
-            with path.open() as fp:
-                data = json.load(fp)
-                docs[doc_id] = Document(**data)
-    return docs
+    return _DATA_DIR / "documents"
 
 
 # ---------------------------------------------------------------------------

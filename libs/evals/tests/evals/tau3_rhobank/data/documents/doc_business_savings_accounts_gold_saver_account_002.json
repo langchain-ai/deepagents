@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_gold_saver_account_002",
+  "title": "Gold Saver Account: How Automated Sweeps Work with Business Checking",
+  "content": "## Overview of automated sweeps\nAutomated sweeps move available funds between your business checking and savings to help you maintain working capital while capturing interest on excess balances.\n\n### When sweeps run\n- Sweeps are evaluated on a daily cadence.\n\n### Checking balance threshold\n- Your checking account aims to maintain at least $1,000.\n- When available funds exceed this threshold, the excess becomes eligible to move into savings.\n\n### What happens during a sweep\n- The system checks your checking balance against the threshold.\n- Eligible excess is transferred into savings to optimize idle funds.\n- If your checking balance is at or below $1,000, no sweep to savings occurs.\n\n### Managing sweeps\n- You can monitor sweep activity in your account activity view.\n- If you anticipate large outgoing payments, ensure your checking balance remains at or above $1,000 so that a sweep does not reduce funds needed for those payments."
+}

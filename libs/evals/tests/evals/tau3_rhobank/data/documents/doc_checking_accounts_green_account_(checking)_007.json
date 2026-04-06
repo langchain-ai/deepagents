@@ -1,0 +1,5 @@
+{
+  "id": "doc_checking_accounts_green_account_(checking)_007",
+  "title": "Green Account (checking): Troubleshooting: declined transactions",
+  "content": "## Quick checks\n- Verify your available balance covers the full amount requested.\n- Review any pending authorizations that may be reducing your available balance.\n- If you received a decline notification, check the message details: Yes.\n\n## Merchant-specific considerations\n- Confirm that the merchant did not attempt a higher amount than expected.\n- For subscription or recurring charges, ensure funds are available on the charge date.\n\n## What to do next\n- Add funds and retry the transaction.\n- If the decline persists after funding, contact the merchant to verify the amount they are attempting.\n- Keep records of the decline notice if you receive alerts: Yes."
+}

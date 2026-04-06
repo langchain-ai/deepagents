@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_virtual_card_management_007",
+  "title": "Virtual Card Management: Security Benefits of Virtual Cards",
+  "content": "## Key security controls you can apply\n- Single-use protection: Generate one-time cards for isolated purchases when appropriate. Availability: Yes.\n- Rapid risk response: Revoke or cancel a card within 3 seconds to stop further authorizations.\n- Number rotation: Auto-refresh recurring card numbers on a schedule to limit exposure, configurable as monthly.\n\n## How to apply these controls effectively\n- For high-risk or untrusted merchants, prefer single-use cards where Yes.\n- If a card is suspected to be compromised, revoke it immediately; the block propagates within 3 seconds.\n- Align your rotation schedule with vendor billing cycles using monthly to minimize failed payments while maintaining security.\n\n## Ongoing review\n- Periodically audit active cards and retire those no longer needed.\n- Verify that rotation schedules and revocation procedures are documented for your finance and security teams."
+}

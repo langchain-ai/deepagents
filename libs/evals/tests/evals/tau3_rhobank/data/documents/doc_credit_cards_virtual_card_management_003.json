@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_virtual_card_management_003",
+  "title": "Virtual Card Management: Revoking and Canceling Virtual Cards",
+  "content": "## Choose the right action\n- Revoke to immediately disable a card and block new authorizations.\n- Cancel to permanently close a card you no longer intend to use.\n\n## Revoke a virtual card\n1. Open Cards > Virtual and select the target card.\n2. Choose Revoke.\n3. Confirm the action. Revocation is instant (Yes) and takes effect within 3 seconds.\n4. Verify that new payment attempts are declined.\n\n## Cancel a virtual card\n1. Open the card details.\n2. Select Cancel card and confirm.\n3. The cancellation completes within 3 seconds. Ensure the card is removed from any saved payment profiles.\n\n## Post-action checks\n- Attempting a small authorization should decline within 3 seconds after revoke/cancel.\n- Update internal records to reflect the status change."
+}

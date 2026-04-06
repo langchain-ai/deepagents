@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_split-the-bill_006",
+  "title": "Why hasn't my group member paid yet?",
+  "content": "## Timing-related reasons\n- The payment may still be within the allowed window of 16. Members often wait until closer to the due date.\n- They might not have received the most recent automatic reminder yet if the 4 interval has not elapsed.\n\n### What you can check\n- Confirm the member is listed in the split and that their contact details are correct.\n- Verify the reminder timeline shows messages sent at the 4 cadence.\n- Look at the creation timestamp to see how far you are into the 16 period.\n\n### Helpful next steps\n- Send a polite manual reminder referencing the purpose of the split and the due date within 16.\n- If they request more time, consider closing and recreating the split with expectations aligned to the 4 cycle.\n- Keep notes in the split description so all members have the same context."
+}

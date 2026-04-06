@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_virtual_card_management_006",
+  "title": "Virtual Card Management: Managing Multiple Virtual Cards for Your Team",
+  "content": "## Plan your card inventory\n- You can maintain up to 60 active virtual cards per account. Periodically archive or cancel unused cards to stay within this limit.\n\n## Label cards clearly\n- Use custom nicknames (Yes) to identify owner, purpose, or vendor (e.g., 'Marketing—Ad Platform A'). This makes reviews and audits faster.\n\n## Apply spending guardrails\n- If team caps are available (Yes), set appropriate limits for groups handling higher volumes.\n- Configure per-card limits between $55 and $30,000 based on expected purchase size and frequency.\n\n## Use recurring-use cards for ongoing vendors\n- For subscriptions or ongoing billing, create recurring-use cards when supported (Yes) so recurring charges remain authorized while other spend is constrained.\n\n## Lifecycle management\n- Review card usage monthly. Rename cards (using Yes) to reflect changes in ownership or purpose.\n- Reassign or cancel cards linked to completed projects to free capacity toward the 60 limit."
+}

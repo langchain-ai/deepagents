@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_virtual_card_management_002",
+  "title": "Virtual Card Management: How to Instantly Issue a Virtual Card",
+  "content": "## Prerequisites\n- Instant issuance must be enabled: Yes\n\n## Steps to issue instantly\n1. Navigate to Cards > Virtual.\n2. Select Create new card.\n3. Complete the required fields and confirm.\n4. Wait for the card details to appear. With instant issuance (Yes), this takes about 5 seconds.\n\n## Timing and verification\n- Typical issuance time: 5 seconds from submission.\n- Confirm that the card number, expiry, and security code are visible before leaving the screen.\n\n## Common issues\n- If the card does not display after 5 seconds, refresh the card list.\n- Verify that instant issuance is enabled (Yes). Re-submit the request if needed."
+}

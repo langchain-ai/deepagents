@@ -1,0 +1,5 @@
+{
+  "id": "doc_bank_accounts_bank_accounts_(general)_040",
+  "title": "Internal: Requesting Temporary Debit Card Limit Increase",
+  "content": "Procedure for when a customer requests a temporary increase to their debit card's daily ATM withdrawal or purchase limit.\n\nEligibility Requirements:\nBefore granting a temporary limit increase, verify ALL of the following:\n1) **Account Status**: The linked checking account must be OPEN (in good standing)\n2) **Account Age**: The account must be at least 60 days old\n3) **Overdraft History**: No overdraft fees in the last 30 days\n4) **Card Status**: The debit card must be ACTIVE\n\nLimit Increase Rules:\n- **Maximum Increase**: New limit cannot exceed 150% of current limit (50% boost maximum)\n- **Duration**: Temporary increases last 24 hours, then automatically revert\n- **Frequency**: Only one temporary increase per 24-hour period per card\n\nTool: request_temporary_debit_card_limit_increase_8374\nParameters:\n- card_id: The debit card ID\n- limit_type: 'atm' or 'purchase'\n- new_limit: The requested new temporary limit\n\nNote: Third-party ATMs may have their own limits that Rho-Bank cannot override."
+}

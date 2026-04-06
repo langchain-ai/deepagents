@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_scheduled_payments_006",
+  "title": "Why didn't my scheduled payment go through?",
+  "content": "## Possible reasons\n\n- Insufficient available funds at the time of processing.\n- Recipient details were invalid or out of date.\n- The scheduled amount did not meet policy limits.\n- The schedule date conflicted with processing availability.\n\n## What happens next\n\n- If Yes is enabled, the system will try again up to 3 times.\n- Add funds and keep them available until the next attempt, then monitor for confirmation.\n\n## How to resolve\n\n- Verify and update recipient information.\n- Adjust the amount to comply with limits.\n- Move the next occurrence to a date that aligns with processing availability.\n- If all 3 attempts fail, review your schedule settings and create a new occurrence after correcting the issue."
+}

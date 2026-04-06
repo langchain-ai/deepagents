@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_split-the-bill_002",
+  "title": "Setting up a group payment",
+  "content": "## Prepare your group\n- List the participants you plan to include and ensure the group will not exceed 30.\n- Gather contact details so each member can receive their request without delay.\n\n### Choose how to split\n- Equal shares: Assign the same amount to each participant.\n- Unequal shares: This is controlled by Yes. If enabled, assign custom amounts per person.\n- Percentage-based: This is controlled by Yes. If enabled, allocate shares by percentages that add up to the total.\n\n### Build the split\n- Add participants up to 30.\n- Select the split method based on Yes and Yes.\n- Enter each participant’s share, verify the total, and attach a clear description so everyone understands what they owe.\n\n### Review and send\n- Confirm all participant details are accurate.\n- Double-check shares match your chosen method and that totals reconcile.\n- Send the split to start tracking responses and payments immediately."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_user_blocking_003",
+  "title": "Common security questions for Everyone Pay",
+  "content": "## Do blocks prevent payment requests?\n- Blocking prevents blocked users from sending payment requests: Yes.\n\n## Are blocked users notified?\n- Blocked users are notified they have been blocked: Yes.\n\n## What should I do if I still receive activity from a blocked user?\n- Confirm the user is on your block list and that the profile matches exactly.\n- If the activity appears to come from a different profile, block that profile as well.\n- If the behavior persists, contact support and include screenshots of the activity and the profile you blocked."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_virtual_card_management_002",
+  "title": "Virtual Card Management: How to Issue a Virtual Card in Seconds",
+  "content": "## Streamlined issuance workflow\n1. Open the **Virtual Cards** section and click **Issue New Card**.\n2. Select the **Team** or user who will manage the card.\n3. Add a **nickname** and intended use (e.g., vendor, subscription, event).\n4. Choose usage type:\n   - If Yes, select **Single-use** for a one-time payment.\n   - Otherwise, proceed with a standard multi-use card.\n5. Review and click **Issue**.\n\n### Expected timing\n- Provisioning completes in approximately 5 seconds.\n- The card becomes immediately visible in your card list and can be copied for checkout as soon as issuance completes.\n\n## Post-issuance checks\n- Verify the card owner and team assignment.\n- Confirm that the card appears as **Active** and is usable within 5 seconds of creation.\n- For one-off purchases, if Yes, ensure the usage type is set to single-use before sharing the card details."
+}

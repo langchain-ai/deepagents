@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_diamond_003",
+  "title": "BNPL Diamond: Understanding Your Maximum BNPL Limit and Concurrent Plans",
+  "content": "## Your overall BNPL cap\n- The total outstanding balance across your BNPL Diamond plans must remain at or below $2505000.00.\n- Capacity for new plans equals $2505000.00 minus your current outstanding principal balance.\n\n## Concurrent plan cap\n- You may keep up to 25 active BNPL Diamond repayment plans at any given time.\n- A new plan will be declined if it causes your active plans to exceed 25 even if you are under $2505000.00.\n\n### How approvals are evaluated\n- A plan request is reviewed against both criteria:\n  - Total outstanding after adding the new plan must be ≤ $2505000.00.\n  - Total number of active plans must be ≤ 25.\n\n### Managing within your caps\n- Pay down existing plan balances to free up capacity under $2505000.00.\n- Close fully repaid plans to free a slot under the 25 cap.\n- When scheduling new purchases, consider both your remaining monetary capacity and the number of available plan slots."
+}

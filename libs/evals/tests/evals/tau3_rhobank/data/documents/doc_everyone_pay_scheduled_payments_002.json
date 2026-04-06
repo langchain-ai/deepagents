@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_scheduled_payments_002",
+  "title": "Setting up recurring payments",
+  "content": "## Before you begin\n\n- Confirm you have not reached your limit of active schedules: 30.\n- Decide on an amount that does not exceed $3,000.\n- Plan a cadence that respects at least 4 days between occurrences.\n\n## Create a new recurring payment\n\n- Select the recipient.\n- Enter the payment amount up to $3,000.\n- Choose the start date and cadence ensuring the gap between occurrences is at least 4 days.\n- Review the summary and confirm.\n\n## Tips for avoiding setup errors\n\n- If the amount exceeds $3,000, reduce the amount before saving.\n- If the cadence attempts to schedule occurrences too close together, increase the interval so there are at least 4 days between payments.\n- If you already have 30 active, cancel an existing schedule before adding a new one.\n\n## Verifying your schedule\n\n- Check that the first and subsequent occurrences align with your intended timing and comply with the 4 rule.\n- Confirm that the recurring amount remains at or below $3,000 for all future occurrences."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_everyone_pay_014",
+  "title": "Why can't I cancel my payment?",
+  "content": "## Common reasons\n- The cancellation window of 17 minutes has passed.\n- The recipient claimed the funds already.\n- The transfer was sent using an instant option and posted immediately.\n- A system action has already finalized the payment.\n\n## What you can do\n- If the payment is ineligible for cancellation, request a return from the recipient.\n- If you believe the payment is unauthorized or incorrect, file a dispute from the transaction details.\n- Review recipient details carefully before submitting future payments to reduce the need for cancellations.\n\n## Tip\n- Act as soon as you notice an error to stay within the available cancellation window of 17 minutes."
+}

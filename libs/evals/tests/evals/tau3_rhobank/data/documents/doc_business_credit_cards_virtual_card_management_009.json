@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_virtual_card_management_009",
+  "title": "Virtual Card Management: Best Practices for Subscription and Vendor Payments",
+  "content": "## Create a dedicated card per subscription\n- Assign one virtual card per vendor to isolate risk and simplify reconciliation.\n- Use clear nicknames to identify the vendor and service tier. Support for custom nicknames: Yes.\n\n## Align number refresh with billing\n- Set the card’s refresh cadence to match the vendor’s billing cycle using monthly.\n- Update the schedule if the vendor changes its billing frequency to prevent declines.\n\n## Restrict spend to expected categories\n- Enable merchant category restrictions to reduce misuse: Yes.\n- Review the allowed categories periodically, especially when a vendor expands services.\n\n## Ongoing maintenance\n- Periodically audit all subscription cards to confirm active services and correct nicknames using Yes.\n- When switching vendors, retain historical records and then refresh or retire the old card according to your chosen monthly strategy."
+}

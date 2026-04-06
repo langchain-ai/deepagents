@@ -86,11 +86,16 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _get_ptc_implementations(self) -> dict[str, Callable[..., Any] | BaseTool]:
         implementations: dict[str, Callable[..., Any] | BaseTool] = {}
         for implementation in self._ptc:
-            name = (
-                implementation.name
-                if isinstance(implementation, BaseTool)
-                else implementation.__name__
-            )
+            if isinstance(implementation, BaseTool):
+                name = str(implementation.name)
+            elif hasattr(implementation, "__name__"):
+                name = str(implementation.__name__)
+            else:
+                msg = (
+                    f"Implementation type: {type(implementation)} is "
+                    "not a BaseTool or callable"
+                )
+                raise TypeError(msg)
             implementations[name] = implementation
         return implementations
 

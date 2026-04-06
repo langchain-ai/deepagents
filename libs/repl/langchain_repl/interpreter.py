@@ -558,9 +558,7 @@ class Interpreter:
         self, args: tuple[Expression, ...], env: dict[str, Any]
     ) -> list[Any]:
         snapshots = [dict(env) for _ in args]
-        with ThreadPoolExecutor(
-            max_workers=self._max_workers or len(args) or None
-        ) as executor:
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
                 executor.submit(self._eval_expression, arg, snapshot)
                 for arg, snapshot in zip(args, snapshots, strict=False)

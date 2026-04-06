@@ -298,7 +298,7 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
@@ -317,7 +317,9 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`."""
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
+
+FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix="/large_tool_results")
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
@@ -578,6 +580,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        artifacts_root: str = "/",
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -594,6 +597,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            artifacts_root: Root path for artifacts. Defaults to `"/"` if not provided.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
@@ -603,6 +607,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
+
+        self.artifacts_root = artifacts_root
+        _root = artifacts_root.rstrip("/")
+        self._large_tool_results_prefix = f"{_root}/large_tool_results"
+        self._conversation_history_prefix = f"{_root}/conversation_history"
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -1171,7 +1180,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1232,7 +1241,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1289,7 +1298,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, False
@@ -1336,7 +1345,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
             return message, False
@@ -1484,7 +1493,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         file_path: str | None = None
         if new_eviction_needed:
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_path = f"/conversation_history/{uuid.uuid4()}.md"
+            file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)
@@ -1510,7 +1519,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         file_path: str | None = None
         if new_eviction_needed:
             backend = self._get_backend_from_runtime(request.state, request.runtime)
-            file_path = f"/conversation_history/{uuid.uuid4()}.md"
+            file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)

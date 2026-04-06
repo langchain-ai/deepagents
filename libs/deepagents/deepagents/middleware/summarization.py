@@ -223,6 +223,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
+        artifacts_root: str = "/",
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -254,6 +255,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
             history_path_prefix: Path prefix for storing conversation history.
+            artifacts_root: Root path for artifacts. Defaults to `"/"`.
 
         Example:
             ```python
@@ -282,6 +284,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         # Deep Agents specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
+        self.artifacts_root = artifacts_root
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -1086,6 +1089,8 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    artifacts_root: str = "/",
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
 
@@ -1097,6 +1102,7 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
+        artifacts_root: Root path for artifacts. Defaults to `"/"`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1118,6 +1124,8 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
+        artifacts_root=artifacts_root,
+        history_path_prefix=f"{artifacts_root.rstrip('/')}/conversation_history",
     )
 
 

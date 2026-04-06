@@ -434,7 +434,9 @@ class ChatTextArea(TextArea):
         """
         try:
             return super().scroll_cursor_visible(center=center, animate=animate)
-        except ValueError:  # Textual <=8.0.2: get_offsets raises on off-by-one in clamp
+        except (
+            ValueError
+        ):  # WrappedDocument.get_offsets off-by-one clamp in location_to_offset
             logger.warning(
                 "Cursor/document desync in scroll_cursor_visible "
                 "(cursor=%s, doc_lines=%d); skipping scroll",

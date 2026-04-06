@@ -442,25 +442,31 @@ except PermissionError:
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
-        """Create a new file, failing if it already exists.
+        """Create a new file, optionally overwriting if it already exists.
 
         Args:
             file_path: Absolute path for the new file.
             content: UTF-8 text content to write.
+            overwrite: If ``True``, overwrite the file when it already exists.
+
+                Defaults to ``False``.
 
         Returns:
             `WriteResult` with `path` on success or `error` on failure.
         """
-        # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below - a concurrent process could create the file in
-        # between. This is an inherent limitation of splitting the operation;
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
-        if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+        if not overwrite:
+            # Existence check + mkdir. There is a TOCTOU window between this
+            # check and the upload below - a concurrent process could create
+            # the file in between. This is an inherent limitation of splitting
+            # the operation;
+            path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+            check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+            result = self.execute(check_cmd)
+            if result.exit_code != 0 or "Error:" in result.output:
+                error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+                return WriteResult(error=error_msg)
 
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:

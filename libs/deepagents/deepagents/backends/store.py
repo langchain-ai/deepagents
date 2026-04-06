@@ -480,8 +480,9 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
-        """Create a new file with content.
+        """Create a new file with content, optionally overwriting.
 
         Returns WriteResult on success or error.
         """
@@ -489,9 +490,12 @@ class StoreBackend(BackendProtocol):
         namespace = self._get_namespace()
 
         # Check if file exists
-        existing = store.get(namespace, file_path)
-        if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+        if not overwrite:
+            existing = store.get(namespace, file_path)
+            if existing is not None:
+                return WriteResult(
+                    error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+                )
 
         # Create new file
         file_data = create_file_data(content)
@@ -503,6 +507,7 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
@@ -512,9 +517,12 @@ class StoreBackend(BackendProtocol):
         namespace = self._get_namespace()
 
         # Check if file exists using async method
-        existing = await store.aget(namespace, file_path)
-        if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+        if not overwrite:
+            existing = await store.aget(namespace, file_path)
+            if existing is not None:
+                return WriteResult(
+                    error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+                )
 
         # Create new file using async method
         file_data = create_file_data(content)

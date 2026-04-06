@@ -461,18 +461,22 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
         """Create a new file, routing to appropriate backend.
 
         Args:
             file_path: Absolute file path.
             content: File content as a string.
+            overwrite: If ``True``, overwrite the file when it already exists.
+
+                Defaults to ``False``.
 
         Returns:
             Success message or Command object, or error if file already exists.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.write(stripped_key, content)
+        res = backend.write(stripped_key, content, overwrite=overwrite)
         if res.path is not None:
             res = replace(res, path=file_path)
         return res
@@ -481,10 +485,11 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.awrite(stripped_key, content)
+        res = await backend.awrite(stripped_key, content, overwrite=overwrite)
         if res.path is not None:
             res = replace(res, path=file_path)
         return res

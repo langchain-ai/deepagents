@@ -67,7 +67,12 @@ class LangSmithSandbox(BaseSandbox):
             truncated=False,
         )
 
-    def write(self, file_path: str, content: str) -> WriteResult:
+    def write(
+        self,
+        file_path: str,
+        content: str,
+        overwrite: bool = False,  # noqa: ARG002, FBT001, FBT002
+    ) -> WriteResult:
         """Write content using the LangSmith SDK to avoid ARG_MAX.
 
         `BaseSandbox.write()` sends the full content in a shell command, which
@@ -77,6 +82,10 @@ class LangSmithSandbox(BaseSandbox):
         Args:
             file_path: Destination path inside the sandbox.
             content: Text content to write.
+            overwrite: If ``True``, overwrite the file when it already exists.
+
+                Defaults to ``False``. The LangSmith SDK always overwrites,
+                so this parameter only controls the preflight check.
 
         Returns:
             `WriteResult` with the written path on success, or an error message.

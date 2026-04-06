@@ -475,14 +475,21 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
-        """Write content to a new file in the filesystem, error if file exists.
+        """Write content to a file in the filesystem.
+
+        By default, errors if the file already exists. Set ``overwrite=True``
+        to replace an existing file.
 
         Args:
             file_path: Absolute path where the file should be created.
 
                 Must start with '/'.
             content: String content to write to the file.
+            overwrite: If ``True``, overwrite the file when it already exists.
+
+                Defaults to ``False``.
 
         Returns:
             WriteResult
@@ -493,9 +500,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
         """Async version of write."""
-        return await asyncio.to_thread(self.write, file_path, content)
+        return await asyncio.to_thread(self.write, file_path, content, overwrite)
 
     def edit(
         self,

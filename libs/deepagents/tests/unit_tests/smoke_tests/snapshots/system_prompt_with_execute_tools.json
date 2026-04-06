@@ -88,7 +88,7 @@
   },
   {
     "function": {
-      "description": "Writes to a new file in the filesystem.\n\nUsage:\n- The write_file tool will create the a new file.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
+      "description": "Writes a file to the filesystem.\n\nUsage:\n- By default, creates a new file and errors if the file already exists.\n- Set overwrite=True to replace an existing file's content.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
       "name": "write_file",
       "parameters": {
         "properties": {
@@ -99,6 +99,11 @@
           "file_path": {
             "description": "Absolute path where the file should be created. Must be absolute, not relative.",
             "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "If True, overwrite the file if it already exists. Defaults to False.",
+            "type": "boolean"
           }
         },
         "required": [

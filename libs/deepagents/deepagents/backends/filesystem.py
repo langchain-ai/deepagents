@@ -350,20 +350,24 @@ class FilesystemBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
-        """Create a new file with content.
+        """Create a new file with content, optionally overwriting.
 
         Args:
-            file_path: Path where the new file will be created.
+            file_path: Path where the file will be created.
             content: Text content to write to the file.
+            overwrite: If ``True``, overwrite the file when it already exists.
+
+                Defaults to ``False``.
 
         Returns:
             `WriteResult` with path on success, or error message if the file
-                already exists or write fails.
+                already exists (and ``overwrite`` is ``False``) or write fails.
         """
         resolved_path = self._resolve_path(file_path)
 
-        if resolved_path.exists():
+        if not overwrite and resolved_path.exists():
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         try:

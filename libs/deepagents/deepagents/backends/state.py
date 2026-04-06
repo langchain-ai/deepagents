@@ -243,14 +243,15 @@ class StateBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        overwrite: bool = False,  # noqa: FBT001, FBT002
     ) -> WriteResult:
-        """Create a new file with content.
+        """Create a new file with content, optionally overwriting.
 
         The update is queued directly via `CONFIG_KEY_SEND`.
         """
         files = self._read_files()
 
-        if file_path in files:
+        if not overwrite and file_path in files:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)

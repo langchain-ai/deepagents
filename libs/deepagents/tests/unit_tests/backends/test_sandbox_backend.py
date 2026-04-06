@@ -814,3 +814,44 @@ def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
     assert "unexpected server response" in result.error
     assert len(cleanup_commands) == 1
     assert ".deepagents_edit_" in cleanup_commands[0]
+
+
+# -- overwrite tests -----------------------------------------------------------
+
+
+def test_sandbox_write_overwrite_skips_check() -> None:
+    """Test that write(overwrite=True) skips the existence check command."""
+    sandbox = MockSandbox()
+    commands: list[str] = []
+    original_execute = sandbox.execute
+
+    def tracking_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        commands.append(command)
+        return original_execute(command, timeout=timeout)
+
+    sandbox.execute = tracking_execute  # type: ignore[assignment]
+
+    result = sandbox.write("/test/file.txt", "content", overwrite=True)
+
+    assert result.error is None
+    assert result.path == "/test/file.txt"
+    # No check command should have been issued
+    assert len(commands) == 0
+    # upload_files should still be called
+    assert len(sandbox._uploaded) == 1
+
+
+def test_sandbox_write_overwrite_false_still_checks() -> None:
+    """Test that write(overwrite=False) still runs the existence check."""
+    sandbox = MockSandbox()
+
+    def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="Error: File already exists", exit_code=1)
+
+    sandbox.execute = fail_execute  # type: ignore[assignment]
+
+    result = sandbox.write("/test/existing.txt", "content", overwrite=False)
+    assert result.error is not None
+    assert "Error:" in result.error
+    assert len(sandbox._uploaded) == 0

@@ -144,6 +144,7 @@ class WriteFileSchema(BaseModel):
 
     file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
     content: str = Field(description="The text content to write to the file. This parameter is required.")
+    overwrite: bool = Field(default=False, description="If True, overwrite the file if it already exists. Defaults to False.")
 
 
 class EditFileSchema(BaseModel):
@@ -225,10 +226,11 @@ Usage:
 - Only use emojis if the user explicitly requests it."""
 
 
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
+WRITE_FILE_TOOL_DESCRIPTION = """Writes a file to the filesystem.
 
 Usage:
-- The write_file tool will create the a new file.
+- By default, creates a new file and errors if the file already exists.
+- Set overwrite=True to replace an existing file's content.
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
@@ -802,6 +804,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
+            overwrite: Annotated[bool, "If True, overwrite the file if it already exists. Defaults to False."] = False,  # noqa: FBT002
         ) -> str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -809,7 +812,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = resolved_backend.write(validated_path, content)
+            res: WriteResult = resolved_backend.write(validated_path, content, overwrite=overwrite)
             if res.error:
                 return res.error
             return f"Updated file {res.path}"
@@ -818,6 +821,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
+            overwrite: Annotated[bool, "If True, overwrite the file if it already exists. Defaults to False."] = False,  # noqa: FBT002
         ) -> str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -825,7 +829,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            res: WriteResult = await resolved_backend.awrite(validated_path, content)
+            res: WriteResult = await resolved_backend.awrite(validated_path, content, overwrite=overwrite)
             if res.error:
                 return res.error
             return f"Updated file {res.path}"

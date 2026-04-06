@@ -59,6 +59,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.write("/file.txt", "content")
 
+    def test_write_with_overwrite(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.write("/file.txt", "content", overwrite=True)
+
     def test_edit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.edit("/file.txt", "old", "new")
@@ -102,6 +106,10 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_awrite(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.awrite("/file.txt", "content")
+
+    async def test_awrite_with_overwrite(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.awrite("/file.txt", "content", overwrite=True)
 
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

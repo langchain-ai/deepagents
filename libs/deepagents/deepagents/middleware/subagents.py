@@ -2,7 +2,6 @@
 
 import dataclasses
 import json
-import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 

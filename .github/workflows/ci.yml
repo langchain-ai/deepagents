@@ -39,6 +39,7 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
+      repl: ${{ steps.filter.outputs.repl }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
@@ -105,6 +106,12 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            repl:
+              - 'libs/repl/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
 
   # Run linting on changed packages
   lint-deepagents:
@@ -159,6 +166,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-repl:
+    name: "🧹 Lint repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/repl"
       python-version: "3.11"
 
   lint-quickjs:
@@ -255,6 +271,20 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  test-repl:
+    name: "🧪 Test repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/repl"
+      python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
+
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
@@ -286,6 +316,7 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-repl
       - lint-quickjs
       - test-deepagents
       - test-cli
@@ -293,6 +324,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-repl
       - benchmark-deepagents
       - benchmark-cli
     if: always()
@@ -300,6 +332,19 @@ jobs:
     steps:
       - name: "🎉 All Checks Passed"
         run: |
+          # Get all job results (excluding 'changes' which always succeeds)
+          results='${{ toJSON(needs.*.result) }}'
+          echo "Job results: $results"
+
+          # Check for failures or cancellations
+          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
+            echo "Some jobs failed or were cancelled"
+            exit 1
+          fi
+
+          echo "All required checks passed (skipped jobs are OK)"
+          exit 0
+|
           # Get all job results (excluding 'changes' which always succeeds)
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"

@@ -2263,3 +2263,29 @@ class TestChatInputTypingBubble:
             await pilot.pause()
 
             assert app.chat_input_typing_count == 2
+
+
+class TestScrollCursorVisibleDesync:
+    """scroll_cursor_visible should not crash on cursor/document desync."""
+
+    async def test_returns_zero_offset_on_value_error(self) -> None:
+        """When super() raises ValueError, return Offset(0, 0)."""
+        from unittest.mock import patch
+
+        from textual.geometry import Offset
+        from textual.widgets import TextArea
+
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+
+            with patch.object(
+                TextArea,
+                "scroll_cursor_visible",
+                side_effect=ValueError("line index out of bounds"),
+            ):
+                result = text_area.scroll_cursor_visible()
+
+            assert result == Offset(0, 0)

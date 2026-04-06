@@ -241,7 +241,10 @@ ignore-var-parameters = true
     "T201",     # `print` found — scripts use print for output
 ]
 "vibe-coding-olympics/**" = [
+    "ANN401",   # Any types — LangSmith evaluator callback signatures require Any
+    "BLE001",   # Blind exception catch — best-effort logging in standalone scripts
     "INP001",   # Missing `__init__.py` — standalone eval scripts, not a package
+    "T201",     # `print` found — scripts use print for output
 ]
 "examples/**" = [
     "ANN001",   # Missing type annotation for function argument — examples prioritize clarity

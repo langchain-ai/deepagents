@@ -75,7 +75,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         return
 
     known = {
-        m.args[0] for item in items if (m := item.get_closest_marker("eval_category")) and m.args
+        m.args[0]
+        for item in items
+        for m in item.iter_markers("eval_category")
+        if m.args
     }
     unknown = set(categories) - known
     if unknown:
@@ -88,8 +91,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
-        marker = item.get_closest_marker("eval_category")
-        if marker and marker.args and marker.args[0] in categories:
+        item_categories = {m.args[0] for m in item.iter_markers("eval_category") if m.args}
+        if any(c in categories for c in item_categories):
             selected.append(item)
         else:
             deselected.append(item)

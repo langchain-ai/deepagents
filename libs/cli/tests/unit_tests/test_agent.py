@@ -582,6 +582,29 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive CLI" in prompt
 
+    def test_interactive_todo_section_asks_user_before_starting(self) -> None:
+        """Interactive mode should require plan approval before first in_progress."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "Wait for the user's response before marking the first todo" in prompt
+
+    def test_non_interactive_todo_section_does_not_wait_for_user(self) -> None:
+        """Headless mode must not contradict 'no human' guidance in todo rules."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        wait_for_user = "Wait for the user's response before marking the first todo"
+        assert wait_for_user not in prompt
+        assert "do NOT ask the user to approve your plan" in prompt
+        assert "mark the first item `in_progress` immediately" in prompt
+
 
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""

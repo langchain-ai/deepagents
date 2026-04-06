@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.geometry import Offset
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
@@ -411,6 +412,36 @@ class ChatTextArea(TextArea):
         self._paste_burst_timer: Timer | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+
+    def scroll_cursor_visible(
+        self, center: bool = False, animate: bool = False
+    ) -> Offset:
+        """Scroll to make the cursor visible, guarding against cursor/document desync.
+
+        Textual's `WrappedDocument.location_to_offset` has an off-by-one in its
+        line-index clamp (`len(...)` instead of `len(...) - 1`). When a reactive
+        watcher (e.g. `_watch_show_vertical_scrollbar`) fires between a document
+        replacement and cursor update, the stale cursor location triggers a
+        `ValueError`. Guard here since `scroll_cursor_visible` is the sole
+        caller of `_recompute_cursor_offset`.
+
+        Args:
+            center: Whether the cursor should be scrolled to the center.
+            animate: Whether to animate while scrolling.
+
+        Returns:
+            The scroll offset applied, or `Offset(0, 0)` on desync.
+        """
+        try:
+            return super().scroll_cursor_visible(center=center, animate=animate)
+        except ValueError:  # Textual <=8.0.2: get_offsets raises on off-by-one in clamp
+            logger.warning(
+                "Cursor/document desync in scroll_cursor_visible "
+                "(cursor=%s, doc_lines=%d); skipping scroll",
+                self.cursor_location,
+                self.document.line_count,
+            )
+            return Offset(0, 0)
 
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.

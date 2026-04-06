@@ -405,7 +405,7 @@ wheels = [
 [[package]]
 name = "deepagents"
 version = "0.5.0a4"
-source = { directory = "../../deepagents" }
+source = { directory = "../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -865,7 +865,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepagents", directory = "../../deepagents" },
+    { name = "deepagents", directory = "../deepagents" },
     { name = "lark", specifier = ">=1.2.2,<2" },
 ]
 

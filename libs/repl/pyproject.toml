@@ -29,9 +29,9 @@ dependencies = [
 packages = ["langchain_repl"]
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/langchain_repl"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/repl"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/langchain_repl"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/repl"
 
 [dependency-groups]
 test = [

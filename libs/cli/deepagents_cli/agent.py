@@ -480,7 +480,8 @@ def get_system_prompt(
 
     Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path, execution mode, and todo-list guidance for interactive vs headless).
+    skills path, execution mode, and todo-list guidance for
+    interactive vs headless).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -523,11 +524,10 @@ def get_system_prompt(
         todo_guidance = (
             "6. When first creating a todo list for a task, ALWAYS ask the user if "
             "the plan looks good before starting work\n"
-            '   - Create the todos, let them render, then ask: "Does this plan '
+            '   - Create the todos, then ask: "Does this plan '
             'look good?" or similar\n'
             "   - Wait for the user's response before marking the first todo as "
             "in_progress\n"
-            "   - If they want changes, adjust the plan accordingly\n"
             "7. Update todo status promptly as you complete each item"
         )
     else:

@@ -91,6 +91,7 @@ lint lint_diff:
 		fi; \
 	fi
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+	uv run python scripts/generate_eval_catalog.py --check
 
 type: ## Run type checker (eval + harbor source + unit tests)
 type typecheck:

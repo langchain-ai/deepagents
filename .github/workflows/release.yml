@@ -29,6 +29,7 @@ on:
           - langchain-daytona
           - langchain-modal
           - langchain-quickjs
+          - langchain-repl
           - langchain-runloop
         default: deepagents
       dangerous-nonmain-release:
@@ -87,12 +88,15 @@ jobs:
             langchain-quickjs)
               echo "working-dir=libs/partners/quickjs" >> $GITHUB_OUTPUT
               ;;
+            langchain-repl)
+              echo "working-dir=libs/repl" >> $GITHUB_OUTPUT
+              ;;
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-repl, langchain-runloop"
               exit 1
               ;;
           esac

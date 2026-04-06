@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibe Coding Olympics</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: #0a0a0a;
+    color: #fff;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4vh;
+    padding: 2vh 4vw;
+  }
+
+  /* Prompt */
+  #prompt-section {
+    width: 100%;
+    max-width: 80vw;
+    text-align: center;
+  }
+
+  #prompt-input {
+    width: 100%;
+    font-size: clamp(1.2rem, 3vw, 2.4rem);
+    padding: 0.6em 0.8em;
+    border: 2px solid #333;
+    border-radius: 8px;
+    background: #141414;
+    color: #fff;
+    text-align: center;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  #prompt-input:focus {
+    border-color: #555;
+  }
+
+  #prompt-input::placeholder {
+    color: #555;
+  }
+
+  #prompt-display {
+    display: none;
+    font-size: clamp(1.4rem, 3.5vw, 3rem);
+    font-weight: 600;
+    color: #e0e0e0;
+    line-height: 1.3;
+    word-break: break-word;
+  }
+
+  /* Timer */
+  #timer-section {
+    text-align: center;
+    user-select: none;
+  }
+
+  #timer {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: clamp(6rem, 20vw, 20rem);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    transition: color 0.4s ease;
+  }
+
+  #timer.yellow { color: #ffd000; }
+  #timer.red    { color: #ff3333; }
+
+  #timer.pulse {
+    animation: pulse 0.5s ease-in-out infinite;
+  }
+
+  #timer.times-up {
+    font-size: clamp(3rem, 12vw, 12rem);
+    color: #ff3333;
+    animation: flash 0.3s ease-in-out 4;
+  }
+
+  /* Controls */
+  #controls {
+    display: flex;
+    gap: 1.5vw;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: clamp(1rem, 2vw, 1.5rem);
+    font-weight: 600;
+    padding: 0.6em 2em;
+    min-height: 48px;
+    min-width: 120px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  button:active { opacity: 0.8; }
+
+  #btn-start {
+    background: #22c55e;
+    color: #000;
+  }
+
+  #btn-start:hover { background: #16a34a; }
+
+  #btn-pause {
+    display: none;
+    background: #eab308;
+    color: #000;
+  }
+
+  #btn-pause:hover { background: #ca8a04; }
+
+  #btn-reset {
+    display: none;
+    background: #555;
+    color: #fff;
+  }
+
+  #btn-reset:hover { background: #666; }
+
+  /* Animations */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  @keyframes flash {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-12px); }
+    40% { transform: translateX(12px); }
+    60% { transform: translateX(-8px); }
+    80% { transform: translateX(8px); }
+  }
+
+  .shake {
+    animation: shake 0.4s ease-in-out;
+  }
+</style>
+</head>
+<body>
+
+<div id="prompt-section">
+  <input id="prompt-input" type="text" placeholder="Enter the prompt..." autofocus>
+  <div id="prompt-display"></div>
+</div>
+
+<div id="timer-section">
+  <div id="timer">5:00</div>
+</div>
+
+<div id="controls">
+  <button id="btn-start">Start</button>
+  <button id="btn-pause">Pause</button>
+  <button id="btn-reset">Reset</button>
+</div>
+
+<script>
+  const DURATION = 300; // seconds
+
+  const timerEl    = document.getElementById('timer');
+  const inputEl    = document.getElementById('prompt-input');
+  const displayEl  = document.getElementById('prompt-display');
+  const btnStart   = document.getElementById('btn-start');
+  const btnPause   = document.getElementById('btn-pause');
+  const btnReset   = document.getElementById('btn-reset');
+
+  let state = 'idle'; // idle | running | paused | done
+  let remaining = DURATION;
+  let anchorRemaining = DURATION;
+  let startedAt = null;   // Date.now() when timer last started/resumed
+  let rafId = null;
+  let audioCtx = null;
+
+  function formatTime(s) {
+    s = Math.floor(s);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m + ':' + String(sec).padStart(2, '0');
+  }
+
+  function computeRemaining() {
+    return Math.max(0, anchorRemaining - Math.floor((Date.now() - startedAt) / 1000));
+  }
+
+  function render() {
+    if (state === 'done') return;
+
+    timerEl.textContent = formatTime(remaining);
+
+    // color classes
+    timerEl.classList.remove('yellow', 'red', 'pulse', 'times-up');
+
+    if (remaining <= 10 && remaining > 0 && state === 'running') {
+      timerEl.classList.add('red', 'pulse');
+    } else if (remaining <= 30) {
+      timerEl.classList.add('red');
+    } else if (remaining <= 60) {
+      timerEl.classList.add('yellow');
+    }
+  }
+
+  function tick() {
+    if (state !== 'running') return;
+
+    remaining = computeRemaining();
+
+    render();
+
+    if (remaining <= 0) {
+      finish();
+      return;
+    }
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (state === 'done') return;
+    cancelAnimationFrame(rafId);
+
+    if (state === 'idle') {
+      // lock prompt
+      const text = inputEl.value.trim() || 'Build something amazing!';
+      displayEl.textContent = text;
+      inputEl.style.display = 'none';
+      displayEl.style.display = 'block';
+    }
+
+    anchorRemaining = remaining;
+    startedAt = Date.now();
+    state = 'running';
+
+    btnStart.style.display = 'none';
+    btnPause.style.display = 'inline-block';
+    btnPause.textContent = 'Pause';
+    btnReset.style.display = 'inline-block';
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function pause() {
+    if (state !== 'running') return;
+    state = 'paused';
+
+    // snapshot remaining
+    remaining = computeRemaining();
+    cancelAnimationFrame(rafId);
+
+    btnPause.textContent = 'Resume';
+    render();
+  }
+
+  function resume() {
+    if (state !== 'paused') return;
+    start();
+  }
+
+  function togglePause() {
+    if (state === 'running') pause();
+    else if (state === 'paused') resume();
+    else if (state === 'idle') start();
+  }
+
+  function finish() {
+    state = 'done';
+    remaining = 0;
+    cancelAnimationFrame(rafId);
+
+    timerEl.textContent = "TIME'S UP!";
+    timerEl.classList.remove('yellow', 'red', 'pulse');
+    timerEl.classList.add('times-up');
+    document.body.classList.add('shake');
+    setTimeout(() => document.body.classList.remove('shake'), 400);
+
+    btnPause.style.display = 'none';
+
+    beep();
+  }
+
+  function reset() {
+    state = 'idle';
+    remaining = DURATION;
+    anchorRemaining = DURATION;
+    startedAt = null;
+    cancelAnimationFrame(rafId);
+
+    timerEl.classList.remove('yellow', 'red', 'pulse', 'times-up');
+    timerEl.textContent = formatTime(DURATION);
+    document.body.classList.remove('shake');
+
+    inputEl.style.display = '';
+    displayEl.style.display = 'none';
+
+    btnStart.style.display = 'inline-block';
+    btnPause.style.display = 'none';
+    btnReset.style.display = 'none';
+
+    inputEl.focus();
+  }
+
+  function beep() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx.resume().then(() => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'square';
+        osc.frequency.value = 880;
+        gain.gain.value = 0.3;
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+        osc.stop(audioCtx.currentTime + 0.5);
+      });
+    } catch (err) {
+      console.warn('beep() failed:', err);
+    }
+  }
+
+  // Button handlers
+  btnStart.addEventListener('click', start);
+  btnPause.addEventListener('click', togglePause);
+  btnReset.addEventListener('click', reset);
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Let the facilitator type in the prompt input freely
+    if (state === 'idle' && e.target === inputEl) {
+      // Enter starts the timer from the input field
+      if (e.key === 'Enter') { e.preventDefault(); start(); }
+      return;
+    }
+
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      if (state === 'idle') start();
+      else if (state === 'done') reset();
+      else togglePause();
+    }
+
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      reset();
+    }
+  });
+
+  // Catch up when tab returns from background (rAF pauses in hidden tabs)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state === 'running') {
+      remaining = computeRemaining();
+      if (remaining <= 0) {
+        finish();
+      } else {
+        render();
+      }
+    }
+  });
+
+  // Initial render
+  render();
+</script>
+</body>
+</html>

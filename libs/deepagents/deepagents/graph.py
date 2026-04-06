@@ -497,6 +497,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+
+            subagent_memory = spec.get("memory")
+            if subagent_memory:
+                subagent_middleware.append(MemoryMiddleware(backend=backend, sources=subagent_memory))
+
             subagent_middleware.extend(spec.get("middleware", []))
 
             # Provider-specific middleware for this subagent's model

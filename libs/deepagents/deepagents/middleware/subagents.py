@@ -77,6 +77,10 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
 
+    memory: NotRequired[list[str]]
+    """Memory file paths (AGENTS.md) for MemoryMiddleware.
+    Same format as `create_deep_agent(memory=...)`."""
+
     permissions: NotRequired[list[FilesystemPermission]]
     """List of ``FilesystemPermission`` rules for this subagent.
 

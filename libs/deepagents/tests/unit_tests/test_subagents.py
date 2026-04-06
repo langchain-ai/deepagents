@@ -1731,6 +1731,99 @@ class TestSubAgents:
         skill_names = [s["name"] for s in skills_metadata]
         assert "custom-skill" in skill_names, f"Custom subagent should have 'custom-skill' in skills_metadata. Found skills: {skill_names}"
 
+    def test_custom_subagent_with_memory_parameter(self, tmp_path: Path) -> None:
+        """Test that a custom SubAgent with memory parameter loads memory correctly.
+
+        Verifies that:
+        1. When a SubAgent spec includes a `memory` parameter, the subagent gets `MemoryMiddleware`
+        2. The `memory_contents` are present in the subagent's runtime state
+        3. The `AGENTS.md` content is correctly loaded from the specified source paths
+        """
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        memory_file_path = str(tmp_path / "AGENTS.md")
+        memory_content = "# Agent Memory\n\nYou are a specialized subagent with custom instructions."
+
+        responses = backend.upload_files([(memory_file_path, memory_content.encode("utf-8"))])
+        assert responses[0].error is None
+
+        captured_subagent_states: list[dict[str, Any]] = []
+
+        @tool
+        def capture_subagent_state(query: str, runtime: ToolRuntime) -> str:
+            """Captures runtime state from the subagent."""
+            captured_subagent_states.append(dict(runtime.state))
+            return f"Processed: {query}"
+
+        custom_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_subagent_state",
+                                "args": {"query": "check state"},
+                                "id": "call_capture",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Custom subagent response with memory."),
+                ]
+            )
+        )
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do custom work",
+                                    "subagent_type": "memory-worker",
+                                },
+                                "id": "call_custom",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        leader = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[
+                SubAgent(
+                    name="memory-worker",
+                    description="A custom worker agent with memory",
+                    system_prompt="You are a custom worker with memory.",
+                    model=custom_subagent_model,
+                    tools=[capture_subagent_state],
+                    memory=[memory_file_path],
+                )
+            ],
+        )
+
+        leader.invoke(
+            {"messages": [HumanMessage(content="Go")]},
+            config={"configurable": {"thread_id": "test_custom_with_memory"}},
+        )
+
+        assert len(captured_subagent_states) > 0, "Custom subagent tool should have been invoked"
+
+        subagent_state = captured_subagent_states[0]
+        assert "memory_contents" in subagent_state, "Custom subagent with memory parameter SHOULD have memory_contents in runtime.state"
+        assert any(memory_content[:30] in content for content in subagent_state["memory_contents"].values()), (
+            "Memory content should be loaded from the specified AGENTS.md file"
+        )
+
     def test_custom_subagent_with_skills_multiple_sources(self, tmp_path: Path) -> None:
         """Test that a custom SubAgent with multiple skill sources loads skills with proper override.
 

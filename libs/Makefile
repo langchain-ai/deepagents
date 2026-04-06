@@ -47,7 +47,7 @@ lock-check: ## Check all lockfiles are up-to-date
 
 lint: ## Lint all packages
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
+	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🔍 Linting $$dir"; \
 		$(MAKE) -C "$$dir" lint; \
 	done
@@ -55,7 +55,7 @@ lint: ## Lint all packages
 
 format: ## Format all packages
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
+	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \
 		$(MAKE) -C "$$dir" format; \
 	done

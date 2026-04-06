@@ -438,7 +438,6 @@ def _get_subagents_legacy(
     return specs
 
 
-
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,

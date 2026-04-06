@@ -7,45 +7,71 @@ description: "Scaffold, serve, and iterate on a website from a creative prompt. 
 
 Sprint mode -- start building immediately, no planning phase. Visual impact and completeness beat code quality.
 
-## 1. Scaffold (first 30 seconds)
+**IMPORTANT: Do NOT stop after starting the server. The server is just step 1. You MUST then rewrite the HTML, CSS, and JS to build the site described in the prompt. Keep editing files until the site is complete and polished.**
 
-Create a fresh directory for the project, then scaffold with Vite vanilla template:
+## 1. Scaffold (if no project exists yet)
+
+If the current directory already has a `package.json` with Vite, skip to step 2.
+
+Otherwise scaffold with Vite vanilla template:
 
 ```bash
-mkdir project && cd project
-npm create vite@latest . -- --template vanilla
+npm create vite@latest . -- --template vanilla <<< "y"
 npm install
 ```
 
 **Do not use** `create-react-app`, `next`, or heavy frameworks -- too slow to scaffold.
 
-**Fallback** if Vite fails:
+## 2. Start dev server in background
 
-Create a single `index.html` and serve with:
-
-```bash
-npx live-server --port=${VIBE_PORT:-5173} --no-browser
-```
-
-## 2. Start dev server immediately
-
-Read `VIBE_PORT` from the environment. Default to `5173` if unset. Bind to all interfaces so LAN devices can reach it:
+First, detect the port. Run this command and note the output:
 
 ```bash
-npx vite --port ${VIBE_PORT:-5173} --host
+echo "${VIBE_PORT:-5173}"
 ```
 
-Start the server **within the first minute**. Use the Bash tool with `run_in_background: true` (or append `&`) and continue editing.
+Use that port number (not the variable) in all subsequent commands. Start the server fully detached so the command returns immediately:
 
-## 3. Iteration loop
+```bash
+nohup npx vite --port PORT --host > /tmp/vite.log 2>&1 & disown && sleep 2 && echo "server started"
+```
 
-Apply changes incrementally so Vite HMR shows progress live. Focus edits on `index.html` and `style.css`. Delete or empty `counter.js` and simplify `main.js` -- the Vite boilerplate JS is irrelevant.
+Replace `PORT` with the actual number from above. The `& disown` is critical — without it the command blocks forever.
+
+Verify it started:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:PORT
+```
+
+If you get `200`, proceed to step 3 immediately.
+
+**Fallback** if Vite fails: `nohup npx live-server --port=PORT --no-browser > /tmp/vite.log 2>&1 & disown`
+
+## 3. Build the site (THIS IS THE MAIN WORK)
+
+Now rewrite the project files to match the prompt. This is where you spend most of your time.
+
+**First**, clean up Vite boilerplate:
+- Rewrite `index.html` completely -- replace the `<body>` content with your site's HTML
+- Rewrite `src/style.css` completely -- replace with your site's styles
+- Rewrite `src/main.js` -- delete the boilerplate, add any JS your site needs (or make it minimal)
+- Delete or empty `src/counter.js` -- it's Vite boilerplate
+
+**Then**, iterate on the design. Apply changes incrementally so Vite HMR shows progress live.
 
 **Priority order:**
 
 1. **Visual impact** -- colors, typography, layout, full-viewport hero section
 2. **Content completeness** -- meaningful text (never lorem ipsum), real headings, real descriptions
 3. **Creative touches** -- animations, gradients, illustrations, micro-interactions
+
+**Keep going** until the site has:
+- A complete layout with multiple sections
+- Real, meaningful content that matches the prompt
+- A cohesive color palette and typography
+- At least one animation or creative touch
+- No placeholder text or Vite boilerplate visible
 
 ## 4. Design tips
 

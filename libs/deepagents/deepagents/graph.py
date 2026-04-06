@@ -136,10 +136,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         system_prompt: Custom system instructions to prepend before the base deep agent
             prompt.
 
-            If a string, it's concatenated with the base prompt. If `None`, only the
-            built-in base prompt is used. The Deep Agents CLI passes a longer default
-            template (`system_prompt.md`) in addition to this base; library usage does
-            not, unless you provide `system_prompt` explicitly.
+            If a string, it's concatenated with the base prompt.
         middleware: Additional middleware to apply after the base stack
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
             `SummarizationMiddleware`, `PatchToolCallsMiddleware`) but before

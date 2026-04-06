@@ -26,8 +26,6 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 `deepagents` is a Python package that implements these in a general purpose way so that you can easily create a Deep Agent for your application. For a full overview and quickstart of Deep Agents, the best resource is our [docs](https://docs.langchain.com/oss/python/deepagents/overview).
 
-**Default system prompt:** `create_deep_agent(..., system_prompt=None)` uses the package **base harness prompt** only. The [Deep Agents CLI](https://github.com/langchain-ai/deepagents/tree/main/libs/cli) adds a separate **coding-agent template** before that base, so terminal and library defaults are not identical. See **Default prompts: library vs CLI** in the [repository README](https://github.com/langchain-ai/deepagents#default-prompts-library-vs-cli) (also available when browsing the monorepo locally).
-
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
 ## 📖 Resources

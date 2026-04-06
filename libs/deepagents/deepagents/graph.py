@@ -285,8 +285,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    # "ignore" makes this a no-op for non-Anthropic models so we can add it
-    # unconditionally to every middleware stack.
+    # "ignore" silently skips cache-control header injection for non-Anthropic
+    # models, so this middleware can be added unconditionally.
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
@@ -324,7 +324,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
-            # "ignore" is a no-op for non-Anthropic models (see comment above).
+            # "ignore" skips caching for non-Anthropic models (see comment above).
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
@@ -372,8 +372,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.extend(middleware)
     # Caching + memory after all other middleware so memory updates don't
     # invalidate the Anthropic prompt cache prefix.
-    # "ignore" is a no-op for non-Anthropic models (see general-purpose subagent
-    # comment above).
+    # "ignore" skips caching for non-Anthropic models (see general-purpose
+    # subagent comment above).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))

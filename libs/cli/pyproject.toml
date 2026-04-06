@@ -159,6 +159,9 @@ langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
 
+[tool.ty.src]
+exclude = ["vibe-coding-olympics/"]  # standalone eval scripts — openevals not in CLI deps
+
 [tool.ty.environment]
 python-version = "3.11"
 extra-paths = [
@@ -236,6 +239,9 @@ ignore-var-parameters = true
     "INP",      # Missing `__init__.py` — scripts are standalone
     "S",        # Security warnings — not applicable to scripts
     "T201",     # `print` found — scripts use print for output
+]
+"vibe-coding-olympics/**" = [
+    "INP001",   # Missing `__init__.py` — standalone eval scripts, not a package
 ]
 "examples/**" = [
     "ANN001",   # Missing type annotation for function argument — examples prioritize clarity

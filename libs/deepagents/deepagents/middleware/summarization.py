@@ -1076,8 +1076,11 @@ A condensed summary follows:
         )
 
 
-# Public alias
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
+"""Public alias for `_DeepAgentsSummarizationMiddleware`.
+
+This is the name external callers should import and reference.
+"""
 
 
 def create_summarization_middleware(
@@ -1090,11 +1093,16 @@ def create_summarization_middleware(
     (or uses fixed-token fallbacks) and returns a configured middleware.
 
     Args:
-        model: Resolved chat model instance.
+        model: Resolved `BaseChatModel` instance.
+
+            Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
+
+    Raises:
+        TypeError: If `model` is not a `BaseChatModel` instance.
     """
     from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
 

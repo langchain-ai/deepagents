@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from deepagents_cli.sessions import ThreadInfo
 
 import pytest
@@ -22,6 +24,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
@@ -68,6 +71,66 @@ class TestInitialPromptOnMount:
             await pilot.pause()
 
         assert submitted == ["hello world"]
+
+    async def test_initial_skill_triggers_invoke_skill(self) -> None:
+        """When `--skill` is set, startup should invoke that skill."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_prompt="  keep leading whitespace",
+            initial_skill="code-review",
+        )
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == [("code-review", "  keep leading whitespace", None)]
+
+    async def test_initial_skill_runs_after_server_ready(self) -> None:
+        """Deferred startup should invoke the requested skill after connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="review this diff",
+            initial_skill="code-review",
+        )
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        app.on_deep_agents_app_server_ready(
+            app.ServerReady(
+                agent=MagicMock(),
+                server_proc=None,
+                mcp_server_info=[],
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert submitted == [("code-review", "review this diff", None)]
 
 
 class TestAppCSSValidation:
@@ -1218,6 +1281,87 @@ class TestAskUserLifecycle:
 
             assert app._pending_ask_user_widget is None
             widget.remove.assert_awaited_once()
+
+
+class TestLoadingSpinnerLifecycle:
+    """Tests for loading spinner timer cleanup in app flows."""
+
+    async def test_hide_stops_spinner_before_remove_completes(self) -> None:
+        """Hiding the spinner should stop animation before DOM removal finishes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.25)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                hide_task = asyncio.create_task(app._set_spinner(None))
+                await asyncio.sleep(0.25)
+                assert widget._spinner._position == frozen_position
+                await hide_task
+
+            assert app._loading_widget is None
+
+    async def test_reposition_stops_spinner_before_remove_completes(self) -> None:
+        """Repositioning should stop animation before delayed removal completes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            messages = app.query_one("#messages", Container)
+            queued_widget = QueuedUserMessage("queued")
+            await messages.mount(queued_widget, before=widget)
+            app._queued_widgets.append(queued_widget)
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.25)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
+                await asyncio.sleep(0.25)
+                assert widget._spinner._position == frozen_position
+                await reposition_task
+
+            children = list(messages.children)
+            assert children.index(widget) == children.index(queued_widget) - 1
+
+            await pilot.pause()
+            new_widget = app._loading_widget
+            assert new_widget is not None
+            assert new_widget._animation_timer is not None
 
 
 class TestTraceCommand:
@@ -2859,6 +3003,20 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
+    async def test_server_failure_stores_error(self) -> None:
+        """Server startup error should be stored for _send_to_agent fallback."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("exit code 3"))
+            )
+
+            assert app._server_startup_error == "RuntimeError: exit code 3"
+            assert app._connecting is False
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()
@@ -3012,3 +3170,37 @@ class TestDeferredActions:
 
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
+
+
+class TestServerStartupError:
+    """Test error messages when the server fails to start."""
+
+    async def test_send_to_agent_shows_server_error(self) -> None:
+        """_send_to_agent should show the server startup error as an ErrorMessage."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_startup_error = (
+                "RuntimeError: Server process exited with code 3"
+            )
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(ErrorMessage)
+            assert len(msgs) == 1
+            assert "Server failed to start" in str(msgs[0]._content)
+            assert "exited with code 3" in str(msgs[0]._content)
+
+    async def test_send_to_agent_shows_generic_when_no_server_error(self) -> None:
+        """_send_to_agent should show the generic AppMessage when no server error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert msgs[0]._content == "Agent not configured for this session."

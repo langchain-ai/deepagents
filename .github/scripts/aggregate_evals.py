@@ -21,9 +21,9 @@ def _format_table(
             r.get("skipped", 0),
             r.get("total", 0),
             r.get("correctness", 0.0),
-            r.get("solve_rate") or "n/a",
-            r.get("step_ratio") or "n/a",
-            r.get("tool_call_ratio") or "n/a",
+            "n/a" if r.get("solve_rate") is None else r.get("solve_rate"),
+            "n/a" if r.get("step_ratio") is None else r.get("step_ratio"),
+            "n/a" if r.get("tool_call_ratio") is None else r.get("tool_call_ratio"),
             r.get("median_duration_s", 0.0),
         ]
         for r in rows

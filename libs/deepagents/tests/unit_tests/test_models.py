@@ -10,12 +10,16 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
+    _PROVIDER_PROFILES,
     OPENROUTER_MIN_VERSION,
+    ProviderProfile,
     _openrouter_attribution_kwargs,
     _string_value,
     check_openrouter_version,
     get_model_identifier,
+    get_provider_profile,
     model_matches_spec,
+    register_provider_profile,
     resolve_model,
 )
 
@@ -254,3 +258,126 @@ class TestStringValue:
 
     def test_non_string(self) -> None:
         assert _string_value({"key": 42}, "key") is None
+
+
+class TestProviderProfile:
+    """Tests for the ProviderProfile dataclass."""
+
+    def test_defaults_are_empty(self) -> None:
+        profile = ProviderProfile()
+        assert profile.init_kwargs == {}
+        assert profile.pre_init is None
+        assert profile.init_kwargs_factory is None
+        assert profile.system_prompt_suffix is None
+        assert profile.exclude_tools == frozenset()
+        assert profile.tool_description_overrides == {}
+        assert profile.extra_middleware == ()
+
+    def test_frozen(self) -> None:
+        profile = ProviderProfile()
+        with pytest.raises(AttributeError):
+            profile.system_prompt_suffix = "nope"  # type: ignore[misc]
+
+
+class TestProviderProfileRegistry:
+    """Tests for register_provider_profile / get_provider_profile."""
+
+    def test_register_and_retrieve_by_provider(self) -> None:
+        profile = ProviderProfile(init_kwargs={"temperature": 0})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("test_provider", profile)
+            assert get_provider_profile("test_provider:some-model") is profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_exact_model_match_takes_priority(self) -> None:
+        provider_profile = ProviderProfile(init_kwargs={"a": 1})
+        model_profile = ProviderProfile(init_kwargs={"b": 2})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("test_prov", provider_profile)
+            register_provider_profile("test_prov:special-model", model_profile)
+            assert get_provider_profile("test_prov:special-model") is model_profile
+            assert get_provider_profile("test_prov:other-model") is provider_profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_returns_empty_default_for_unknown(self) -> None:
+        profile = get_provider_profile("nonexistent:model")
+        assert profile == ProviderProfile()
+
+    def test_bare_model_name_without_colon(self) -> None:
+        profile = get_provider_profile("claude-sonnet-4-6")
+        assert profile == ProviderProfile()
+
+
+class TestBuiltInProfiles:
+    """Tests for the built-in provider profile registrations."""
+
+    def test_openai_profile_sets_responses_api(self) -> None:
+        profile = get_provider_profile("openai:gpt-5")
+        assert profile.init_kwargs == {"use_responses_api": True}
+
+    def test_openrouter_profile_has_pre_init_and_factory(self) -> None:
+        profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
+        assert profile.pre_init is not None
+        assert profile.init_kwargs_factory is not None
+
+    def test_anthropic_profile_has_extra_middleware(self) -> None:
+        profile = get_provider_profile("anthropic:claude-sonnet-4-6")
+        assert callable(profile.extra_middleware)
+
+    def test_anthropic_extra_middleware_produces_caching(self) -> None:
+        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
+
+        profile = get_provider_profile("anthropic:claude-sonnet-4-6")
+        middleware = profile.extra_middleware()
+        assert len(middleware) == 1
+        assert isinstance(middleware[0], AnthropicPromptCachingMiddleware)
+
+
+class TestResolveModelWithProfiles:
+    """Tests for resolve_model using the profile registry."""
+
+    def test_openai_uses_profile_init_kwargs(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openai:gpt-5")
+
+        mock.assert_called_once_with("openai:gpt-5", use_responses_api=True)
+
+    def test_openrouter_runs_pre_init_and_factory(self) -> None:
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch("deepagents._models.check_openrouter_version") as mock_check,
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openrouter:anthropic/claude-sonnet-4-6")
+
+        mock_check.assert_called_once()
+        _, kwargs = mock.call_args
+        assert "app_url" in kwargs or "app_title" in kwargs
+
+    def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("some_provider:some-model")
+
+        mock.assert_called_once_with("some_provider:some-model")
+
+    def test_custom_profile_kwargs_forwarded(self) -> None:
+        profile = ProviderProfile(init_kwargs={"custom_key": "custom_val"})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("customprov", profile)
+            with patch("deepagents._models.init_chat_model") as mock:
+                mock.return_value = MagicMock(spec=BaseChatModel)
+                resolve_model("customprov:my-model")
+
+            mock.assert_called_once_with("customprov:my-model", custom_key="custom_val")
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)

@@ -2,7 +2,7 @@
 
 Provides `create_deep_agent`, the main entry point for constructing a fully
 configured Deep Agent with planning, filesystem, subagent, and summarization
-middleware.
+middleware.  Also defines `BASE_AGENT_PROMPT` and the default model fallback.
 """
 
 from collections.abc import Callable, Sequence
@@ -13,7 +13,6 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
-from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
@@ -23,7 +22,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
-from deepagents._models import resolve_model
+from deepagents._models import ProviderProfile, get_model_identifier, get_provider_profile, resolve_model
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -94,6 +93,62 @@ def get_default_model() -> ChatAnthropic:
     return ChatAnthropic(
         model_name="claude-sonnet-4-6",
     )
+
+
+def _resolve_extra_middleware(
+    profile: ProviderProfile,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Materialize the `extra_middleware` from a provider profile.
+
+    Handles both static sequences and zero-arg factories.
+
+    Args:
+        profile: The provider profile to read from.
+
+    Returns:
+        A fresh list of middleware instances (may be empty).
+    """
+    extra = profile.extra_middleware
+    if callable(extra):
+        return list(extra())  # ty: ignore[call-top-callable]  # callable() narrows but ty can't prove safety
+    return list(extra)
+
+
+def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfile:
+    """Look up the `ProviderProfile` for an already-resolved model.
+
+    If `spec` is provided (the original string the caller passed), it is used
+    for registry lookup.  Otherwise the model identifier is extracted from the
+    instance and used as a best-effort fallback.
+
+    Args:
+        model: Resolved chat model instance.
+        spec: Original model spec string, or `None` for pre-built instances.
+
+    Returns:
+        The matching `ProviderProfile`, or an empty default.
+    """
+    if spec is not None:
+        return get_provider_profile(spec)
+    identifier = get_model_identifier(model)
+    if identifier is not None:
+        return get_provider_profile(identifier)
+    return ProviderProfile()
+
+
+def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
+    """Extract the tool name from any supported tool type.
+
+    Args:
+        tool: A tool in any of the forms accepted by `create_deep_agent`.
+
+    Returns:
+        The tool name, or `None` if it cannot be determined.
+    """
+    if isinstance(tool, dict):
+        name = tool.get("name")  # ty: ignore[invalid-argument-type]  # Callable & dict intersection confuses ty
+        return name if isinstance(name, str) else None
+    return getattr(tool, "name", None)
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -175,7 +230,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Tail stack:
 
-            - `AnthropicPromptCachingMiddleware`
+            - Provider-specific middleware (from `ProviderProfile.extra_middleware`)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
         subagents: Subagent specs available to the main agent.
@@ -278,7 +333,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
     """
+    model_spec: str | None
+    if isinstance(model, str):
+        model_spec = model
+    elif model is None:
+        # Default model is always Anthropic; derive a spec so the profile
+        # registry resolves correctly (bare model names lack a provider prefix).
+        model_spec = "anthropic:claude-sonnet-4-6"
+    else:
+        model_spec = None
     model = get_default_model() if model is None else resolve_model(model)
+    profile = _profile_for_model(model, model_spec)
     backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
@@ -290,9 +355,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    # "ignore" silently skips cache-control header injection for non-Anthropic
-    # models, so this middleware can be added unconditionally.
-    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    # Provider-specific middleware (e.g. Anthropic prompt caching).
+    gp_middleware.extend(_resolve_extra_middleware(profile))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
@@ -315,8 +379,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             inline_subagents.append(spec)
         else:
             # SubAgent - fill in defaults and prepend base middleware
-            subagent_model = spec.get("model", model)
-            subagent_model = resolve_model(subagent_model)
+            raw_subagent_model = spec.get("model", model)
+            subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
+            subagent_model = resolve_model(raw_subagent_model)
+            subagent_profile = _profile_for_model(subagent_model, subagent_spec)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -329,8 +395,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
-            # "ignore" skips caching for non-Anthropic models (see comment above).
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            # Provider-specific middleware for this subagent's model.
+            subagent_middleware.extend(_resolve_extra_middleware(subagent_profile))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
@@ -375,29 +441,49 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     if middleware:
         deepagent_middleware.extend(middleware)
-    # Caching + memory after all other middleware so memory updates don't
-    # invalidate the Anthropic prompt cache prefix.
-    # "ignore" skips caching for non-Anthropic models (see general-purpose
-    # subagent comment above).
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    # Provider-specific middleware goes between user middleware and memory so
+    # that memory updates (which change the system prompt) don't invalidate the
+    # Anthropic prompt cache prefix.
+    deepagent_middleware.extend(_resolve_extra_middleware(profile))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    # Combine system_prompt with BASE_AGENT_PROMPT
+    # Combine system_prompt with BASE_AGENT_PROMPT (+ optional profile suffix)
+    base_prompt = BASE_AGENT_PROMPT
+    if profile.system_prompt_suffix:
+        base_prompt = base_prompt + "\n\n" + profile.system_prompt_suffix
+
     if system_prompt is None:
-        final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
+        final_system_prompt: str | SystemMessage = base_prompt
     elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
+        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
     else:
         # String: simple concatenation
-        final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
+        final_system_prompt = system_prompt + "\n\n" + base_prompt
+
+    # Apply tool exclusions and description overrides from the profile.
+    # Copy the sequence so caller-owned objects are not mutated.
+    filtered_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = list(tools) if tools is not None else None
+    if profile.exclude_tools and filtered_tools:
+        filtered_tools = [t for t in filtered_tools if _tool_name(t) not in profile.exclude_tools]
+    if profile.tool_description_overrides and filtered_tools:
+        for tool in filtered_tools:
+            name = _tool_name(tool)
+            if name is None:
+                continue
+            override = profile.tool_description_overrides.get(name)
+            if override is not None:
+                if isinstance(tool, dict):
+                    tool["description"] = override  # ty: ignore[invalid-assignment]  # Callable & dict intersection
+                else:
+                    tool.description = override  # type: ignore[union-attr]
 
     return create_agent(
         model,
         system_prompt=final_system_prompt,
-        tools=tools,
+        tools=filtered_tools,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,

@@ -135,7 +135,7 @@ class LoadingWidget(Static):
         """Stop animation before delegating DOM removal to Textual.
 
         Returns:
-            Textual's awaitable removal handle.
+            Awaitable that completes once the widget is removed from the DOM.
         """
         self._stop_timer()
         return super().remove()

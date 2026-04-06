@@ -48,3 +48,18 @@ class TestLoadingWidget:
             await pilot.pause()
 
             assert widget._animation_timer is None
+            assert not pilot.app.query("LoadingWidget")
+
+    async def test_double_stop_is_safe(self) -> None:
+        """Calling `stop()` then `remove()` should not raise."""
+        async with LoadingWidgetApp().run_test() as pilot:
+            widget = pilot.app.query_one("#loading", LoadingWidget)
+
+            widget.stop()
+            assert widget._animation_timer is None
+
+            await widget.remove()
+            await pilot.pause()
+
+            assert widget._animation_timer is None
+            assert not pilot.app.query("LoadingWidget")

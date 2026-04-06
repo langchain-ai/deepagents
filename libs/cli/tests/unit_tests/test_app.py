@@ -1227,7 +1227,7 @@ class TestLoadingSpinnerLifecycle:
     """Tests for loading spinner timer cleanup in app flows."""
 
     async def test_hide_stops_spinner_before_remove_completes(self) -> None:
-        """Hiding the spinner should stop animation before DOM pruning finishes."""
+        """Hiding the spinner should stop animation before DOM removal finishes."""
         app = DeepAgentsApp()
         original_remove = Widget.remove
 
@@ -1247,13 +1247,13 @@ class TestLoadingSpinnerLifecycle:
             assert widget is not None
 
             before_tick = widget._spinner._position
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
 
             frozen_position = widget._spinner._position
             with patch.object(Widget, "remove", new=delayed_remove):
                 hide_task = asyncio.create_task(app._set_spinner(None))
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.25)
                 assert widget._spinner._position == frozen_position
                 await hide_task
 
@@ -1285,18 +1285,23 @@ class TestLoadingSpinnerLifecycle:
             app._queued_widgets.append(queued_widget)
 
             before_tick = widget._spinner._position
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
 
             frozen_position = widget._spinner._position
             with patch.object(Widget, "remove", new=delayed_remove):
                 reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.25)
                 assert widget._spinner._position == frozen_position
                 await reposition_task
 
             children = list(messages.children)
             assert children.index(widget) == children.index(queued_widget) - 1
+
+            await pilot.pause()
+            new_widget = app._loading_widget
+            assert new_widget is not None
+            assert new_widget._animation_timer is not None
 
 
 class TestTraceCommand:

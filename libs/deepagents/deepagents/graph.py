@@ -71,7 +71,7 @@ For longer tasks, provide brief progress updates at reasonable intervals — a c
 
 
 def get_default_model() -> ChatAnthropic:
-    """Get the default model for deep agents.
+    """Get default model.
 
     Returns:
         `ChatAnthropic` instance configured with Claude Sonnet 4.6.
@@ -100,9 +100,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     name: str | None = None,
     cache: BaseCache | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
-    """Create a deep agent.
+    """Create a Deep Agent.
 
-    !!! warning "Deep agents require a LLM that supports tool calling!"
+    !!! warning "Deep Agents require a LLM that supports tool calling!"
 
     By default, this agent has access to the following tools:
 
@@ -119,35 +119,57 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Defaults to `claude-sonnet-4-6`.
 
-            Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models.
+            Accepts a `provider:model` string (e.g., `openai:gpt-5`); see
+            [`init_chat_model`][langchain.chat_models.init_chat_model(model_provider)]
+            for supported values. You can also pass a pre-initialized
+            [`BaseChatModel`][langchain.chat_models.BaseChatModel] instance directly.
 
-            If an `openai:` model is used, the agent will use the OpenAI
-            Responses API by default. To use OpenAI chat completions instead,
-            initialize the model with
-            `init_chat_model("openai:...", use_responses_api=False)` and pass
-            the initialized model instance here. To disable data retention with
-            the Responses API, use
-            `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
-            and pass the initialized model instance here.
-        tools: The tools the agent should have access to.
+            !!! note "OpenAI Models and Data Retention"
 
-            In addition to custom tools you provide, deep agents include built-in tools for planning,
-            file management, and subagent spawning.
-        system_prompt: Custom system instructions to prepend before the base deep agent
-            prompt.
+                If an `openai:` model is used, the agent will use the OpenAI
+                Responses API by default. To use OpenAI chat completions
+                instead, initialize the model with
+                `init_chat_model("openai:...", use_responses_api=False)` and
+                pass the initialized model instance here.
+
+                To disable data retention with the Responses API, use
+                `init_chat_model("openai:...", use_responses_api=True, store=False, include=["reasoning.encrypted_content"])`
+                and pass the initialized model instance here.
+        tools: Additional tools the agent should have access to.
+
+            These are merged with the built-in tool suite listed above
+            (`write_todos`, filesystem tools, `execute`, and `task`).
+        system_prompt: Custom system instructions to prepend before the base
+            Deep Agent prompt.
 
             If a string, it's concatenated with the base prompt.
         middleware: Additional middleware to apply after the base stack
-            (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
-            `SummarizationMiddleware`, `PatchToolCallsMiddleware`) but before
-            `AnthropicPromptCachingMiddleware` and `MemoryMiddleware`.
-        subagents: Optional subagent specs available to the main agent.
+            but before the tail middleware. The full ordering is:
+
+            Base stack:
+
+            - `TodoListMiddleware`
+            - `SkillsMiddleware` (if `skills` is provided)
+            - `FilesystemMiddleware`
+            - `SubAgentMiddleware`
+            - `SummarizationMiddleware`
+            - `PatchToolCallsMiddleware`
+            - `AsyncSubAgentMiddleware` (if async `subagents` are provided)
+
+            *User middleware is inserted here.*
+
+            Tail stack:
+
+            - `AnthropicPromptCachingMiddleware`
+            - `MemoryMiddleware` (if `memory` is provided)
+            - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
+        subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
 
-            - `SubAgent`: A declarative synchronous subagent spec.
-            - `CompiledSubAgent`: A pre-compiled runnable subagent.
-            - `AsyncSubAgent`: A remote/background subagent spec.
+            - [`SubAgent`][deepagents.middleware.subagents.SubAgent]: A declarative synchronous subagent spec.
+            - [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]: A pre-compiled runnable subagent.
+            - [`AsyncSubAgent`][deepagents.middleware.async_subagents.AsyncSubAgent]: A remote/background subagent spec.
 
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
@@ -170,27 +192,38 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             If no subagent named `general-purpose` is provided, a default
             general-purpose synchronous subagent is added automatically.
 
-        skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
+        skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
-            Paths must be specified using POSIX conventions (forward slashes) and are relative
-            to the backend's root. When using `StateBackend` (default), provide skill files via
-            `invoke(files={...})`. With `FilesystemBackend`, skills are loaded from disk relative
-            to the backend's `root_dir`. Later sources override earlier ones for skills with the
-            same name (last one wins).
-        memory: Optional list of memory file paths (`AGENTS.md` files) to load
+            Paths must be specified using POSIX conventions (forward slashes)
+            and are relative to the backend's root. When using
+            `StateBackend` (default), provide skill files via
+            `invoke(files={...})`. With `FilesystemBackend`, skills are loaded
+            from disk relative to the backend's `root_dir`. Later sources
+            override earlier ones for skills with the same name (last one wins).
+        memory: List of memory file paths (`AGENTS.md` files) to load
             (e.g., `["/memory/AGENTS.md"]`).
 
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
         response_format: A structured output response format to use for the agent.
-        context_schema: The schema of the deep agent.
-        checkpointer: Optional `Checkpointer` for persisting agent state between runs.
-        store: Optional store for persistent storage (required if backend uses `StoreBackend`).
+        context_schema: Schema class that defines immutable run-scoped context.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        checkpointer: Optional `Checkpointer` for persisting agent state
+            between runs.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        store: Optional store for persistent storage (required if backend
+            uses `StoreBackend`).
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
         backend: Optional backend for file storage and execution.
 
             Pass a `Backend` instance (e.g. `StateBackend()`).
-            For execution support, use a backend that implements `SandboxBackendProtocol`.
+
+            For execution support, use a backend that
+            implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
             Pass to pause agent execution at specified tool calls for human
@@ -199,25 +232,32 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             This config always applies to the main agent.
 
             For subagents:
-            - Declarative `SubAgent` specs inherit the top-level
-              `interrupt_on` config by default.
+            - Declarative `SubAgent` specs inherit the top-level `interrupt_on`
+                config by default.
             - If a declarative `SubAgent` provides its own `interrupt_on`, that
-              subagent-specific config overrides the inherited top-level config.
+                subagent-specific config overrides the inherited
+                top-level config.
             - `CompiledSubAgent` runnables do not inherit top-level
-              `interrupt_on`; configure human-in-the-loop behavior inside the
-              compiled runnable itself.
+                `interrupt_on`; configure human-in-the-loop behavior inside the
+                compiled runnable itself.
             - Remote `AsyncSubAgent` specs do not inherit top-level
-              `interrupt_on`; configure any approval behavior on the remote
-              subagent itself.
+                `interrupt_on`; configure any approval behavior on the remote
+                subagent itself.
 
-            Example: `interrupt_on={"edit_file": True}` pauses before every
-            edit.
-        debug: Whether to enable debug mode. Passed through to `create_agent`.
-        name: The name of the agent. Passed through to `create_agent`.
-        cache: The cache to use for the agent. Passed through to `create_agent`.
+            For example, `interrupt_on={"edit_file": True}` pauses before
+            every edit.
+        debug: Whether to enable debug mode.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        name: The name of the agent.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        cache: The cache to use for the agent.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
 
     Returns:
-        A configured deep agent.
+        A configured Deep Agent.
     """
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else StateBackend()

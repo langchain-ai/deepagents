@@ -213,14 +213,14 @@ def _ensure_bootstrap() -> None:
                     # Propagate (including empty string for explicit disable).
                     os.environ[canonical] = prefixed_val
                 elif os.environ[canonical] != prefixed_val:
+                    os.environ[canonical] = prefixed_val
                     logger.warning(
                         "Both %s and %s are set with different values; "
-                        "the LangSmith SDK will use %s while the CLI "
-                        "prefers %s. Unset one to avoid confusion.",
+                        "using %s. Unset %s to silence this warning.",
                         canonical,
                         prefixed,
-                        canonical,
                         prefixed,
+                        canonical,
                     )
         except Exception:
             logger.exception(

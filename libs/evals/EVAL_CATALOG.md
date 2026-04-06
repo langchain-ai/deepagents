@@ -87,7 +87,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 ## Conversation (`conversation`) (3 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L82) — `tests/evals/tau2_airline/test_tau2_airline.py:82`
-- [`test_tau3_rhobank`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau3_rhobank/test_tau3_rhobank.py#L84) — `tests/evals/tau3_rhobank/test_tau3_rhobank.py:84`
+- [`test_tau3_rhobank`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau3_rhobank/test_tau3_rhobank.py#L73) — `tests/evals/tau3_rhobank/test_tau3_rhobank.py:73`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L94) — `tests/evals/test_followup_quality.py:94`
 
 ## Summarization (`summarization`) (5 evals)

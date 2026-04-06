@@ -1,4 +1,9 @@
-"""Deep Agents come with planning, filesystem, and subagents."""
+"""Primary graph assembly module for Deep Agents.
+
+Provides `create_deep_agent`, the main entry point for constructing a fully
+configured Deep Agent with planning, filesystem, subagent, and summarization
+middleware.
+"""
 
 from collections.abc import Callable, Sequence
 from typing import Any, cast

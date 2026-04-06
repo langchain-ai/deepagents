@@ -2136,10 +2136,10 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls
 
-    def test_bootstrap_does_not_overwrite_canonical_langsmith_vars(
+    def test_bootstrap_overrides_canonical_with_prefixed_value(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Canonical LangSmith vars are preserved when already set."""
+        """Prefixed value wins when both canonical and prefixed vars are set."""
         import deepagents_cli.config as config_mod
         from deepagents_cli.config import _ensure_bootstrap
 
@@ -2163,8 +2163,8 @@ class TestLazyModuleAttributes:
 
             import os
 
-            # Canonical value preserved — propagation does not overwrite.
-            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_original"
+            # Prefixed value wins — canonical is overwritten.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls

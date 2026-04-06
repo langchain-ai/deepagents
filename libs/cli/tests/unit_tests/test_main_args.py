@@ -6,7 +6,7 @@ import os
 import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -181,6 +181,71 @@ class TestQuietRequiresNonInteractive:
         assert exc_info.value.code == 2
 
 
+class TestSkillFlagValidation:
+    """Tests for `--skill` validation in `cli_main`."""
+
+    def test_skill_allowed_with_non_interactive(self) -> None:
+        """`--skill` should be accepted when `-n` selects headless mode."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--skill", "code-review", "-n", "review this"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_cli.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # type: ignore[union-attr]
+
+    def test_skill_with_quiet_without_non_interactive_exits_2(self) -> None:
+        """`--skill` + `--quiet` without `-n` should exit with code 2."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--skill", "code-review", "-q"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+    def test_skill_with_no_stream_without_non_interactive_exits_2(self) -> None:
+        """`--skill` + `--no-stream` without `-n` should exit with code 2."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--skill", "code-review", "--no-stream"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""
 
@@ -269,12 +334,14 @@ def _make_args(
     *,
     non_interactive_message: str | None = None,
     initial_prompt: str | None = None,
+    initial_skill: str | None = None,
     stdin: bool = False,
 ) -> argparse.Namespace:
     """Create a minimal argument namespace for stdin pipe tests."""
     return argparse.Namespace(
         non_interactive_message=non_interactive_message,
         initial_prompt=initial_prompt,
+        initial_skill=initial_skill,
         stdin=stdin,
     )
 
@@ -328,6 +395,26 @@ class TestApplyStdinPipe:
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "error log contents\n\nexplain this"
+        assert args.non_interactive_message is None
+
+    def test_stdin_sets_initial_prompt_for_startup_skill(self) -> None:
+        """Piped stdin becomes the startup request when `--skill` is set."""
+        args = _make_args(initial_skill="code-review")
+        fake_stdin = io.StringIO("diff contents")
+        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.initial_prompt == "diff contents"
+        assert args.non_interactive_message is None
+
+    def test_stdin_prepends_to_skill_prompt(self) -> None:
+        """Piped stdin is prepended when `--skill` and `-m` are combined."""
+        args = _make_args(initial_prompt="review this", initial_skill="code-review")
+        fake_stdin = io.StringIO("diff contents")
+        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.initial_prompt == "diff contents\n\nreview this"
         assert args.non_interactive_message is None
 
     def test_non_interactive_takes_priority_over_initial_prompt(self) -> None:

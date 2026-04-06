@@ -1948,6 +1948,65 @@ class TestArtifactsRoot:
         assert "/workspace/large_tool_results/" in evicted_msg.content
         assert mem_store.get(("filesystem",), "/workspace/large_tool_results/call_big") is not None
 
+    def test_deep_agent_artifacts_root_eviction_then_read(self) -> None:
+        """Evicted tool result under custom artifacts_root can be read back."""
+        large_content = "z" * 500_000
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return large_content
+
+        mem_store = InMemoryStore()
+        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "big_tool",
+                                "args": {},
+                                "id": "call_big",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/workspace/large_tool_results/call_big"},
+                                "id": "call_read",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[big_tool],
+            backend=backend,
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool then read it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        read_msg = next(m for m in tool_messages if m.tool_call_id == "call_read")
+        assert "z" * 100 in read_msg.content
+
     def test_deep_agent_artifacts_root_conversation_history_offload(self) -> None:
         """Summarization offloads conversation history under the custom artifacts_root."""
         mem_store = InMemoryStore()

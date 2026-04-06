@@ -126,7 +126,8 @@ class CompositeBackend(BackendProtocol):
         default: Backend for paths that don't match any route.
         routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
         sorted_routes: Routes sorted by length (longest first) for correct matching.
-        artifacts_root: Root path for artifacts. Defaults to `"/"`.
+        artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
+            Defaults to `"/"`.
 
     Examples:
         ```python
@@ -150,7 +151,8 @@ class CompositeBackend(BackendProtocol):
             default: Backend for paths that don't match any route.
             routes: Map of path prefixes to backends. Prefixes must start with "/"
                 and should end with "/" (e.g., "/memories/").
-            artifacts_root: Root path for artifacts. Defaults to `"/"`.
+            artifacts_root: Root path for artifacts, such as messages offloaded
+                by middleware. Defaults to `"/"`.
         """
         # Default backend
         self.default = default

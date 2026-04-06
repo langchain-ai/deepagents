@@ -597,7 +597,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            artifacts_root: Root path for artifacts. Defaults to `"/"` if not provided.
+            artifacts_root: Root path for artifacts, such as messages offloaded
+                by middleware. Defaults to `"/"`.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.

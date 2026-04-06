@@ -37,7 +37,10 @@ from tests.evals.tau3_rhobank.user_sim import UserSimulator
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("conversation")]
+pytestmark = [
+    pytest.mark.eval_category("conversation"),
+    pytest.mark.eval_category("tau3"),
+]
 
 logger = logging.getLogger(__name__)
 

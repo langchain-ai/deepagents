@@ -1867,9 +1867,10 @@ _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
     """Inject default OpenRouter attribution kwargs.
 
-    Sets `app_url` and `app_title` via `setdefault` so that user-supplied
-    values in config take precedence. These map to the `HTTP-Referer` and
-    `X-Title` headers that `ChatOpenRouter` sends for app attribution
+    Sets `app_url`, `app_title`, and `app_categories` via `setdefault` so
+    that user-supplied values in config take precedence. These map to the
+    `HTTP-Referer`, `X-Title`, and `X-OpenRouter-Categories` headers that
+    `ChatOpenRouter` sends for app attribution
     (see https://openrouter.ai/docs/app-attribution).
 
     Users can override either value provider-wide or per-model in
@@ -2305,8 +2306,8 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     Note:
         This validation is best-effort. Models without profiles will pass with
-        a warning. Exits via sys.exit(1) if model profile explicitly indicates
-        tool_calling=False.
+        a warning. Calls `sys.exit(1)` if the model's profile explicitly
+        indicates `tool_calling=False`.
     """
     console = _get_console()
     profile = getattr(model, "profile", None)

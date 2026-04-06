@@ -72,6 +72,66 @@ class TestInitialPromptOnMount:
 
         assert submitted == ["hello world"]
 
+    async def test_initial_skill_triggers_invoke_skill(self) -> None:
+        """When `--skill` is set, startup should invoke that skill."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_prompt="  keep leading whitespace",
+            initial_skill="code-review",
+        )
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == [("code-review", "  keep leading whitespace", None)]
+
+    async def test_initial_skill_runs_after_server_ready(self) -> None:
+        """Deferred startup should invoke the requested skill after connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="review this diff",
+            initial_skill="code-review",
+        )
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        app.on_deep_agents_app_server_ready(
+            app.ServerReady(
+                agent=MagicMock(),
+                server_proc=None,
+                mcp_server_info=[],
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert submitted == [("code-review", "review this diff", None)]
+
 
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""
@@ -2943,6 +3003,20 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
+    async def test_server_failure_stores_error(self) -> None:
+        """Server startup error should be stored for _send_to_agent fallback."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("exit code 3"))
+            )
+
+            assert app._server_startup_error == "RuntimeError: exit code 3"
+            assert app._connecting is False
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()
@@ -3096,3 +3170,37 @@ class TestDeferredActions:
 
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
+
+
+class TestServerStartupError:
+    """Test error messages when the server fails to start."""
+
+    async def test_send_to_agent_shows_server_error(self) -> None:
+        """_send_to_agent should show the server startup error as an ErrorMessage."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_startup_error = (
+                "RuntimeError: Server process exited with code 3"
+            )
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(ErrorMessage)
+            assert len(msgs) == 1
+            assert "Server failed to start" in str(msgs[0]._content)
+            assert "exited with code 3" in str(msgs[0]._content)
+
+    async def test_send_to_agent_shows_generic_when_no_server_error(self) -> None:
+        """_send_to_agent should show the generic AppMessage when no server error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert msgs[0]._content == "Agent not configured for this session."

@@ -11,7 +11,7 @@ import inspect
 import logging
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, NotRequired, TypeAlias
 
@@ -178,10 +178,25 @@ class _Unset:
     """Sentinel type for detecting explicit parameter usage."""
 
 
-_FILES_UPDATE_UNSET = _Unset()
+Unset = _Unset()
 
 
-@dataclass
+def _normalize_files_update(
+    files_update: dict[str, Any] | None | _Unset,
+) -> dict[str, Any] | None:
+    """Normalize file updates."""
+    if isinstance(files_update, _Unset):
+        return None
+
+    warnings.warn(
+        "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return files_update
+
+
+@dataclass(init=False)
 class WriteResult:
     """Result from backend write operations.
 
@@ -194,20 +209,23 @@ class WriteResult:
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
 
-    def __post_init__(self) -> None:  # noqa: D105
-        if not isinstance(self.files_update, _Unset):
-            warnings.warn(
-                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+    ) -> None:
+        """Initialize WriteResult."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
 
 
-@dataclass
+@dataclass(init=False)
 class EditResult:
     """Result from backend edit operations.
 
@@ -221,18 +239,23 @@ class EditResult:
         >>> EditResult(error="File not found")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None | _Unset = field(default=_FILES_UPDATE_UNSET, repr=False)
-    occurrences: int | None = None
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+    occurrences: int | None
 
-    def __post_init__(self) -> None:  # noqa: D105
-        if not isinstance(self.files_update, _Unset):
-            warnings.warn(
-                "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+        occurrences: int | None = None,
+    ) -> None:
+        """Initialize edit result."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
+        self.occurrences = occurrences
 
 
 @dataclass

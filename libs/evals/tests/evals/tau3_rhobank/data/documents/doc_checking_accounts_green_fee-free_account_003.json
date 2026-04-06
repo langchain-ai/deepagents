@@ -1,0 +1,5 @@
+{
+  "id": "doc_checking_accounts_green_fee-free_account_003",
+  "title": "Green Fee-Free Account at a glance",
+  "content": "## Snapshot\n| Feature | Value |\n|---|---|\n| Overdraft fee | $0.00 |\n| Out-of-network ATM fee (Rho Bank) | $0.00 |\n| APY on balances | 0% |\n| Mobile check deposit daily limit | $2,500 |\n| Early direct deposit | 0 day(s) before payday |\n\n## Notes\n- Rho Bank does not charge for non-network ATM withdrawals: $0.00; ATM owners may set a separate surcharge.\n- No interest is paid on balances: 0%.\n- Mobile check deposits are limited to $2,500 per day.\n- You won't incur an overdraft fee: $0.00.\n- This account offers 0 day(s) early access to direct deposits."
+}

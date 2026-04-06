@@ -23,7 +23,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_external_benchmarks",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
-    "conversation": ["test_followup_quality", "test_tau2_airline"],
+    "conversation": ["test_followup_quality", "test_tau2_airline", "test_tau3_rhobank"],
     "summarization": ["test_summarization"],
     "unit_test": [
         "test_system_prompt",

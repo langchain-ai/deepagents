@@ -1,0 +1,5 @@
+{
+  "id": "doc_bank_accounts_bank_accounts_(general)_009",
+  "title": "Internal: Retrieving Customer Account Information",
+  "content": "## Overview\n\nUse get_all_user_accounts_by_user_id_3847 to retrieve the bank accounts (checkings, savings) for a customer.\n\n## When to Use\n\nThis tool is essential for:\n1. Checking eligibility requirements for opening new accounts (existing account status, balances, account tenure, number of accounts)\n2. Verifying pre-closure requirements when closing accounts\n3. Looking up account details for customer service inquiries\n\n## Parameters\n\nThe tool requires the customer's user_id and returns all account information including:\n- account_id\n- account_type\n- account_class\n- status\n- balance\n- date_opened"
+}

@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**85 evals** across **7 categories**
+**86 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -84,9 +84,10 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L231) — `tests/evals/test_memory_multiturn.py:231`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L258) — `tests/evals/test_memory_multiturn.py:258`
 
-## Conversation (`conversation`) (2 evals)
+## Conversation (`conversation`) (3 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L82) — `tests/evals/tau2_airline/test_tau2_airline.py:82`
+- [`test_tau3_rhobank`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau3_rhobank/test_tau3_rhobank.py#L84) — `tests/evals/tau3_rhobank/test_tau3_rhobank.py:84`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L94) — `tests/evals/test_followup_quality.py:94`
 
 ## Summarization (`summarization`) (5 evals)

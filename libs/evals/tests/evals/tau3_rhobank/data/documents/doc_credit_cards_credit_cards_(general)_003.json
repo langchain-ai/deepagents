@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_credit_cards_(general)_003",
+  "title": "Submitting a Cash Back Dispute (Internal)",
+  "content": "## When to use this\nUse this process when a customer believes there is a discrepancy between the cash back they received for a particular transaction and the cash back they should have received. This process applies to all credit card transactions.\n\n## How to submit the dispute\nInstead of a step-by-step workflow, instruct the customer to use the tool directly:\n\n- Tool to provide to the user: `submit_cash_back_dispute_0589(user_id: str, transaction_id: str)`\n- Tell the customer to run the tool with their own user_id and the specific transaction_id for the purchase in question.\n\n## Agent notes\n- Confirm the customer has the correct transaction_id before they submit.\n- Do not collect sensitive card details; the tool uses the identifiers provided by the user.\n- Advise the customer that supporting context (e.g., category or promotion expectations) may be requested later during review, but the submission itself is initiated with the tool above."
+}

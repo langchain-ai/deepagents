@@ -50,14 +50,14 @@ test = [
 ]
 
 [tool.uv.sources]
-deepagents = { path = "../../deepagents" }
+deepagents = { path = "../deepagents" }
 
 [tool.uv]
 constraint-dependencies = ["urllib3>=2.6.3"]
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../../deepagents"]
+extra-paths = ["../deepagents"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

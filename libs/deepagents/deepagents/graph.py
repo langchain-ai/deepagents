@@ -68,13 +68,23 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
+"""Default system prompt appended to every Deep Agent.
+
+When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
+is prepended and this base prompt is appended. When `system_prompt` is `None`,
+this is used as the sole system prompt.
+"""
 
 
 def get_default_model() -> ChatAnthropic:
-    """Get default model.
+    """Get the default model for Deep Agents.
+
+    Used as a fallback when `model=None` is passed to `create_deep_agent`.
+
+    Requires `ANTHROPIC_API_KEY` to be set in the environment.
 
     Returns:
-        `ChatAnthropic` instance configured with Claude Sonnet 4.6.
+        `ChatAnthropic` instance configured with `claude-sonnet-4-6`.
     """
     return ChatAnthropic(
         model_name="claude-sonnet-4-6",
@@ -258,6 +268,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     Returns:
         A configured Deep Agent.
+
+    Raises:
+        ImportError: If a required provider package is missing or below the
+            minimum supported version (e.g., `langchain-openrouter`).
     """
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else StateBackend()
@@ -271,6 +285,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    # "ignore" makes this a no-op for non-Anthropic models so we can add it
+    # unconditionally to every middleware stack.
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
@@ -308,6 +324,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
+            # "ignore" is a no-op for non-Anthropic models (see comment above).
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
@@ -355,6 +372,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.extend(middleware)
     # Caching + memory after all other middleware so memory updates don't
     # invalidate the Anthropic prompt cache prefix.
+    # "ignore" is a no-op for non-Anthropic models (see general-purpose subagent
+    # comment above).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))

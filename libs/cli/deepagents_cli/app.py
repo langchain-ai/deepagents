@@ -517,6 +517,7 @@ class DeepAgentsApp(App):
         thread_id: str | None = None,
         resume_thread: str | None = None,
         initial_prompt: str | None = None,
+        initial_skill: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -547,6 +548,7 @@ class DeepAgentsApp(App):
 
                 Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
+            initial_skill: Optional skill name to invoke when session starts.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -593,6 +595,12 @@ class DeepAgentsApp(App):
         self._resume_thread_intent = resume_thread
 
         self._initial_prompt = initial_prompt
+
+        self._initial_skill = (
+            initial_skill.strip().lower()
+            if initial_skill and initial_skill.strip()
+            else None
+        )
 
         self._mcp_server_info = mcp_server_info
 
@@ -711,8 +719,8 @@ class DeepAgentsApp(App):
         """Cached skill metadata (populated by startup discovery worker,
         refreshed on `/reload`).
 
-        Used by `_handle_skill_command` to skip re-walking all skill directories
-        on every invocation.
+        Used by `_invoke_skill` to skip re-walking all skill directories on
+        every invocation.
         """
 
         self._skill_allowed_roots: list[Path] = []
@@ -970,21 +978,23 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
-        # Auto-submit initial prompt if provided via -m flag.
+        # Auto-submit initial prompt or skill if provided via -m / --skill.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
         # thread-history branch would never execute.
         # When connecting, defer until on_deep_agents_app_server_ready fires.
-        if not self._connecting:
-            if self._initial_prompt and self._initial_prompt.strip():
-                prompt = self._initial_prompt
-                self.call_after_refresh(
-                    lambda: asyncio.create_task(self._handle_user_message(prompt))
-                )
-            elif self._lc_thread_id and self._agent:
-                self.call_after_refresh(
-                    lambda: asyncio.create_task(self._load_thread_history())
-                )
+        # NOTE: _schedule_initial_submission() has a side effect (queues a
+        # task via call_after_refresh); short-circuit ensures it only runs
+        # when not connecting — the deferred path handles the connecting case.
+        if (
+            not self._connecting
+            and not self._schedule_initial_submission()
+            and self._lc_thread_id
+            and self._agent
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
+            )
 
     async def _init_session_state(self) -> None:
         """Create session state in a thread (imports deepagents_cli.sessions)."""
@@ -1096,44 +1106,16 @@ class DeepAgentsApp(App):
         """Discover skills and build pre-resolved containment roots.
 
         Shared by `_discover_skills` (startup/reload) and the cache-miss
-        fallback in `_handle_skill_command` to avoid duplicating the
+        fallback in `_invoke_skill` to avoid duplicating the
         `list_skills` call and root-resolution logic.
 
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_cli.config import settings
-        from deepagents_cli.skills.load import list_skills
+        from deepagents_cli.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or "agent"
-        skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=settings.get_user_skills_dir(assistant_id),
-            project_skills_dir=settings.get_project_skills_dir(),
-            user_agent_skills_dir=settings.get_user_agent_skills_dir(),
-            project_agent_skills_dir=settings.get_project_agent_skills_dir(),
-            user_claude_skills_dir=settings.get_user_claude_skills_dir(),
-            project_claude_skills_dir=settings.get_project_claude_skills_dir(),
-        )
-        # Pre-resolve containment roots once so _handle_skill_command
-        # doesn't repeat resolve() on every invocation.
-        roots = [
-            d.resolve()
-            for d in (
-                settings.get_built_in_skills_dir(),
-                settings.get_user_skills_dir(assistant_id),
-                settings.get_project_skills_dir(),
-                settings.get_user_agent_skills_dir(),
-                settings.get_project_agent_skills_dir(),
-                settings.get_user_claude_skills_dir(),
-                settings.get_project_claude_skills_dir(),
-            )
-            if d is not None
-        ]
-        # Extra dirs are containment-only (not discovery); they allow
-        # symlinks in standard dirs to point outside those dirs.
-        roots.extend(d.resolve() for d in settings.get_extra_skills_dirs())
-        return skills, roots
+        return discover_skills_and_roots(assistant_id)
 
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
@@ -1305,13 +1287,10 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
-        # Handle deferred initial prompt or thread history
-        if self._initial_prompt and self._initial_prompt.strip():
-            prompt = self._initial_prompt
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._handle_user_message(prompt))
-            )
-        elif self._lc_thread_id and self._agent:
+        # Handle deferred initial prompt, skill, or thread history
+        if not self._schedule_initial_submission() and (
+            self._lc_thread_id and self._agent
+        ):
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
@@ -1337,10 +1316,8 @@ class DeepAgentsApp(App):
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
 
         # Drain any messages the user typed while the server was starting.
-        # (If an initial prompt exists, its cleanup path will drain the queue.)
-        if self._pending_messages and not (
-            self._initial_prompt and self._initial_prompt.strip()
-        ):
+        # (If an initial submission exists, its cleanup path will drain the queue.)
+        if self._pending_messages and not self._has_initial_submission():
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._process_next_from_queue())
             )
@@ -2185,6 +2162,45 @@ class DeepAgentsApp(App):
             logger.warning("Unrecognized input mode %r, treating as normal", mode)
             await self._handle_user_message(value)
 
+    def _has_initial_submission(self) -> bool:
+        """Return whether startup should auto-submit a prompt or skill."""
+        return self._initial_skill is not None or bool(
+            self._initial_prompt and self._initial_prompt.strip()
+        )
+
+    def _schedule_initial_submission(self) -> bool:
+        """Schedule the startup prompt or skill after the next refresh.
+
+        Returns:
+            `True` when a startup submission was queued, `False` otherwise.
+        """
+        if not self._has_initial_submission():
+            return False
+        self.call_after_refresh(
+            lambda: asyncio.create_task(self._submit_initial_submission())
+        )
+        return True
+
+    async def _submit_initial_submission(self) -> None:
+        """Submit the startup prompt or skill after the UI is ready."""
+        try:
+            if self._initial_skill is not None:
+                await self._invoke_skill(
+                    self._initial_skill, self._initial_prompt or ""
+                )
+                return
+            if self._initial_prompt and self._initial_prompt.strip():
+                await self._handle_user_message(self._initial_prompt)
+        except Exception:
+            logger.exception("Unhandled error during initial submission")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "Failed to submit startup prompt. "
+                        "Try running the command manually in the session."
+                    )
+                )
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -2870,8 +2886,14 @@ class DeepAgentsApp(App):
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
 
-    async def _handle_skill_command(self, command: str) -> None:
-        """Handle a `/skill:<name>` command by loading and invoking a skill.
+    async def _invoke_skill(
+        self,
+        skill_name: str,
+        args: str = "",
+        *,
+        command: str | None = None,
+    ) -> None:
+        """Load a skill, render its widget, and send its prompt to the agent.
 
         Looks up the skill from cached metadata (populated at startup), falling
         back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
@@ -2879,20 +2901,31 @@ class DeepAgentsApp(App):
         and sends the composed message to the agent.
 
         Args:
-            command: The full command string (e.g., `/skill:web-research find X`).
+            skill_name: Skill name to invoke.
+            args: Optional user request to append after the skill body.
+            command: Original slash command text for UI echo, if any.
         """
-        from deepagents_cli.command_registry import parse_skill_command
+        from deepagents_cli.skills.invocation import build_skill_invocation_envelope
         from deepagents_cli.skills.load import load_skill_content
 
-        skill_name, args = parse_skill_command(command)
-        if not skill_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+        normalized_name = skill_name.strip().lower()
+
+        async def _mount_error(message: str) -> None:
+            if command is not None:
+                await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(message))
+
+        if not normalized_name:
+            if command is not None:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+            else:
+                await self._mount_message(AppMessage("Skill name is required."))
             return
 
         # Fast path: look up from the cached discovery results
         cached = next(
-            (s for s in self._discovered_skills if s["name"] == skill_name),
+            (s for s in self._discovered_skills if s["name"] == normalized_name),
             None,
         )
         allowed_roots = self._skill_allowed_roots
@@ -2906,34 +2939,28 @@ class DeepAgentsApp(App):
                 # Backfill cache so subsequent invocations are fast
                 self._discovered_skills = skills
                 self._skill_allowed_roots = allowed_roots
-                cached = next((s for s in skills if s["name"] == skill_name), None)
+                cached = next((s for s in skills if s["name"] == normalized_name), None)
             except OSError as exc:
                 logger.warning(
-                    "Filesystem error loading skill %r", skill_name, exc_info=True
+                    "Filesystem error loading skill %r", normalized_name, exc_info=True
                 )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        f"Could not load skill: {skill_name}. Filesystem error: {exc}"
-                    )
+                await _mount_error(
+                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
                 )
                 return
             except Exception as exc:
                 logger.warning(
-                    "Error searching for skill %r", skill_name, exc_info=True
+                    "Error searching for skill %r", normalized_name, exc_info=True
                 )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        f"Error loading skill: {skill_name}. "
-                        f"Unexpected error: {type(exc).__name__}: {exc}"
-                    )
+                await _mount_error(
+                    f"Error loading skill: {normalized_name}. "
+                    f"Unexpected error: {type(exc).__name__}: {exc}"
                 )
                 return
 
         if cached is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(f"Skill not found: {skill_name}"))
+            logger.warning("Skill not found: %r", normalized_name)
+            await _mount_error(f"Skill not found: {normalized_name}")
             return
 
         # Load SKILL.md content (filesystem I/O offloaded to thread)
@@ -2946,62 +2973,44 @@ class DeepAgentsApp(App):
             content = await asyncio.to_thread(_load)
         except PermissionError as exc:
             logger.warning(
-                "Containment check failed for skill %r", skill_name, exc_info=True
+                "Containment check failed for skill %r",
+                normalized_name,
+                exc_info=True,
             )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(str(exc)))
+            await _mount_error(str(exc))
             return
         except OSError as exc:
             logger.warning(
-                "Filesystem error loading skill %r", skill_name, exc_info=True
+                "Filesystem error loading skill %r", normalized_name, exc_info=True
             )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Could not load skill: {skill_name}. Filesystem error: {exc}"
-                )
+            await _mount_error(
+                f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
             )
             return
         except Exception as exc:
-            logger.warning("Error reading skill %r", skill_name, exc_info=True)
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Error loading skill: {skill_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}"
-                )
+            logger.warning("Error reading skill %r", normalized_name, exc_info=True)
+            await _mount_error(
+                f"Error loading skill: {normalized_name}. "
+                f"Unexpected error: {type(exc).__name__}: {exc}"
             )
             return
 
         if content is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Could not read content for skill: {skill_name}. "
-                    "Check that the SKILL.md file exists, is readable, "
-                    "and is saved as UTF-8."
-                )
+            await _mount_error(
+                f"Could not read content for skill: {normalized_name}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
             )
             return
 
         if not content.strip():
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Skill '{skill_name}' has an empty SKILL.md file. "
-                    "Add instructions to the file before invoking."
-                )
+            await _mount_error(
+                f"Skill '{normalized_name}' has an empty SKILL.md file. "
+                "Add instructions to the file before invoking."
             )
             return
 
-        prompt = (
-            f"I'm invoking the skill `{cached['name']}`. "
-            "Below are the full instructions from the skill's SKILL.md file. "
-            "Follow these instructions to complete the task.\n\n"
-            f"---\n{content}\n---"
-        )
-        if args:
-            prompt += f"\n\n**User request:** {args}"
+        envelope = build_skill_invocation_envelope(cached, content, args)
 
         await self._mount_message(
             SkillMessage(
@@ -3013,18 +3022,20 @@ class DeepAgentsApp(App):
             )
         )
         await self._send_to_agent(
-            prompt,
-            message_kwargs={
-                "additional_kwargs": {
-                    "__skill": {
-                        "name": cached["name"],
-                        "description": str(cached.get("description", "")),
-                        "source": str(cached.get("source", "")),
-                        "args": args,
-                    },
-                },
-            },
+            envelope.prompt,
+            message_kwargs=envelope.message_kwargs,
         )
+
+    async def _handle_skill_command(self, command: str) -> None:
+        """Handle a `/skill:<name>` command by loading and invoking a skill.
+
+        Args:
+            command: The full command string (e.g., `/skill:web-research find X`).
+        """
+        from deepagents_cli.command_registry import parse_skill_command
+
+        skill_name, args = parse_skill_command(command)
+        await self._invoke_skill(skill_name, args, command=command)
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -4940,6 +4951,7 @@ async def run_textual_app(
     thread_id: str | None = None,
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
+    initial_skill: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -4969,6 +4981,7 @@ async def run_textual_app(
 
             Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
+        initial_skill: Optional skill name to invoke when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -4995,6 +5008,7 @@ async def run_textual_app(
         thread_id=thread_id,
         resume_thread=resume_thread,
         initial_prompt=initial_prompt,
+        initial_skill=initial_skill,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

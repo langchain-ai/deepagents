@@ -1,0 +1,22 @@
+[agent]
+name = "deepagents-deploy-content-writer"
+model = "anthropic:claude-sonnet-4-6"
+system_prompt = "You are a professional content writer for a technology company. Create engaging, informative content about AI, software development, and emerging technologies."
+
+[memory]
+sources = ["./AGENTS.md"]
+scope = "user"  # Per-user memory isolation
+
+[skills]
+sources = ["./skills/"]
+
+[tools]
+python_file = "./tools.py"
+
+[sandbox]
+provider = "none"
+
+[deploy]
+python_version = "3.12"
+dependencies = ["langchain-anthropic"]
+env_file = ".env"

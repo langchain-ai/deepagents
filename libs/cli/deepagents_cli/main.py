@@ -234,6 +234,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.deploy import setup_deploy_parser
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
 
@@ -356,6 +357,11 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
         add_output_args=add_json_output_arg,
+    )
+
+    setup_deploy_parser(
+        subparsers,
+        make_help_action=_make_help_action,
     )
 
     threads_parser = subparsers.add_parser(
@@ -1467,6 +1473,10 @@ def cli_main() -> None:
             from deepagents_cli.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command == "deploy":
+            from deepagents_cli.deploy import execute_deploy_command
+
+            execute_deploy_command(args)
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

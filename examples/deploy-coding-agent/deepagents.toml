@@ -1,0 +1,23 @@
+[agent]
+name = "deepagents-deploy-coding-agent"
+model = "anthropic:claude-sonnet-4-6"
+system_prompt = "You are an expert software engineer. You solve coding tasks by planning, implementing, and reviewing your work methodically."
+
+[memory]
+sources = ["./AGENTS.md"]
+
+[skills]
+sources = ["./skills/"]
+
+[mcp]
+config = "./.mcp.json"
+
+[sandbox]
+provider = "langsmith"
+template = "coding-agent"
+image = "python:3.12"
+
+[deploy]
+python_version = "3.12"
+dependencies = ["langchain-anthropic"]
+env_file = ".env"

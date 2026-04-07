@@ -268,9 +268,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
-        _deprecated_history_prefix = deprecated_kwargs.pop(
-            "history_path_prefix", None
-        )
+        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
         if _deprecated_history_prefix is not None:
             warn_deprecated(
                 "0.5",

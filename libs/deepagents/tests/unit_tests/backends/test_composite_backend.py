@@ -5,7 +5,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.composite import CompositeBackend, _route_for_path
+from deepagents.backends.composite import CompositeBackend, Route, RoutePolicy, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -1400,3 +1400,264 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+# --- Route and RoutePolicy tests ---
+
+
+class TestRoutePolicy:
+    """Tests for RoutePolicy dataclass."""
+
+    def test_is_allowed_returns_true_for_allowed_method(self) -> None:
+        policy = RoutePolicy(allowed_methods={"read", "ls"})
+        assert policy.is_allowed("read") is True
+        assert policy.is_allowed("ls") is True
+
+    def test_is_allowed_returns_false_for_disallowed_method(self) -> None:
+        policy = RoutePolicy(allowed_methods={"read", "ls"})
+        assert policy.is_allowed("write") is False
+        assert policy.is_allowed("execute") is False
+
+    def test_empty_allowed_methods_blocks_everything(self) -> None:
+        policy = RoutePolicy(allowed_methods=set())
+        assert policy.is_allowed("read") is False
+        assert policy.is_allowed("ls") is False
+
+
+class TestRoute:
+    """Tests for Route dataclass."""
+
+    def test_route_with_policy(self) -> None:
+        mem_store = InMemoryStore()
+        backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        policy = RoutePolicy(allowed_methods={"ls", "read"})
+        route = Route(backend=backend, policy=policy)
+        assert route.backend is backend
+        assert route.policy is policy
+
+    def test_route_without_policy(self) -> None:
+        mem_store = InMemoryStore()
+        backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        route = Route(backend=backend)
+        assert route.backend is backend
+        assert route.policy is None
+
+
+class TestCompositeBackendPolicyEnforcement:
+    """Tests for policy enforcement in CompositeBackend."""
+
+    def _make_read_only_composite(self) -> CompositeBackend:
+        """Create a composite with a read-only policy on /memories/ route."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        return CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+
+    def test_bare_backend_route_backwards_compat(self) -> None:
+        """Bare BackendProtocol in routes dict still works (no policy)."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(default=default, routes={"/memories/": store})
+        res = comp.write("/memories/note.txt", "content")
+        assert res.error is None
+
+    def test_route_with_policy_allows_read(self) -> None:
+        comp = self._make_read_only_composite()
+        comp.default.write("/file.txt", "default content")
+        result = comp.read("/file.txt")
+        assert result.file_data is not None
+
+    def test_route_with_policy_blocks_write(self) -> None:
+        comp = self._make_read_only_composite()
+        res = comp.write("/memories/note.txt", "content")
+        assert res.error is not None
+        assert "write" in res.error.lower()
+
+    def test_route_with_policy_blocks_edit(self) -> None:
+        comp = self._make_read_only_composite()
+        res = comp.edit("/memories/note.txt", "old", "new")
+        assert res.error is not None
+        assert "edit" in res.error.lower()
+
+    def test_route_with_policy_allows_ls(self) -> None:
+        comp = self._make_read_only_composite()
+        result = comp.ls("/memories/")
+        assert result.error is None
+
+    def test_route_with_policy_allows_grep(self) -> None:
+        comp = self._make_read_only_composite()
+        result = comp.grep("pattern", path="/memories/")
+        assert result.error is None
+
+    def test_route_with_policy_allows_glob(self) -> None:
+        comp = self._make_read_only_composite()
+        result = comp.glob("*.txt", path="/memories/")
+        assert result.error is None
+
+    def test_route_with_policy_allows_read_on_route(self) -> None:
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "glob", "grep"}),
+                ),
+            },
+        )
+        comp.write("/memories/note.txt", "content")
+        result = comp.read("/memories/note.txt")
+        assert result.error is None
+        assert result.file_data is not None
+
+    def test_default_policy_applies_to_bare_backend_routes(self) -> None:
+        """When default_policy is set, bare backend routes inherit it."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={"/memories/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        res = comp.write("/memories/note.txt", "content")
+        assert res.error is not None
+        assert "write" in res.error.lower()
+
+    def test_explicit_route_policy_overrides_default_policy(self) -> None:
+        """Route with explicit policy ignores default_policy."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+                ),
+            },
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        res = comp.write("/memories/note.txt", "content")
+        assert res.error is None
+
+    def test_default_policy_applies_to_default_backend(self) -> None:
+        """default_policy also governs the default backend."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={"/memories/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        res = comp.write("/file.txt", "default backend content")
+        assert res.error is not None
+        assert "write" in res.error.lower()
+
+    def test_no_policy_no_restriction(self) -> None:
+        """No default_policy and bare backend routes = no restrictions."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(default=default, routes={"/memories/": store})
+        res = comp.write("/memories/note.txt", "content")
+        assert res.error is None
+        result = comp.read("/memories/note.txt")
+        assert result.file_data is not None
+
+    def test_policy_blocks_upload_files(self) -> None:
+        comp = self._make_read_only_composite()
+        responses = comp.upload_files([("/memories/file.bin", b"data")])
+        assert len(responses) == 1
+        assert responses[0].error == "permission_denied"
+
+    def test_policy_blocks_download_files(self) -> None:
+        """Download requires 'download_files' in allowed_methods."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+        responses = comp.download_files(["/memories/file.bin"])
+        assert len(responses) == 1
+        assert responses[0].error == "permission_denied"
+
+    def test_policy_mixed_routes(self) -> None:
+        """Multiple routes with different policies."""
+        mem_store = InMemoryStore()
+        store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("memories",))
+        store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("vendor",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store1,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+                ),
+                "/vendor/": Route(
+                    backend=store2,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+        res_mem = comp.write("/memories/note.txt", "content")
+        assert res_mem.error is None
+
+        res_vendor = comp.write("/vendor/lib.txt", "content")
+        assert res_vendor.error is not None
+        assert "write" in res_vendor.error.lower()
+
+    def test_grep_across_root_respects_policy(self) -> None:
+        """Grep at root still works; policy only blocks disallowed methods."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+        result = comp.grep("pattern", path="/")
+        assert result.error is None
+
+    def test_glob_across_root_respects_policy(self) -> None:
+        """Glob at root still works when grep is allowed on all routes."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+        result = comp.glob("*.txt", path="/")
+        assert result.error is None

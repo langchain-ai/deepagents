@@ -6,20 +6,34 @@ persistent store for memories).
 
 Examples:
     ```python
-    from deepagents.backends.composite import CompositeBackend
+    from deepagents.backends.composite import CompositeBackend, Route, RoutePolicy
     from deepagents.backends.state import StateBackend
     from deepagents.backends.store import StoreBackend
 
+    # Bare backends (no restrictions, backwards compatible)
     composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
 
-    composite.write("/temp.txt", "ephemeral")
-    composite.write("/memories/note.md", "persistent")
+    # With policies
+    composite = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/memories/": Route(
+                backend=StoreBackend(),
+                policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+            ),
+        },
+        default_policy=RoutePolicy(
+            allowed_methods={"ls", "read", "write", "edit", "glob", "grep", "execute"},
+        ),
+    )
     ```
 """
 
+from __future__ import annotations
+
 from collections import defaultdict
-from dataclasses import replace
-from typing import cast
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -37,7 +51,62 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.state import StateBackend
+
+if TYPE_CHECKING:
+    from deepagents.backends.state import StateBackend
+
+
+@dataclass
+class RoutePolicy:
+    """Policy that governs which backend methods are allowed on a route.
+
+    Methods are identified by their backend method names: `ls`, `read`, `write`,
+    `edit`, `glob`, `grep`, `execute`, `upload_files`, `download_files`.
+
+    Subclass and override `is_allowed` for programmatic policies (e.g.,
+    user-based access control).
+
+    Examples:
+        ```python
+        read_only = RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"})
+        read_only.is_allowed("read")  # True
+        read_only.is_allowed("write")  # False
+        ```
+    """
+
+    allowed_methods: set[str]
+
+    def is_allowed(self, method: str, **context: Any) -> bool:  # noqa: ARG002
+        """Check whether a backend method is permitted.
+
+        Args:
+            method: Backend method name (e.g. `"write"`, `"read"`).
+            **context: Reserved for future use (e.g. user identity).
+
+        Returns:
+            `True` if the method is allowed, `False` otherwise.
+        """
+        return method in self.allowed_methods
+
+
+@dataclass
+class Route:
+    """A backend paired with an optional access policy.
+
+    Use this instead of a bare `BackendProtocol` when you want to attach
+    a `RoutePolicy` to a route.
+
+    Examples:
+        ```python
+        Route(
+            backend=StoreBackend(),
+            policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        ```
+    """
+
+    backend: BackendProtocol
+    policy: RoutePolicy | None = None
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -122,48 +191,92 @@ class CompositeBackend(BackendProtocol):
     Matches paths against route prefixes (longest first) and delegates to the
     corresponding backend. Unmatched paths use the default backend.
 
+    Access policies can be attached to routes via `Route` objects or applied
+    globally via `default_policy`.
+
     Attributes:
         default: Backend for paths that don't match any route.
-        routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
+        routes: Map of path prefixes to backends.
         sorted_routes: Routes sorted by length (longest first) for correct matching.
+        default_policy: Policy applied to the default backend and to bare-backend
+            routes that lack an explicit policy.
         artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
-            Defaults to `"/"`.
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
-
-        composite.write("/temp.txt", "data")
-        composite.write("/memories/note.txt", "data")
+        composite = CompositeBackend(
+            default=StateBackend(),
+            routes={
+                "/memories/": Route(
+                    backend=StoreBackend(),
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+                "/cache/": StoreBackend(),  # bare backend, inherits default_policy
+            },
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+        )
         ```
     """
 
     def __init__(
         self,
         default: BackendProtocol | StateBackend,
-        routes: dict[str, BackendProtocol],
+        routes: dict[str, Route | BackendProtocol],
         *,
+        default_policy: RoutePolicy | None = None,
         artifacts_root: str = "/",
     ) -> None:
         """Initialize composite backend.
 
         Args:
             default: Backend for paths that don't match any route.
-            routes: Map of path prefixes to backends. Prefixes must start with "/"
-                and should end with "/" (e.g., "/memories/").
+            routes: Map of path prefixes to backends or `Route` objects. Prefixes
+                must start with "/" and should end with "/" (e.g., "/memories/").
+                Values can be bare `BackendProtocol` instances (backwards
+                compatible) or `Route` objects with an optional `RoutePolicy`.
+            default_policy: Policy applied to the default backend and to
+                bare-backend routes (without an explicit `Route.policy`).
+                Does **not** override explicit `Route.policy` values.
             artifacts_root: Root path for artifacts, such as messages offloaded
-                by middleware. Defaults to `"/"`.
+                by middleware.
         """
-        # Default backend
         self.default = default
+        self.default_policy = default_policy
 
-        # Virtual routes
-        self.routes = routes
+        backend_routes: dict[str, BackendProtocol] = {}
+        self._policies: dict[str, RoutePolicy | None] = {}
+        for prefix, value in routes.items():
+            if isinstance(value, Route):
+                backend_routes[prefix] = value.backend
+                self._policies[prefix] = value.policy
+            else:
+                backend_routes[prefix] = value
+                self._policies[prefix] = None
 
-        # Sort routes by length (longest first) for correct prefix matching
-        self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
-
+        self.routes = backend_routes
+        self.sorted_routes = sorted(backend_routes.items(), key=lambda x: len(x[0]), reverse=True)
         self.artifacts_root = artifacts_root
+
+    def _policy_for_route(self, route_prefix: str | None) -> RoutePolicy | None:
+        """Resolve the effective policy for a matched route.
+
+        Returns the explicit route policy if set, otherwise falls back to
+        `default_policy`. The default policy applies to both the default
+        backend and bare-backend routes.
+        """
+        if route_prefix is None:
+            return self.default_policy
+        explicit = self._policies.get(route_prefix)
+        if explicit is not None:
+            return explicit
+        return self.default_policy
+
+    def _policy_error(self, method: str, path: str, route_prefix: str | None) -> str | None:
+        """Return an error message if the policy blocks the method, else `None`."""
+        policy = self._policy_for_route(route_prefix)
+        if policy is not None and not policy.is_allowed(method):
+            return f"Method '{method}' is not allowed on path '{path}' (route '{route_prefix}'). Allowed methods: {sorted(policy.allowed_methods)}"
+        return None
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(
@@ -172,6 +285,14 @@ class CompositeBackend(BackendProtocol):
             path=key,
         )
         return backend, stripped_key
+
+    def _get_backend_key_and_route(self, key: str) -> tuple[BackendProtocol, str, str | None]:
+        """Like `_get_backend_and_key` but also returns the matched route prefix."""
+        return _route_for_path(
+            default=self.default,
+            sorted_routes=self.sorted_routes,
+            path=key,
+        )
 
     @staticmethod
     def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:
@@ -204,6 +325,9 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            err = self._policy_error("ls", path, route_prefix)
+            if err:
+                return LsResult(error=err)
             ls_result = self._coerce_ls_result(backend.ls(backend_path))
             if ls_result.error:
                 return ls_result
@@ -239,6 +363,9 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            err = self._policy_error("ls", path, route_prefix)
+            if err:
+                return LsResult(error=err)
             ls_result = self._coerce_ls_result(await backend.als(backend_path))
             if ls_result.error:
                 return ls_result
@@ -282,7 +409,10 @@ class CompositeBackend(BackendProtocol):
         Returns:
             ReadResult
         """
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("read", file_path, route_prefix)
+        if err:
+            return ReadResult(error=err)
         return backend.read(stripped_key, offset=offset, limit=limit)
 
     async def aread(
@@ -292,7 +422,10 @@ class CompositeBackend(BackendProtocol):
         limit: int = 2000,
     ) -> ReadResult:
         """Async version of read."""
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("read", file_path, route_prefix)
+        if err:
+            return ReadResult(error=err)
         return await backend.aread(stripped_key, offset=offset, limit=limit)
 
     @staticmethod
@@ -304,7 +437,7 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
-    def grep(
+    def grep(  # noqa: PLR0911
         self,
         pattern: str,
         path: str | None = None,
@@ -338,6 +471,9 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
+                err = self._policy_error("grep", path, route_prefix)
+                if err:
+                    return GrepResult(error=err)
                 grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
@@ -353,6 +489,9 @@ class CompositeBackend(BackendProtocol):
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
+                err = self._policy_error("grep", path or "/", route_prefix)
+                if err:
+                    continue
                 grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
@@ -362,7 +501,7 @@ class CompositeBackend(BackendProtocol):
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
-    async def agrep(
+    async def agrep(  # noqa: PLR0911
         self,
         pattern: str,
         path: str | None = None,
@@ -379,6 +518,9 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
+                err = self._policy_error("grep", path, route_prefix)
+                if err:
+                    return GrepResult(error=err)
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
@@ -394,6 +536,9 @@ class CompositeBackend(BackendProtocol):
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
+                err = self._policy_error("grep", path or "/", route_prefix)
+                if err:
+                    continue
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
@@ -413,6 +558,9 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            err = self._policy_error("glob", path, route_prefix)
+            if err:
+                return GlobResult(error=err)
             glob_result = backend.glob(pattern, backend_path)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
@@ -425,6 +573,9 @@ class CompositeBackend(BackendProtocol):
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
+            err = self._policy_error("glob", path, route_prefix)
+            if err:
+                continue
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = backend.glob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
@@ -444,6 +595,9 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            err = self._policy_error("glob", path, route_prefix)
+            if err:
+                return GlobResult(error=err)
             glob_result = await backend.aglob(pattern, backend_path)
             matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
             if isinstance(glob_result, GlobResult) and glob_result.error:
@@ -456,6 +610,9 @@ class CompositeBackend(BackendProtocol):
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
+            err = self._policy_error("glob", path, route_prefix)
+            if err:
+                continue
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = await backend.aglob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
@@ -479,7 +636,10 @@ class CompositeBackend(BackendProtocol):
         Returns:
             Success message or Command object, or error if file already exists.
         """
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("write", file_path, route_prefix)
+        if err:
+            return WriteResult(error=err)
         res = backend.write(stripped_key, content)
         if res.path is not None:
             res = replace(res, path=file_path)
@@ -491,7 +651,10 @@ class CompositeBackend(BackendProtocol):
         content: str,
     ) -> WriteResult:
         """Async version of write."""
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("write", file_path, route_prefix)
+        if err:
+            return WriteResult(error=err)
         res = await backend.awrite(stripped_key, content)
         if res.path is not None:
             res = replace(res, path=file_path)
@@ -515,7 +678,10 @@ class CompositeBackend(BackendProtocol):
         Returns:
             Success message or Command object, or error message on failure.
         """
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("edit", file_path, route_prefix)
+        if err:
+            return EditResult(error=err)
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res = replace(res, path=file_path)
@@ -529,7 +695,10 @@ class CompositeBackend(BackendProtocol):
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit."""
-        backend, stripped_key = self._get_backend_and_key(file_path)
+        backend, stripped_key, route_prefix = self._get_backend_key_and_route(file_path)
+        err = self._policy_error("edit", file_path, route_prefix)
+        if err:
+            return EditResult(error=err)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res = replace(res, path=file_path)
@@ -610,29 +779,23 @@ class CompositeBackend(BackendProtocol):
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
         """
-        # Pre-allocate result list
         results: list[FileUploadResponse | None] = [None] * len(files)
-
-        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):
-            backend, stripped_path = self._get_backend_and_key(path)
-            backend_batches[backend].append((idx, stripped_path, content))
+            backend, stripped_path, route_prefix = self._get_backend_key_and_route(path)
+            if self._policy_error("upload_files", path, route_prefix):
+                results[idx] = FileUploadResponse(path=path, error="permission_denied")
+            else:
+                backend_batches[backend].append((idx, stripped_path, content))
 
-        # Process each backend's batch
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
-
-            # Call backend once with all its files
             batch_responses = backend.upload_files(batch_files)
-
-            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],  # Original path
+                    path=files[orig_idx][0],
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
@@ -640,29 +803,23 @@ class CompositeBackend(BackendProtocol):
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Async version of upload_files."""
-        # Pre-allocate result list
         results: list[FileUploadResponse | None] = [None] * len(files)
-
-        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):
-            backend, stripped_path = self._get_backend_and_key(path)
-            backend_batches[backend].append((idx, stripped_path, content))
+            backend, stripped_path, route_prefix = self._get_backend_key_and_route(path)
+            if self._policy_error("upload_files", path, route_prefix):
+                results[idx] = FileUploadResponse(path=path, error="permission_denied")
+            else:
+                backend_batches[backend].append((idx, stripped_path, content))
 
-        # Process each backend's batch
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
-
-            # Call backend once with all its files
             batch_responses = await backend.aupload_files(batch_files)
-
-            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],  # Original path
+                    path=files[orig_idx][0],
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
@@ -681,27 +838,22 @@ class CompositeBackend(BackendProtocol):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
         """
-        # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
-
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
 
         for idx, path in enumerate(paths):
-            backend, stripped_path = self._get_backend_and_key(path)
-            backend_batches[backend].append((idx, stripped_path))
+            backend, stripped_path, route_prefix = self._get_backend_key_and_route(path)
+            if self._policy_error("download_files", path, route_prefix):
+                results[idx] = FileDownloadResponse(path=path, error="permission_denied")
+            else:
+                backend_batches[backend].append((idx, stripped_path))
 
-        # Process each backend's batch
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths = zip(*batch, strict=False)
-
-            # Call backend once with all its paths
             batch_responses = backend.download_files(list(stripped_paths))
-
-            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],  # Original path
+                    path=paths[orig_idx],
                     content=batch_responses[i].content if i < len(batch_responses) else None,
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
@@ -710,27 +862,22 @@ class CompositeBackend(BackendProtocol):
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
-        # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
-
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
 
         for idx, path in enumerate(paths):
-            backend, stripped_path = self._get_backend_and_key(path)
-            backend_batches[backend].append((idx, stripped_path))
+            backend, stripped_path, route_prefix = self._get_backend_key_and_route(path)
+            if self._policy_error("download_files", path, route_prefix):
+                results[idx] = FileDownloadResponse(path=path, error="permission_denied")
+            else:
+                backend_batches[backend].append((idx, stripped_path))
 
-        # Process each backend's batch
         for backend, batch in backend_batches.items():
-            # Extract data for backend call
             indices, stripped_paths = zip(*batch, strict=False)
-
-            # Call backend once with all its paths
             batch_responses = await backend.adownload_files(list(stripped_paths))
-
-            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],  # Original path
+                    path=paths[orig_idx],
                     content=batch_responses[i].content if i < len(batch_responses) else None,
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )

@@ -21,6 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.backends.composite import Route, RoutePolicy
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
@@ -2139,6 +2140,170 @@ class TestArtifactsRoot:
 
         default_ls = backend.ls("/conversation_history/")
         assert not default_ls.entries
+
+
+class TestRoutePolicyEndToEnd:
+    """End-to-end tests for route policy enforcement through the agent."""
+
+    def test_write_to_read_only_route_returns_policy_error(self) -> None:
+        """Agent tries to write to a route with read-only policy; gets error in tool message."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={
+                "/vendor/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/vendor/lib.py", "content": "hacked"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Write was blocked."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        result = agent.invoke({"messages": [HumanMessage(content="Write to vendor")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        write_msg = next(m for m in tool_msgs if m.tool_call_id == "call_w")
+        assert "write" in write_msg.content.lower()
+        assert "not allowed" in write_msg.content.lower() or "policy" in write_msg.content.lower()
+
+    def test_read_from_read_only_route_succeeds(self) -> None:
+        """Agent can read from a route with read-only policy."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+
+        store.write("/readme.txt", "vendor readme content")
+
+        backend = CompositeBackend(
+            default=default,
+            routes={
+                "/vendor/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/vendor/readme.txt"},
+                                "id": "call_r",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Read the file."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        result = agent.invoke({"messages": [HumanMessage(content="Read vendor file")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        read_msg = next(m for m in tool_msgs if m.tool_call_id == "call_r")
+        assert "vendor readme content" in read_msg.content
+
+    def test_default_policy_blocks_write_on_bare_route(self) -> None:
+        """default_policy restricts bare backend routes."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={"/vendor/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/vendor/lib.py", "content": "hacked"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Blocked."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        result = agent.invoke({"messages": [HumanMessage(content="Write to vendor")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        write_msg = next(m for m in tool_msgs if m.tool_call_id == "call_w")
+        assert "write" in write_msg.content.lower()
+
+    def test_write_to_default_backend_restricted_by_default_policy(self) -> None:
+        """default_policy also restricts the default backend."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={"/vendor/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/notes.txt", "content": "my notes"},
+                                "id": "call_w",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Blocked."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        result = agent.invoke({"messages": [HumanMessage(content="Write notes")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        write_msg = next(m for m in tool_msgs if m.tool_call_id == "call_w")
+        assert "write" in write_msg.content.lower()
 
 
 class TestAsyncSubagentEndToEnd:

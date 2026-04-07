@@ -62,8 +62,10 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
 def get_model_provider(model: BaseChatModel) -> str | None:
     """Extract the provider name from a chat model instance.
 
-    Uses the model's `_get_ls_params` method, which every LangChain chat model
-    implements with an `ls_provider` field (e.g. `"anthropic"`, `"openai"`).
+    Uses the model's `_get_ls_params` method. The base `BaseChatModel`
+    implementation derives `ls_provider` from the class name, and all major
+    providers override it with a hardcoded value (e.g. `"anthropic"`,
+    `"openai"`). Returns `None` if the field is absent or extraction fails.
 
     Args:
         model: Chat model instance to inspect.

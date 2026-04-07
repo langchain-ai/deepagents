@@ -88,6 +88,16 @@ class RoutePolicy:
         """
         return method in self.allowed_methods
 
+    def describe(self) -> str:
+        """Return a human-readable description of this policy for system prompts.
+
+        Subclasses should override this to describe their custom constraints.
+
+        Returns:
+            A short description of the policy.
+        """
+        return f"allowed methods: {', '.join(sorted(self.allowed_methods))}"
+
 
 @dataclass
 class Route:

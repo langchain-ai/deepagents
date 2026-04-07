@@ -330,6 +330,36 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
+def _build_policy_prompt(backend: BackendProtocol) -> str | None:
+    """Build a system prompt section describing route policies, if any.
+
+    Returns `None` if the backend has no policies configured.
+    """
+    if not isinstance(backend, CompositeBackend):
+        return None
+
+    has_any_policy = backend.default_policy is not None or any(p is not None for p in backend._policies.values())
+    if not has_any_policy:
+        return None
+
+    lines = [
+        "## Route Policies",
+        "",
+        "The following paths have access restrictions. Operations not listed in the allowed methods will be rejected.",
+        "",
+    ]
+
+    for prefix in sorted(backend.routes):
+        policy = backend._policy_for_route(prefix)
+        if policy is not None:
+            lines.append(f"- `{prefix}`: {policy.describe()}")
+
+    if backend.default_policy is not None:
+        lines.append(f"- Default policy (all other paths): {backend.default_policy.describe()}")
+
+    return "\n".join(lines)
+
+
 def _supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
 
@@ -1159,14 +1189,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response, or an `ExtendedModelResponse` with a state
             update tagging a newly evicted message.
         """
+        resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = _supports_execution(backend)
+            backend_supports_execution = _supports_execution(resolved_backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
@@ -1188,6 +1218,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            # Add route policy descriptions if configured
+            policy_prompt = _build_policy_prompt(resolved_backend)
+            if policy_prompt:
+                prompt_parts.append(policy_prompt)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 
@@ -1224,14 +1259,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response from the handler, or an `ExtendedModelResponse`
             with a state update tagging newly evicted messages.
         """
+        resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = _supports_execution(backend)
+            backend_supports_execution = _supports_execution(resolved_backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
@@ -1253,6 +1288,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            # Add route policy descriptions if configured
+            policy_prompt = _build_policy_prompt(resolved_backend)
+            if policy_prompt:
+                prompt_parts.append(policy_prompt)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 

@@ -2179,7 +2179,7 @@ class TestRoutePolicyEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        agent = create_deep_agent(model=model, backend=backend)
         result = agent.invoke({"messages": [HumanMessage(content="Write to vendor")]})
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
@@ -2224,7 +2224,7 @@ class TestRoutePolicyEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        agent = create_deep_agent(model=model, backend=backend)
         result = agent.invoke({"messages": [HumanMessage(content="Read vendor file")]})
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
@@ -2261,7 +2261,7 @@ class TestRoutePolicyEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        agent = create_deep_agent(model=model, backend=backend)
         result = agent.invoke({"messages": [HumanMessage(content="Write to vendor")]})
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
@@ -2298,12 +2298,158 @@ class TestRoutePolicyEndToEnd:
             )
         )
 
-        agent = create_deep_agent(model=model, backend=backend, store=mem_store)
+        agent = create_deep_agent(model=model, backend=backend)
         result = agent.invoke({"messages": [HumanMessage(content="Write notes")]})
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
         write_msg = next(m for m in tool_msgs if m.tool_call_id == "call_w")
         assert "write" in write_msg.content.lower()
+
+    def test_edit_to_read_only_route_returns_policy_error(self) -> None:
+        """Agent tries to edit a file on a read-only route; gets error in tool message."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={
+                "/vendor/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "edit_file",
+                                "args": {
+                                    "file_path": "/vendor/lib.py",
+                                    "old_string": "old",
+                                    "new_string": "new",
+                                },
+                                "id": "call_e",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Edit was blocked."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Edit vendor file")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        edit_msg = next(m for m in tool_msgs if m.tool_call_id == "call_e")
+        assert "edit" in edit_msg.content.lower()
+        assert "not allowed" in edit_msg.content.lower() or "policy" in edit_msg.content.lower()
+
+    def test_system_prompt_includes_route_policies(self) -> None:
+        """System prompt describes route policies when they are configured."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={
+                "/vendor/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+                "/memories/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+                ),
+            },
+        )
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing_middleware])
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/vendor/" in system_content
+        assert "/memories/" in system_content
+        assert "ls" in system_content
+        assert "read" in system_content
+
+    def test_system_prompt_includes_default_policy(self) -> None:
+        """System prompt describes default_policy when it is configured."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={"/vendor/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing_middleware])
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "default" in system_content.lower() or "policy" in system_content.lower()
+        assert "ls" in system_content
+        assert "read" in system_content
+
+    def test_system_prompt_no_policy_section_without_policies(self) -> None:
+        """System prompt does not include policy section when no policies are set."""
+        mem_store = InMemoryStore()
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={"/memories/": store},
+        )
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing_middleware])
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "route polic" not in system_content.lower()
+
+    def test_system_prompt_explicit_policy_overrides_default_in_prompt(self) -> None:
+        """Route with explicit policy shows its own methods, not the default policy."""
+        mem_store = InMemoryStore()
+        store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("vendor",))
+        store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("data",))
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        backend = CompositeBackend(
+            default=default,
+            routes={
+                "/vendor/": Route(
+                    backend=store1,
+                    policy=RoutePolicy(allowed_methods={"ls", "read"}),
+                ),
+                "/data/": store2,
+            },
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+        )
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing_middleware])
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/vendor/" in system_content
+        assert "/data/" in system_content
 
 
 class TestAsyncSubagentEndToEnd:

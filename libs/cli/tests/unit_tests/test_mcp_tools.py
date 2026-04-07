@@ -662,9 +662,17 @@ class TestGetMCPTools:
             }
         )
 
-        # Create mock tools from different servers
-        mock_tools_fs = [MagicMock(name="read_file"), MagicMock(name="write_file")]
-        mock_tools_search = [MagicMock(name="web_search")]
+        # Create mock tools from different servers.
+        # Note: MagicMock(name=...) sets the internal _mock_name, not a .name
+        # attribute. Set .name explicitly so tools can be sorted by name.
+        tool_read = MagicMock()
+        tool_read.name = "read_file"
+        tool_write = MagicMock()
+        tool_write.name = "write_file"
+        tool_search = MagicMock()
+        tool_search.name = "web_search"
+        mock_tools_fs = [tool_read, tool_write]
+        mock_tools_search = [tool_search]
 
         # Setup mock client with session support
         mock_session_fs = AsyncMock()
@@ -1683,3 +1691,114 @@ class TestHealthCheckIntegration:
         error_msg = str(exc_info.value)
         assert "missing-cmd" in error_msg
         assert "down:9999" in error_msg
+
+
+class TestToolOrdering:
+    """Tools returned by get_mcp_tools are sorted deterministically."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        """Bypass pre-flight health checks for all tests in this class."""
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+        ):
+            yield
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tools_sorted_alphabetically_by_name(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Tools from MCP servers are sorted by name for stable prompt caches."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "srv": {"command": "node", "args": ["server.js"]},
+                }
+            }
+        )
+
+        # Return tools in non-alphabetical order
+        zeta = MagicMock()
+        zeta.name = "srv_zeta"
+        zeta.description = "z"
+        alpha = MagicMock()
+        alpha.name = "srv_alpha"
+        alpha.description = "a"
+        mu = MagicMock()
+        mu.name = "srv_mu"
+        mu.description = "m"
+        mock_load_tools.return_value = [zeta, alpha, mu]
+
+        mock_session = AsyncMock()
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_session)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        mock_client = MagicMock()
+        mock_client.session.return_value = cm
+        mock_client_class.return_value = mock_client
+
+        tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
+        await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tools_sorted_across_multiple_servers(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Tools from multiple servers are interleaved alphabetically."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "beta": {"command": "node", "args": ["b.js"]},
+                    "alpha": {"command": "node", "args": ["a.js"]},
+                }
+            }
+        )
+
+        tool_b = MagicMock()
+        tool_b.name = "beta_write"
+        tool_b.description = "w"
+        tool_a = MagicMock()
+        tool_a.name = "alpha_read"
+        tool_a.description = "r"
+
+        mock_session_a = AsyncMock()
+        mock_session_b = AsyncMock()
+
+        def mock_load_side_effect(
+            session: AsyncMock, **_kwargs: object
+        ) -> list[MagicMock]:
+            if session == mock_session_b:
+                return [tool_b]
+            return [tool_a]
+
+        mock_load_tools.side_effect = mock_load_side_effect
+
+        def mock_session_cm(server_name: str) -> MagicMock:
+            session = mock_session_b if server_name == "beta" else mock_session_a
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(return_value=session)
+            cm.__aexit__ = AsyncMock(return_value=None)
+            return cm
+
+        mock_client = MagicMock()
+        mock_client.session.side_effect = mock_session_cm
+        mock_client_class.return_value = mock_client
+
+        tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["alpha_read", "beta_write"]
+        await manager.cleanup()

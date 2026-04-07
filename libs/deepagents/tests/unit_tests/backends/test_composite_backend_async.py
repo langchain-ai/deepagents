@@ -1280,3 +1280,84 @@ async def test_policy_blocks_adownload_files() -> None:
     responses = await comp.adownload_files(["/memories/file.bin"])
     assert len(responses) == 1
     assert responses[0].error == "permission_denied"
+
+
+# --- Default policy enforcement on default backend (async) ---
+
+
+async def test_agrep_aggregate_path_enforces_default_policy() -> None:
+    """agrep(path='/') must not search default backend when grep is blocked."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+    default.write("/secret.txt", "secret data")
+    comp = CompositeBackend(
+        default=default,
+        routes={"/data/": store},
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob"}),
+    )
+    result = await comp.agrep("secret", path="/")
+    assert not result.matches
+
+
+async def test_agrep_fallback_path_enforces_default_policy() -> None:
+    """Agrep with non-routed path must check default_policy."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+    default.write("/secret.txt", "secret data")
+    comp = CompositeBackend(
+        default=default,
+        routes={"/data/": store},
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob"}),
+    )
+    result = await comp.agrep("secret", path="/unrouted/")
+    assert result.error is not None
+    assert "grep" in result.error.lower()
+
+
+async def test_als_aggregate_root_enforces_default_policy() -> None:
+    """als('/') must not include default backend entries when ls is blocked."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+    default.write("/secret.txt", "secret data")
+    comp = CompositeBackend(
+        default=default,
+        routes={"/data/": store},
+        default_policy=RoutePolicy(allowed_methods={"read", "write", "edit", "glob", "grep"}),
+    )
+    result = await comp.als("/")
+    paths = {fi["path"] for fi in (result.entries or [])}
+    assert "/secret.txt" not in paths
+
+
+async def test_als_fallback_path_enforces_default_policy() -> None:
+    """Als with non-routed path must check default_policy."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+    comp = CompositeBackend(
+        default=default,
+        routes={"/data/": store},
+        default_policy=RoutePolicy(allowed_methods={"read", "write", "edit", "glob", "grep"}),
+    )
+    result = await comp.als("/subdir/")
+    assert result.error is not None
+    assert "ls" in result.error.lower()
+
+
+async def test_aglob_aggregate_path_enforces_default_policy() -> None:
+    """Aglob at root must not search default backend when glob is blocked."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+    default.write("/secret.txt", "secret data")
+    comp = CompositeBackend(
+        default=default,
+        routes={"/data/": store},
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "grep"}),
+    )
+    result = await comp.aglob("*.txt", path="/")
+    paths = {fi["path"] for fi in (result.matches or [])}
+    assert "/secret.txt" not in paths

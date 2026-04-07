@@ -1729,6 +1729,116 @@ class TestCompositeBackendPolicyEnforcement:
         assert result.error is None
 
 
+class TestDefaultPolicyEnforcementOnDefaultBackend:
+    """Tests that default_policy is enforced on the default backend in all code paths.
+
+    These cover authorization bypass vectors where aggregate or fallback paths
+    previously skipped policy checks for the default backend.
+    """
+
+    def _make_no_grep_composite(self) -> CompositeBackend:
+        """Composite where grep is blocked everywhere via default_policy."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        default.write("/secret.txt", "secret data")
+        store.write("/public.txt", "public data")
+        return CompositeBackend(
+            default=default,
+            routes={"/data/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob"}),
+        )
+
+    def _make_no_ls_composite(self) -> CompositeBackend:
+        """Composite where ls is blocked everywhere via default_policy."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        default.write("/secret.txt", "secret data")
+        return CompositeBackend(
+            default=default,
+            routes={"/data/": store},
+            default_policy=RoutePolicy(allowed_methods={"read", "write", "edit", "glob", "grep"}),
+        )
+
+    def _make_no_glob_composite(self) -> CompositeBackend:
+        """Composite where glob is blocked everywhere via default_policy."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        default.write("/secret.txt", "secret data")
+        return CompositeBackend(
+            default=default,
+            routes={"/data/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "grep"}),
+        )
+
+    # --- grep bypass vectors ---
+
+    def test_grep_aggregate_path_enforces_default_policy(self) -> None:
+        """grep(path='/') must not search default backend when grep is blocked."""
+        comp = self._make_no_grep_composite()
+        result = comp.grep("secret", path="/")
+        assert not result.matches
+
+    def test_grep_none_path_enforces_default_policy(self) -> None:
+        """grep(path=None) must not search default backend when grep is blocked."""
+        comp = self._make_no_grep_composite()
+        result = comp.grep("secret", path=None)
+        assert not result.matches
+
+    def test_grep_fallback_path_enforces_default_policy(self) -> None:
+        """Grep with non-routed path must check default_policy."""
+        comp = self._make_no_grep_composite()
+        result = comp.grep("secret", path="/unrouted/")
+        assert result.error is not None
+        assert "grep" in result.error.lower()
+
+    # --- ls bypass vectors ---
+
+    def test_ls_aggregate_root_enforces_default_policy(self) -> None:
+        """ls('/') must not include default backend entries when ls is blocked."""
+        comp = self._make_no_ls_composite()
+        result = comp.ls("/")
+        paths = {fi["path"] for fi in (result.entries or [])}
+        assert "/secret.txt" not in paths
+
+    def test_ls_aggregate_root_skips_blocked_routes(self) -> None:
+        """ls('/') must not include route directories when ls is blocked on that route."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/blocked/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"read", "write"}),
+                ),
+            },
+        )
+        result = comp.ls("/")
+        paths = {fi["path"] for fi in (result.entries or [])}
+        assert "/blocked/" not in paths
+
+    def test_ls_fallback_path_enforces_default_policy(self) -> None:
+        """Ls with non-routed path must check default_policy."""
+        comp = self._make_no_ls_composite()
+        result = comp.ls("/subdir/")
+        assert result.error is not None
+        assert "ls" in result.error.lower()
+
+    # --- glob bypass vectors ---
+
+    def test_glob_aggregate_path_enforces_default_policy(self) -> None:
+        """Glob at root must not search default backend when glob is blocked."""
+        comp = self._make_no_glob_composite()
+        result = comp.glob("*.txt", path="/")
+        matches = result.matches or []
+        paths = {fi["path"] for fi in matches}
+        assert "/secret.txt" not in paths
+
+
 class TestGloballyBlockedMethods:
     """Tests for CompositeBackend.globally_blocked_methods()."""
 

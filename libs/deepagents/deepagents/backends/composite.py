@@ -384,9 +384,13 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(self.default.ls(path))
-            results.extend(default_result.entries or [])
+            err = self._policy_error("ls", path, None)
+            if not err:
+                default_result = self._coerce_ls_result(self.default.ls(path))
+                results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
+                if self._policy_error("ls", route_prefix, route_prefix):
+                    continue
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
                     FileInfo(
@@ -401,6 +405,9 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
+        err = self._policy_error("ls", path, None)
+        if err:
+            return LsResult(error=err)
         return self._coerce_ls_result(self.default.ls(path))
 
     async def als(self, path: str) -> LsResult:
@@ -422,9 +429,13 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(await self.default.als(path))
-            results.extend(default_result.entries or [])
+            err = self._policy_error("ls", path, None)
+            if not err:
+                default_result = self._coerce_ls_result(await self.default.als(path))
+                results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
+                if self._policy_error("ls", route_prefix, route_prefix):
+                    continue
                 # Add the route itself as a directory (e.g., /memories/)
                 results.append(
                     {
@@ -439,6 +450,9 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
+        err = self._policy_error("ls", path, None)
+        if err:
+            return LsResult(error=err)
         return self._coerce_ls_result(await self.default.als(path))
 
     def read(
@@ -485,7 +499,7 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
-    def grep(  # noqa: PLR0911
+    def grep(  # noqa: C901, PLR0911
         self,
         pattern: str,
         path: str | None = None,
@@ -531,10 +545,12 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
-            if default_result.error:
-                return default_result
-            all_matches.extend(default_result.matches or [])
+            err = self._policy_error("grep", path or "/", None)
+            if not err:
+                default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
+                if default_result.error:
+                    return default_result
+                all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
                 err = self._policy_error("grep", path or "/", route_prefix)
@@ -547,9 +563,12 @@ class CompositeBackend(BackendProtocol):
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
+        err = self._policy_error("grep", path, None)
+        if err:
+            return GrepResult(error=err)
         return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
-    async def agrep(  # noqa: PLR0911
+    async def agrep(  # noqa: C901, PLR0911
         self,
         pattern: str,
         path: str | None = None,
@@ -578,10 +597,12 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
-            if default_result.error:
-                return default_result
-            all_matches.extend(default_result.matches or [])
+            err = self._policy_error("grep", path or "/", None)
+            if not err:
+                default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+                if default_result.error:
+                    return default_result
+                all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
                 err = self._policy_error("grep", path or "/", route_prefix)
@@ -594,6 +615,9 @@ class CompositeBackend(BackendProtocol):
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
+        err = self._policy_error("grep", path, None)
+        if err:
+            return GrepResult(error=err)
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
@@ -616,9 +640,11 @@ class CompositeBackend(BackendProtocol):
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = self.default.glob(pattern, path)
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
+        err = self._policy_error("glob", path, None)
+        if not err:
+            default_result = self.default.glob(pattern, path)
+            default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+            results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             err = self._policy_error("glob", path, route_prefix)
@@ -653,9 +679,11 @@ class CompositeBackend(BackendProtocol):
             return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob(pattern, path)
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
+        err = self._policy_error("glob", path, None)
+        if not err:
+            default_result = await self.default.aglob(pattern, path)
+            default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+            results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             err = self._policy_error("glob", path, route_prefix)

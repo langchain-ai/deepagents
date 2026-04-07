@@ -131,6 +131,12 @@ def main() -> None:
         "Falls back to EVAL_OUTCOME env var. Used to produce a targeted "
         "diagnostic message when there are no results to chart.",
     )
+    parser.add_argument(
+        "--keep-zero-scores",
+        action="store_true",
+        help="Include models with all-zero scores (by default they are "
+        "dropped as likely infrastructure failures).",
+    )
 
     args = parser.parse_args()
 
@@ -158,11 +164,30 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # Drop models whose scores are all zero — they almost certainly failed
+    # (e.g. provider pin mismatch) and would just flatten the chart.
+    zero_models: list[ModelResult] = []
+    if not args.keep_zero_scores:
+        zero_models = [r for r in results if not any(v > 0 for v in r.scores.values())]
+        if zero_models:
+            names = ", ".join(r.model for r in zero_models)
+            print(
+                f"note: dropped {len(zero_models)} model(s) with all-zero scores: {names}",
+                file=sys.stderr,
+            )
+            results = [r for r in results if r not in zero_models]
+
     if not results:
         source = args.summary or args.results or "toy"
-        outcome = args.eval_outcome or os.environ.get("EVAL_OUTCOME", "")
-        hint = _no_results_hint(outcome)
-        msg = f"skipped: no results to plot from {source}\nhint: {hint}"
+        if zero_models:
+            msg = (
+                f"skipped: all {len(zero_models)} model(s) had all-zero scores and "
+                "were dropped. Re-run with --keep-zero-scores to force chart generation."
+            )
+        else:
+            outcome = args.eval_outcome or os.environ.get("EVAL_OUTCOME", "")
+            hint = _no_results_hint(outcome)
+            msg = f"skipped: no results to plot from {source}\nhint: {hint}"
         _clear_stale_outputs(args.output, args.individual_dir)
         print(msg)
         print(msg, file=sys.stderr)

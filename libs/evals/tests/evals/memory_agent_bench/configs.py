@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    """Minimal configuration for one `MemoryAgentBench` sub-dataset."""
+    """Minimal configuration for one MemoryAgentBench sub-dataset."""
 
     split: str
     """HuggingFace dataset split name (e.g. `Conflict_Resolution`)."""
@@ -295,5 +295,5 @@ CI_CONFIGS: list[DatasetConfig] = FOCUSED_CONFIGS
 """CI runs the focused set: 4 tests, one per category, each posing a single
 cherry-picked question.
 
-This keeps cost low while covering all four `MemoryAgentBench` capability axes.
+This keeps cost low while covering all four MemoryAgentBench capability axes.
 """

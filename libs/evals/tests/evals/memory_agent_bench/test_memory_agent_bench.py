@@ -3,7 +3,8 @@
 Runs the MemoryAgentBench benchmark (ICLR 2026) using the deepagents runner.
 Data is loaded from the `ai-hyz/MemoryAgentBench` HuggingFace dataset.
 Each test feeds context chunks to the agent, then poses questions and evaluates
-responses against ground-truth answers using normalized substring matching.
+responses against ground-truth answers using normalized substring matching via
+`tests.evals.memory_agent_bench.eval_utils.substring_match()`.
 
 Reference: https://github.com/HUST-AI-HYZ/MemoryAgentBench
 
@@ -299,6 +300,10 @@ def _run_benchmark_sample_fileseeded(
 
 def _score_predictions(output: _SampleOutput) -> list[bool]:
     """Compute substring match for each prediction in a sample output.
+
+    Normalized substring matching is defined in
+    `tests.evals.memory_agent_bench.eval_utils.substring_match()` and applied
+    here through `substring_match_any()`.
 
     Args:
         output: Raw output from `_run_benchmark_sample`.

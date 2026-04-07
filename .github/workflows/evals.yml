@@ -269,7 +269,7 @@ jobs:
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "🔒 Apply OpenRouter provider pin"
-        if: inputs.openrouter_provider != ''
+        if: inputs.openrouter_provider != '' && matrix.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"

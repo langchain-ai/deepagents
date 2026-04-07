@@ -10,6 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     _string_value,
     get_model_identifier,
+    get_model_provider,
     model_matches_spec,
     resolve_model,
 )
@@ -132,6 +133,30 @@ class TestGetModelIdentifier:
     def test_skips_non_string_model_name(self) -> None:
         model = _make_model({"model_name": 123, "model": "real-name"})
         assert get_model_identifier(model) == "real-name"
+
+
+class TestGetModelProvider:
+    """Tests for get_model_provider."""
+
+    def test_returns_provider_from_ls_params(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert get_model_provider(model) == "anthropic"
+
+    def test_returns_none_when_no_ls_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={})
+        assert get_model_provider(model) is None
+
+    def test_returns_none_when_ls_provider_empty(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": ""})
+        assert get_model_provider(model) is None
+
+    def test_returns_none_when_get_ls_params_raises(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
+        assert get_model_provider(model) is None
 
 
 class TestModelMatchesSpec:

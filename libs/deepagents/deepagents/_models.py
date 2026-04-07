@@ -59,6 +59,28 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
     return _string_value(config, "model_name") or _string_value(config, "model")
 
 
+def get_model_provider(model: BaseChatModel) -> str | None:
+    """Extract the provider name from a chat model instance.
+
+    Uses the model's `_get_ls_params` method, which every LangChain chat model
+    implements with an `ls_provider` field (e.g. `"anthropic"`, `"openai"`).
+
+    Args:
+        model: Chat model instance to inspect.
+
+    Returns:
+        The provider name, or `None` if unavailable.
+    """
+    try:
+        ls_params = model._get_ls_params()
+    except Exception:  # noqa: BLE001
+        return None
+    provider = ls_params.get("ls_provider")
+    if isinstance(provider, str) and provider:
+        return provider
+    return None
+
+
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
     """Check whether a model instance already matches a string model spec.
 

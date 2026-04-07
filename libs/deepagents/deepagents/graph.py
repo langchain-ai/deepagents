@@ -22,7 +22,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
-from deepagents._models import get_model_identifier, resolve_model
+from deepagents._models import get_model_identifier, get_model_provider, resolve_model
 from deepagents._profiles import ProviderProfile, get_provider_profile
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -122,6 +122,12 @@ def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfil
     for registry lookup. Otherwise the model identifier is extracted from the
     instance and used as a best-effort fallback.
 
+    For pre-built model instances (where `spec` is `None`), the identifier alone
+    (e.g. `"claude-sonnet-4-6"`) has no provider prefix, so
+    `get_provider_profile` cannot resolve the provider-level profile. As a
+    fallback we use `get_model_provider` (backed by `_get_ls_params`) to recover
+    the provider name and look up the profile directly.
+
     Args:
         model: Resolved chat model instance.
         spec: Original model spec string, or `None` for pre-built instances.
@@ -133,7 +139,13 @@ def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfil
         return get_provider_profile(spec)
     identifier = get_model_identifier(model)
     if identifier is not None:
-        return get_provider_profile(identifier)
+        profile = get_provider_profile(identifier)
+        if profile != ProviderProfile():
+            return profile
+    # Bare model name (no colon) — fall back to provider from the model class.
+    provider = get_model_provider(model)
+    if provider is not None:
+        return get_provider_profile(provider)
     return ProviderProfile()
 
 

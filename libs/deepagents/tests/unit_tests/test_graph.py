@@ -100,13 +100,30 @@ class TestProfileForModel:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
+    def test_falls_back_to_provider_for_bare_identifier(self) -> None:
+        """Pre-built models with bare identifiers (no colon) resolve via provider."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            profile = ProviderProfile(init_kwargs={"from_provider": True})
+            register_provider_profile("fakeprov", profile)
+            model = _make_model({"model": "some-model-name"})
+            # Simulate _get_ls_params returning the provider
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
+            result = _profile_for_model(model, None)
+            assert result is profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
+        model._get_ls_params = MagicMock(return_value={})
         result = _profile_for_model(model, None)
         assert result == ProviderProfile()
 
     def test_returns_empty_default_when_no_identifier(self) -> None:
         model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={})
         result = _profile_for_model(model, None)
         assert result == ProviderProfile()
 

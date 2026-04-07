@@ -297,7 +297,6 @@ class TestProviderProfile:
         assert profile.pre_init is None
         assert profile.init_kwargs_factory is None
         assert profile.system_prompt_suffix is None
-        assert profile.exclude_tools == frozenset()
         assert profile.tool_description_overrides == {}
         assert profile.extra_middleware == ()
 
@@ -413,12 +412,6 @@ class TestMergeProfiles:
         override = ProviderProfile()
         merged = _merge_profiles(base, override)
         assert merged.system_prompt_suffix == "base suffix"
-
-    def test_exclude_tools_unioned(self) -> None:
-        base = ProviderProfile(exclude_tools=frozenset({"a", "b"}))
-        override = ProviderProfile(exclude_tools=frozenset({"b", "c"}))
-        merged = _merge_profiles(base, override)
-        assert merged.exclude_tools == frozenset({"a", "b", "c"})
 
     def test_tool_description_overrides_merged(self) -> None:
         base = ProviderProfile(tool_description_overrides={"t1": "base", "t2": "base"})

@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._profiles import _PROVIDER_PROFILES, ProviderProfile, register_provider_profile
 from deepagents._version import __version__
-from deepagents.graph import _profile_for_model, _resolve_extra_middleware, _tool_name, create_deep_agent
+from deepagents.graph import (
+    _apply_tool_description_overrides,
+    _profile_for_model,
+    _resolve_extra_middleware,
+    _tool_name,
+    create_deep_agent,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -158,75 +164,45 @@ class TestToolName:
         assert _tool_name(my_func) is None
 
 
-class TestToolFiltering:
-    """Tests for tool exclusion and description override logic.
+class TestToolDescriptionOverrides:
+    """Tests for copying and rewriting supported user-supplied tools.
 
-    These test the filtering helpers directly rather than going through
-    ``create_deep_agent`` (which requires real tool schemas).
+    These test the helper directly rather than going through `create_deep_agent`
+    (which requires full agent assembly).
     """
 
-    def test_exclude_filters_basetool(self) -> None:
-        tool = MagicMock(spec=BaseTool)
-        tool.name = "remove_me"
-        tools = [tool]
-        exclude = frozenset({"remove_me"})
-        result = [t for t in tools if _tool_name(t) not in exclude]
-        assert result == []
-
-    def test_exclude_filters_dict_tool(self) -> None:
-        tools: list[dict[str, Any]] = [{"name": "remove_me", "description": "d"}]
-        exclude = frozenset({"remove_me"})
-        result = [t for t in tools if _tool_name(t) not in exclude]
-        assert result == []
-
-    def test_exclude_keeps_non_matching(self) -> None:
-        keep = MagicMock(spec=BaseTool)
-        keep.name = "keep_me"
-        remove = MagicMock(spec=BaseTool)
-        remove.name = "remove_me"
-        tools = [keep, remove]
-        exclude = frozenset({"remove_me"})
-        result = [t for t in tools if _tool_name(t) not in exclude]
-        assert len(result) == 1
-        assert result[0].name == "keep_me"
-
-    def test_exclude_skips_tools_without_name(self) -> None:
-        """Tools with no determinable name should not be excluded."""
-        nameless: dict[str, Any] = {"description": "no name"}
-        exclude = frozenset({"something"})
-        result = [t for t in [nameless] if _tool_name(t) not in exclude]
-        assert len(result) == 1
-
-    def test_description_override_on_dict(self) -> None:
+    def test_description_override_on_dict_copies_without_mutation(self) -> None:
         tool: dict[str, Any] = {"name": "my_tool", "description": "old"}
-        overrides = {"my_tool": "new desc"}
-        name = _tool_name(tool)
-        assert name is not None
-        override = overrides.get(name)
-        if override is not None:
-            tool["description"] = override
-        assert tool["description"] == "new desc"
+        result = _apply_tool_description_overrides([tool], {"my_tool": "new desc"})
+        assert result is not None
+        assert result[0]["description"] == "new desc"
+        assert result[0] is not tool
+        assert tool["description"] == "old"
 
-    def test_description_override_on_basetool(self) -> None:
-        tool = MagicMock(spec=BaseTool)
-        tool.name = "my_tool"
-        tool.description = "old"
-        overrides = {"my_tool": "new desc"}
-        name = _tool_name(tool)
-        assert name is not None
-        override = overrides.get(name)
-        if override is not None:
-            tool.description = override
-        assert tool.description == "new desc"
+    def test_description_override_on_basetool_copies_without_mutation(self) -> None:
+        def sample_tool(text: str) -> str:
+            return text
 
-    def test_copy_prevents_caller_mutation(self) -> None:
-        """Copying the list prevents the caller's list from being modified."""
-        original = [{"name": "a"}, {"name": "b"}]
-        copied = list(original)
-        exclude = frozenset({"b"})
-        filtered = [t for t in copied if _tool_name(t) not in exclude]
-        assert len(original) == 2
-        assert len(filtered) == 1
+        tool = StructuredTool.from_function(
+            func=sample_tool,
+            name="my_tool",
+            description="old",
+        )
+        result = _apply_tool_description_overrides([tool], {"my_tool": "new desc"})
+        assert result is not None
+        rewritten = result[0]
+        assert isinstance(rewritten, BaseTool)
+        assert rewritten.description == "new desc"
+        assert rewritten is not tool
+        assert tool.description == "old"
+
+    def test_plain_callable_is_left_unchanged(self) -> None:
+        def my_func() -> None:
+            pass
+
+        my_func.name = "my_tool"  # type: ignore[attr-defined]
+        result = _apply_tool_description_overrides([my_func], {"my_tool": "new desc"})
+        assert result == [my_func]
 
 
 class TestDefaultModelProfile:
@@ -238,3 +214,47 @@ class TestDefaultModelProfile:
         anthropic_profile = _PROVIDER_PROFILES.get("anthropic")
         assert anthropic_profile is not None
         assert callable(anthropic_profile.extra_middleware)
+
+
+class TestToolDescriptionOverrideWiring:
+    """Tests that supported built-in tool overrides are wired into middleware."""
+
+    def test_create_deep_agent_passes_overrides_to_filesystem_and_task(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "testprov",
+                ProviderProfile(
+                    tool_description_overrides={
+                        "ls": "custom ls",
+                        "task": "custom task",
+                    }
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                result = create_deep_agent(model="testprov:some-model")
+
+            assert result == "compiled-agent"
+            assert mock_fs.call_count == 2
+            for call in mock_fs.call_args_list:
+                assert call.kwargs["custom_tool_descriptions"] == {
+                    "ls": "custom ls",
+                    "task": "custom task",
+                }
+            assert mock_subagents.call_args is not None
+            assert mock_subagents.call_args.kwargs["task_description"] == "custom task"
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)

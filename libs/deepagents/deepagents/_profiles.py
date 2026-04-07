@@ -3,7 +3,7 @@
 Defines the `ProviderProfile` dataclass and the provider profile registry used
 by `resolve_model` and `create_deep_agent` to apply provider- and
 model-specific configuration (init kwargs, extra middleware, system prompt
-patches, tool overrides).
+    patches, and supported tool-description overrides).
 """
 
 from __future__ import annotations
@@ -74,11 +74,15 @@ class ProviderProfile:
     """Text appended to the system prompt after `BASE_AGENT_PROMPT`.
     `None` means no suffix."""
 
-    exclude_tools: frozenset[str] = frozenset()
-    """Names of built-in tools to remove from the agent's tool set."""
-
     tool_description_overrides: dict[str, str] = field(default_factory=dict)
-    """Per-tool description replacements, keyed by tool name."""
+    """Per-tool description replacements, keyed by tool name.
+
+    Applied only where Deep Agents has a stable description hook: built-in
+    filesystem tools, the `task` tool, and user-supplied `BaseTool` / dict
+    tools.
+
+    Plain callable tools are left unchanged.
+    """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
     """Provider-specific middleware appended to every middleware stack (main
@@ -164,9 +168,9 @@ def _merge_profiles(base: ProviderProfile, override: ProviderProfile) -> Provide
     """Merge two profiles, layering `override` on top of `base`.
 
     Dict fields are merged (override wins per-key). Callables (`pre_init`,
-    `init_kwargs_factory`) are chained. Set-like fields (`exclude_tools`) are
-    unioned. Middleware sequences are concatenated. Scalar fields use the
-    override value when it differs from the dataclass default.
+    `init_kwargs_factory`) are chained. Middleware sequences are concatenated.
+    Scalar fields use the override value when it differs from the dataclass
+    default.
 
     Args:
         base: Provider-level profile (lower priority).
@@ -222,7 +226,6 @@ def _merge_profiles(base: ProviderProfile, override: ProviderProfile) -> Provide
         pre_init=pre_init,
         init_kwargs_factory=init_kwargs_factory,
         system_prompt_suffix=(override.system_prompt_suffix if override.system_prompt_suffix is not None else base.system_prompt_suffix),
-        exclude_tools=base.exclude_tools | override.exclude_tools,
         tool_description_overrides={
             **base.tool_description_overrides,
             **override.tool_description_overrides,

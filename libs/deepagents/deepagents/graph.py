@@ -164,6 +164,45 @@ def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
     return getattr(tool, "name", None)
 
 
+def _apply_tool_description_overrides(
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
+    overrides: dict[str, str],
+) -> list[BaseTool | Callable | dict[str, Any]] | None:
+    """Apply description overrides without mutating caller-owned tools.
+
+    Only dict tools and `BaseTool` instances are rewritten. Plain callables are
+    returned unchanged because safely replacing their descriptions would require
+    wrapping them in new tool objects.
+
+    Args:
+        tools: User-supplied tools to copy and possibly rewrite.
+        overrides: Description overrides keyed by tool name.
+
+    Returns:
+        A copied tool list with supported overrides applied, or `None`.
+    """
+    if tools is None:
+        return None
+
+    copied_tools: list[BaseTool | Callable | dict[str, Any]] = []
+    for tool in tools:
+        name = _tool_name(tool)
+        override = overrides.get(name) if name is not None else None
+        if override is None:
+            copied_tools.append(tool)
+            continue
+        if isinstance(tool, dict):
+            rewritten_tool = cast("dict[str, Any]", tool).copy()
+            rewritten_tool["description"] = override
+            copied_tools.append(rewritten_tool)
+            continue
+        if isinstance(tool, BaseTool):
+            copied_tools.append(tool.model_copy(update={"description": override}))
+            continue
+        copied_tools.append(tool)
+    return copied_tools
+
+
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -358,11 +397,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model = get_default_model() if model is None else resolve_model(model)
     profile = _profile_for_model(model, model_spec)
     backend = backend if backend is not None else StateBackend()
+    default_tools = _apply_tool_description_overrides(
+        tools,
+        profile.tool_description_overrides,
+    )
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
+        FilesystemMiddleware(
+            backend=backend,
+            custom_tool_descriptions=profile.tool_description_overrides,
+        ),
         create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
     ]
@@ -373,7 +419,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
-        "tools": tools or [],
+        "tools": default_tools or [],
         "middleware": gp_middleware,
     }
     if interrupt_on is not None:
@@ -400,7 +446,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
+                FilesystemMiddleware(
+                    backend=backend,
+                    custom_tool_descriptions=subagent_profile.tool_description_overrides,
+                ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
@@ -412,11 +461,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(_resolve_extra_middleware(subagent_profile))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+            raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
+            subagent_tools = _apply_tool_description_overrides(
+                raw_subagent_tools,
+                subagent_profile.tool_description_overrides,
+            )
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                 **spec,
                 "model": subagent_model,
-                "tools": spec.get("tools", tools or []),
+                "tools": subagent_tools or [],
                 "middleware": subagent_middleware,
             }
             if subagent_interrupt_on is not None:
@@ -437,10 +491,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend),
+            FilesystemMiddleware(
+                backend=backend,
+                custom_tool_descriptions=profile.tool_description_overrides,
+            ),
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
+                task_description=profile.tool_description_overrides.get("task"),
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -476,27 +534,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
-    # Apply tool exclusions and description overrides from the profile.
-    # Copy the sequence so caller-owned objects are not mutated.
-    filtered_tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = list(tools) if tools is not None else None
-    if profile.exclude_tools and filtered_tools:
-        filtered_tools = [t for t in filtered_tools if _tool_name(t) not in profile.exclude_tools]
-    if profile.tool_description_overrides and filtered_tools:
-        for tool in filtered_tools:
-            name = _tool_name(tool)
-            if name is None:
-                continue
-            override = profile.tool_description_overrides.get(name)
-            if override is not None:
-                if isinstance(tool, dict):
-                    tool["description"] = override  # ty: ignore[invalid-assignment]  # Callable & dict intersection
-                else:
-                    tool.description = override  # type: ignore[union-attr]
-
     return create_agent(
         model,
         system_prompt=final_system_prompt,
-        tools=filtered_tools,
+        tools=default_tools,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,

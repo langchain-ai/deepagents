@@ -296,6 +296,7 @@ class TestProviderProfile:
         assert profile.init_kwargs == {}
         assert profile.pre_init is None
         assert profile.init_kwargs_factory is None
+        assert profile.base_system_prompt is None
         assert profile.system_prompt_suffix is None
         assert profile.tool_description_overrides == {}
         assert profile.extra_middleware == ()
@@ -401,6 +402,22 @@ class TestMergeProfiles:
             "shared": "override",
         }
 
+    def test_base_system_prompt_override_wins(self) -> None:
+        base = ProviderProfile(base_system_prompt="base prompt")
+        override = ProviderProfile(base_system_prompt="override prompt")
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "override prompt"
+
+    def test_base_system_prompt_inherits_from_base(self) -> None:
+        base = ProviderProfile(base_system_prompt="base prompt")
+        override = ProviderProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "base prompt"
+
+    def test_base_system_prompt_neither_set_produces_none(self) -> None:
+        merged = _merge_profiles(ProviderProfile(), ProviderProfile())
+        assert merged.base_system_prompt is None
+
     def test_system_prompt_suffix_override_wins(self) -> None:
         base = ProviderProfile(system_prompt_suffix="base suffix")
         override = ProviderProfile(system_prompt_suffix="override suffix")
@@ -411,6 +428,13 @@ class TestMergeProfiles:
         base = ProviderProfile(system_prompt_suffix="base suffix")
         override = ProviderProfile()
         merged = _merge_profiles(base, override)
+        assert merged.system_prompt_suffix == "base suffix"
+
+    def test_base_system_prompt_and_suffix_both_merge(self) -> None:
+        base = ProviderProfile(base_system_prompt="base prompt", system_prompt_suffix="base suffix")
+        override = ProviderProfile(base_system_prompt="override prompt")
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "override prompt"
         assert merged.system_prompt_suffix == "base suffix"
 
     def test_tool_description_overrides_merged(self) -> None:

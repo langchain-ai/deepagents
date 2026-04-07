@@ -521,9 +521,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    # Combine system_prompt with BASE_AGENT_PROMPT (+ optional profile suffix)
-    base_prompt = BASE_AGENT_PROMPT
-    if profile.system_prompt_suffix:
+    # Assemble base prompt: use profile.base_system_prompt if set, else
+    # BASE_AGENT_PROMPT, then append profile suffix if present.
+    # Finally prepend user system_prompt (handled below).
+    base_prompt = profile.base_system_prompt if profile.base_system_prompt is not None else BASE_AGENT_PROMPT
+    if profile.system_prompt_suffix is not None:
         base_prompt = base_prompt + "\n\n" + profile.system_prompt_suffix
 
     if system_prompt is None:

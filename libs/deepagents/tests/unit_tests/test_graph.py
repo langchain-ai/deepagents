@@ -6,12 +6,13 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._profiles import _PROVIDER_PROFILES, ProviderProfile, register_provider_profile
 from deepagents._version import __version__
 from deepagents.graph import (
+    BASE_AGENT_PROMPT,
     _apply_tool_description_overrides,
     _profile_for_model,
     _resolve_extra_middleware,
@@ -258,3 +259,122 @@ class TestToolDescriptionOverrideWiring:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
+
+
+class TestSystemPromptAssembly:
+    """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
+
+    def _build_and_capture_system_prompt(self, profile_key: str, profile: ProviderProfile, **kwargs: Any) -> str | SystemMessage:
+        """Register a profile, call create_deep_agent, return the system_prompt passed to create_agent."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(profile_key, profile)
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model=f"{profile_key}:some-model", **kwargs)
+
+            return mock_create.call_args.kwargs["system_prompt"]
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_default_uses_base_agent_prompt(self) -> None:
+        prompt = self._build_and_capture_system_prompt("defprov", ProviderProfile())
+        assert prompt == BASE_AGENT_PROMPT
+
+    def test_profile_base_system_prompt_replaces_base(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(base_system_prompt="You are a custom agent."),
+        )
+        assert prompt == "You are a custom agent."
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_profile_base_system_prompt_with_suffix(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(
+                base_system_prompt="You are a custom agent.",
+                system_prompt_suffix="Be concise.",
+            ),
+        )
+        assert prompt == "You are a custom agent.\n\nBe concise."
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "suffprov",
+            ProviderProfile(system_prompt_suffix="Think step by step."),
+        )
+        assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
+
+    def test_user_system_prompt_prepended_before_profile_base(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(base_system_prompt="Custom base."),
+            system_prompt="User instructions.",
+        )
+        assert prompt == "User instructions.\n\nCustom base."
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_user_system_prompt_prepended_before_default_base(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "defprov",
+            ProviderProfile(),
+            system_prompt="User instructions.",
+        )
+        assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
+
+    def test_triple_combo_all_three_inputs(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(
+                base_system_prompt="Custom base.",
+                system_prompt_suffix="Extra.",
+            ),
+            system_prompt="User instructions.",
+        )
+        assert prompt == "User instructions.\n\nCustom base.\n\nExtra."
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_system_message_with_profile_base(self) -> None:
+        msg = SystemMessage(content="User content.")
+        result = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(base_system_prompt="Custom base."),
+            system_prompt=msg,
+        )
+        assert isinstance(result, SystemMessage)
+        # Last content block should contain the custom base, not BASE_AGENT_PROMPT
+        last_block = result.content_blocks[-1]
+        assert "Custom base." in last_block["text"]
+        assert BASE_AGENT_PROMPT not in last_block["text"]
+
+    def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(base_system_prompt=""),
+        )
+        assert prompt == ""
+        assert BASE_AGENT_PROMPT not in prompt
+
+    def test_empty_string_suffix_still_appended(self) -> None:
+        prompt = self._build_and_capture_system_prompt(
+            "custprov",
+            ProviderProfile(
+                base_system_prompt="Custom base.",
+                system_prompt_suffix="",
+            ),
+        )
+        assert prompt == "Custom base.\n\n"

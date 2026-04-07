@@ -61,18 +61,39 @@ class ProviderProfile:
 
     pre_init: Callable[[str], None] | None = None
     """Optional callable invoked with the raw model spec string *before*
-    `init_chat_model` runs.  Use for version checks or other preconditions
-    (e.g. `check_openrouter_version`).  Must raise on failure."""
+    `init_chat_model` runs.
+
+    Use for version checks or other preconditions
+    (e.g. `check_openrouter_version`).
+
+    Must raise on failure.
+    """
 
     init_kwargs_factory: Callable[[], dict[str, Any]] | None = None
     """Optional factory called at init time to produce dynamic kwargs that
-    are merged *on top of* `init_kwargs`.  Use when values depend on runtime
-    state like environment variables (e.g. OpenRouter attribution headers
-    that defer to env var overrides)."""
+    are merged *on top of* `init_kwargs`.
+
+    Use when values depend on runtime state like environment variables
+    (e.g. OpenRouter attribution headers that defer to env var overrides).
+    """
+
+    base_system_prompt: str | None = None
+    """When set, completely replaces `BASE_AGENT_PROMPT` as the base system
+    prompt.  `None` (default) means use `BASE_AGENT_PROMPT` unchanged.
+
+    The caller's `system_prompt` argument to `create_deep_agent` (if any)
+    is still prepended before this base.
+
+    If both `base_system_prompt` and `system_prompt_suffix` are set, the
+    suffix is appended to this custom base.
+    """
 
     system_prompt_suffix: str | None = None
-    """Text appended to the system prompt after `BASE_AGENT_PROMPT`.
-    `None` means no suffix."""
+    """Text appended to the base system prompt (either `BASE_AGENT_PROMPT`
+    or the profile's `base_system_prompt` when set).
+
+    `None` means no suffix.
+    """
 
     tool_description_overrides: dict[str, str] = field(default_factory=dict)
     """Per-tool description replacements, keyed by tool name.
@@ -225,6 +246,7 @@ def _merge_profiles(base: ProviderProfile, override: ProviderProfile) -> Provide
         init_kwargs={**base.init_kwargs, **override.init_kwargs},
         pre_init=pre_init,
         init_kwargs_factory=init_kwargs_factory,
+        base_system_prompt=(override.base_system_prompt if override.base_system_prompt is not None else base.base_system_prompt),
         system_prompt_suffix=(override.system_prompt_suffix if override.system_prompt_suffix is not None else base.system_prompt_suffix),
         tool_description_overrides={
             **base.tool_description_overrides,

@@ -307,6 +307,7 @@ jobs:
           # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
           declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
           declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
+          declare -A INTERNAL_USERS   # Map: github_username -> 1 (for dedup)
           SEEN_PRS=""
 
           for sha in $COMMITS; do
@@ -330,10 +331,15 @@ jobs:
                   continue
                 fi
 
-                # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
+                # Separate internal contributors (PRs labeled "internal" by pr_labeler workflow)
                 IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
                 if [ "$IS_INTERNAL" = "true" ]; then
-                  echo "Skipping internal contributor: $GH_USER (PR #$PR_NUM)"
+                  if [ -n "$GH_USER" ]; then
+                    INTERNAL_USERS[$GH_USER]=1
+                    echo "Collected internal contributor: $GH_USER (PR #$PR_NUM)"
+                  else
+                    echo "::warning::Internal PR #$PR_NUM has no author login — contributor will not appear in release notes"
+                  fi
                   continue
                 fi
 
@@ -355,6 +361,13 @@ jobs:
                 fi
               fi
             fi
+          done
+
+          # Dedup: if a user has both internal and community PRs, keep them
+          # in internal only (they are an org member regardless of PR labels)
+          for GH_USER in "${!INTERNAL_USERS[@]}"; do
+            unset "TWITTER_HANDLES[$GH_USER]"
+            unset "LINKEDIN_URLS[$GH_USER]"
           done
 
           # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
@@ -393,11 +406,32 @@ jobs:
             fi
           done
 
-          echo "Found contributors: $CONTRIBUTOR_LIST"
+          echo "Found community contributors: $CONTRIBUTOR_LIST"
+
+          # Build internal maintainers list: @ghuser, @ghuser, ...
+          INTERNAL_LIST=""
+          for GH_USER in "${!INTERNAL_USERS[@]}"; do
+            if [ -z "$INTERNAL_LIST" ]; then
+              INTERNAL_LIST="@$GH_USER"
+            else
+              INTERNAL_LIST="$INTERNAL_LIST, @$GH_USER"
+            fi
+          done
+
+          echo "Found internal maintainers: $INTERNAL_LIST"
 
           # Append contributor shoutouts
+          SEPARATOR_ADDED=false
           if [ -n "$CONTRIBUTOR_LIST" ]; then
             RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTOR_LIST")
+            SEPARATOR_ADDED=true
+          fi
+
+          if [ -n "$INTERNAL_LIST" ]; then
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+            fi
+            RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
           fi
 
           # Output release body using heredoc for proper multiline handling

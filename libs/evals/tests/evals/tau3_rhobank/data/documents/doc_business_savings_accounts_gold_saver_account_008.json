@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_gold_saver_account_008",
+  "title": "Gold Saver Account: Adding authorized users to your account",
+  "content": "## Access limits\n- You can add up to 5 authorized users to your Gold Saver Account.\n\n## How to add authorized users\n- Navigate to account settings and choose user management.\n- Enter the individual’s name and email address.\n- Assign permissions appropriate to their responsibilities.\n- Send the invitation and confirm when access is accepted.\n\n## Managing permissions\n- Adjust permissions at any time to align with role changes or segregation of duties.\n- Require dual review for sensitive actions by assigning distinct roles to different users.\n\n## Removing or suspending access\n- Temporarily suspend a user to pause access during staffing changes.\n- Remove a user when access is no longer required, and audit recent activity as part of your offboarding checklist."
+}

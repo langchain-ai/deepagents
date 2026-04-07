@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_everyone_pay_013",
+  "title": "Why is my payment still pending?",
+  "content": "## Standard transfer timing\n- Standard transfers complete within 12 hours. Until settlement, the payment appears as pending.\n\n## Other reasons a payment can remain pending\n- The recipient has not taken the required action to receive the funds.\n- The payment is under routine review for security reasons.\n- The recipient’s account is temporarily unable to accept funds.\n\n## What to do next\n- Check the transaction details for the current status and any requested actions.\n- Confirm with the recipient that their account can receive funds.\n- If the payment remains pending beyond the standard timeframe, contact support from the transaction screen."
+}

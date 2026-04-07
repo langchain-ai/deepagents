@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_silver_005",
+  "title": "BNPL Silver: Soft Credit Checks, Providers, and Inquiry Limits",
+  "content": "## Requirement\n- Activation and certain transactions will prompt a soft credit check only if [value not available] is true.\n\n## Provider\n- Soft inquiries are performed through [value not available].\n\n## Inquiry limits\n- You may complete up to [value not available] BNPL Silver soft credit checks per calendar month.\n- After reaching [value not available], additional attempts are blocked until the next month begins.\n\n## Managing attempts\n- If a check fails due to the monthly cap, wait until the next calendar month before retrying.\n- Ensure your information matches your account profile to avoid unnecessary repeated inquiries."
+}

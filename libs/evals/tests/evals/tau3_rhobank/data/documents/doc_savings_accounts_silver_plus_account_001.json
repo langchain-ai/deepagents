@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_silver_plus_account_001",
+  "title": "Silver Plus Account specifications and requirements",
+  "content": "## Account parameters\n\n| Item | Detail |\n|---|---|\n| Minimum opening deposit | $1,000 |\n| Ongoing minimum balance | $2,500 |\n| Interest compounding | daily |\n| Tier 2 balance threshold | $15,000 |\n| Free withdrawals per month | 15 |\n\n### Opening and maintaining your account\n- Fund your new account with at least $1,000 to open it.\n- Keep your balance at or above $2,500 to meet the ongoing requirement.\n\n### Interest structure\n- Interest is compounded daily to help maximize earnings.\n- Balances at or above $15,000 qualify for Tier 2 interest; lower balances earn the Tier 1 rate.\n\n### Withdrawal access\n- You have up to 15 free withdrawals each month.\n- Transactions beyond this free limit may be subject to an excess withdrawal fee per our fee schedule."
+}

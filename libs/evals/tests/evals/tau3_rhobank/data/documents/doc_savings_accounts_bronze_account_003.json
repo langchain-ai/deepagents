@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_bronze_account_003",
+  "title": "Bronze Account specifications and requirements",
+  "content": "## Balance and opening requirements\n- Minimum balance requirement: $0\n- Minimum opening deposit: $0\n\n## Interest processing\n- Interest compounding frequency: daily\n\n## What to expect\n- If the minimum balance is $0, you can maintain the account without holding a higher ongoing balance.\n- With interest compounding daily, interest is calculated based on your daily balance and added per the account’s crediting schedule."
+}

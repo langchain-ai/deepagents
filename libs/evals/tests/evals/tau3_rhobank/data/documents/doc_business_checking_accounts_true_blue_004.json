@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_checking_accounts_true_blue_004",
+  "title": "True Blue Account: Treasury Services Integration",
+  "content": "## Pricing\n- Monthly fee to link your account to treasury services: $0.00\n- Cash Management Dashboard access is included at no additional cost: Yes\n\n## How to connect\n- Submit a request to enable the treasury link from your administrative profile.\n- Confirm authorized company signers are assigned for integration approvals.\n- Complete credential exchange with your treasury provider and finalize the connection.\n\n## Operational considerations\n- Verify that account permissions mirror your internal control policies before activating the link.\n- Reconcile the first file exchange after activation to confirm end-to-end connectivity.\n\n## Support\n- If the link does not appear after approval, confirm the integration is active and that dashboard access is enabled (included: Yes)."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_qr_transfers_003",
+  "title": "Scanning and sending payments",
+  "content": "## Scan the QR\n- Open the QR scanner in your app and point your camera at the code.\n- Hold the device steady and ensure the code fills most of the frame without cropping.\n- If the code does not resolve quickly, adjust distance and reduce glare.\n\n## Review and send\n- Check the recipient and amount displayed after the scan.\n- Ensure the payment amount does not exceed $1,250. If it does, lower the amount and try again.\n- If Yes applies, review the details on the confirmation screen and approve to proceed.\n\n## Tips for a smooth scan\n- Increase on-screen brightness when scanning from another device’s display.\n- Clean the camera lens and avoid obstructions.\n- Ask the other party to refresh the QR if it appears unresponsive or outdated."
+}

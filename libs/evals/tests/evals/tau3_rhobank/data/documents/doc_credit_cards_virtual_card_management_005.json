@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_virtual_card_management_005",
+  "title": "Virtual Card Management: Creating One-Time Use Cards for Security",
+  "content": "## Availability\n- One-time (single-use) virtual cards must be enabled: Yes\n\n## Create a one-time use card\n1. Go to Cards > Virtual and select Create new card.\n2. Choose the one-time use option (availability: Yes).\n3. Confirm and generate the card details.\n4. Use the card for a single transaction and do not store it for future use.\n\n## Usage notes\n- After one successful authorization, the card is no longer usable for additional payments.\n- If a transaction fails, you may need to generate a new one-time card and retry.\n- Share the card details only with the intended payee and avoid saving them in vendor profiles."
+}

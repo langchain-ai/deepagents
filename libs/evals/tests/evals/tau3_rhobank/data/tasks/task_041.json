@@ -1,0 +1,291 @@
+{
+  "id": "task_041",
+  "description": {
+    "purpose": "Task: task_041",
+    "relevant_policies": null,
+    "notes": "Complex multi-card dispute with 16 transactions across four cards: 4 from Gold Rewards Card, 4 from Crypto-Cash Back, 4 from EcoCard, and 4 from Business Gold Rewards Card. User Claire Dubois needs to dispute transactions on all four cards for different reasons. CRITICAL TWIST: There is an existing resolved dispute from September 2025 that already received provisional credit. This counts against the provisional_credit_max_disputes_in_period = 3 limit, meaning only 2 more disputes can receive provisional credit. The 16 disputed transactions have different dispute reasons: 4 fraud (eligible), 4 duplicate (eligible), 2 goods not received (eligible if > 30 days), 2 goods not as described (not eligible), 2 incorrect amount/cancelled subscription (not eligible), 2 refund not processed (not eligible). The 10 reason-eligible transactions are: txn_645286a3dd13 ($623.45 fraud on business gold), txn_1b4cc30a928e ($512.34 fraud on crypto), txn_107c4fa829bd ($487.50 fraud on gold), txn_3880720b4409 ($456.78 duplicate on business gold), txn_816986054539 ($349.99 duplicate on crypto), txn_4f6e48543e07 ($299.99 duplicate on gold), txn_b4f90f6ee392 ($245.00 fraud on eco), txn_5e6ad271fefb ($178.50 duplicate on eco), txn_a42ce2e4156d ($156.78 goods not received on gold), txn_c7a1c5fad26b ($134.27 goods not received on eco). Only the 2 highest-value can get provisional credit: txn_645286a3dd13 ($623.45) and txn_1b4cc30a928e ($512.34). Agent must check dispute history using get_user_dispute_history_7291 to see the existing dispute and calculate remaining provisional credit eligibility. Agent must request all four cards' last 4 digits from user since disputes span four cards."
+  },
+  "user_scenario": {
+    "persona": null,
+    "instructions": "**Your character:** You are Claire Dubois, a 32-year-old freelance graphic designer from Charleston, WV. You have four credit cards with Rho-Bank: a Gold Rewards Card (personal), a Crypto-Cash Back card (for crypto rewards), an EcoCard (for eco-friendly purchases), and a Business Gold Rewards Card (for your design business).\n\n**Your situation:** You've been reviewing statements for all your credit cards and found problems on each. There's been fraud, duplicate charges, missing deliveries, and other issues across all four cards.\n\n**Your goal:** Dispute 16 specific transactions across all four cards (4 on each) and get provisional credit where eligible.\n\n**Information you know and should provide when asked:**\n- Your full name: Claire Dubois\n- Your phone number: 504-555-0847\n- Your email: jazzy_cat_lady@yahoo.com\n- Your date of birth: 06/03/1993\n\n**GOLD REWARDS CARD DISPUTES (4 transactions):**\n1. **Delta Airlines $487.50 on 10/08/2025** - FRAUD. You did NOT book this flight. Someone must have your card info. You have never flown Delta.\n2. **Apple Store $299.99 on 10/15/2025** - DUPLICATE CHARGE. You bought AirPods but got charged twice. The Apple Store confirmed the duplicate.\n3. **Amazon $156.78 on 10/05/2025** - GOODS NOT RECEIVED. You ordered home decor items but they never arrived. It's been over a month and Amazon says it was delivered but you never got it.\n4. **XFINITY $189.99 on 10/28/2025** - INCORRECT AMOUNT. Your usual bill is around $120. They overcharged you significantly. XFINITY confirmed the billing error.\n\n**CRYPTO-CASH BACK CARD DISPUTES (4 transactions):**\n1. **Coinbase $512.34 on 10/12/2025** - FRAUD. You never made this transaction on Coinbase. This is completely unauthorized.\n2. **Best Buy $349.99 on 10/22/2025** - DUPLICATE CHARGE. You bought a monitor but got charged twice. Best Buy confirmed the duplicate.\n3. **Newegg $789.45 on 10/25/2025** - GOODS NOT AS DESCRIBED. You ordered a new graphics card but received a used/refurbished one. Newegg refused to exchange.\n4. **Netflix $22.99 on 11/01/2025** - CANCELLED SUBSCRIPTION. You cancelled Netflix two months ago but they keep charging you. You've contacted them multiple times.\n\n**ECOCARD DISPUTES (4 transactions):**\n1. **Patagonia $245.00 on 10/10/2025** - FRAUD. You never ordered from Patagonia. This is completely unauthorized.\n2. **REI Co-op $178.50 on 10/18/2025** - DUPLICATE CHARGE. You bought camping gear but got charged twice. REI confirmed the duplicate.\n3. **Whole Foods Market $134.27 on 10/02/2025** - GOODS NOT RECEIVED. You placed a grocery delivery order over a month ago that never arrived. Whole Foods said it was delivered but you never got it.\n4. **Tesla Supercharger $67.45 on 10/30/2025** - REFUND NOT PROCESSED. You were overcharged at a Supercharger and Tesla promised a refund weeks ago. Never received it.\n\n**BUSINESS GOLD REWARDS CARD DISPUTES (4 transactions):**\n1. **Staples $623.45 on 10/14/2025** - FRAUD. You never ordered from Staples. This is completely unauthorized - someone must have gotten your business card info.\n2. **Office Depot $456.78 on 10/20/2025** - DUPLICATE CHARGE. You ordered office supplies but got charged twice. Office Depot confirmed the duplicate.\n3. **Dell Technologies $1,299.99 on 10/24/2025** - GOODS NOT AS DESCRIBED. You ordered a new laptop for work but received a refurbished model instead of new. Dell refused to exchange saying it was a closeout sale.\n4. **AT&T Business $312.50 on 11/02/2025** - REFUND NOT PROCESSED. You downgraded your business phone plan and were promised a partial refund weeks ago. Never received it despite multiple calls.\n\n## Conversation Flow:\n\n1. **Opening (mention ALL FOUR cards):** \"Hi, I need help disputing some charges. I have issues on four different cards - my personal Gold card, my Crypto-Cash Back card, my EcoCard, and my Business Gold card. There's been fraud and other problems on all of them.\"\n\n2. **Provide verification info when asked:** Give your name, phone number, email, date of birth as requested.\n\n3. **When asked to clarify which transactions:** List them out by card. \"On my Gold card, there's a fraudulent Delta flight charge, a duplicate from Apple, an Amazon delivery that never came, and an XFINITY overcharge. On my Crypto card, there's fraud from Coinbase, a duplicate from Best Buy, a wrong item from Newegg, and Netflix keeps charging me after I cancelled. On my EcoCard, there's fraud from Patagonia, a duplicate from REI, a Whole Foods delivery that never came, and a missing Tesla refund. On my Business Gold card, there's fraud from Staples, a duplicate from Office Depot, a wrong laptop from Dell, and a missing AT&T refund.\"\n\n4. **If asked about contacting merchants:**\n   - Delta Airlines fraud: \"No, I didn't contact them. I never booked that flight - why would I call about something I didn't buy?\"\n   - Apple Store duplicate: \"Yes, the Apple Store confirmed it was a duplicate.\"\n   - Amazon goods not received: \"Yes, I've contacted Amazon multiple times. They say it was delivered but I never got it.\"\n   - XFINITY incorrect amount: \"Yes, XFINITY confirmed the billing error.\"\n   - Coinbase fraud: \"No, I never made that transaction - that's fraud.\"\n   - Best Buy duplicate: \"Yes, Best Buy confirmed the duplicate charge.\"\n   - Newegg wrong item: \"Yes, I tried but they said final sale.\"\n   - Netflix cancelled subscription: \"Yes, I've contacted them multiple times about this.\"\n   - Patagonia fraud: \"No, I never ordered from them - that's fraud.\"\n   - REI duplicate: \"Yes, REI confirmed the duplicate charge.\"\n   - Whole Foods not received: \"Yes, I've contacted them. They say delivered but I never got it.\"\n   - Tesla refund: \"Yes, I've called multiple times about my missing refund.\"\n   - Staples fraud: \"No, I never ordered from Staples - that's fraud.\"\n   - Office Depot duplicate: \"Yes, Office Depot confirmed the duplicate charge.\"\n   - Dell wrong item: \"Yes, I tried but they said closeout sale.\"\n   - AT&T refund: \"Yes, I've called multiple times about my missing refund.\"\n\n5. **Card action:** \"I want to keep all four cards active. The fraud seems isolated and I need all my cards for daily use and my business.\"\n\n6. **IMPORTANT - Provisional credit:** If the agent mentions provisional credit or asks about it, say: \"Yes, I'd like provisional credit on whatever qualifies. The Staples and Coinbase charges are the biggest ones - those are really hurting my cash flow right now. Please prioritize those if there's any limit.\"\n\n7. **When issues were noticed:** \"I noticed all of this today when going through my statements - do not make up a date or respond with any other date, just mention that it was noticed today and you forget today's date.\"\n\n8. **End conversation:** Once all sixteen disputes are filed across all four cards, thank the agent and end the conversation."
+  },
+  "initial_state": {
+    "initialization_data": {
+      "agent_data": {
+        "transaction_disputes": {
+          "data": {
+            "dsp_dfab0685d198": {
+              "dispute_id": "dsp_dfab0685d198",
+              "transaction_id": "txn_previous_dispute_001",
+              "user_id": "a6a7d745b2",
+              "card_action": "keep_active",
+              "card_last_4_digits": "0573",
+              "full_name": "Claire Dubois",
+              "phone": "504-555-0847",
+              "email": "jazzy_cat_lady@yahoo.com",
+              "address": "1723 Santana Ave, Charleston, WV 25301",
+              "contacted_merchant": true,
+              "purchase_date": "09/05/2025",
+              "issue_noticed_date": "09/15/2025",
+              "dispute_reason": "duplicate_charge",
+              "resolution_requested": "full_refund",
+              "partial_refund_amount": null,
+              "eligible_for_provisional_credit": true,
+              "provisional_credit_given": true,
+              "submitted_at": "09/20/2025",
+              "status": "APPROVED"
+            }
+          }
+        }
+      },
+      "user_data": null
+    },
+    "initialization_actions": null,
+    "message_history": null
+  },
+  "evaluation_criteria": {
+    "actions": [
+      {
+        "name": "log_verification",
+        "arguments": {
+          "name": "Claire Dubois",
+          "user_id": "a6a7d745b2",
+          "address": "1723 Santana Ave, Charleston, WV 25301",
+          "email": "jazzy_cat_lady@yahoo.com",
+          "phone_number": "504-555-0847",
+          "date_of_birth": "06/03/1993",
+          "time_verified": "2025-11-14 03:40:00 EST"
+        },
+        "requestor": "assistant",
+        "action_id": "041_0"
+      },
+      {
+        "name": "unlock_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "get_user_dispute_history_7291"
+        },
+        "requestor": "assistant",
+        "action_id": "041_1"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "get_user_dispute_history_7291",
+          "arguments": "{\"user_id\": \"a6a7d745b2\"}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_2"
+      },
+      {
+        "name": "give_discoverable_user_tool",
+        "arguments": {
+          "discoverable_tool_name": "get_card_last_4_digits"
+        },
+        "requestor": "assistant",
+        "action_id": "041_3"
+      },
+      {
+        "name": "call_discoverable_user_tool",
+        "arguments": {
+          "discoverable_tool_name": "get_card_last_4_digits",
+          "arguments": "{\"credit_card_account_id\": \"cc_a6a7d745b2_gold\"}"
+        },
+        "requestor": "user",
+        "action_id": "041_4"
+      },
+      {
+        "name": "call_discoverable_user_tool",
+        "arguments": {
+          "discoverable_tool_name": "get_card_last_4_digits",
+          "arguments": "{\"credit_card_account_id\": \"cc_a6a7d745b2_crypto\"}"
+        },
+        "requestor": "user",
+        "action_id": "041_5"
+      },
+      {
+        "name": "call_discoverable_user_tool",
+        "arguments": {
+          "discoverable_tool_name": "get_card_last_4_digits",
+          "arguments": "{\"credit_card_account_id\": \"cc_a6a7d745b2_eco\"}"
+        },
+        "requestor": "user",
+        "action_id": "041_6"
+      },
+      {
+        "name": "call_discoverable_user_tool",
+        "arguments": {
+          "discoverable_tool_name": "get_card_last_4_digits",
+          "arguments": "{\"credit_card_account_id\": \"cc_a6a7d745b2_bgold\"}"
+        },
+        "requestor": "user",
+        "action_id": "041_7"
+      },
+      {
+        "name": "unlock_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829"
+        },
+        "requestor": "assistant",
+        "action_id": "041_8"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_645286a3dd13\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0652\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": false, \"purchase_date\": \"10/14/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"unauthorized_fraudulent_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": true}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_9"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_1b4cc30a928e\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3081\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": false, \"purchase_date\": \"10/12/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"unauthorized_fraudulent_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": true}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_10"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_107c4fa829bd\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0573\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": false, \"purchase_date\": \"10/08/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"unauthorized_fraudulent_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_11"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_3880720b4409\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0652\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/20/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"duplicate_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_12"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_816986054539\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3081\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/22/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"duplicate_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_13"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_4f6e48543e07\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0573\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/15/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"duplicate_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_14"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_b4f90f6ee392\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3604\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": false, \"purchase_date\": \"10/10/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"unauthorized_fraudulent_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_15"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_5e6ad271fefb\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3604\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/18/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"duplicate_charge\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_16"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_a42ce2e4156d\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0573\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/05/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"goods_services_not_received\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_17"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_c7a1c5fad26b\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3604\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/02/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"goods_services_not_received\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_18"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_dd095dee227f\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0573\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/28/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"incorrect_amount\", \"resolution_requested\": \"partial_refund\", \"partial_refund_amount\": 69.99, \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_19"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_ca1257bc2218\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3081\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/25/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"goods_services_not_as_described\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_20"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_79a44bbd7177\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3081\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"11/01/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"canceled_subscription_still_charging\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_21"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_9c32520bf815\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"3604\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/30/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"refund_never_processed\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_22"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_7554844bef96\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0652\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"10/24/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"goods_services_not_as_described\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_23"
+      },
+      {
+        "name": "call_discoverable_agent_tool",
+        "arguments": {
+          "agent_tool_name": "file_credit_card_transaction_dispute_4829",
+          "arguments": "{\"transaction_id\": \"txn_db96f3228527\", \"card_action\": \"keep_active\", \"card_last_4_digits\": \"0652\", \"full_name\": \"Claire Dubois\", \"user_id\": \"a6a7d745b2\", \"phone\": \"504-555-0847\", \"email\": \"jazzy_cat_lady@yahoo.com\", \"address\": \"1723 Santana Ave, Charleston, WV 25301\", \"contacted_merchant\": true, \"purchase_date\": \"11/02/2025\", \"issue_noticed_date\": \"11/14/2025\", \"dispute_reason\": \"refund_never_processed\", \"resolution_requested\": \"full_refund\", \"eligible_for_provisional_credit\": false}"
+        },
+        "requestor": "assistant",
+        "action_id": "041_24"
+      }
+    ],
+    "reward_basis": [
+      "DB"
+    ]
+  },
+  "annotations": null,
+  "user_tools": [
+    "apply_for_credit_card",
+    "call_discoverable_user_tool"
+  ],
+  "required_documents": [
+    "doc_credit_cards_credit_cards_(general)_013",
+    "doc_credit_cards_credit_cards_(general)_014",
+    "doc_credit_cards_credit_cards_(general)_015",
+    "doc_credit_cards_credit_cards_(general)_016"
+  ]
+}

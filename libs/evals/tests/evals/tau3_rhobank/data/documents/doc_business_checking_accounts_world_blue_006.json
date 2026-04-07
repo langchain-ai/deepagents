@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_checking_accounts_world_blue_006",
+  "title": "Configuring Team Permissions on World Blue",
+  "content": "## Plan your permission structure\n- Map your roles across up to 4 tiers to align access with responsibilities\n- Define which actions each tier can take, such as viewing balances, preparing payments, approving disbursements, or administering settings\n\n## Create tiers and assign capabilities\n- Name each tier to reflect its function and risk level\n- Specify allowed actions for each tier, including access to accounts, payment creation, approval, and user management\n- Set approval flows so sensitive actions require appropriate review before execution\n\n## Add users and enforce least privilege\n- Assign each team member to the lowest tier that enables their work\n- Limit administrative access to a small group and separate payment preparation from approval across different tiers\n\n## Ongoing governance\n- Review tier memberships regularly and adjust when responsibilities change\n- Use activity logs to confirm that approvals and changes align with your internal policy\n"
+}

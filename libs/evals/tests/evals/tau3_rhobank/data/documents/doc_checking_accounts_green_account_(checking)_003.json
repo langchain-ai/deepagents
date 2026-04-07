@@ -1,0 +1,5 @@
+{
+  "id": "doc_checking_accounts_green_account_(checking)_003",
+  "title": "No-overdraft checking explained",
+  "content": "## How no-overdraft works in this account\n- Transactions that would push your available balance negative are declined at authorization.\n- There are no overdraft transfers from linked accounts; the overdraft protection transfer fee is $0.00.\n\n## Checks and guaranteed funds\n- When you request a cashier's check, your account must have sufficient available funds at issuance; the fee to issue is 8.\n- If there are not enough available funds, the cashier's check request is not completed rather than overdrawing your account.\n\n### What to expect at the point of sale\n- Card purchases and ATM withdrawals are authorized only up to your available balance.\n- If a merchant attempts a charge above your available funds, the authorization is declined immediately, with no overdraft and no transfer assessed at $0.00."
+}

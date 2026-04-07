@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_silver_002",
+  "title": "BNPL Silver: Eligible Purchase Amounts and Transaction Limits",
+  "content": "## Purchase eligibility thresholds\n- A transaction qualifies when the final authorized amount is between [value not available] and [value not available] (inclusive), in your account currency.\n\n## Limits at a glance\n| Threshold | Amount |\n|---|---|\n| Minimum eligible purchase | [value not available] |\n| Maximum eligible purchase per transaction | [value not available] |\n\n## How the limit is applied\n- The eligibility check uses the total at authorization, including taxes, fees, and discounts applied at checkout.\n- Partial captures: if the initial authorization exceeds [value not available], the transaction is not eligible even if the final capture is lower.\n- Split tenders: only the portion routed to BNPL Silver must fall within [value not available] and [value not available].\n\n## Tips\n- If your cart total is below [value not available], add eligible items or use another payment method.\n- For carts above [value not available], consider paying down part of the total before selecting BNPL Silver."
+}

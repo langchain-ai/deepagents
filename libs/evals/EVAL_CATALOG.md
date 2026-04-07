@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**85 evals** across **7 categories**
+**87 evals** across **8 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -84,9 +84,10 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L231) — `tests/evals/test_memory_multiturn.py:231`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L258) — `tests/evals/test_memory_multiturn.py:258`
 
-## Conversation (`conversation`) (2 evals)
+## Conversation (`conversation`) (3 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L82) — `tests/evals/tau2_airline/test_tau2_airline.py:82`
+- [`test_tau3_rhobank`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau3_rhobank/test_tau3_rhobank.py#L76) — `tests/evals/tau3_rhobank/test_tau3_rhobank.py:76`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L94) — `tests/evals/test_followup_quality.py:94`
 
 ## Summarization (`summarization`) (5 evals)
@@ -111,3 +112,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_task_calls_weather_subagent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_subagents.py#L38) — `tests/evals/test_subagents.py:38`
 - [`test_task_calls_general_purpose_subagent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_subagents.py#L78) — `tests/evals/test_subagents.py:78`
 - [`test_custom_system_prompt`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_system_prompt.py#L28) — `tests/evals/test_system_prompt.py:28`
+
+## Tau3 (`tau3`) (1 eval)
+
+- [`test_tau3_rhobank`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau3_rhobank/test_tau3_rhobank.py#L76) — `tests/evals/tau3_rhobank/test_tau3_rhobank.py:76`

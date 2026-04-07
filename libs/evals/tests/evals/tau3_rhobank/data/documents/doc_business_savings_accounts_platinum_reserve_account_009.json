@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_platinum_reserve_account_009",
+  "title": "Platinum Reserve Account: Managing authorized users",
+  "content": "## Access model\n- Define roles for initiators, approvers, and viewers based on segregation-of-duties principles\n- Scope permissions to the minimum necessary accounts and actions for each user\n\n## Adding and removing users\n- Add users from your administrative settings and assign roles during onboarding\n- Remove access promptly when responsibilities change or a user departs\n- Review permissions alongside role changes to prevent privilege creep\n\n## User limits\n- Maximum number of authorized users: 10\n- Plan role assignments with this ceiling in mind, prioritizing shared operational mailboxes where appropriate\n\n## Oversight and audit\n- Conduct periodic access reviews and require attestations for high-privilege roles\n- Use activity logs to verify that approvals and sensitive actions match your policy"
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_diamond_vault_006",
+  "title": "Diamond Vault Account: Same-day transfers",
+  "content": "## Availability\n- Same-day ACH transfers enabled: Yes.\n- Select the same-day option during submission to prioritize expedited processing where supported.\n\n## Posting and interest treatment\n- Interest is compounded daily.\n- When same-day ACH posts, the settled amount is reflected in your balance used for interest accrual per the compounding schedule.\n\n## Submission guidance\n- Confirm beneficiary routing and account details before sending to avoid exceptions.\n- Use clear payment descriptions to aid your internal reconciliation.\n- Monitor transaction status for confirmation of posting."
+}

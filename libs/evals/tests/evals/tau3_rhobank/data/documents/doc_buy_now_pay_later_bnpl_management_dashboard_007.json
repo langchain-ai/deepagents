@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_management_dashboard_007",
+  "title": "BNPL Management Dashboard: Viewing Projected Early-Payment Rewards",
+  "content": "## Displaying the projection\n- Show projected rewards total: [value not available]. When true, the dashboard displays the aggregated projection for eligible early payments.\n\n## Interpreting the total\n- Projected total across all active plans: [value not available]. This figure reflects current schedules and eligibility assumptions and will update if plan details or payment timing change.\n\n### Practical use\n- Use the projection to estimate near-term incentive value and to prioritize which installments to pay early.\n- If [value not available] is false, enable it to see the consolidated projection, or review per-plan details to infer potential rewards."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_qr_transfers_005",
+  "title": "Why isn't my QR code scanning?",
+  "content": "## Common causes\n- The code expired because it was generated more than 17 ago.\n- Screen glare or low brightness is obscuring the pattern.\n- The camera cannot focus due to distance, motion, or a dirty lens.\n- The QR is cropped, distorted, or low quality.\n- Camera permissions for the app are disabled.\n\n## Quick fixes\n- Regenerate the QR if it may be older than 17.\n- Increase the display brightness on the device showing the QR and reduce reflections.\n- Clean your camera lens and adjust the distance until the code is sharp.\n- Enable camera access in your device settings and reopen the scanner.\n- Ask for a clearer or unaltered version of the QR if it looks compressed or edited."
+}

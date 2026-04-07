@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_automatic_sweep_program_005",
+  "title": "Automatic Sweep: Timing and Processing of Nightly Transfers",
+  "content": "## Execution time\n- Sweeps are initiated at 11:00 PM.\n- The system evaluates your checking balance at that time and releases the transfer accordingly.\n\n## Processing sequence\n- Eligible excess is moved to the designated savings account after the evaluation.\n- Posting times can vary by institution; activity will appear once processed.\n\n## Monthly limits\n- The program supports up to 60 sweep transfers per month.\n- Each completed sweep counts toward this limit.\n- After reaching 60, additional sweep activity pauses until the next month."
+}

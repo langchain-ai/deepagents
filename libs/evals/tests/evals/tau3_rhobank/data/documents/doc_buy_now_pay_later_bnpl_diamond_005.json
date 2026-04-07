@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_diamond_005",
+  "title": "BNPL Diamond: APR, Introductory Interest-Free Period, and Late Payment Fees",
+  "content": "## Standard APR\n- A standard APR of 12.49% applies to outstanding BNPL Diamond balances as set out in your plan documentation.\n- Interest begins to accrue after any applicable introductory period ends.\n\n## Introductory interest-free period\n- Purchases may be interest-free for 3 months from plan start.\n- If 3 is 0, interest accrues from the plan start date.\n- After the interest-free window ends, the then-outstanding principal is subject to 12.49%.\n\n## Late payment fees\n- If an installment is overdue, a fee equal to 2.5% of the overdue installment amount is applied.\n- Example calculation: Late fee = Overdue installment × 2.5%.\n- Late fees may be assessed per missed due date until the overdue amount is cured."
+}

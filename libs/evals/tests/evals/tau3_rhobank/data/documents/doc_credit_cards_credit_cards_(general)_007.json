@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_credit_cards_(general)_007",
+  "title": "Credit Card Rewards Points Rounding Policy",
+  "content": "## Rounding policy\nAll credit card rewards points are rounded down to the nearest whole number. When calculating points earned on a purchase, the system always truncates (floors) fractional points rather than rounding to the nearest integer. For example, a $126.77 purchase on a 1% cash back card earns 126 points (not 127), because 126.77 × 0.01 = 1.2677 points, which rounds down to 1 point per dollar, giving 126 points. Similarly, a $99.99 purchase at 2.5% cash back would calculate to 249.975 points but would award 249 points. This rounding policy applies consistently across all credit card types and reward categories."
+}

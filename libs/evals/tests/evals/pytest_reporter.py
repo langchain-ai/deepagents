@@ -30,7 +30,7 @@ _DURATIONS_S: list[float] = []
 _EFFICIENCY_RESULTS: list[_evals_utils.EfficiencyResult] = []
 """Per-test efficiency data (steps, tool calls) collected via the utils callback."""
 
-_NODEID_TO_CATEGORY: dict[str, str] = {}
+_NODEID_TO_CATEGORY: dict[str, list[str]] = {}
 """Mapping of pytest node ID to its `eval_category` mark value, built during collection."""
 
 _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
@@ -203,9 +203,9 @@ def pytest_collection_modifyitems(
     items: list[pytest.Item],
 ) -> None:
     for item in items:
-        marker = item.get_closest_marker("eval_category")
-        if marker and marker.args:
-            _NODEID_TO_CATEGORY[item.nodeid] = str(marker.args[0])
+        categories = [str(m.args[0]) for m in item.iter_markers("eval_category") if m.args]
+        if categories:
+            _NODEID_TO_CATEGORY[item.nodeid] = categories
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -232,11 +232,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
 
-    category = _NODEID_TO_CATEGORY.get(report.nodeid)
-    if category and outcome in {"passed", "failed"}:
-        bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
-        bucket[outcome] += 1
-        bucket["total"] += 1
+    categories = _NODEID_TO_CATEGORY.get(report.nodeid)
+    if categories and outcome in {"passed", "failed"}:
+        for category in categories:
+            bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
+            bucket[outcome] += 1
+            bucket["total"] += 1
 
     if _EFFICIENCY_RESULTS and _EFFICIENCY_RESULTS[-1].duration_s is None:
         _EFFICIENCY_RESULTS[-1].duration_s = duration

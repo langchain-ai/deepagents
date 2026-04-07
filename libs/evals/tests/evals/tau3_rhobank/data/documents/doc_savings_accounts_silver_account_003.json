@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_silver_account_003",
+  "title": "Interest-rate tiers explained",
+  "content": "## Tier structure at a glance\n\n| Balance tier | Balance range | APY |\n| --- | --- | --- |\n| Below threshold | Less than $10,000 | 2.5% |\n| At or above threshold | At least $10,000 | 4.0% |\n\n## How your rate is determined\n- Each day, your ending balance is compared to $10,000. If it is below that amount, the applicable APY for that day is 2.5%. If it is at or above that amount, the applicable APY for that day is 4.0%.\n- Interest accrues on your daily balance and is compounded daily.\n\n## Tips for staying in the higher tier\n- Use balance alerts to help keep your balance at or above $10,000.\n- Avoid large same-day transfers out that might temporarily move you below $10,000."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "doc_credit_cards_credit_cards_(general)_012",
+  "title": "Internal: Backend Incident 11/14 - Erroneous Credit Bureau Reporting",
+  "content": "This protocol is active from 11/14/2025 through 11/18/2025, 11:59 PM EST. On 11/14/2025, a backend batch processing error caused erroneous delinquency reports to be transmitted to credit bureaus for certain credit card accounts that are in good standing. Affected customers may report: receiving alerts from credit monitoring services about sudden score drops, being notified of a delinquency they did not incur, or credit score decreasing significantly (often 80-150 points). This is Rho-Bank's fault and requires IMMEDIATE escalation. Identity verification is NOT required for this incident protocol. IMMEDIATELY use emergency_credit_bureau_incident_transfer_1114() then transfer_to_human_agents. Use empathetic, urgent language acknowledging the severity."
+}

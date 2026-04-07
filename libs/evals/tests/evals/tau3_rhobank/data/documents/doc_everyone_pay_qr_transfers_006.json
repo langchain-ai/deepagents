@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_qr_transfers_006",
+  "title": "Why did my QR transfer fail?",
+  "content": "## Check limits first\n- Per-transaction limit: If the amount exceeds $1,250, the transfer will not proceed. Reduce the amount and try again.\n- Daily limit: If your total QR payments for the day exceed $3,000, you will need to wait until your daily cap resets before sending another QR payment.\n\n## Other common causes\n- You closed the payment screen before completion.\n- Connectivity issues interrupted the submission.\n- The QR data was invalid or damaged when scanned.\n\n## How to resolve\n- Adjust the amount so it is within $1,250 and resubmit.\n- If you have reached $3,000, wait for the daily cap to reset and try again.\n- Keep the app open until you see a success message, and ensure you have a stable connection.\n- Ask the other party to regenerate a fresh QR if the original appears corrupted or unresponsive."
+}

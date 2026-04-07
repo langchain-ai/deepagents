@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_sending_limits_003",
+  "title": "What is Everyone Pay?",
+  "content": "## A focused definition\n\nEveryone Pay is Rho-Bank’s payment capability for sending funds to individuals or businesses from your account.\n\n### How limits apply to Everyone Pay\n- New accounts start with a daily cap of $750.\n- New accounts start with a monthly cap of $7,500.\n- Both caps apply at the same time; a send must be within your remaining daily and monthly capacity.\n\n### What to expect when you start\n- Your available amount updates after each completed send.\n- If you reach either cap, you can resume sending when the relevant period renews or after an approved limit adjustment."
+}

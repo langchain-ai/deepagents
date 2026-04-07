@@ -1,0 +1,5 @@
+{
+  "id": "doc_checking_accounts_purple_account_002",
+  "title": "Purple Account specifications and requirements",
+  "content": "## Fees and thresholds\n- Monthly maintenance fee: $15.00\n- Minimum daily balance to waive the monthly maintenance fee: $3,750\n- Returned deposit fee: $20.00 per item returned unpaid\n- Incoming domestic wire transfer fee: $0.00\n\n## Usage limits\n- Debit card daily purchase limit: $10,000\n- Supported foreign currencies that can be held in the wallet: 30\n\n### Important\n- Maintain the minimum daily balance listed to avoid the monthly maintenance fee.\n- Card purchase activity above the daily limit will be declined until the next day."
+}

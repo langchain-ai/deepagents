@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_savings_accounts_bronze_saver_account_002",
+  "title": "Bronze Saver Account specifications and requirements",
+  "content": "## Specifications\n| Item | Details |\n| --- | --- |\n| Minimum opening deposit | $0 |\n| Interest compounding frequency | daily |\n| Linked Rho-Bank business checking required | Yes |\n\n## Requirements guidance\n- Ensure a linked Rho-Bank business checking account remains active if Yes is required for your setup.\n- Confirm your compounding preference is set to daily in your account details.\n- Verify the initial funding meets or exceeds $0."
+}

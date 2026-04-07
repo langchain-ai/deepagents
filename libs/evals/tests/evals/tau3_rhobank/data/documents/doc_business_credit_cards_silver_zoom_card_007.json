@@ -1,0 +1,5 @@
+{
+  "id": "doc_business_credit_cards_silver_zoom_card_007",
+  "title": "Silver Zoom Card: Fuel Purchase Reporting and Analytics",
+  "content": "## Views that matter\n- A fuel summary view highlights total fuel spend and reductions applied at 10.0%\n- Category earnings reports display rewards accrued on eligible transportation and logistics expenses at 3.0%\n\n## Key fields to review\n- Discount rate field: confirms application of 10.0% to eligible fuel transactions\n- Category rate field: confirms earning at 3.0% for qualifying spend\n- Merchant and station identifiers: help you confirm in-network activity and compare station-level pricing\n\n## How to analyze\n- Filter by merchant category and participating network to isolate transactions with the 10.0% reduction\n- Export to your accounting system to reconcile reductions and rewards against route plans\n- Use variance checks to spot out-of-network fueling where the expected discount did not apply\n\n## Reporting hygiene\n- Tag transactions with vehicle or route identifiers for clearer allocation\n- Periodically audit a sample of receipts against reported discounts and rewards"
+}

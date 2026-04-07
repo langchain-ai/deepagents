@@ -1,0 +1,5 @@
+{
+  "id": "doc_savings_accounts_green_account_(savings)_001",
+  "title": "Green Account (savings) specifications and requirements",
+  "content": "## Key specifications\n\n| Item | Value |\n|---|---|\n| Minimum opening deposit | $100 |\n| Ongoing minimum balance | $500 |\n| Maximum free withdrawals per month | 8 |\n| Interest compounding frequency | daily |\n| Paperless statements required | Yes |\n| Debit card made from recycled ocean plastic | Yes |\n\n### Requirements to open\n- Fund the account with at least $100.\n- Enroll in paperless statements, as indicated by Yes.\n\n### Ongoing maintenance\n- Keep your balance at or above $500.\n- Plan withdrawals to stay within 8 each month.\n\n### Interest handling\n- Interest is compounded daily.\n\n### Card materials\n- Your debit card is made from recycled ocean plastic: Yes."
+}

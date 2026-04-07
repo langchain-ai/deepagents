@@ -1,0 +1,5 @@
+{
+  "id": "doc_everyone_pay_everyone_pay_012",
+  "title": "Why was my Everyone Pay transaction declined?",
+  "content": "## Limits reached\n- Individual accounts have a daily limit of $1,500 and a monthly limit of $12,500. If your payment would exceed either limit, it will be declined.\n\n## Other possible causes\n- Insufficient available balance in the selected funding account.\n- Invalid or unverified recipient details.\n- A temporary security review based on unusual activity.\n- Network or system interruptions during submission.\n\n## How to resolve\n- Adjust the amount to fit within your remaining daily or monthly capacity.\n- Confirm recipient details on the contact card and try again.\n- Select a different funding account if available.\n- Wait and retry after any temporary restrictions are cleared.\n- If declines continue, contact support from the transaction screen."
+}

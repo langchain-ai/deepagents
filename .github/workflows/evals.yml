@@ -121,6 +121,7 @@ on:
           - summarization
           - tool_use
           - unit_test
+          - tau3
       eval_categories_override:
         description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
         required: false

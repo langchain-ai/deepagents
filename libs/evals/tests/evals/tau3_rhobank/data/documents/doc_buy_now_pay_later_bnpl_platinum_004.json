@@ -1,0 +1,5 @@
+{
+  "id": "doc_buy_now_pay_later_bnpl_platinum_004",
+  "title": "BNPL Platinum: Minimum and Maximum Purchase Amounts for Financing",
+  "content": "## Eligibility thresholds\n- Minimum amount eligible for financing: [value not available]\n- Maximum amount eligible for financing: [value not available]\n\n## How eligibility is evaluated\n- Eligibility is determined using the final settled transaction amount.\n- Transactions below [value not available] or above [value not available] will not present the BNPL Platinum option at checkout.\n\n## Practical tips\n- If taxes, fees, or shipping push the settled amount above [value not available], the purchase will be ineligible.\n- If a discount reduces the settled amount below [value not available], the purchase will be ineligible.\n- Verify the final amount before confirming financing to ensure it remains within the eligible range."
+}

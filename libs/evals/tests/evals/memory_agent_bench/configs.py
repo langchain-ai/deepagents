@@ -291,7 +291,9 @@ FOCUSED_CONFIGS: list[DatasetConfig] = [
     FOCUSED_CR_MH_6K,
 ]
 
-# CI runs the focused set: 4 tests, one per category, each posing a single
-# cherry-picked question. This keeps cost low while covering all four
-# MemoryAgentBench capability axes.
 CI_CONFIGS: list[DatasetConfig] = FOCUSED_CONFIGS
+"""CI runs the focused set: 4 tests, one per category, each posing a single
+cherry-picked question.
+
+This keeps cost low while covering all four `MemoryAgentBench` capability axes.
+"""

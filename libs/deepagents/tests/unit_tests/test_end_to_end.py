@@ -20,7 +20,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
@@ -1950,6 +1950,259 @@ class TestStateBackendConfigKeys:
         dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
         factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
         assert len(factory_warnings) >= 1
+
+
+class TestArtifactsRoot:
+    """Test that artifacts_root on CompositeBackend parameterizes internal paths."""
+
+    def test_deep_agent_artifacts_root_system_prompt_and_eviction(self) -> None:
+        """Custom artifacts_root flows through to system prompt and eviction paths."""
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return "x" * 500_000
+
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "big_tool",
+                                "args": {},
+                                "id": "call_big",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[big_tool],
+            backend=backend,
+            middleware=[capturing_middleware],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
+
+        # Verify system prompt references the custom artifacts_root
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/workspace/large_tool_results/" in system_content
+        assert "/large_tool_results/<tool_call_id>" not in system_content or "/workspace/large_tool_results/<tool_call_id>" in system_content
+
+        # Verify the evicted tool result was written under the custom prefix
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
+        assert "/workspace/large_tool_results/" in evicted_msg.content
+        [resp] = backend.download_files(["/workspace/large_tool_results/call_big"])
+        assert resp.error is None
+        assert resp.content is not None
+        assert b"x" * 100 in resp.content
+
+    def test_deep_agent_artifacts_root_eviction_then_read(self) -> None:
+        """Evicted tool result under custom artifacts_root can be read back."""
+        large_content = "z" * 500_000
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return large_content
+
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "big_tool",
+                                "args": {},
+                                "id": "call_big",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/workspace/large_tool_results/call_big"},
+                                "id": "call_read",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[big_tool],
+            backend=backend,
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool then read it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        read_msg = next(m for m in tool_messages if m.tool_call_id == "call_read")
+        assert "z" * 100 in read_msg.content
+
+    def test_deep_agent_artifacts_root_conversation_history_offload(self) -> None:
+        """Summarization offloads conversation history under the custom artifacts_root."""
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
+        )
+        fake_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(
+            model=fake_model,
+            backend=backend,
+            checkpointer=InMemorySaver(),
+        )
+
+        text_10_000_tokens = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        text_50_000_tokens = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        input_messages = [
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),
+            HumanMessage(content=text_10_000_tokens),
+            AIMessage(content=text_50_000_tokens),
+            HumanMessage(content="query"),
+        ]
+
+        config = {"configurable": {"thread_id": "artifacts-root-summarization-test"}}
+        result = agent.invoke({"messages": input_messages}, config)
+
+        assert result["messages"][-1].content == "response"
+
+        # Verify conversation history was offloaded under /workspace/conversation_history/
+        ls_result = backend.ls("/workspace/conversation_history/")
+        assert ls_result.entries, "Expected conversation history offloaded under /workspace/conversation_history/"
+
+        # Verify nothing was written to the default /conversation_history/ path
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
+
+    def test_create_deep_agent_no_composite_backend(self) -> None:
+        """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
+        backend = StateBackend()
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            middleware=[capturing_middleware],
+        )
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/large_tool_results/" in system_content
+
+    def test_create_deep_agent_composite_backend_default_artifacts_root(self) -> None:
+        """create_deep_agent with CompositeBackend without artifacts_root defaults to '/'."""
+        backend = CompositeBackend(default=StateBackend(), routes={})
+        assert backend.artifacts_root == "/"
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            middleware=[capturing_middleware],
+        )
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/large_tool_results/" in system_content
+
+    def test_human_message_eviction_uses_artifacts_root(self) -> None:
+        """Oversized HumanMessage is evicted under the custom artifacts_root."""
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        threshold = 50_000
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+
+        model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Got it.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "eviction-artifacts-root"}}
+        result = agent.invoke({"messages": [HumanMessage(content=large_content)]}, config)
+
+        human_messages = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+        assert len(human_messages) == 1
+        evicted_to = human_messages[0].additional_kwargs.get("lc_evicted_to")
+        assert evicted_to is not None
+        assert evicted_to.startswith("/workspace/conversation_history/")
+
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries
+
+    async def test_async_human_message_eviction_uses_artifacts_root(self) -> None:
+        """Async: oversized HumanMessage is evicted under the custom artifacts_root."""
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        backend = CompositeBackend(
+            default=store_backend,
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        threshold = 50_000
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+
+        model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Got it.")]))
+
+        agent = create_deep_agent(model=model, backend=backend, checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "async-eviction-artifacts-root"}}
+        result = await agent.ainvoke({"messages": [HumanMessage(content=large_content)]}, config)
+
+        human_messages = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+        assert len(human_messages) == 1
+        evicted_to = human_messages[0].additional_kwargs.get("lc_evicted_to")
+        assert evicted_to is not None
+        assert evicted_to.startswith("/workspace/conversation_history/")
+
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries
 
 
 class TestAsyncSubagentEndToEnd:

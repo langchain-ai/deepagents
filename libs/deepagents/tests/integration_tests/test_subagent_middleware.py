@@ -112,7 +112,7 @@ class TestSubagentMiddleware:
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
                             "tools": [get_weather],
-                            "model": "gpt-4.1",
+                            "model": "gpt-5.4",
                         }
                     ],
                 )
@@ -124,7 +124,7 @@ class TestSubagentMiddleware:
                 "args": {"subagent_type": "weather"},
                 "model": "claude-sonnet-4-20250514",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,
@@ -145,7 +145,7 @@ class TestSubagentMiddleware:
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
                             "tools": [],  # No tools, only in middleware
-                            "model": "gpt-4.1",
+                            "model": "gpt-5.4",
                             "middleware": [WeatherMiddleware()],
                         }
                     ],
@@ -158,7 +158,7 @@ class TestSubagentMiddleware:
                 "args": {"subagent_type": "weather"},
                 "model": "claude-sonnet-4-20250514",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,
@@ -168,7 +168,7 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_runnable(self):
         custom_subagent = create_agent(
-            model="gpt-4.1-2025-04-14",
+            model="gpt-5.4",
             system_prompt="Use the get_weather tool to get the weather in a city.",
             tools=[get_weather],
         )
@@ -194,7 +194,7 @@ class TestSubagentMiddleware:
                 "args": {"subagent_type": "weather"},
                 "model": "claude-sonnet-4-20250514",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,

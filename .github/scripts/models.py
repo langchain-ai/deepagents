@@ -264,6 +264,17 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "ollama:glm-5.1",
+        frozenset(
+            {
+                "eval:set2",
+                "eval:ollama",
+                "harbor:set2",
+                "harbor:ollama",
+            }
+        ),
+    ),
+    Model(
         "ollama:minimax-m2.5",
         frozenset(
             {
@@ -425,12 +436,21 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "openrouter:nvidia/nemotron-3-super-120b-a12b",
+        "openrouter:z-ai/glm-5.1",
         frozenset(
             {
                 "eval:open",
                 "eval:openrouter",
                 "harbor:open",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:nvidia/nemotron-3-super-120b-a12b",
+        frozenset(
+            {
+                "eval:openrouter",
                 "harbor:openrouter",
             }
         ),

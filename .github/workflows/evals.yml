@@ -78,6 +78,7 @@ on:
           - "groq:moonshotai/kimi-k2-instruct"
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
+          - "ollama:glm-5.1"
           - "ollama:minimax-m2.5"
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
@@ -99,6 +100,7 @@ on:
           - "openai:gpt-5.4"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -267,7 +269,7 @@ jobs:
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "🔒 Apply OpenRouter provider pin"
-        if: inputs.openrouter_provider != ''
+        if: inputs.openrouter_provider != '' && matrix.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
@@ -324,6 +326,8 @@ jobs:
       - name: "📊 Generate radar chart"
         if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
         working-directory: libs/evals
+        env:
+          EVAL_OUTCOME: ${{ needs.eval.result }}
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"

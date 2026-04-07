@@ -41,7 +41,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
+        description: "(CLI only) Skip SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"

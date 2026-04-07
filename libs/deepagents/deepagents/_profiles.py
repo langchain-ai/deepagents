@@ -81,9 +81,6 @@ class ProviderProfile:
     """When set, completely replaces `BASE_AGENT_PROMPT` as the base system
     prompt.  `None` (default) means use `BASE_AGENT_PROMPT` unchanged.
 
-    The caller's `system_prompt` argument to `create_deep_agent` (if any)
-    is still prepended before this base.
-
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
     suffix is appended to this custom base.
     """

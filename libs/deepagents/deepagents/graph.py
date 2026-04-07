@@ -261,10 +261,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
-        system_prompt: Custom system instructions to prepend before the base
-            Deep Agent prompt.
+        system_prompt: Custom system instructions prepended before the base
+            system prompt (`BASE_AGENT_PROMPT`, or the provider profile's
+            `base_system_prompt` when set).
 
-            If a string, it's concatenated with the base prompt.
+            Does not replace the base prompt — use
+            `ProviderProfile.base_system_prompt` for that.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 

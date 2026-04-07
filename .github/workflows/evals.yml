@@ -325,6 +325,8 @@ jobs:
       - name: "📊 Generate radar chart"
         if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
         working-directory: libs/evals
+        env:
+          EVAL_OUTCOME: ${{ needs.eval.result }}
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"

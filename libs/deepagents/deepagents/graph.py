@@ -26,7 +26,6 @@ from langgraph.typing import ContextT
 from deepagents._models import resolve_model
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
-from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -282,13 +281,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else StateBackend()
 
-    artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
-
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend, artifacts_root=artifacts_root),
-        create_summarization_middleware(model, backend, artifacts_root=artifacts_root),
+        FilesystemMiddleware(backend=backend),
+        create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
@@ -324,8 +321,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend, artifacts_root=artifacts_root),
-                create_summarization_middleware(subagent_model, backend, artifacts_root=artifacts_root),
+                FilesystemMiddleware(backend=backend),
+                create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
@@ -361,12 +358,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend, artifacts_root=artifacts_root),
+            FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
             ),
-            create_summarization_middleware(model, backend, artifacts_root=artifacts_root),
+            create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
     )

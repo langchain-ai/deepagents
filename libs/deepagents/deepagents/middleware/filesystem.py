@@ -32,8 +32,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from deepagents.backends import StateBackend
-from deepagents.backends.composite import CompositeBackend
+from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -53,7 +52,7 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import append_to_system_message, resolve_artifacts_root
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -580,7 +579,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
-        artifacts_root: str = "/",
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -597,8 +595,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            artifacts_root: Root path for artifacts, such as messages offloaded
-                by middleware. Defaults to `"/"`.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
@@ -609,8 +605,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
 
-        self.artifacts_root = artifacts_root
-        _root = artifacts_root.rstrip("/")
+        self._artifacts_root = resolve_artifacts_root(self.backend)
+        _root = self._artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 

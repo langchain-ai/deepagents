@@ -1,6 +1,32 @@
 """Utility functions for middleware."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from langchain_core.messages import ContentBlock, SystemMessage
+
+from deepagents.backends import CompositeBackend
+
+if TYPE_CHECKING:
+    from deepagents.backends.protocol import BACKEND_TYPES
+
+
+def resolve_artifacts_root(backend: BACKEND_TYPES | None) -> str:
+    """Determine the artifacts root from the backend instance.
+
+    Returns the `artifacts_root` attribute from a `CompositeBackend`, or
+    `"/"` for all other backend types.
+
+    Args:
+        backend: Backend instance or factory, or None.
+
+    Returns:
+        The artifacts root path.
+    """
+    if isinstance(backend, CompositeBackend):
+        return backend.artifacts_root
+    return "/"
 
 
 def append_to_system_message(

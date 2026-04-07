@@ -74,7 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import append_to_system_message, resolve_artifacts_root
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -221,9 +221,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        history_path_prefix: str = "/conversation_history",
+        history_path_prefix: str | None = None,
         truncate_args_settings: TruncateArgsSettings | None = None,
-        artifacts_root: str = "/",
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -255,8 +254,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
             history_path_prefix: Path prefix for storing conversation history.
-            artifacts_root: Root path for artifacts, such as messages offloaded
-                by middleware. Defaults to `"/"`.
+                Derived from the backend's `artifacts_root` when not provided.
 
         Example:
             ```python
@@ -284,8 +282,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Deep Agents specific attributes
         self._backend = backend
+
+        self._artifacts_root = resolve_artifacts_root(backend)
+        if history_path_prefix is None:
+            _root = self._artifacts_root.rstrip("/")
+            history_path_prefix = f"{_root}/conversation_history"
         self._history_path_prefix = history_path_prefix
-        self._artifacts_root = artifacts_root
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -1090,8 +1092,6 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
-    *,
-    artifacts_root: str = "/",
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
 
@@ -1103,8 +1103,6 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
-        artifacts_root: Root path for artifacts, such as messages offloaded
-            by middleware. Defaults to `"/"`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1126,8 +1124,6 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
-        artifacts_root=artifacts_root,
-        history_path_prefix=f"{artifacts_root.rstrip('/')}/conversation_history",
     )
 
 

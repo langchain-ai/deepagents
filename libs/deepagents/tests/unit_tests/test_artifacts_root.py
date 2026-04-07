@@ -17,6 +17,14 @@ def _make_store_backend():
     return StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
 
+def _make_composite_backend(*, artifacts_root: str = "/"):
+    return CompositeBackend(
+        default=_make_store_backend(),
+        routes={},
+        artifacts_root=artifacts_root,
+    )
+
+
 def _runtime(tool_call_id: str = "tc"):
     return ToolRuntime(
         state={"messages": [], "files": {}},
@@ -41,29 +49,31 @@ class TestCompositeBackendArtifactsRoot:
 class TestFilesystemMiddlewareArtifactsRoot:
     def test_default_prefixes(self) -> None:
         mw = FilesystemMiddleware()
-        assert mw.artifacts_root == "/"
+        assert mw._artifacts_root == "/"
         assert mw._large_tool_results_prefix == "/large_tool_results"
         assert mw._conversation_history_prefix == "/conversation_history"
 
-    def test_custom_artifacts_root_prefixes(self) -> None:
-        mw = FilesystemMiddleware(artifacts_root="/workspace")
-        assert mw.artifacts_root == "/workspace"
+    def test_custom_artifacts_root_from_composite_backend(self) -> None:
+        backend = _make_composite_backend(artifacts_root="/workspace")
+        mw = FilesystemMiddleware(backend=backend)
+        assert mw._artifacts_root == "/workspace"
         assert mw._large_tool_results_prefix == "/workspace/large_tool_results"
         assert mw._conversation_history_prefix == "/workspace/conversation_history"
 
     def test_trailing_slash_normalized(self) -> None:
-        mw = FilesystemMiddleware(artifacts_root="/workspace/")
+        backend = _make_composite_backend(artifacts_root="/workspace/")
+        mw = FilesystemMiddleware(backend=backend)
         assert mw._large_tool_results_prefix == "/workspace/large_tool_results"
         assert mw._conversation_history_prefix == "/workspace/conversation_history"
 
     def test_root_slash_no_double_slash(self) -> None:
-        mw = FilesystemMiddleware(artifacts_root="/")
+        mw = FilesystemMiddleware()
         assert mw._large_tool_results_prefix == "/large_tool_results"
         assert mw._conversation_history_prefix == "/conversation_history"
 
     def test_large_tool_result_eviction_uses_artifacts_root(self) -> None:
-        backend = _make_store_backend()
-        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100, artifacts_root="/workspace")
+        backend = _make_composite_backend(artifacts_root="/workspace")
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("evict_123")
 
         large_content = "x" * 5000
@@ -98,23 +108,23 @@ class TestCreateSummarizationMiddlewareArtifactsRoot:
         assert mw._history_path_prefix == "/conversation_history"
         assert mw._artifacts_root == "/"
 
-    def test_custom_artifacts_root_history_path_prefix(self) -> None:
-        backend = _make_store_backend()
+    def test_custom_artifacts_root_from_composite_backend(self) -> None:
+        backend = _make_composite_backend(artifacts_root="/workspace")
         model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend, artifacts_root="/workspace")
+        mw = create_summarization_middleware(model, backend)
         assert mw._history_path_prefix == "/workspace/conversation_history"
         assert mw._artifacts_root == "/workspace"
 
     def test_trailing_slash_normalized(self) -> None:
-        backend = _make_store_backend()
+        backend = _make_composite_backend(artifacts_root="/workspace/")
         model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend, artifacts_root="/workspace/")
+        mw = create_summarization_middleware(model, backend)
         assert mw._history_path_prefix == "/workspace/conversation_history"
 
     def test_root_slash_no_double_slash(self) -> None:
         backend = _make_store_backend()
         model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend, artifacts_root="/")
+        mw = create_summarization_middleware(model, backend)
         assert mw._history_path_prefix == "/conversation_history"
 
 
@@ -123,13 +133,8 @@ class TestCompositeBackendEvictionArtifactsRoot:
 
     def test_large_tool_result_eviction(self) -> None:
         """Large tool result eviction writes to the custom artifacts_root path."""
-        store_backend = _make_store_backend()
-        backend = CompositeBackend(
-            default=store_backend,
-            routes={},
-            artifacts_root="/workspace",
-        )
-        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100, artifacts_root="/workspace")
+        backend = _make_composite_backend(artifacts_root="/workspace")
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("evict_ws")
 
         large_content = "x" * 5000
@@ -145,9 +150,9 @@ class TestCompositeBackendEvictionArtifactsRoot:
 
     def test_summarization_history_prefix(self) -> None:
         """Summarization middleware uses the correct history prefix from artifacts_root."""
-        backend = _make_store_backend()
+        backend = _make_composite_backend(artifacts_root="/workspace")
         model = FakeChatModel(messages=iter([]))
-        mw = create_summarization_middleware(model, backend, artifacts_root="/workspace")
+        mw = create_summarization_middleware(model, backend)
         assert mw._history_path_prefix == "/workspace/conversation_history"
         assert mw._artifacts_root == "/workspace"
 
@@ -156,8 +161,8 @@ class TestAsyncEvictionArtifactsRoot:
     """Tests for async eviction paths with custom artifacts_root."""
 
     async def test_async_large_tool_result_eviction_uses_artifacts_root(self) -> None:
-        backend = _make_store_backend()
-        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100, artifacts_root="/workspace")
+        backend = _make_composite_backend(artifacts_root="/workspace")
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("async_evict_123")
 
         large_content = "x" * 5000

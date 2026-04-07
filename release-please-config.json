@@ -102,6 +102,18 @@
         "langchain_daytona/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/modal": {
+      "release-type": "python",
+      "package-name": "langchain-modal",
+      "component": "langchain-modal",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_modal/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

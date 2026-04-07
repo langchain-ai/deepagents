@@ -1,8 +1,7 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
-import warnings
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, NotRequired, TypedDict, Unpack, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -199,7 +198,7 @@ User: "I want to order a pizza from Dominos, order a burger from McDonald's, and
 Assistant: *Calls tools directly in parallel to order a pizza from Dominos, a burger from McDonald's, and a salad from Subway*
 <commentary>
 The assistant did not use the task tool because the objective is super simple and clear and only requires a few trivial tool calls.
-It is better to just complete the task directly and NOT use the `task`tool.
+It is better to just complete the task directly and NOT use the `task` tool.
 </commentary>
 </example>
 
@@ -209,7 +208,7 @@ It is better to just complete the task directly and NOT use the `task`tool.
 "content-reviewer": use this agent after you are done creating significant content or documents
 "greeting-responder": use this agent when to respond to user greetings with a friendly joke
 "research-analyst": use this agent to conduct thorough research on complex topics
-</example_agent_description>
+</example_agent_descriptions>
 
 <example>
 user: "Please write a function that checks if a number is prime"
@@ -296,101 +295,11 @@ class _SubagentSpec(TypedDict):
     runnable: Runnable
 
 
-def _get_subagents_legacy(
-    *,
-    default_model: str | BaseChatModel,
-    default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
-    default_middleware: list[AgentMiddleware] | None,
-    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: Sequence[SubAgent | CompiledSubAgent],
-    general_purpose_agent: bool,
-) -> list[_SubagentSpec]:
-    """Create subagent instances from specifications.
-
-    Args:
-        default_model: Default model for subagents that don't specify one.
-        default_tools: Default tools for subagents that don't specify tools.
-        default_middleware: Middleware to apply to all subagents. If `None`,
-            no default middleware is applied.
-        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
-            are also the fallback for any subagents that don't specify their own tool configs.
-        subagents: List of agent specifications or pre-compiled agents.
-        general_purpose_agent: Whether to include a general-purpose subagent.
-
-    Returns:
-        List of subagent specs containing name, description, and runnable.
-    """
-    # Use empty list if None (no default middleware)
-    default_subagent_middleware = default_middleware or []
-
-    specs: list[_SubagentSpec] = []
-
-    # Create general-purpose agent if enabled
-    if general_purpose_agent:
-        general_purpose_middleware = [*default_subagent_middleware]
-        if default_interrupt_on:
-            general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
-        general_purpose_subagent = create_agent(
-            default_model,
-            system_prompt=DEFAULT_SUBAGENT_PROMPT,
-            tools=default_tools,
-            middleware=general_purpose_middleware,
-            name="general-purpose",
-        )
-        specs.append(
-            {
-                "name": "general-purpose",
-                "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
-                "runnable": general_purpose_subagent,
-            }
-        )
-
-    # Process custom subagents
-    for agent_ in subagents:
-        if "runnable" in agent_:
-            custom_agent = cast("CompiledSubAgent", agent_)
-            specs.append(
-                {
-                    "name": custom_agent["name"],
-                    "description": custom_agent["description"],
-                    "runnable": custom_agent["runnable"],
-                }
-            )
-            continue
-        _tools = agent_.get("tools", list(default_tools))
-
-        subagent_model = agent_.get("model", default_model)
-
-        _middleware = [*default_subagent_middleware, *agent_["middleware"]] if "middleware" in agent_ else [*default_subagent_middleware]
-
-        interrupt_on = agent_.get("interrupt_on", default_interrupt_on)
-        if interrupt_on:
-            _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-        specs.append(
-            {
-                "name": agent_["name"],
-                "description": agent_["description"],
-                "runnable": create_agent(
-                    subagent_model,
-                    system_prompt=agent_["system_prompt"],
-                    tools=_tools,
-                    middleware=_middleware,
-                    name=agent_["name"],
-                ),
-            }
-        )
-
-    return specs
-
-
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
     """Create a task tool from pre-built subagent graphs.
-
-    This is the shared implementation used by both the legacy API and new API.
 
     Args:
         subagents: List of subagent specs containing name, description, and runnable.
@@ -480,14 +389,6 @@ def _build_task_tool(  # noqa: C901
     )
 
 
-class _DeprecatedKwargs(TypedDict, total=False):
-    """TypedDict for deprecated SubAgentMiddleware keyword arguments.
-
-    These arguments are deprecated and will be removed in version 0.5.0.
-    Use `backend` and fully-specified `subagents` instead.
-    """
-
-
 class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for providing subagents to an agent via a `task` tool.
 
@@ -502,7 +403,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     subset of tools and focus.
 
     Args:
-        backend: Backend for file operations and execution. Required for the new API.
+        backend: Backend for file operations and execution.
         subagents: List of fully-specified subagent configs. Each SubAgent
             must specify `model` and `tools`. Optional `interrupt_on` on
             individual subagents is respected.
@@ -534,87 +435,25 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
         ```
 
-    .. deprecated::
-        The following arguments are deprecated and will be removed in version 0.5.0:
-        `default_model`, `default_tools`, `default_middleware`,
-        `default_interrupt_on`, `general_purpose_agent`. Use `backend` and `subagents` instead.
     """
-
-    # Valid deprecated kwarg names for runtime validation
-    _VALID_DEPRECATED_KWARGS = frozenset(
-        {
-            "default_model",
-            "default_tools",
-            "default_middleware",
-            "default_interrupt_on",
-            "general_purpose_agent",
-        }
-    )
 
     def __init__(
         self,
         *,
-        backend: BackendProtocol | BackendFactory | None = None,
-        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+        backend: BackendProtocol | BackendFactory,
+        subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
-        **deprecated_kwargs: Unpack[_DeprecatedKwargs],
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
 
-        # Validate that only known deprecated kwargs are passed
-        unknown_kwargs = set(deprecated_kwargs.keys()) - self._VALID_DEPRECATED_KWARGS
-        if unknown_kwargs:
-            msg = f"SubAgentMiddleware got unexpected keyword argument(s): {', '.join(sorted(unknown_kwargs))}"
-            raise TypeError(msg)
-
-        # Handle deprecated kwargs for backward compatibility
-        default_model = deprecated_kwargs.get("default_model")
-        default_tools = deprecated_kwargs.get("default_tools")
-        default_middleware = deprecated_kwargs.get("default_middleware")
-        default_interrupt_on = deprecated_kwargs.get("default_interrupt_on")
-        # general_purpose_agent defaults to True if not specified
-        general_purpose_agent = deprecated_kwargs.get("general_purpose_agent", True)
-
-        # Warn about any deprecated kwargs that were provided
-        provided_deprecated = [key for key in deprecated_kwargs if key != "general_purpose_agent"]
-        if "general_purpose_agent" in deprecated_kwargs and not general_purpose_agent:
-            provided_deprecated.append("general_purpose_agent")
-
-        if provided_deprecated:
-            warnings.warn(
-                f"The following SubAgentMiddleware arguments are deprecated and will be removed "
-                f"in version 0.5.0: {', '.join(provided_deprecated)}. "
-                f"Use `backend` and fully-specified `subagents` instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-        # Detect which API is being used
-        using_new_api = backend is not None
-        using_old_api = default_model is not None
-
-        if using_old_api and not using_new_api:
-            # Legacy API - build subagents from deprecated args
-            subagent_specs = _get_subagents_legacy(
-                default_model=default_model,  # ty: ignore[invalid-argument-type]
-                default_tools=default_tools or [],
-                default_middleware=default_middleware,
-                default_interrupt_on=default_interrupt_on,
-                subagents=subagents or [],
-                general_purpose_agent=general_purpose_agent,
-            )
-        elif using_new_api:
-            if not subagents:
-                msg = "At least one subagent must be specified when using the new API"
-                raise ValueError(msg)
-            self._backend = backend
-            self._subagents = subagents
-            subagent_specs = self._get_subagents()
-        else:
-            msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
+        if not subagents:
+            msg = "At least one subagent must be specified"
             raise ValueError(msg)
+        self._backend = backend
+        self._subagents = subagents
+        subagent_specs = self._get_subagents()
 
         task_tool = _build_task_tool(subagent_specs, task_description)
 

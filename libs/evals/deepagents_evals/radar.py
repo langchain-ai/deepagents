@@ -290,7 +290,7 @@ def toy_data() -> list[ModelResult]:
             },
         ),
         ModelResult(
-            model="openai:gpt-4.1",
+            model="openai:gpt-5.4",
             scores={
                 "file_operations": 0.88,
                 "retrieval": 0.72,

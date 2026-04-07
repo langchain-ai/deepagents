@@ -150,11 +150,11 @@ def test_tau3_rhobank(model: BaseChatModel, task_id: str) -> None:
     )
     episode_score = score_tau3_episode(reward)
 
-    t.log_feedback(key="db_score", value=reward.db_score)
-    t.log_feedback(key="communicate_score", value=reward.communicate_score)
-    t.log_feedback(key="turn_count", value=conversation.turn_count)
-    for key, value in episode_score.expected_metrics.items():
-        t.log_feedback(key=key, value=value)
+    t.log_feedback(key="db_score", score=reward.db_score)
+    t.log_feedback(key="communicate_score", score=reward.communicate_score)
+    t.log_feedback(key="turn_count", score=conversation.turn_count)
+    for metric_key, metric_val in episode_score.expected_metrics.items():
+        t.log_feedback(key=metric_key, score=metric_val)
 
     logger.info(
         "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls",

@@ -131,14 +131,14 @@ class UserSimulator:
         """Whether the simulator has emitted a stop token."""
         return self._done
 
-    def get_opening_message(self) -> str:
+    def get_opening_message(self) -> UserResponse:
         """Generate the customer's first message in the conversation.
 
         Returns:
-            The customer's opening message.
+            The customer's opening response (may include tool calls).
         """
         greeting = "Hello! Welcome to Rho-Bank customer service. How may I assist you today?"
-        return self.respond(greeting).text
+        return self.respond(greeting)
 
     def respond(self, agent_message: str) -> UserResponse:
         """Generate the customer's response to an agent message.

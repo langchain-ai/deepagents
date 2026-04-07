@@ -356,6 +356,11 @@ def evaluate_task(
 def score_tau3_episode(reward: TaskReward) -> EpisodeScore:
     """Map a tau3 task reward into success + expectation metrics.
 
+    Success requires a perfect DB state match (all expected actions executed
+    with the correct arguments). The `actions_match_rate` is logged as the
+    primary continuous score so experiments show a 0-1 gradient rather than
+    binary pass/fail.
+
     Args:
         reward: The combined reward object produced by `evaluate_task`.
 
@@ -375,6 +380,7 @@ def score_tau3_episode(reward: TaskReward) -> EpisodeScore:
 
     expected_metrics: dict[str, float | int | str] = {
         "actions_match_rate": actions_match_rate,
+        "score": actions_match_rate,
     }
 
     return EpisodeScore(

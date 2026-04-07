@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
     from tests.evals.tau3_rhobank.domain import ToolCallEntry
-    from tests.evals.tau3_rhobank.user_sim import UserSimulator
+    from tests.evals.tau3_rhobank.user_sim import UserResponse, UserSimulator
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,38 @@ def run_multi_turn(
     result = ConversationResult(tool_call_log=tool_call_log)
     user_tools_by_name = {t.name: t for t in user_tools}
 
-    user_msg = user_sim.get_opening_message()
+    def _resolve_user_tool_calls(user_response: UserResponse, label: str) -> str:
+        """Execute user-sim tool calls and return the final text message.
+
+        When the user simulator responds with tool calls (and possibly empty
+        text), this helper runs those tools against the shared DB, feeds the
+        results back, and re-invokes the sim until it produces a text message.
+        """
+        tool_rounds = 0
+        while user_response.tool_calls:
+            tool_rounds += 1
+            if tool_rounds > MAX_USER_TOOL_ROUNDS_PER_TURN:
+                logger.warning(
+                    "Exceeded max user tool rounds (%d) at %s", MAX_USER_TOOL_ROUNDS_PER_TURN, label
+                )
+                break
+            for tc in user_response.tool_calls:
+                tool = user_tools_by_name.get(tc["name"])
+                if tool is not None:
+                    try:
+                        tool_result = tool.invoke(tc["args"])
+                    except Exception as e:  # noqa: BLE001
+                        tool_result = f"Error: {e}"
+                    user_sim.receive_tool_result(tc["id"], tc["name"], tool_result)
+                else:
+                    user_sim.receive_tool_result(
+                        tc["id"], tc["name"], f"Error: Unknown tool '{tc['name']}'"
+                    )
+            user_response = user_sim.get_response_after_tools()
+        return user_response.text
+
+    opening = user_sim.get_opening_message()
+    user_msg = _resolve_user_tool_calls(opening, "opening")
     result.messages.append(Message(role="user", content=user_msg))
 
     for turn in range(max_turns):
@@ -107,35 +138,7 @@ def run_multi_turn(
 
         logger.info("Turn %d: user responding", turn + 1)
         user_response = user_sim.respond(agent_msg)
-
-        tool_rounds = 0
-        while user_response.tool_calls:
-            tool_rounds += 1
-            if tool_rounds > MAX_USER_TOOL_ROUNDS_PER_TURN:
-                logger.warning(
-                    "Exceeded max user tool rounds (%d) in turn %d",
-                    MAX_USER_TOOL_ROUNDS_PER_TURN,
-                    turn + 1,
-                )
-                break
-
-            for tc in user_response.tool_calls:
-                tool = user_tools_by_name.get(tc["name"])
-                if tool is not None:
-                    try:
-                        tool_result = tool.invoke(tc["args"])
-                    except Exception as e:  # noqa: BLE001
-                        tool_result = f"Error: {e}"
-                    user_sim.receive_tool_result(tc["id"], tc["name"], tool_result)
-                else:
-                    user_sim.receive_tool_result(
-                        tc["id"],
-                        tc["name"],
-                        f"Error: Unknown tool '{tc['name']}'",
-                    )
-            user_response = user_sim.get_response_after_tools()
-
-        user_msg = user_response.text
+        user_msg = _resolve_user_tool_calls(user_response, f"turn {turn + 1}")
 
         result.messages.append(Message(role="user", content=user_msg))
 

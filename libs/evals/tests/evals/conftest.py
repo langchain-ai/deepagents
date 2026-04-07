@@ -74,12 +74,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not categories:
         return
 
-    known = {
-        m.args[0]
-        for item in items
-        for m in item.iter_markers("eval_category")
-        if m.args
-    }
+    known = {m.args[0] for item in items for m in item.iter_markers("eval_category") if m.args}
     unknown = set(categories) - known
     if unknown:
         msg = (

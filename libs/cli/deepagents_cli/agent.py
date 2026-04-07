@@ -365,7 +365,7 @@ def reset_agent(
             )
             raise SystemExit(1)
 
-        source_content = source_md.read_text()
+        source_content = source_md.read_text(encoding="utf-8")
         action_desc = f"contents of agent '{source_agent}'"
     else:
         source_content = get_default_coding_instructions()
@@ -505,7 +505,7 @@ def get_system_prompt(
         ... {CONDITIONAL SECTIONS} ...
         ```
     """
-    template = (Path(__file__).parent / "system_prompt.md").read_text()
+    template = (Path(__file__).parent / "system_prompt.md").read_text(encoding="utf-8")
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 

@@ -125,23 +125,110 @@ def get_provider_profile(spec: str) -> ProviderProfile:
         without a colon, the full string is used).
     3. A default empty `ProviderProfile`.
 
+    When both an exact-model profile and a provider-level profile exist, they
+    are merged: the provider profile serves as the base and the exact-model
+    profile is layered on top. This ensures per-model tweaks inherit provider
+    defaults (e.g. `use_responses_api` for OpenAI, prompt-caching middleware
+    for Anthropic) instead of silently dropping them.
+
     Args:
         spec: Model spec in `provider:model` format, or a bare model name.
 
     Returns:
         The matching `ProviderProfile`, or an empty default.
     """
-    profile = _PROVIDER_PROFILES.get(spec)
-    if profile is not None:
-        return profile
+    exact = _PROVIDER_PROFILES.get(spec)
 
-    provider, _, _ = spec.partition(":")
-    if provider:
-        profile = _PROVIDER_PROFILES.get(provider)
-        if profile is not None:
-            return profile
+    provider, sep, _ = spec.partition(":")
+    base = _PROVIDER_PROFILES.get(provider) if sep else None
 
+    if exact is not None and base is not None:
+        return _merge_profiles(base, exact)
+    if exact is not None:
+        return exact
+    if base is not None:
+        return base
     return ProviderProfile()
+
+
+def _resolve_middleware_seq(
+    middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
+) -> Sequence[AgentMiddleware]:
+    """Resolve middleware to a concrete sequence, calling factory if needed."""
+    if callable(middleware):
+        return middleware()  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
+    return middleware
+
+
+def _merge_profiles(base: ProviderProfile, override: ProviderProfile) -> ProviderProfile:
+    """Merge two profiles, layering `override` on top of `base`.
+
+    Dict fields are merged (override wins per-key). Callables (`pre_init`,
+    `init_kwargs_factory`) are chained. Set-like fields (`exclude_tools`) are
+    unioned. Middleware sequences are concatenated. Scalar fields use the
+    override value when it differs from the dataclass default.
+
+    Args:
+        base: Provider-level profile (lower priority).
+        override: Exact-model profile (higher priority).
+
+    Returns:
+        A new merged `ProviderProfile`.
+    """
+    # Chain pre_init callables
+    if base.pre_init is not None and override.pre_init is not None:
+        base_pre = base.pre_init
+        over_pre = override.pre_init
+
+        def chained_pre_init(spec: str) -> None:
+            base_pre(spec)
+            over_pre(spec)
+
+        pre_init: Callable[[str], None] | None = chained_pre_init
+    else:
+        pre_init = override.pre_init or base.pre_init
+
+    # Chain init_kwargs_factory callables
+    if base.init_kwargs_factory is not None and override.init_kwargs_factory is not None:
+        base_fac = base.init_kwargs_factory
+        over_fac = override.init_kwargs_factory
+
+        def chained_factory() -> dict[str, Any]:
+            result = base_fac()
+            result.update(over_fac())
+            return result
+
+        init_kwargs_factory: Callable[[], dict[str, Any]] | None = chained_factory
+    else:
+        init_kwargs_factory = override.init_kwargs_factory or base.init_kwargs_factory
+
+    # Concatenate extra_middleware (preserve deferred resolution)
+    base_mw = base.extra_middleware
+    over_mw = override.extra_middleware
+    if base_mw and over_mw:
+
+        def merged_middleware() -> Sequence[AgentMiddleware]:
+            return [
+                *_resolve_middleware_seq(base_mw),
+                *_resolve_middleware_seq(over_mw),
+            ]
+
+        extra_mw: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = merged_middleware
+    else:
+        extra_mw = over_mw or base_mw
+
+    return ProviderProfile(
+        init_kwargs={**base.init_kwargs, **override.init_kwargs},
+        pre_init=pre_init,
+        init_kwargs_factory=init_kwargs_factory,
+        system_prompt_suffix=(override.system_prompt_suffix if override.system_prompt_suffix is not None else base.system_prompt_suffix),
+        exclude_tools=base.exclude_tools | override.exclude_tools,
+        tool_description_overrides={
+            **base.tool_description_overrides,
+            **override.tool_description_overrides,
+        },
+        extra_middleware=extra_mw,
+    )
 
 
 # ---------------------------------------------------------------------------

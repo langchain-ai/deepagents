@@ -19,6 +19,7 @@ from deepagents._profiles import (
     _PROVIDER_PROFILES,
     OPENROUTER_MIN_VERSION,
     ProviderProfile,
+    _merge_profiles,
     _openrouter_attribution_kwargs,
     check_openrouter_version,
     get_provider_profile,
@@ -294,14 +295,17 @@ class TestProviderProfileRegistry:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
-    def test_exact_model_match_takes_priority(self) -> None:
+    def test_exact_model_match_merges_with_provider(self) -> None:
         provider_profile = ProviderProfile(init_kwargs={"a": 1})
         model_profile = ProviderProfile(init_kwargs={"b": 2})
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("test_prov", provider_profile)
             register_provider_profile("test_prov:special-model", model_profile)
-            assert get_provider_profile("test_prov:special-model") is model_profile
+            merged = get_provider_profile("test_prov:special-model")
+            # Both provider and model kwargs are present
+            assert merged.init_kwargs == {"a": 1, "b": 2}
+            # Provider-only lookup still returns the provider profile directly
             assert get_provider_profile("test_prov:other-model") is provider_profile
         finally:
             _PROVIDER_PROFILES.clear()
@@ -314,6 +318,177 @@ class TestProviderProfileRegistry:
     def test_bare_model_name_without_colon(self) -> None:
         profile = get_provider_profile("claude-sonnet-4-6")
         assert profile == ProviderProfile()
+
+
+class TestMergeProfiles:
+    """Tests for _merge_profiles layering behavior."""
+
+    def test_init_kwargs_merged(self) -> None:
+        base = ProviderProfile(init_kwargs={"a": 1, "shared": "base"})
+        override = ProviderProfile(init_kwargs={"b": 2, "shared": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.init_kwargs == {"a": 1, "b": 2, "shared": "override"}
+
+    def test_pre_init_chained(self) -> None:
+        calls: list[str] = []
+        base = ProviderProfile(pre_init=lambda s: calls.append(f"base:{s}"))
+        override = ProviderProfile(pre_init=lambda s: calls.append(f"override:{s}"))
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("spec")
+        assert calls == ["base:spec", "override:spec"]
+
+    def test_pre_init_base_only(self) -> None:
+        called = False
+
+        def base_fn(_s: str) -> None:
+            nonlocal called
+            called = True
+
+        base = ProviderProfile(pre_init=base_fn)
+        override = ProviderProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_pre_init_override_only(self) -> None:
+        called = False
+
+        def over_fn(_s: str) -> None:
+            nonlocal called
+            called = True
+
+        base = ProviderProfile()
+        override = ProviderProfile(pre_init=over_fn)
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_init_kwargs_factory_chained(self) -> None:
+        base = ProviderProfile(init_kwargs_factory=lambda: {"a": 1, "shared": "base"})
+        override = ProviderProfile(init_kwargs_factory=lambda: {"b": 2, "shared": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.init_kwargs_factory is not None
+        assert merged.init_kwargs_factory() == {
+            "a": 1,
+            "b": 2,
+            "shared": "override",
+        }
+
+    def test_system_prompt_suffix_override_wins(self) -> None:
+        base = ProviderProfile(system_prompt_suffix="base suffix")
+        override = ProviderProfile(system_prompt_suffix="override suffix")
+        merged = _merge_profiles(base, override)
+        assert merged.system_prompt_suffix == "override suffix"
+
+    def test_system_prompt_suffix_inherits_from_base(self) -> None:
+        base = ProviderProfile(system_prompt_suffix="base suffix")
+        override = ProviderProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.system_prompt_suffix == "base suffix"
+
+    def test_exclude_tools_unioned(self) -> None:
+        base = ProviderProfile(exclude_tools=frozenset({"a", "b"}))
+        override = ProviderProfile(exclude_tools=frozenset({"b", "c"}))
+        merged = _merge_profiles(base, override)
+        assert merged.exclude_tools == frozenset({"a", "b", "c"})
+
+    def test_tool_description_overrides_merged(self) -> None:
+        base = ProviderProfile(tool_description_overrides={"t1": "base", "t2": "base"})
+        override = ProviderProfile(tool_description_overrides={"t2": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.tool_description_overrides == {
+            "t1": "base",
+            "t2": "override",
+        }
+
+    def test_extra_middleware_concatenated(self) -> None:
+        mw_a, mw_b = MagicMock(), MagicMock()
+        base = ProviderProfile(extra_middleware=[mw_a])
+        override = ProviderProfile(extra_middleware=[mw_b])
+        merged = _merge_profiles(base, override)
+        # Merged middleware is a factory since both sides had entries
+        assert callable(merged.extra_middleware)
+        result = merged.extra_middleware()
+        assert list(result) == [mw_a, mw_b]
+
+    def test_extra_middleware_callable_and_sequence(self) -> None:
+        mw_a, mw_b = MagicMock(), MagicMock()
+        base = ProviderProfile(extra_middleware=lambda: [mw_a])
+        override = ProviderProfile(extra_middleware=[mw_b])
+        merged = _merge_profiles(base, override)
+        assert callable(merged.extra_middleware)
+        result = merged.extra_middleware()
+        assert list(result) == [mw_a, mw_b]
+
+    def test_extra_middleware_inherits_from_base(self) -> None:
+        mw = MagicMock()
+        base = ProviderProfile(extra_middleware=[mw])
+        override = ProviderProfile()
+        merged = _merge_profiles(base, override)
+        assert list(merged.extra_middleware) == [mw]
+
+
+class TestProfileMergingEndToEnd:
+    """End-to-end tests: exact-model profiles inherit provider defaults."""
+
+    def test_openai_exact_model_inherits_responses_api(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "openai:o3-pro",
+                ProviderProfile(system_prompt_suffix="think harder"),
+            )
+            profile = get_provider_profile("openai:o3-pro")
+            assert profile.init_kwargs == {"use_responses_api": True}
+            assert profile.system_prompt_suffix == "think harder"
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_anthropic_exact_model_inherits_caching_middleware(self) -> None:
+        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
+
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "anthropic:claude-sonnet-4-6-20250514",
+                ProviderProfile(system_prompt_suffix="be concise"),
+            )
+            profile = get_provider_profile("anthropic:claude-sonnet-4-6-20250514")
+            assert profile.system_prompt_suffix == "be concise"
+            # Middleware is a factory (merged); should produce caching middleware
+            assert callable(profile.extra_middleware)
+            mw = profile.extra_middleware()
+            assert any(isinstance(m, AnthropicPromptCachingMiddleware) for m in mw)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_exact_model_override_wins_for_init_kwargs(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "openai:o3-pro",
+                ProviderProfile(init_kwargs={"use_responses_api": False}),
+            )
+            profile = get_provider_profile("openai:o3-pro")
+            assert profile.init_kwargs == {"use_responses_api": False}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_no_provider_profile_returns_exact_unchanged(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            model_profile = ProviderProfile(init_kwargs={"x": 1})
+            register_provider_profile("noprov:special", model_profile)
+            assert get_provider_profile("noprov:special") is model_profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
 
 
 class TestBuiltInProfiles:

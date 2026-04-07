@@ -317,7 +317,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return ReadResult(error=f"File '{file_path}' not found")
+            return ReadResult(error=f"File '{file_path}' not found. Use the ls or glob tool to list available files and verify the correct path.")
 
         try:
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -405,7 +405,7 @@ class FilesystemBackend(BackendProtocol):
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error=f"Error: File '{file_path}' not found. Use the ls or glob tool to list available files and verify the correct path.")
 
         try:
             # Read securely

@@ -681,3 +681,23 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+class TestInvalidPathErrors:
+    """Tests for actionable error messages when paths are invalid. See #2463."""
+
+    def test_edit_file_not_found_suggests_ls(self, tmp_path: Path):
+        """edit() should suggest using ls/glob when the file is not found."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.edit("/nonexistent.txt", "old", "new")
+        assert result.error is not None
+        assert "not found" in result.error
+        assert "ls" in result.error or "glob" in result.error
+
+    def test_read_file_not_found_suggests_ls(self, tmp_path: Path):
+        """read() should suggest using ls/glob when the file is not found."""
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.read("/nonexistent.txt")
+        assert result.error is not None
+        assert "not found" in result.error
+        assert "ls" in result.error or "glob" in result.error

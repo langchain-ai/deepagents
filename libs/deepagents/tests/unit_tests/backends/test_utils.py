@@ -89,6 +89,24 @@ class TestValidatePath:
         with pytest.raises(ValueError, match="Path traversal not allowed"):
             validate_path("/workspace/../../../etc/shadow")
 
+    @pytest.mark.parametrize(
+        ("invalid_path", "error_match"),
+        [
+            ("/email_request_05-04-2021?", "URL characters"),
+            ("/some/file?query=1", "URL characters"),
+            ("/path/to/file#anchor", "URL characters"),
+            ("/data?format=json#section", "URL characters"),
+        ],
+    )
+    def test_url_characters_rejected(self, invalid_path: str, error_match: str) -> None:
+        """Test that paths containing URL query/fragment characters are rejected.
+
+        Agents sometimes mistakenly pass URLs or URL-like strings as file paths.
+        These should be caught early with a helpful error message. See #2463.
+        """
+        with pytest.raises(ValueError, match=error_match):
+            validate_path(invalid_path)
+
     def test_dot_and_empty_string_normalize_to_slash_dot(self) -> None:
         """Document that `'.'` and `''` normalize to `'/.'` via `os.path.normpath`."""
         assert validate_path(".") == "/."

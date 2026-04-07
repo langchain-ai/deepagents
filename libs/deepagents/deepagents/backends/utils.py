@@ -427,6 +427,16 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
+    # Detect URL query/fragment characters that indicate a URL was mistakenly
+    # used as a file path (e.g. '/some/file?query=1' or '/path#anchor').
+    if "?" in path or "#" in path:
+        msg = (
+            f"Path contains URL characters ('?' or '#') which are not valid in file paths: {path}. "
+            "Ensure you are providing a filesystem path, not a URL. "
+            "Use the ls or glob tool to find the correct file path."
+        )
+        raise ValueError(msg)
+
     # Reject Windows absolute paths (e.g., C:\..., D:/...)
     if re.match(r"^[a-zA-Z]:", path):
         msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"

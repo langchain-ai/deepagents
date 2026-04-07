@@ -530,6 +530,11 @@ async def _load_tools_from_config(
                     ],
                 )
             )
+        # Sort tools deterministically by name so the tools block in API
+        # requests is stable across turns. MCP's list_tools() does not guarantee
+        # order, and any change in the tools array busts the prompt cache at the
+        # tools block.
+        all_tools.sort(key=lambda t: t.name)
     except Exception as e:
         await manager.cleanup()
         error_msg = (

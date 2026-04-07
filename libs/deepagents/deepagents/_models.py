@@ -1,9 +1,8 @@
 """Shared helpers for resolving and inspecting chat models.
 
-Also defines the `ProviderProfile` dataclass and the provider profile registry
-used by `resolve_model` and `create_deep_agent` to apply provider- and
-model-specific configuration (init kwargs, extra middleware, system prompt
-patches, tool overrides).
+Defines `ProviderProfile` dataclass and the provider profile registry used by
+`resolve_model` and `create_deep_agent` to apply provider- and model-specific
+configuration (init kwargs, extra middleware, system prompt patches, tool overrides).
 """
 
 from __future__ import annotations
@@ -48,10 +47,10 @@ _OPENROUTER_APP_TITLE = "Deep Agents"
 class ProviderProfile:
     """Declarative configuration for the Deep Agent harness.
 
-    Applied based on the selected model or provider. Each field is optional —
-    its default means "no change from baseline behavior". Profiles are looked
-    up by `get_provider_profile` (exact model spec first, then provider prefix)
-    and consumed by `resolve_model` (for `init_kwargs` / `pre_init`) and
+    Applied based on the selected model or provider. Each field is optional.
+    Default means "no change from baseline behavior". Profiles are looked up by
+    `get_provider_profile` (exact model spec first, then provider prefix) and
+    consumed by `resolve_model` (for `init_kwargs` / `pre_init`) and
     `create_deep_agent` (for everything else).
 
     Register profiles via `register_provider_profile`.
@@ -63,18 +62,26 @@ class ProviderProfile:
 
     pre_init: Callable[[str], None] | None = None
     """Optional callable invoked with the raw model spec string *before*
-    `init_chat_model` runs.  Use for version checks or other preconditions
-    (e.g. `check_openrouter_version`).  Must raise on failure."""
+    `init_chat_model` runs.
+
+    Use for version checks or other preconditions (e.g. `check_openrouter_version`).
+
+    Must raise on failure.
+    """
 
     init_kwargs_factory: Callable[[], dict[str, Any]] | None = None
     """Optional factory called at init time to produce dynamic kwargs that
-    are merged *on top of* `init_kwargs`.  Use when values depend on runtime
-    state like environment variables (e.g. OpenRouter attribution headers
-    that defer to env var overrides)."""
+    are merged *on top of* `init_kwargs`.
+
+    Use when values depend on runtime state like environment variables
+    (e.g. OpenRouter attribution headers that defer to env var overrides).
+    """
 
     system_prompt_suffix: str | None = None
     """Text appended to the system prompt after `BASE_AGENT_PROMPT`.
-    `None` means no suffix."""
+
+    `None` means no suffix.
+    """
 
     exclude_tools: frozenset[str] = frozenset()
     """Names of built-in tools to remove from the agent's tool set."""
@@ -100,8 +107,9 @@ _PROVIDER_PROFILES: dict[str, ProviderProfile] = {}
 """Registry mapping profile keys to `ProviderProfile` instances.
 
 Keys are either a full `provider:model` spec (for per-model overrides) or a
-bare provider name (for provider-wide defaults).  Lookup order:
-exact spec → provider prefix → empty default.
+bare provider name (for provider-wide defaults).
+
+Lookup order: exact spec -> provider prefix -> empty default.
 """
 
 
@@ -203,7 +211,7 @@ def _anthropic_extra_middleware() -> Sequence[AgentMiddleware]:
 
     Returns:
         Single-element sequence containing an `AnthropicPromptCachingMiddleware`
-        configured with `unsupported_model_behavior="ignore"`.
+            configured with `unsupported_model_behavior="ignore"`.
     """
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
 

@@ -110,7 +110,7 @@ def _resolve_extra_middleware(
     """
     extra = profile.extra_middleware
     if callable(extra):
-        return list(extra())  # ty: ignore[call-top-callable]  # callable() narrows but ty can't prove safety
+        return list(extra())  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
     return list(extra)
 
 
@@ -118,7 +118,7 @@ def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfil
     """Look up the `ProviderProfile` for an already-resolved model.
 
     If `spec` is provided (the original string the caller passed), it is used
-    for registry lookup.  Otherwise the model identifier is extracted from the
+    for registry lookup. Otherwise the model identifier is extracted from the
     instance and used as a best-effort fallback.
 
     Args:

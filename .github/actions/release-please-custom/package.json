@@ -1,0 +1,17 @@
+{
+  "name": "release-please-custom",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Custom release-please action with PR-body changelog notes",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --license licenses.txt"
+  },
+  "dependencies": {
+    "@actions/core": "^2.0.0",
+    "release-please": "^17.4.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  }
+}

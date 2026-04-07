@@ -1,0 +1,34 @@
+name: "Release Please (custom changelog)"
+description: >
+  Wraps release-please with a custom ChangelogNotes implementation that
+  extracts a "## Release Notes" section from PR bodies.
+
+inputs:
+  token:
+    description: GitHub token with contents:write and pull-requests:write
+    required: true
+  config-file:
+    description: Path to release-please-config.json
+    default: release-please-config.json
+  manifest-file:
+    description: Path to .release-please-manifest.json
+    default: .release-please-manifest.json
+  target-branch:
+    description: Override the default branch
+    required: false
+
+outputs:
+  releases_created:
+    description: Whether any releases were created
+  prs_created:
+    description: Whether any PRs were created
+  pr:
+    description: The first release PR (JSON object)
+  prs:
+    description: All release PRs (JSON array)
+  paths_released:
+    description: Paths of all released components (JSON array)
+
+runs:
+  using: node22
+  main: dist/index.js

@@ -1,0 +1,51 @@
+# Check that dist/ is up-to-date for custom JS GitHub Actions.
+#
+# Runs `npm ci && npm run build` then verifies the committed dist/ matches.
+# Fails if a developer edited the source but forgot to rebuild.
+
+name: "📦 Check Action Dist"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/release-please-custom/src/**"
+      - ".github/actions/release-please-custom/package.json"
+      - ".github/actions/release-please-custom/package-lock.json"
+  pull_request:
+    paths:
+      - ".github/actions/release-please-custom/src/**"
+      - ".github/actions/release-please-custom/package.json"
+      - ".github/actions/release-please-custom/package-lock.json"
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-dist:
+    name: "Verify dist/ is up-to-date"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install and build
+        working-directory: .github/actions/release-please-custom
+        run: npm ci && npm run build
+
+      - name: Check for uncommitted changes
+        working-directory: .github/actions/release-please-custom
+        run: |
+          if ! git diff --exit-code dist/; then
+            echo "::error::dist/ is out of date. Run 'cd .github/actions/release-please-custom && npm ci && npm run build' and commit the result."
+            exit 1
+          fi

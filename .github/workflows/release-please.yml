@@ -49,6 +49,36 @@ jobs:
         with:
           fetch-depth: 2
 
+      # release-please uses GITHUB_TOKEN, so its PR events don't trigger
+      # pull_request_target (GitHub's infinite-loop prevention). Reuse the
+      # shared labelPR() helper so labeling logic stays in one place.
+      - name: Label release PRs
+        if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
+        continue-on-error: true
+        uses: actions/github-script@v8
+        env:
+          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+        with:
+          script: |
+            let prs;
+            try {
+              prs = JSON.parse(process.env.RELEASE_PRS || '[]');
+            } catch (e) {
+              core.warning(`Failed to parse RELEASE_PRS: ${e.message}`);
+              return;
+            }
+            if (!prs.length) return;
+            const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            for (const pr of prs) {
+              try {
+                const labels = await h.labelPR(pr.number, { title: pr.title });
+                console.log(`PR #${pr.number} ("${pr.title}"): +[${labels.join(', ')}]`);
+              } catch (e) {
+                core.warning(`Failed to label PR #${pr.number}: ${e.message}`);
+              }
+            }
+
       - name: Check if release PRs were merged
         id: check-releases
         run: |

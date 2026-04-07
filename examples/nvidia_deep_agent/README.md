@@ -43,7 +43,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Install dependencies:
 
 ```bash
-cd nemotron-deep-agent
+cd examples/nvidia_deep_agent
 uv sync
 ```
 
@@ -58,7 +58,7 @@ export LANGSMITH_PROJECT="nemotron-deep-agent"
 export LANGSMITH_TRACING="true"
 ```
 
-Add your Modal keys to your `.env`(`MODAL_TOKEN_ID` & `MODEL_TOKEN_SECRET)`
+Add your Modal keys to your `.env` (`MODAL_TOKEN_ID` & `MODAL_TOKEN_SECRET`)
 
 OR
 

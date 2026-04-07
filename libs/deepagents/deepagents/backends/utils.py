@@ -28,6 +28,7 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
     ".jpeg": "image",
     ".jpg": "image",
     ".webp": "image",
+    ".gif": "image",
     ".heic": "image",
     ".heif": "image",
     # Video (https://ai.google.dev/gemini-api/docs/video-understanding)

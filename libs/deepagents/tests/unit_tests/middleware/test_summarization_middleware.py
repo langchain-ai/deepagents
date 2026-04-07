@@ -349,6 +349,35 @@ class TestSummarizationMiddlewareInit:
 
         assert callable(middleware._backend)
 
+    def test_deprecated_history_path_prefix_warns_and_applies(self) -> None:
+        """Passing history_path_prefix emits a deprecation warning and is used."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/custom/history",
+            )
+
+        assert middleware._history_path_prefix == "/custom/history"
+
+    def test_deprecated_history_path_prefix_overrides_default(self) -> None:
+        """Deprecated history_path_prefix takes precedence over the default."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/overridden",
+            )
+
+        assert middleware._history_path_prefix == "/overridden"
+        assert middleware._history_path_prefix != "/conversation_history"
+
 
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""

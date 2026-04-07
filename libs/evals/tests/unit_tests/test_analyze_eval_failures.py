@@ -7,12 +7,13 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts"))
 
-from analyze_eval_failures import _format_markdown, analyze_one, run
-
+from analyze_eval_failures import (  # ty: ignore[unresolved-import]
+    _format_markdown,
+    analyze_one,
+    run,
+)
 
 _SAMPLE_FAILURE = {
     "test_name": "tests/evals/test_memory.py::test_recall[anthropic:claude-sonnet-4-6]",

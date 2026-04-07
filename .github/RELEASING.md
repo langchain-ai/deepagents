@@ -9,6 +9,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [deepagents](https://pypi.org/project/deepagents/) |
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [deepagents-cli](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [deepagents-acp](https://pypi.org/project/deepagents-acp/) |
+| `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [langchain-daytona](https://pypi.org/project/langchain-daytona/) |
 
 ## Overview
 
@@ -97,7 +98,8 @@ Tracks the current version of each package:
 {
   "libs/cli": "0.0.35",
   "libs/deepagents": "0.5.0",
-  "libs/acp": "0.0.5"
+  "libs/acp": "0.0.5",
+  "libs/partners/daytona": "0.0.5"
 }
 ```
 
@@ -107,7 +109,7 @@ This file is automatically updated by release-please when releases are created.
 
 ### Detection Mechanism
 
-The release-please workflow (`.github/workflows/release-please.yml`) detects releases by checking if a package's `CHANGELOG.md` was modified in the commit (e.g., `libs/cli/CHANGELOG.md` for the CLI, `libs/deepagents/CHANGELOG.md` for the SDK, `libs/acp/CHANGELOG.md` for ACP). This file is always updated by release-please when merging a release PR.
+The release-please workflow (`.github/workflows/release-please.yml`) detects releases by checking if a package's `CHANGELOG.md` was modified in the commit (e.g., `libs/cli/CHANGELOG.md` for the CLI, `libs/deepagents/CHANGELOG.md` for the SDK, `libs/acp/CHANGELOG.md` for ACP, `libs/partners/daytona/CHANGELOG.md` for Daytona). This file is always updated by release-please when merging a release PR.
 
 ### Lockfile Updates
 
@@ -248,7 +250,7 @@ If a release PR shows `autorelease: pending` after the release workflow complete
 **To fix manually:**
 
 ```bash
-# Find the PR number for the release commit (replace <PACKAGE> with deepagents, deepagents-cli, or deepagents-acp)
+# Find the PR number for the release commit (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, or langchain-daytona)
 gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 
 # Update the label
@@ -268,7 +270,7 @@ Using the PyPI web interface or a CLI tool.
 #### 2. Delete GitHub Release/Tag (optional)
 
 ```bash
-# Delete the GitHub release (replace <PACKAGE> with deepagents, deepagents-cli, or deepagents-acp)
+# Delete the GitHub release (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, or langchain-daytona)
 gh release delete "<PACKAGE>==<VERSION>" --yes
 
 # Delete the git tag
@@ -336,7 +338,7 @@ This means a release PR was merged but its merge commit doesn't have the expecte
 **To diagnose**, compare the tag's commit with the release PR's merge commit:
 
 ```bash
-# Find what commit the tag points to (replace <PACKAGE> with deepagents, deepagents-cli, or deepagents-acp)
+# Find what commit the tag points to (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, or langchain-daytona)
 git ls-remote --tags origin | grep "<PACKAGE>==<VERSION>"
 
 # Find the release PR's merge commit
@@ -348,7 +350,7 @@ If these differ, release-please is confused.
 **To fix**, move the tag and update the GitHub release:
 
 ```bash
-# 1. Delete the remote tag (replace <PACKAGE> with deepagents, deepagents-cli, or deepagents-acp)
+# 1. Delete the remote tag (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, or langchain-daytona)
 git push origin :refs/tags/<PACKAGE>==<VERSION>
 
 # 2. Delete local tag if it exists

@@ -27,6 +27,7 @@ jobs:
       cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
@@ -39,7 +40,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp
+      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
@@ -87,6 +88,13 @@ jobs:
             echo "ACP release detected: $COMMIT_MSG"
           else
             echo "acp-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
+            echo "daytona-release=true" >> $GITHUB_OUTPUT
+            echo "Daytona release detected: $COMMIT_MSG"
+          else
+            echo "daytona-release=false" >> $GITHUB_OUTPUT
           fi
 
   # Update uv.lock files when release-please creates/updates a PR
@@ -163,6 +171,18 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: deepagents-acp
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Daytona release PR is merged
+  release-langchain-daytona:
+    needs: release-please
+    if: needs.release-please.outputs.daytona-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-daytona
     permissions:
       contents: write
       id-token: write

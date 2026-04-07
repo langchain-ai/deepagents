@@ -90,6 +90,18 @@
         "deepagents_acp/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/daytona": {
+      "release-type": "python",
+      "package-name": "langchain-daytona",
+      "component": "langchain-daytona",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_daytona/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

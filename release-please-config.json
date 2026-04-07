@@ -65,6 +65,18 @@
         "deepagents_cli/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/deepagents": {
+      "release-type": "python",
+      "package-name": "deepagents",
+      "component": "deepagents",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

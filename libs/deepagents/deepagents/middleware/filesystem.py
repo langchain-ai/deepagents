@@ -1184,10 +1184,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                large_tool_results_prefix=self._large_tool_results_prefix,
-                conversation_history_prefix=self._conversation_history_prefix,
-            )]
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                    conversation_history_prefix=self._conversation_history_prefix,
+                )
+            ]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1248,10 +1250,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                large_tool_results_prefix=self._large_tool_results_prefix,
-                conversation_history_prefix=self._conversation_history_prefix,
-            )]
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                    conversation_history_prefix=self._conversation_history_prefix,
+                )
+            ]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:

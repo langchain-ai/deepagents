@@ -404,7 +404,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.0"
+version = "0.5.1"
 source = { directory = "../deepagents" }
 dependencies = [
     { name = "langchain" },

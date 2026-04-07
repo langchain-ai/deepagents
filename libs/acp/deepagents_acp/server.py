@@ -589,14 +589,12 @@ class AgentServerACP(ACPAgent):
         if self._agent is None:
             self._reset_agent(session_id)
 
-            if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = (
-                    MemorySaver()
-                )  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
-
         if self._agent is None:
             msg = "Agent initialization failed"
             raise RuntimeError(msg)
+
+        if getattr(self._agent, "checkpointer", None) is None:
+            self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
         agent = self._agent
 
         # Reset cancellation flag for new prompt

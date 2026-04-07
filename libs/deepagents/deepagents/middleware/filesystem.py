@@ -316,9 +316,16 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`.
 
-FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix="/large_tool_results")
+## Conversation History
+
+When a human message is too large, its content may be offloaded into the filesystem. The message will include a preview and a path to the full content. Use `read_file` with pagination to retrieve the full message from `{conversation_history_prefix}/`."""
+
+FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+    large_tool_results_prefix="/large_tool_results",
+    conversation_history_prefix="/conversation_history",
+)
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
@@ -605,8 +612,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
 
-        self._artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
-        _root = self._artifacts_root.rstrip("/")
+        artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
@@ -1177,7 +1184,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
+            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                large_tool_results_prefix=self._large_tool_results_prefix,
+                conversation_history_prefix=self._conversation_history_prefix,
+            )]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1238,7 +1248,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
+            prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                large_tool_results_prefix=self._large_tool_results_prefix,
+                conversation_history_prefix=self._conversation_history_prefix,
+            )]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:

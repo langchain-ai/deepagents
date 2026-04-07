@@ -281,8 +281,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         # Deep Agents specific attributes
         self._backend = backend
 
-        self._artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
-        _root = self._artifacts_root.rstrip("/")
+        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
 
         # Parse truncate_args_settings

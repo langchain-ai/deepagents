@@ -29,6 +29,7 @@ jobs:
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
+      runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
@@ -41,7 +42,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal
+      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
@@ -103,6 +104,13 @@ jobs:
             echo "Modal release detected: $COMMIT_MSG"
           else
             echo "modal-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
+            echo "runloop-release=true" >> $GITHUB_OUTPUT
+            echo "Runloop release detected: $COMMIT_MSG"
+          else
+            echo "runloop-release=false" >> $GITHUB_OUTPUT
           fi
 
   # Update uv.lock files when release-please creates/updates a PR
@@ -203,6 +211,18 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-modal
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Runloop release PR is merged
+  release-langchain-runloop:
+    needs: release-please
+    if: needs.release-please.outputs.runloop-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-runloop
     permissions:
       contents: write
       id-token: write

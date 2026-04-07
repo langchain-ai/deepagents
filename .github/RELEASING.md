@@ -11,6 +11,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [deepagents-acp](https://pypi.org/project/deepagents-acp/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [langchain-daytona](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [langchain-modal](https://pypi.org/project/langchain-modal/) |
+| `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [langchain-runloop](https://pypi.org/project/langchain-runloop/) |
 
 ## Overview
 
@@ -101,7 +102,8 @@ Tracks the current version of each package:
   "libs/deepagents": "0.5.0",
   "libs/acp": "0.0.5",
   "libs/partners/daytona": "0.0.5",
-  "libs/partners/modal": "0.0.3"
+  "libs/partners/modal": "0.0.3",
+  "libs/partners/runloop": "0.0.4"
 }
 ```
 
@@ -111,7 +113,7 @@ This file is automatically updated by release-please when releases are created.
 
 ### Detection Mechanism
 
-The release-please workflow (`.github/workflows/release-please.yml`) detects releases by checking if a package's `CHANGELOG.md` was modified in the commit (e.g., `libs/cli/CHANGELOG.md` for the CLI, `libs/deepagents/CHANGELOG.md` for the SDK, `libs/acp/CHANGELOG.md` for ACP, `libs/partners/daytona/CHANGELOG.md` for Daytona, `libs/partners/modal/CHANGELOG.md` for Modal). This file is always updated by release-please when merging a release PR.
+The release-please workflow (`.github/workflows/release-please.yml`) detects releases by checking if a package's `CHANGELOG.md` was modified in the commit (e.g., `libs/cli/CHANGELOG.md` for the CLI, `libs/deepagents/CHANGELOG.md` for the SDK, `libs/acp/CHANGELOG.md` for ACP, `libs/partners/daytona/CHANGELOG.md` for Daytona, `libs/partners/modal/CHANGELOG.md` for Modal, `libs/partners/runloop/CHANGELOG.md` for Runloop). This file is always updated by release-please when merging a release PR.
 
 ### Lockfile Updates
 
@@ -252,7 +254,7 @@ If a release PR shows `autorelease: pending` after the release workflow complete
 **To fix manually:**
 
 ```bash
-# Find the PR number for the release commit (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, or langchain-modal)
+# Find the PR number for the release commit (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, or langchain-runloop)
 gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 
 # Update the label
@@ -272,7 +274,7 @@ Using the PyPI web interface or a CLI tool.
 #### 2. Delete GitHub Release/Tag (optional)
 
 ```bash
-# Delete the GitHub release (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, or langchain-modal)
+# Delete the GitHub release (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, or langchain-runloop)
 gh release delete "<PACKAGE>==<VERSION>" --yes
 
 # Delete the git tag
@@ -340,7 +342,7 @@ This means a release PR was merged but its merge commit doesn't have the expecte
 **To diagnose**, compare the tag's commit with the release PR's merge commit:
 
 ```bash
-# Find what commit the tag points to (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, or langchain-modal)
+# Find what commit the tag points to (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, or langchain-runloop)
 git ls-remote --tags origin | grep "<PACKAGE>==<VERSION>"
 
 # Find the release PR's merge commit
@@ -352,7 +354,7 @@ If these differ, release-please is confused.
 **To fix**, move the tag and update the GitHub release:
 
 ```bash
-# 1. Delete the remote tag (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, or langchain-modal)
+# 1. Delete the remote tag (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, or langchain-runloop)
 git push origin :refs/tags/<PACKAGE>==<VERSION>
 
 # 2. Delete local tag if it exists

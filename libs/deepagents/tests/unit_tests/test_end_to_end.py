@@ -1180,15 +1180,7 @@ class TestDeepAgentEndToEnd:
         backend = StateBackend()
         file_path = "/wrapped.txt"
         long_line = "x" * 15000
-        content = "\n".join(
-            [
-                "line1",
-                long_line,
-                "important instruction",
-                "line4",
-                "line5",
-            ]
-        )
+        content = f"line1\n{long_line}\nimportant instruction\nline4\nline5"
         starter_files = prepopulate_file(backend, file_path, content)
 
         model = FixedGenericFakeChatModel(

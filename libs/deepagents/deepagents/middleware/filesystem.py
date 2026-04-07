@@ -703,7 +703,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
-        def _truncate(content: str, file_path: str, limit: int) -> str:
+        def _truncate(content: str, file_path: str) -> str:
             if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
                 max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
@@ -716,7 +716,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
-            limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
                 warnings.warn(
@@ -727,7 +726,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     stacklevel=2,
                 )
                 # Legacy backends already format with line numbers
-                return _truncate(read_result, validated_path, limit)
+                return _truncate(read_result, validated_path)
 
             if read_result.error:
                 return f"Error: {read_result.error}"
@@ -752,9 +751,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return empty_msg
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
-            # We apply truncation again after formatting content as continuation lines
-            # can increase line count
-            return _truncate(content, validated_path, limit)
+            # Formatting continuation lines can increase the content size.
+            return _truncate(content, validated_path)
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -770,7 +768,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -786,7 +784,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
+            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset)
 
         return StructuredTool.from_function(
             name="read_file",

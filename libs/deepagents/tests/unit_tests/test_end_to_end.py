@@ -1899,8 +1899,7 @@ class TestArtifactsRoot:
             """Return a large string to trigger eviction."""
             return "x" * 500_000
 
-        mem_store = InMemoryStore()
-        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         backend = CompositeBackend(
             default=store_backend,
             routes={},
@@ -1946,7 +1945,8 @@ class TestArtifactsRoot:
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
         assert "/workspace/large_tool_results/" in evicted_msg.content
-        assert mem_store.get(("filesystem",), "/workspace/large_tool_results/call_big") is not None
+        [resp] = backend.download_files(["/workspace/large_tool_results/call_big"])
+        assert resp.content is not None
 
     def test_deep_agent_artifacts_root_eviction_then_read(self) -> None:
         """Evicted tool result under custom artifacts_root can be read back."""
@@ -1957,8 +1957,7 @@ class TestArtifactsRoot:
             """Return a large string to trigger eviction."""
             return large_content
 
-        mem_store = InMemoryStore()
-        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         backend = CompositeBackend(
             default=store_backend,
             routes={},
@@ -2009,8 +2008,7 @@ class TestArtifactsRoot:
 
     def test_deep_agent_artifacts_root_conversation_history_offload(self) -> None:
         """Summarization offloads conversation history under the custom artifacts_root."""
-        mem_store = InMemoryStore()
-        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         backend = CompositeBackend(
             default=store_backend,
             routes={},
@@ -2051,13 +2049,12 @@ class TestArtifactsRoot:
         assert result["messages"][-1].content == "response"
 
         # Verify conversation history was offloaded under /workspace/conversation_history/
-        all_items = mem_store.search(("filesystem",))
-        history_keys = [item.key for item in all_items if item.key.startswith("/workspace/conversation_history/")]
-        assert history_keys, "Expected conversation history offloaded under /workspace/conversation_history/"
+        ls_result = backend.ls("/workspace/conversation_history/")
+        assert ls_result.entries, "Expected conversation history offloaded under /workspace/conversation_history/"
 
         # Verify nothing was written to the default /conversation_history/ path
-        default_history = [item.key for item in all_items if item.key.startswith("/conversation_history/")]
-        assert not default_history, "No files should be written to /conversation_history/ when artifacts_root is set"
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
     def test_create_deep_agent_no_composite_backend(self) -> None:
         """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
@@ -2072,8 +2069,7 @@ class TestArtifactsRoot:
 
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""
-        mem_store = InMemoryStore()
-        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         backend = CompositeBackend(
             default=store_backend,
             routes={},
@@ -2095,14 +2091,12 @@ class TestArtifactsRoot:
         assert evicted_to is not None
         assert evicted_to.startswith("/workspace/conversation_history/")
 
-        all_items = mem_store.search(("filesystem",))
-        default_history = [item.key for item in all_items if item.key.startswith("/conversation_history/")]
-        assert not default_history
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries
 
     async def test_async_human_message_eviction_uses_artifacts_root(self) -> None:
         """Async: oversized HumanMessage is evicted under the custom artifacts_root."""
-        mem_store = InMemoryStore()
-        store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         backend = CompositeBackend(
             default=store_backend,
             routes={},
@@ -2124,9 +2118,8 @@ class TestArtifactsRoot:
         assert evicted_to is not None
         assert evicted_to.startswith("/workspace/conversation_history/")
 
-        all_items = mem_store.search(("filesystem",))
-        default_history = [item.key for item in all_items if item.key.startswith("/conversation_history/")]
-        assert not default_history
+        default_ls = backend.ls("/conversation_history/")
+        assert not default_ls.entries
 
 
 class TestAsyncSubagentEndToEnd:

@@ -285,7 +285,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         # Deep Agents specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
-        self.artifacts_root = artifacts_root
+        self._artifacts_root = artifacts_root
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:

@@ -127,6 +127,7 @@ jobs:
       # We want to keep this build stage *separate* from the release stage,
       # so that there's no sharing of permissions between them.
       # (Release stage has trusted publishing and GitHub repo contents write access,
+      # which the build stage must not have access to.)
       #
       # Otherwise, a malicious `build` step (e.g. via a compromised dependency)
       # could get access to our GitHub or PyPI credentials.
@@ -514,15 +515,7 @@ jobs:
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
-        # Here we use:
-        # - The default regular PyPI index as the *primary* index, meaning
-        #   that it takes priority (https://pypi.org/simple)
-        # - The test PyPI index as an extra index, so that any dependencies that
-        #   are not found on test PyPI can be resolved and installed anyway.
-        #   (https://test.pypi.org/simple). This will include the PKG_NAME==VERSION
-        #   package because VERSION will not have been uploaded to regular PyPI yet.
-        # - attempt install again after 5 seconds if it fails because there is
-        #   sometimes a delay in availability on test pypi
+        # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
           VIRTUAL_ENV=.venv uv pip install dist/*.whl

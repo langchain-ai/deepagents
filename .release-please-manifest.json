@@ -1,4 +1,5 @@
 {
   "libs/cli": "0.0.35",
-  "libs/deepagents": "0.5.0"
+  "libs/deepagents": "0.5.0",
+  "libs/acp": "0.0.5"
 }

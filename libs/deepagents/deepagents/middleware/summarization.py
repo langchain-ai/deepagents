@@ -66,7 +66,6 @@ from langchain.agents.middleware.summarization import (
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
-from langchain_core._api import warn_deprecated
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -270,13 +269,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
         if _deprecated_history_prefix is not None:
-            warn_deprecated(
-                "0.5",
-                name="history_path_prefix",
-                obj_type="argument",
-                removal="0.7",
-                alternative="CompositeBackend(artifacts_root='/my/root', ...)",
-                package="deepagents",
+            warnings.warn(
+                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
+                " and will be removed in 0.7."
+                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
             )
 
         # Initialize langchain helper for core summarization logic

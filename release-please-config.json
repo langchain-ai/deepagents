@@ -138,6 +138,18 @@
         "langchain_quickjs/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/repl": {
+      "release-type": "python",
+      "package-name": "langchain-repl",
+      "component": "langchain-repl",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_repl/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

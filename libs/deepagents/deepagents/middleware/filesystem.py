@@ -55,6 +55,22 @@ from deepagents.backends.utils import (
 from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+
+# Maps tool names to the backend method names used by RoutePolicy.
+# Only entries where the names diverge are listed; tools whose name
+# matches the backend method exactly (ls, glob, grep, execute) are
+# handled by the identity fallback in _tool_name_to_method().
+_TOOL_TO_METHOD: dict[str, str] = {
+    "read_file": "read",
+    "write_file": "write",
+    "edit_file": "edit",
+}
+
+# The set of backend method names that correspond to filesystem tools
+# the LLM can invoke. Used by globally_blocked_methods() to determine
+# which tools to filter.
+_FILESYSTEM_TOOL_METHODS: set[str] = {"ls", "read", "write", "edit", "glob", "grep", "execute"}
+
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
@@ -1163,6 +1179,100 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=ExecuteSchema,
         )
 
+    @staticmethod
+    def _get_tool_name(tool: BaseTool | dict[str, Any]) -> str:
+        """Extract the name from a tool object or dict."""
+        return tool.name if hasattr(tool, "name") else tool.get("name")  # type: ignore[union-attr]
+
+    def _filter_tools_by_backend(
+        self,
+        request: ModelRequest[ContextT],
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ModelRequest[ContextT], bool, bool]:
+        """Filter tools based on backend capabilities and policies.
+
+        Removes tools that can never succeed given the backend configuration:
+        1. `execute` when the backend doesn't implement `SandboxBackendProtocol`.
+        2. Any filesystem tool whose backend method is globally blocked by
+           policies on every route and the default.
+
+        Args:
+            request: The model request to filter tools from.
+            resolved_backend: The resolved backend instance.
+
+        Returns:
+            A tuple of (updated_request, has_execute_tool, backend_supports_execution).
+        """
+        # Filter execute tool if backend doesn't support it (SandboxBackendProtocol)
+        has_execute_tool = any(self._get_tool_name(t) == "execute" for t in request.tools)
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            backend_supports_execution = _supports_execution(resolved_backend)
+            if not backend_supports_execution:
+                request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) != "execute"])
+                has_execute_tool = False
+
+        # Filter tools whose backend methods are blocked on every route + default
+        if isinstance(resolved_backend, CompositeBackend):
+            blocked = resolved_backend.globally_blocked_methods(_FILESYSTEM_TOOL_METHODS)
+            if blocked:
+                blocked_tools = {name for name, method in _TOOL_TO_METHOD.items() if method in blocked}
+                blocked_tools |= blocked & _FILESYSTEM_TOOL_METHODS
+                if "execute" in blocked:
+                    has_execute_tool = False
+                    backend_supports_execution = False
+                request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) not in blocked_tools])
+
+        return request, has_execute_tool, backend_supports_execution
+
+    def _build_and_attach_system_prompt(
+        self,
+        request: ModelRequest[ContextT],
+        resolved_backend: BackendProtocol,
+        *,
+        has_execute_tool: bool,
+        backend_supports_execution: bool,
+    ) -> ModelRequest[ContextT]:
+        """Build the system prompt and attach it to the request.
+
+        Args:
+            request: The model request to update.
+            resolved_backend: The resolved backend instance.
+            has_execute_tool: Whether the execute tool is available.
+            backend_supports_execution: Whether the backend supports execution.
+
+        Returns:
+            The updated model request with system prompt attached.
+        """
+        # Use custom system prompt if provided, otherwise generate dynamically
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            # Add route policy descriptions if configured
+            policy_prompt = _build_policy_prompt(resolved_backend)
+            if policy_prompt:
+                prompt_parts.append(policy_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
+
+        if system_prompt:
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
+
+        return request
+
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -1189,45 +1299,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update tagging a newly evicted message.
         """
         resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            backend_supports_execution = _supports_execution(resolved_backend)
-
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
-
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            # Add route policy descriptions if configured
-            policy_prompt = _build_policy_prompt(resolved_backend)
-            if policy_prompt:
-                prompt_parts.append(policy_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
-
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+        request, has_execute_tool, backend_supports_execution = self._filter_tools_by_backend(request, resolved_backend)
+        request = self._build_and_attach_system_prompt(
+            request,
+            resolved_backend,
+            has_execute_tool=has_execute_tool,
+            backend_supports_execution=backend_supports_execution,
+        )
 
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
@@ -1259,45 +1337,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             with a state update tagging newly evicted messages.
         """
         resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            backend_supports_execution = _supports_execution(resolved_backend)
-
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
-
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            # Add route policy descriptions if configured
-            policy_prompt = _build_policy_prompt(resolved_backend)
-            if policy_prompt:
-                prompt_parts.append(policy_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
-
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+        request, has_execute_tool, backend_supports_execution = self._filter_tools_by_backend(request, resolved_backend)
+        request = self._build_and_attach_system_prompt(
+            request,
+            resolved_backend,
+            has_execute_tool=has_execute_tool,
+            backend_supports_execution=backend_supports_execution,
+        )
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

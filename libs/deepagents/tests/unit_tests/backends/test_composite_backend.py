@@ -1727,3 +1727,108 @@ class TestCompositeBackendPolicyEnforcement:
         )
         result = comp.glob("*.txt", path="/")
         assert result.error is None
+
+
+class TestGloballyBlockedMethods:
+    """Tests for CompositeBackend.globally_blocked_methods()."""
+
+    def test_no_policies_returns_empty(self) -> None:
+        """No policies configured means nothing is globally blocked."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        comp = CompositeBackend(default=default, routes={"/data/": store})
+        assert comp.globally_blocked_methods({"write", "edit", "execute"}) == set()
+
+    def test_default_policy_blocks_write_everywhere(self) -> None:
+        """default_policy without write blocks it globally (no explicit route policies)."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        comp = CompositeBackend(
+            default=default,
+            routes={"/data/": store},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        blocked = comp.globally_blocked_methods({"write", "edit", "execute"})
+        assert blocked == {"write", "edit", "execute"}
+
+    def test_one_route_allows_write_not_globally_blocked(self) -> None:
+        """Write allowed on one route means it is NOT globally blocked."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/writable/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "glob", "grep"}),
+                ),
+            },
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        blocked = comp.globally_blocked_methods({"write", "edit", "execute"})
+        assert "write" not in blocked
+        assert "edit" in blocked
+        assert "execute" in blocked
+
+    def test_unrestricted_route_prevents_global_block(self) -> None:
+        """A bare route with no policy (and no default_policy) means unrestricted."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs1",))
+        store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs2",))
+        comp = CompositeBackend(
+            default=default,
+            routes={
+                "/restricted/": Route(
+                    backend=store1,
+                    policy=RoutePolicy(allowed_methods={"ls", "read"}),
+                ),
+                "/open/": store2,
+            },
+        )
+        blocked = comp.globally_blocked_methods({"write", "edit", "execute"})
+        assert blocked == set()
+
+    def test_all_routes_and_default_block_execute(self) -> None:
+        """Execute blocked on default and every route is globally blocked."""
+        mem_store = InMemoryStore()
+        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
+        comp = CompositeBackend(
+            default=sandbox,
+            routes={
+                "/data/": Route(
+                    backend=store,
+                    policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+                ),
+            },
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+        )
+        blocked = comp.globally_blocked_methods({"execute"})
+        assert blocked == {"execute"}
+
+    def test_empty_candidate_set_returns_empty(self) -> None:
+        """Passing empty methods set always returns empty."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read"}),
+        )
+        assert comp.globally_blocked_methods(set()) == set()
+
+    def test_allowed_methods_not_blocked(self) -> None:
+        """Methods allowed everywhere are not returned."""
+        mem_store = InMemoryStore()
+        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=default,
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        blocked = comp.globally_blocked_methods({"ls", "read", "glob", "grep"})
+        assert blocked == set()

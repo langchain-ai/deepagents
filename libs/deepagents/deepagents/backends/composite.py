@@ -269,9 +269,7 @@ class CompositeBackend(BackendProtocol):
 
     def has_any_policy(self) -> bool:
         """Return `True` if any route or the default has a policy configured."""
-        return self.default_policy is not None or any(
-            p is not None for p in self._policies.values()
-        )
+        return self.default_policy is not None or any(p is not None for p in self._policies.values())
 
     def policy_for_route(self, route_prefix: str | None) -> RoutePolicy | None:
         """Resolve the effective policy for a matched route.
@@ -297,6 +295,36 @@ class CompositeBackend(BackendProtocol):
         if policy is not None and not policy.is_allowed(method):
             return f"Method '{method}' is not allowed on path '{path}' (route '{route_prefix}'). Allowed methods: {sorted(policy.allowed_methods)}"
         return None
+
+    def globally_blocked_methods(self, methods: set[str]) -> set[str]:
+        """Return the subset of methods that are blocked on every route and the default.
+
+        A method is "globally blocked" when every effective policy (the default
+        backend's policy *and* every route's resolved policy) disallows it.
+        If any route or the default has *no* policy, that path is unrestricted
+        and no method can be considered globally blocked.
+
+        Args:
+            methods: Candidate backend method names to check
+                (e.g. `{"write", "edit", "execute"}`).
+
+        Returns:
+            The subset of `methods` that are blocked everywhere. Empty set if
+            no policies are configured or if any path is unrestricted.
+        """
+        if not self.has_any_policy():
+            return set()
+
+        effective_policies: list[RoutePolicy | None] = [
+            self.default_policy,
+            *[self.policy_for_route(prefix) for prefix in self.routes],
+        ]
+
+        if any(p is None for p in effective_policies):
+            return set()
+
+        policies = cast("list[RoutePolicy]", effective_policies)
+        return {m for m in methods if all(not p.is_allowed(m) for p in policies)}
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(

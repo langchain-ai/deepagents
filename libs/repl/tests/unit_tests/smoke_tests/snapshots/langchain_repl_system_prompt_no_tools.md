@@ -68,3 +68,4 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
   `item_id = first_item["id"]`
   `print(parallel(detail_fn(item_id), status_fn(item_id)))`
 - Use the repl for small computations, collection manipulation, branching, loops, and calling externally registered foreign functions.
+

@@ -114,6 +114,18 @@
         "langchain_modal/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/runloop": {
+      "release-type": "python",
+      "package-name": "langchain-runloop",
+      "component": "langchain-runloop",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_runloop/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

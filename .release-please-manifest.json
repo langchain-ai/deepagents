@@ -3,5 +3,6 @@
   "libs/deepagents": "0.5.0",
   "libs/acp": "0.0.5",
   "libs/partners/daytona": "0.0.5",
-  "libs/partners/modal": "0.0.3"
+  "libs/partners/modal": "0.0.3",
+  "libs/partners/runloop": "0.0.4"
 }

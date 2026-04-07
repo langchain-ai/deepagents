@@ -374,23 +374,21 @@ def _run_focused_eval(model: BaseChatModel, config: DatasetConfig) -> None:
 def test_accurate_retrieval(model: BaseChatModel) -> None:
     """LongMemEval: cross-session fact retrieval from long chat histories.
 
-    The agent memorizes ~400K tokens of simulated chat history spanning
-    hundreds of user/assistant conversations across months of diverse topics,
-    then answers a question requiring facts from two separate conversations:
-    a 20-gallon community tank (16 fish) and a betta tank (1 fish) to
-    produce the correct total of 17.
+    The agent memorizes ~400K tokens of simulated chat history spanning hundreds
+    of user/assistant conversations across months of diverse topics, then
+    answers a question requiring facts from two separate conversations:
+    a 20-gallon community tank (16 fish) and a betta tank (1 fish) to produce
+    the correct total of 17.
 
-    Why LongMemEval: it uses evolving chat histories (not static documents),
-    so it tests whether the agent can retrieve information intertwined across
+    Why LongMemEval: it uses evolving chat histories (not static documents), so
+    it tests whether the agent can retrieve information intertwined across
     many sessions. The doc-QA datasets (RULER, EventQA) mostly test
-    chunking + retrieval over static text, but LongMemEval gives cleaner
-    signal on the harder, more realistic challenge of cross-session
-    aggregation.
+    chunking + retrieval over static text, but LongMemEval gives cleaner signal
+    on the harder, more realistic challenge of cross-session aggregation.
 
     Why this question: a retrieval system that only finds one conversation
-    answers 16, not 17. The 16-vs-17 distinction is a clean binary signal
-    on retrieval completeness, and no LLM produces "17" from general
-    knowledge.
+    answers 16, not 17. The 16-vs-17 distinction is a clean binary signal on
+    retrieval completeness, and no LLM produces "17" from general knowledge.
 
     Scoring: normalized substring match ("17" in agent response).
     """
@@ -407,19 +405,18 @@ def test_time_learning(model: BaseChatModel) -> None:
     """CLINC150: semantic generalization from in-context label examples.
 
     The agent memorizes ~366K characters of labeled utterance examples
-    (7,050 examples across 151 intent classes in 10 domains), then
-    classifies a held-out utterance by outputting the correct numeric
-    label ID.
+    (7,050 examples across 151 intent classes in 10 domains), then classifies a
+    held-out utterance by outputting the correct numeric label ID.
 
-    Why CLINC150: it has the largest label space with many semantically
-    close labels across diverse domains, avoiding trivial memorization
-    strategies. BANKING77 is too narrow (single domain), and smaller
-    label-space datasets don't stress-test whether the agent truly
-    internalized the classification scheme.
+    Why CLINC150: it has the largest label space with many semantically close
+    labels across diverse domains, avoiding trivial memorization strategies.
+    BANKING77 is too narrow (single domain), and smaller label-space datasets
+    don't stress-test whether the agent truly internalized the
+    classification scheme.
 
-    Why this question ("tell carl that he sucks" -> label 117): all 47
-    training examples for label 117 use keywords like "text", "send", or
-    "message", but this utterance has none of them. The agent must
+    Why this question ("tell carl that he sucks" -> label 117): all 47 training
+    examples for label 117 use keywords like "text", "send", or "message", but
+    this utterance has none of them. The agent must
     recognize that "tell [person] [content]" is the same intent as
     "text [person] [content]" — no keyword-matching path exists.
 
@@ -437,22 +434,22 @@ def test_time_learning(model: BaseChatModel) -> None:
 def test_long_range_understanding(model: BaseChatModel) -> None:
     """Detective QA: multi-hop narrative reasoning over a full novel.
 
-    The agent memorizes a detective novel (~400K+ characters) in chunks,
-    then answers a multiple-choice question about the plot that requires
-    linking a mundane domestic observation (a replaced lamp), the crime
-    scene mechanics (the murderer needed darkness), the method (short
-    circuit), and the physical consequence (burnt-out bulbs).
+    The agent memorizes a detective novel (~400K+ characters) in chunks, then
+    answers a multiple-choice question about the plot that requires
+    linking a mundane domestic observation (a replaced lamp), the crime scene
+    mechanics (the murderer needed darkness), the method (short circuit), and
+    the physical consequence (burnt-out bulbs).
 
-    Why Detective QA: answers depend on specific plot facts scattered across
-    the full narrative, so small retrieval errors surface clearly. The
-    alternative (InfBench-Sum) mainly measures compression via F-1 score,
-    but specific-fact reasoning gives better signal for memory accuracy.
+    Why Detective QA: answers depend on specific plot facts scattered across the
+    full narrative, so small retrieval errors surface clearly. The
+    alternative (InfBench-Sum) mainly measures compression via F-1 score, but
+    specific-fact reasoning gives better signal for memory accuracy.
 
-    Why this question: it connects the most disparate narrative pieces in
-    the dataset — four causal hops through different parts of a 407K-char
-    novel. All distractors are plausible without the story context, and
-    the correct answer ("short circuit", "light bulbs were burnt out")
-    is distinctive enough for clean substring matching.
+    Why this question: it connects the most disparate narrative pieces in the
+    dataset — four causal hops through different parts of a 407K-char novel.
+    All distractors are plausible without the story context, and the correct
+    answer ("short circuit", "light bulbs were burnt out") is distinctive enough
+    for clean substring matching.
 
     Scoring: normalized substring match (ground-truth answer text in
     agent response).
@@ -471,22 +468,21 @@ def test_conflict_resolution(model: BaseChatModel) -> None:
 
     The agent memorizes ~455 numbered facts where later facts intentionally
     contradict earlier ones for the same subject (latest = ground truth).
-    It then answers a question requiring two reasoning hops, where *both*
-    hops contain a fact conflict that must be resolved to the latest value.
+    It then answers a question requiring two reasoning hops, where *both* hops
+    contain a fact conflict that must be resolved to the latest value.
 
-    Why multi-hop 6k: single-hop tests "did you store the new fact?",
-    but multi-hop tests "did your entire system actually update?" — when
-    a fact changes, do all downstream inferences update too? We use the
-    smallest context (6k) to isolate conflict resolution from retrieval
-    difficulty, since LongMemEval already tests needle-in-haystack
-    retrieval separately.
+    Why multi-hop 6k: single-hop tests "did you store the new fact?", but
+    multi-hop tests "did your entire system actually update?" — when a fact
+    changes, do all downstream inferences update too? We use the smallest
+    context (6k) to isolate conflict resolution from retrieval difficulty, since
+    LongMemEval already tests needle-in-haystack retrieval separately.
 
-    Why this question (Hines Ward's sport -> "field hockey"): both hops
-    have overrides (Ward's position: wide receiver -> cornerback;
-    cornerback's sport: American football -> field hockey), and the LLM's
-    prior strongly says "American football" (Ward is a famous NFL MVP).
-    Answering "field hockey" is proof of correct dual-hop resolution;
-    any other answer diagnoses exactly which hop failed.
+    Why this question (Hines Ward's sport -> "field hockey"): both hops have
+    overrides (Ward's position: wide receiver -> cornerback; cornerback's
+    sport: American football -> field hockey), and the LLM's prior strongly
+    says "American football" (Ward is a famous NFL MVP).
+    Answering "field hockey" is proof of correct dual-hop resolution; any other
+    answer diagnoses exactly which hop failed.
 
     Scoring: normalized substring match ("field hockey" in agent response).
     """

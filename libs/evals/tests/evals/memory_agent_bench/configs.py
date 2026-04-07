@@ -13,33 +13,44 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    """Minimal configuration for one MemoryAgentBench sub-dataset.
-
-    Attributes:
-        split: HuggingFace dataset split name (e.g. `Conflict_Resolution`).
-        source: Value matched against `metadata.source` in the dataset.
-        chunk_size: Token budget per text chunk during memorization.
-        max_samples: Maximum number of context samples to load after
-            filtering by source. Must be large enough to include
-            `sample_index`.
-        max_questions: Cap on questions asked per sample. When `None`,
-            all questions in the dataset are used. Ignored when
-            `question_indices` is set.
-        question_indices: Specific 0-based question indices to evaluate.
-            When set, only these questions are posed to the agent and
-            `max_questions` is ignored.
-        sample_index: 0-based index of the sample to evaluate within
-            the loaded dataset. Configs that target a sample other than
-            the first must set `max_samples` high enough to include it.
-    """
+    """Minimal configuration for one `MemoryAgentBench` sub-dataset."""
 
     split: str
+    """HuggingFace dataset split name (e.g. `Conflict_Resolution`)."""
+
     source: str
+    """Value matched against `metadata.source` in the dataset."""
+
     chunk_size: int = 4096
+    """Token budget per text chunk during memorization."""
+
     max_samples: int = 1
+    """Maximum number of context samples to load after filtering by source.
+
+    Must be large enough to include `sample_index`.
+    """
+
     max_questions: int | None = None
+    """Cap on questions asked per sample.
+
+    When `None`, all questions in the dataset are used.
+
+    Ignored when `question_indices` is set.
+    """
+
     question_indices: tuple[int, ...] | None = None
+    """Specific 0-based question indices to evaluate.
+
+    When set, only these questions are posed to the agent and `max_questions`
+    is ignored.
+    """
+
     sample_index: int = 0
+    """0-based index of the sample to evaluate within the loaded dataset.
+
+    Configs that target a sample other than the first must set `max_samples`
+    high enough to include it.
+    """
 
 
 # -- Conflict Resolution (single-hop) ----------------------------------------

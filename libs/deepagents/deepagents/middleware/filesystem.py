@@ -52,7 +52,7 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
-from deepagents.middleware._utils import append_to_system_message, resolve_artifacts_root
+from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -605,7 +605,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
 
-        self._artifacts_root = resolve_artifacts_root(self.backend)
+        self._artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
         _root = self._artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"

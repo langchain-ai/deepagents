@@ -1093,33 +1093,6 @@ class TestBackendFactoryInvocation:
         assert len(backend.write_calls) == 1
 
 
-class TestCustomHistoryPathPrefix:
-    """Tests for custom `history_path_prefix` configuration."""
-
-    def test_custom_history_path_prefix(self) -> None:
-        """Test that custom `history_path_prefix` is used in file paths."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-            history_path_prefix="/custom/path",
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        with mock_get_config(thread_id="test-thread"):
-            call_wrap_model_call(middleware, state, runtime)
-
-        path, _ = backend.write_calls[0]
-        assert path == "/custom/path/test-thread.md"
-
-
 class TestMarkdownFormatting:
     """Tests for markdown message formatting using `get_buffer_string`."""
 

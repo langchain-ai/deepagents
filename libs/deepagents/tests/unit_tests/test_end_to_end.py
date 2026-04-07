@@ -1946,7 +1946,9 @@ class TestArtifactsRoot:
         evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
         assert "/workspace/large_tool_results/" in evicted_msg.content
         [resp] = backend.download_files(["/workspace/large_tool_results/call_big"])
+        assert resp.error is None
         assert resp.content is not None
+        assert b"x" * 100 in resp.content
 
     def test_deep_agent_artifacts_root_eviction_then_read(self) -> None:
         """Evicted tool result under custom artifacts_root can be read back."""
@@ -2058,14 +2060,31 @@ class TestArtifactsRoot:
 
     def test_create_deep_agent_no_composite_backend(self) -> None:
         """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
-        model = FakeChatModelWithHistory(messages=iter([AIMessage(content="done")]))
-        agent = create_deep_agent(model=model, backend=StateBackend())  # noqa: F841
+        backend = StateBackend()
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            middleware=[capturing_middleware],
+        )
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/large_tool_results/" in system_content
 
     def test_create_deep_agent_composite_backend_default_artifacts_root(self) -> None:
         """create_deep_agent with CompositeBackend without artifacts_root defaults to '/'."""
-        model = FakeChatModelWithHistory(messages=iter([AIMessage(content="done")]))
         backend = CompositeBackend(default=StateBackend(), routes={})
-        agent = create_deep_agent(model=model, backend=backend)  # noqa: F841
+        assert backend.artifacts_root == "/"
+
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            middleware=[capturing_middleware],
+        )
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+        system_content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "/large_tool_results/" in system_content
 
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""

@@ -83,7 +83,9 @@ class TestFilesystemMiddlewareArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/evict_123" in result.content
         [resp] = backend.download_files(["/workspace/large_tool_results/evict_123"])
+        assert resp.error is None
         assert resp.content is not None
+        assert b"x" * 100 in resp.content
 
     def test_large_tool_result_eviction_default_root(self) -> None:
         backend = _make_store_backend()
@@ -97,7 +99,9 @@ class TestFilesystemMiddlewareArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert "/large_tool_results/evict_456" in result.content
         [resp] = backend.download_files(["/large_tool_results/evict_456"])
+        assert resp.error is None
         assert resp.content is not None
+        assert b"x" * 100 in resp.content
 
 
 class TestCreateSummarizationMiddlewareArtifactsRoot:
@@ -144,7 +148,9 @@ class TestCompositeBackendEvictionArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/evict_ws" in result.content
         [resp] = backend.download_files(["/workspace/large_tool_results/evict_ws"])
+        assert resp.error is None
         assert resp.content is not None
+        assert b"x" * 100 in resp.content
         [resp] = backend.download_files(["/large_tool_results/evict_ws"])
         assert resp.content is None
 
@@ -172,4 +178,6 @@ class TestAsyncEvictionArtifactsRoot:
         assert isinstance(result, ToolMessage)
         assert "/workspace/large_tool_results/async_evict_123" in result.content
         [resp] = await backend.adownload_files(["/workspace/large_tool_results/async_evict_123"])
+        assert resp.error is None
         assert resp.content is not None
+        assert b"x" * 100 in resp.content

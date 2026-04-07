@@ -334,3 +334,108 @@ register_provider_profile(
     "anthropic",
     ProviderProfile(extra_middleware=_anthropic_extra_middleware),
 )
+
+# ---------------------------------------------------------------------------
+# GPT-5.4 per-model profile (toy / sample implementation)
+# ---------------------------------------------------------------------------
+# Layered on top of the "openai" provider profile — inherits
+# use_responses_api=True via the merge mechanism.
+
+_GPT54_MIN_LANGCHAIN_OPENAI = "1.1.4"
+"""Minimum `langchain-openai` version required for GPT-5.4 features."""
+
+
+def _check_langchain_openai_for_gpt54(spec: str) -> None:  # noqa: ARG001
+    """Raise if `langchain-openai` is below the minimum for GPT-5.4.
+
+    Skipped when the package is not installed at all; `init_chat_model`
+    will surface its own missing-dependency error downstream.
+
+    Args:
+        spec: Raw model spec string (unused; required by `pre_init` signature).
+
+    Raises:
+        ImportError: If the installed version is too old.
+    """
+    try:
+        installed = pkg_version("langchain-openai")
+    except PackageNotFoundError:
+        return
+    if Version(installed) < Version(_GPT54_MIN_LANGCHAIN_OPENAI):
+        msg = (
+            f"openai:gpt-5.4 requires langchain-openai>={_GPT54_MIN_LANGCHAIN_OPENAI}, "
+            f"but {installed} is installed. "
+            f"Run: pip install 'langchain-openai>={_GPT54_MIN_LANGCHAIN_OPENAI}'"
+        )
+        raise ImportError(msg)
+
+
+def _gpt54_dynamic_kwargs() -> dict[str, Any]:
+    """Build dynamic init kwargs for GPT-5.4.
+
+    Reads `OPENAI_SERVICE_TIER` from the environment at init time so
+    operators can select a processing tier (e.g. `"flex"` for cheaper
+    batch-style throughput, `"auto"` for prioritized latency) without
+    touching code.
+
+    Returns:
+        Dictionary of kwargs to merge on top of `init_kwargs`.
+    """
+    kwargs: dict[str, Any] = {}
+    tier = os.environ.get("OPENAI_SERVICE_TIER")
+    if tier is not None:
+        kwargs["service_tier"] = tier
+    return kwargs
+
+
+def _gpt54_extra_middleware() -> Sequence[AgentMiddleware]:
+    """Build GPT-5.4-specific middleware (deferred import).
+
+    Returns a `PatchToolCallsMiddleware` as a stand-in — a real profile would
+    swap this for provider-specific middleware (e.g. structured-output
+    validation, token-budget enforcement).
+
+    Returns:
+        Single-element sequence with a placeholder middleware instance.
+    """
+    from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware  # noqa: PLC0415
+
+    return [PatchToolCallsMiddleware()]
+
+
+_GPT54_BASE_SYSTEM_PROMPT = """\
+You are a Deep Agent powered by GPT-5.4.
+
+Be concise. Act, don't narrate. Batch independent tool calls."""
+"""Compact base prompt replacing `BASE_AGENT_PROMPT` for GPT-5.4.
+
+A real profile might trim the default prompt for models that follow
+instructions well with less scaffolding.
+"""
+
+register_provider_profile(
+    "openai:gpt-5.4",
+    ProviderProfile(
+        # init_kwargs: merged with the parent openai profile's
+        # {"use_responses_api": True} — the result contains both.
+        init_kwargs={"store": False},
+        # pre_init: version gate — runs before init_chat_model.
+        pre_init=_check_langchain_openai_for_gpt54,
+        # init_kwargs_factory: deferred kwargs from env vars.
+        init_kwargs_factory=_gpt54_dynamic_kwargs,
+        # base_system_prompt: replaces BASE_AGENT_PROMPT entirely.
+        base_system_prompt=_GPT54_BASE_SYSTEM_PROMPT,
+        # system_prompt_suffix: appended after base_system_prompt.
+        system_prompt_suffix=(
+            "You have access to parallel tool execution. "
+            "When multiple tool calls are independent, batch them "
+            "into a single response to minimize round-trips."
+        ),
+        # tool_description_overrides: per-tool rewrites.
+        tool_description_overrides={
+            "task": ("Delegate a subtask to a specialized subagent. Prefer launching independent subtasks concurrently."),
+        },
+        # extra_middleware: appended to every middleware stack.
+        extra_middleware=_gpt54_extra_middleware,
+    ),
+)

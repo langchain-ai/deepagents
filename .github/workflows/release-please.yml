@@ -34,8 +34,11 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # Detect releases by checking if this commit updated a package's CHANGELOG.md
-      # release-please ALWAYS updates CHANGELOG.md when merging a release PR
+      # Detect releases by checking CHANGELOG.md modifications AND commit message.
+      # release-please always updates CHANGELOG.md when merging a release PR, and
+      # the commit message matches pull-request-title-pattern in release-please-config.json:
+      #   "release(${component}): ${version}"
+      # Components: deepagents-cli, deepagents
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
@@ -43,18 +46,37 @@ jobs:
       - name: Check if release PRs were merged
         id: check-releases
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+          if ! CHANGED=$(git diff --name-only HEAD~1 HEAD); then
+            echo "::error::git diff failed — is fetch-depth sufficient?"
+            exit 1
+          fi
 
-          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$"; then
+          if ! COMMIT_MSG=$(git log -1 --format=%s HEAD); then
+            echo "::error::git log failed — cannot read commit message."
+            exit 1
+          fi
+
+          echo "Commit message: $COMMIT_MSG"
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          if [ -z "$COMMIT_MSG" ]; then
+            echo "::warning::Commit message is empty — no release will be triggered."
+          fi
+
+          # grep -q in an `if` conditional is safe under set -eo pipefail;
+          # bash suppresses errexit inside `if` compound commands.
+
+          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
             echo "cli-release=true" >> $GITHUB_OUTPUT
-            echo "CLI CHANGELOG.md was modified - this is a release commit"
+            echo "CLI release detected: $COMMIT_MSG"
           else
             echo "cli-release=false" >> $GITHUB_OUTPUT
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$"; then
+          if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
             echo "sdk-release=true" >> $GITHUB_OUTPUT
-            echo "SDK CHANGELOG.md was modified - this is a release commit"
+            echo "SDK release detected: $COMMIT_MSG"
           else
             echo "sdk-release=false" >> $GITHUB_OUTPUT
           fi

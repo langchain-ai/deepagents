@@ -728,6 +728,10 @@ class CompositeBackend(BackendProtocol):
             NotImplementedError: If the default backend is not a
                 `SandboxBackendProtocol` (i.e., it doesn't support execution).
         """
+        err = self._policy_error("execute", "/", None)
+        if err:
+            return ExecuteResponse(output=err, exit_code=1, truncated=False)
+
         if isinstance(self.default, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self.default)):
                 return self.default.execute(command, timeout=timeout)
@@ -753,6 +757,10 @@ class CompositeBackend(BackendProtocol):
 
         See `execute()` for detailed documentation on parameters and behavior.
         """
+        err = self._policy_error("execute", "/", None)
+        if err:
+            return ExecuteResponse(output=err, exit_code=1, truncated=False)
+
         if isinstance(self.default, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self.default)):
                 return await self.default.aexecute(command, timeout=timeout)

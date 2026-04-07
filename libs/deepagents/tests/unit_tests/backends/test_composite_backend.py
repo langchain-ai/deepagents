@@ -1248,6 +1248,38 @@ def test_get_backend_and_key_consistency() -> None:
     assert stripped == "/other/file.txt"
 
 
+def test_get_backend_key_and_route_consistency() -> None:
+    """Verify _get_backend_key_and_route produces correct stripped paths and route prefixes."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    # Exact route prefix
+    backend, stripped, route = comp._get_backend_key_and_route("/memories/")
+    assert backend is store_be
+    assert stripped == "/"
+    assert route == "/memories/"
+
+    # File inside route
+    backend, stripped, route = comp._get_backend_key_and_route("/memories/notes.txt")
+    assert backend is store_be
+    assert stripped == "/notes.txt"
+    assert route == "/memories/"
+
+    # Nested path inside route
+    backend, stripped, route = comp._get_backend_key_and_route("/memories/sub/file.txt")
+    assert backend is store_be
+    assert stripped == "/sub/file.txt"
+    assert route == "/memories/"
+
+    # Path not matching any route
+    backend, stripped, route = comp._get_backend_key_and_route("/other/file.txt")
+    assert backend is state
+    assert stripped == "/other/file.txt"
+    assert route is None
+
+
 def test_route_for_path_edge_cases() -> None:
     mem_store = InMemoryStore()
     default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
@@ -1644,6 +1676,40 @@ class TestCompositeBackendPolicyEnforcement:
         )
         result = comp.grep("pattern", path="/")
         assert result.error is None
+
+    def test_default_policy_blocks_execute(self) -> None:
+        """default_policy without 'execute' blocks command execution."""
+        mem_store = InMemoryStore()
+        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=sandbox,
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+        )
+        result = comp.execute("echo hello")
+        assert result.exit_code == 1
+        assert "execute" in result.output.lower()
+
+    def test_default_policy_allows_execute(self) -> None:
+        """default_policy with 'execute' permits command execution."""
+        mem_store = InMemoryStore()
+        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(
+            default=sandbox,
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep", "execute"}),
+        )
+        result = comp.execute("echo hello")
+        assert result.exit_code == 0
+        assert result.output == "Executed: echo hello"
+
+    def test_no_default_policy_allows_execute(self) -> None:
+        """No default_policy means execute is unrestricted."""
+        mem_store = InMemoryStore()
+        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+        comp = CompositeBackend(default=sandbox, routes={})
+        result = comp.execute("echo hello")
+        assert result.exit_code == 0
 
     def test_glob_across_root_respects_policy(self) -> None:
         """Glob at root still works when grep is allowed on all routes."""

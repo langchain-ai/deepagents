@@ -1188,6 +1188,32 @@ async def test_policy_allows_aglob() -> None:
     assert result.error is None
 
 
+async def test_default_policy_blocks_aexecute() -> None:
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    comp = CompositeBackend(
+        default=sandbox,
+        routes={},
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+    )
+    result = await comp.aexecute("echo hello")
+    assert result.exit_code == 1
+    assert "execute" in result.output.lower()
+
+
+async def test_default_policy_allows_aexecute() -> None:
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    comp = CompositeBackend(
+        default=sandbox,
+        routes={},
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep", "execute"}),
+    )
+    result = await comp.aexecute("echo hello")
+    assert result.exit_code == 0
+    assert result.output == "Async Executed: echo hello"
+
+
 async def test_default_policy_applies_to_bare_backend_routes_async() -> None:
     mem_store = InMemoryStore()
     store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))

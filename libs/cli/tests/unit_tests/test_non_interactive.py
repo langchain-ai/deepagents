@@ -923,6 +923,111 @@ class TestNonInteractivePrompt:
         _, kwargs = mock_start_server.call_args
         assert kwargs["interactive"] is False
 
+    async def test_initial_skill_wraps_prompt_and_metadata(self) -> None:
+        """Headless skill execution should send wrapped prompt + `__skill`."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+        skill = {
+            "name": "code-review",
+            "description": "Review code changes",
+            "path": "/skills/code-review/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+            "source": "user",
+        }
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.skills.invocation.discover_skills_and_roots",
+                return_value=([skill], []),
+            ),
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Instructions\nDo stuff",
+            ),
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(
+                message="review this patch",
+                initial_skill="code-review",
+                quiet=True,
+            )
+
+        stream_input = mock_agent.astream.call_args.args[0]
+        user_msg = stream_input["messages"][0]
+        assert "I'm invoking the skill `code-review`." in user_msg["content"]
+        assert "**User request:** review this patch" in user_msg["content"]
+        assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
+        assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
+
+    async def test_initial_skill_missing_returns_error_without_starting_server(
+        self,
+    ) -> None:
+        """Missing headless skill should fail before the server starts."""
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.skills.invocation.discover_skills_and_roots",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(
+                message="review this patch",
+                initial_skill="missing-skill",
+                quiet=True,
+            )
+
+        assert result == 1
+        mock_start_server.assert_not_awaited()
+
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""

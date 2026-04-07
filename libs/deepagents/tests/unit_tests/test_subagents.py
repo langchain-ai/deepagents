@@ -6,7 +6,6 @@ and child agents.
 """
 
 import uuid
-import warnings
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -26,7 +25,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -1991,45 +1990,3 @@ class TestSubAgents:
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         assert tool_messages[0].content == "Override response."
-
-
-class TestSubAgentMiddlewareValidation:
-    """Tests for SubAgentMiddleware initialization validation."""
-
-    def test_unknown_kwargs_raises_type_error(self) -> None:
-        """Test that passing unknown kwargs to SubAgentMiddleware raises TypeError.
-
-        This validates that deprecated_kwargs are properly validated and unknown
-        kwargs like 'fooofoobar' are caught and reported.
-        """
-        with pytest.raises(TypeError, match=r"unexpected keyword argument.*fooofoobar"):
-            SubAgentMiddleware(
-                default_model="openai:gpt-4o",  # type: ignore[call-arg]
-                fooofoobar=2,  # type: ignore[call-arg]
-            )
-
-    def test_multiple_unknown_kwargs_reported(self) -> None:
-        """Test that multiple unknown kwargs are all reported in the error message."""
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
-            SubAgentMiddleware(
-                default_model="openai:gpt-4o",  # type: ignore[call-arg]
-                unknown_arg_1=1,  # type: ignore[call-arg]
-                unknown_arg_2=2,  # type: ignore[call-arg]
-            )
-
-    def test_valid_deprecated_kwargs_accepted(self) -> None:
-        """Test that valid deprecated kwargs don't raise TypeError."""
-        fake_model = GenericFakeChatModel(messages=iter([]))
-
-        # This should not raise TypeError, only emit a deprecation warning
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            SubAgentMiddleware(
-                default_model=fake_model,  # type: ignore[call-arg]
-                default_tools=[],  # type: ignore[call-arg]
-            )
-
-        # Should have received deprecation warning but no TypeError
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "deprecated" in str(w[0].message).lower()

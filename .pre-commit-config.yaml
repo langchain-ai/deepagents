@@ -37,7 +37,7 @@ repos:
       - id: evals
         name: format and lint evals
         language: system
-        entry: make -C libs/evals format lint
+        entry: make -C libs/evals format eval-catalog lint
         files: ^libs/evals/
         pass_filenames: false
       - id: acp

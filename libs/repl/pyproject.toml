@@ -21,9 +21,7 @@ classifiers = [
 
 version = "0.0.1"
 requires-python = ">=3.11,<4.0"
-dependencies = [
-    "deepagents",
-]
+dependencies = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_repl"]

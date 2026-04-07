@@ -66,10 +66,10 @@ Source of truth: [`tests/evals/`](tests/evals/).
 
 ## Memory (`memory`) (17 evals)
 
-- [`test_conflict_resolution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L350) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:350`
-- [`test_time_learning`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L380) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:380`
-- [`test_memory_agent_bench_ci`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L409) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:409`
-- [`test_memory_agent_bench_ci_fileseeded`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L438) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:438`
+- [`test_accurate_retrieval`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L379) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:379`
+- [`test_time_learning`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L409) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:409`
+- [`test_long_range_understanding`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L439) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:439`
+- [`test_conflict_resolution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L471) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:471`
 - [`test_memory_basic_recall`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L38) — `tests/evals/test_memory.py:38`
 - [`test_memory_guided_behavior_naming_convention`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L70) — `tests/evals/test_memory.py:70`
 - [`test_memory_influences_file_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L113) — `tests/evals/test_memory.py:113`

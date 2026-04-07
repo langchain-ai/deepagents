@@ -4,7 +4,9 @@ Adapted from https://github.com/HUST-AI-HYZ/MemoryAgentBench
 (ICLR 2026: Evaluating Memory in LLM Agents via Incremental Multi-Turn Interactions)
 
 Only the subset needed for Conflict Resolution and Test-Time Learning splits is
-included here.
+included here. Normalized substring matching is implemented by
+`substring_match()`, which compares `normalize_answer(ground_truth)` against
+`normalize_answer(prediction)`.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ def normalize_answer(text: str) -> str:
 def substring_match(prediction: str, ground_truth: str) -> bool:
     """Check if normalized ground truth is a substring of normalized prediction.
 
+    This helper defines the normalized substring match used by the
+    MemoryAgentBench scorer.
+
     Args:
         prediction: The predicted text.
         ground_truth: The ground truth text.
@@ -48,6 +53,9 @@ def substring_match_any(
     ground_truths: str | list[str] | list[list[str]],
 ) -> bool:
     """Check substring match against any acceptable ground truth.
+
+    This is the entry point used by `_score_predictions()` in
+    `test_memory_agent_bench.py`.
 
     Args:
         prediction: The predicted text.

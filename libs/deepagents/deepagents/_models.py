@@ -16,13 +16,13 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     If `model` is already a `BaseChatModel`, returns it unchanged.
 
     String models are resolved via `init_chat_model` with provider-specific
-    kwargs drawn from the `ProviderProfile` registry.  For example, OpenAI
-    models default to the Responses API, and OpenRouter models include app
+    kwargs drawn from the `ProviderProfile` registry. For example, OpenAI models
+    default to the Responses API, and OpenRouter models include app
     attribution headers.
 
     Args:
-        model: Model string (e.g. `"openai:gpt-5"`) or pre-configured
-            model instance.
+        model: Model string (e.g. `"openai:gpt-5.4"`) or pre-configured
+            `BaseChatModel` subclass instance.
 
     Returns:
         Resolved `BaseChatModel` instance.

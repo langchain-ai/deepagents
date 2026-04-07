@@ -126,6 +126,18 @@
         "langchain_runloop/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/quickjs": {
+      "release-type": "python",
+      "package-name": "langchain-quickjs",
+      "component": "langchain-quickjs",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_quickjs/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
     }
   },
   "tag-separator": "==",

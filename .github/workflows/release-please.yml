@@ -30,6 +30,7 @@ jobs:
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
@@ -42,7 +43,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop
+      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
@@ -111,6 +112,13 @@ jobs:
             echo "Runloop release detected: $COMMIT_MSG"
           else
             echo "runloop-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
+            echo "quickjs-release=true" >> $GITHUB_OUTPUT
+            echo "QuickJS release detected: $COMMIT_MSG"
+          else
+            echo "quickjs-release=false" >> $GITHUB_OUTPUT
           fi
 
   # Update uv.lock files when release-please creates/updates a PR
@@ -223,6 +231,18 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-runloop
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when QuickJS release PR is merged
+  release-langchain-quickjs:
+    needs: release-please
+    if: needs.release-please.outputs.quickjs-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-quickjs
     permissions:
       contents: write
       id-token: write

@@ -316,15 +316,10 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`.
-
-## Conversation History
-
-When a human message is too large, its content may be offloaded into the filesystem. The message will include a preview and a path to the full content. Use `read_file` with pagination to retrieve the full message from `{conversation_history_prefix}/`."""
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
 
 FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
     large_tool_results_prefix="/large_tool_results",
-    conversation_history_prefix="/conversation_history",
 )
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
@@ -1187,7 +1182,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
-                    conversation_history_prefix=self._conversation_history_prefix,
                 )
             ]
 
@@ -1253,7 +1247,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
-                    conversation_history_prefix=self._conversation_history_prefix,
                 )
             ]
 

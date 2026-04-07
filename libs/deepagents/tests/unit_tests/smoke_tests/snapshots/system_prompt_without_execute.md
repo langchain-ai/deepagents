@@ -69,10 +69,6 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`.
 
-## Conversation History
-
-When a human message is too large, its content may be offloaded into the filesystem. The message will include a preview and a path to the full content. Use `read_file` with pagination to retrieve the full message from `/conversation_history/`.
-
 
 ## `task` (subagent spawner)
 

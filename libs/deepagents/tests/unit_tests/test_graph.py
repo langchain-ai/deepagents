@@ -9,7 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
-from deepagents._models import _PROVIDER_PROFILES, ProviderProfile, register_provider_profile
+from deepagents._profiles import _PROVIDER_PROFILES, ProviderProfile, register_provider_profile
 from deepagents._version import __version__
 from deepagents.graph import _profile_for_model, _resolve_extra_middleware, _tool_name, create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel

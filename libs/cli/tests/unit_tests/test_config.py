@@ -1452,7 +1452,7 @@ class TestOpenRouterVersionCheck:
         """_get_provider_kwargs raises ImportError for old langchain-openrouter."""
         with (
             patch(
-                "deepagents._models.pkg_version",
+                "deepagents._profiles.pkg_version",
                 return_value="0.0.1",
             ),
             pytest.raises(ImportError, match="langchain-openrouter>="),
@@ -1461,10 +1461,10 @@ class TestOpenRouterVersionCheck:
 
     def test_accepts_sufficient_version(self) -> None:
         """_get_provider_kwargs succeeds when version meets minimum."""
-        from deepagents._models import OPENROUTER_MIN_VERSION
+        from deepagents._profiles import OPENROUTER_MIN_VERSION
 
         with patch(
-            "deepagents._models.pkg_version",
+            "deepagents._profiles.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
             kwargs = _get_provider_kwargs("openrouter")
@@ -1473,7 +1473,7 @@ class TestOpenRouterVersionCheck:
 
     def test_skipped_for_other_providers(self) -> None:
         """Version check is not invoked for non-openrouter providers."""
-        with patch("deepagents._models.check_openrouter_version") as mock:
+        with patch("deepagents._profiles.check_openrouter_version") as mock:
             _get_provider_kwargs("openai")
 
         mock.assert_not_called()

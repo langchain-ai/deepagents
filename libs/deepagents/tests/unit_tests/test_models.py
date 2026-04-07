@@ -8,19 +8,21 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
+    _string_value,
+    get_model_identifier,
+    model_matches_spec,
+    resolve_model,
+)
+from deepagents._profiles import (
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
     _PROVIDER_PROFILES,
     OPENROUTER_MIN_VERSION,
     ProviderProfile,
     _openrouter_attribution_kwargs,
-    _string_value,
     check_openrouter_version,
-    get_model_identifier,
     get_provider_profile,
-    model_matches_spec,
     register_provider_profile,
-    resolve_model,
 )
 
 
@@ -160,32 +162,32 @@ class TestCheckOpenRouterVersion:
 
     def test_passes_when_not_installed(self) -> None:
         with patch(
-            "deepagents._models.pkg_version",
+            "deepagents._profiles.pkg_version",
             side_effect=PackageNotFoundError("langchain-openrouter"),
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_sufficient(self) -> None:
         with patch(
-            "deepagents._models.pkg_version",
+            "deepagents._profiles.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_above_minimum(self) -> None:
-        with patch("deepagents._models.pkg_version", return_value="99.0.0"):
+        with patch("deepagents._profiles.pkg_version", return_value="99.0.0"):
             check_openrouter_version()  # should not raise
 
     def test_raises_when_version_too_old(self) -> None:
         with (
-            patch("deepagents._models.pkg_version", return_value="0.0.1"),
+            patch("deepagents._profiles.pkg_version", return_value="0.0.1"),
             pytest.raises(ImportError, match="langchain-openrouter>="),
         ):
             check_openrouter_version()
 
     def test_resolve_model_calls_check(self) -> None:
         with (
-            patch("deepagents._models.check_openrouter_version") as mock_check,
+            patch("deepagents._profiles.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -195,7 +197,7 @@ class TestCheckOpenRouterVersion:
 
     def test_resolve_model_skips_check_for_non_openrouter(self) -> None:
         with (
-            patch("deepagents._models.check_openrouter_version") as mock_check,
+            patch("deepagents._profiles.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -352,7 +354,7 @@ class TestResolveModelWithProfiles:
     def test_openrouter_runs_pre_init_and_factory(self) -> None:
         with (
             patch("deepagents._models.init_chat_model") as mock,
-            patch("deepagents._models.check_openrouter_version") as mock_check,
+            patch("deepagents._profiles.check_openrouter_version") as mock_check,
         ):
             mock.return_value = MagicMock(spec=BaseChatModel)
             resolve_model("openrouter:anthropic/claude-sonnet-4-6")

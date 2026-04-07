@@ -22,7 +22,8 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
-from deepagents._models import ProviderProfile, get_model_identifier, get_provider_profile, resolve_model
+from deepagents._models import get_model_identifier, resolve_model
+from deepagents._profiles import ProviderProfile, get_provider_profile
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol

@@ -267,12 +267,22 @@ class CompositeBackend(BackendProtocol):
         self.sorted_routes = sorted(backend_routes.items(), key=lambda x: len(x[0]), reverse=True)
         self.artifacts_root = artifacts_root
 
-    def _policy_for_route(self, route_prefix: str | None) -> RoutePolicy | None:
+    def has_any_policy(self) -> bool:
+        """Return `True` if any route or the default has a policy configured."""
+        return self.default_policy is not None or any(
+            p is not None for p in self._policies.values()
+        )
+
+    def policy_for_route(self, route_prefix: str | None) -> RoutePolicy | None:
         """Resolve the effective policy for a matched route.
 
         Returns the explicit route policy if set, otherwise falls back to
         `default_policy`. The default policy applies to both the default
         backend and bare-backend routes.
+
+        Args:
+            route_prefix: The route prefix to look up, or `None` for the
+                default backend.
         """
         if route_prefix is None:
             return self.default_policy
@@ -283,7 +293,7 @@ class CompositeBackend(BackendProtocol):
 
     def _policy_error(self, method: str, path: str, route_prefix: str | None) -> str | None:
         """Return an error message if the policy blocks the method, else `None`."""
-        policy = self._policy_for_route(route_prefix)
+        policy = self.policy_for_route(route_prefix)
         if policy is not None and not policy.is_allowed(method):
             return f"Method '{method}' is not allowed on path '{path}' (route '{route_prefix}'). Allowed methods: {sorted(policy.allowed_methods)}"
         return None

@@ -338,8 +338,7 @@ def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     if not isinstance(backend, CompositeBackend):
         return None
 
-    has_any_policy = backend.default_policy is not None or any(p is not None for p in backend._policies.values())
-    if not has_any_policy:
+    if not backend.has_any_policy():
         return None
 
     lines = [
@@ -350,7 +349,7 @@ def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     ]
 
     for prefix in sorted(backend.routes):
-        policy = backend._policy_for_route(prefix)
+        policy = backend.policy_for_route(prefix)
         if policy is not None:
             lines.append(f"- `{prefix}`: {policy.describe()}")
 

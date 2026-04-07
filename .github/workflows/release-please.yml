@@ -7,7 +7,7 @@
 # GitHub releases are created by release.yml after all checks pass,
 # not by release-please directly (skip-github-release: true in config).
 
-name: Release Please (CLI ONLY)
+name: Release Please
 
 on:
   push:
@@ -24,7 +24,14 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      cli-release: ${{ steps.check-cli-release.outputs.is-release }}
+      cli-release: ${{ steps.check-releases.outputs.cli-release }}
+      sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
+      acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
+      modal-release: ${{ steps.check-releases.outputs.modal-release }}
+      runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
+      repl-release: ${{ steps.check-releases.outputs.repl-release }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
@@ -33,20 +40,93 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # Detect CLI release by checking if this commit updated the CLI's CHANGELOG.md
-      # release-please ALWAYS updates CHANGELOG.md when merging a release PR
+      # Detect releases by checking CHANGELOG.md modifications AND commit message.
+      # release-please always updates CHANGELOG.md when merging a release PR, and
+      # the commit message matches pull-request-title-pattern in release-please-config.json:
+      #   "release(${component}): ${version}"
+      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - name: Check if CLI release PR was merged
-        id: check-cli-release
+      - name: Check if release PRs were merged
+        id: check-releases
         run: |
-          if git diff --name-only HEAD~1 HEAD | grep -q "^libs/cli/CHANGELOG.md$"; then
-            echo "is-release=true" >> $GITHUB_OUTPUT
-            echo "CLI CHANGELOG.md was modified - this is a release commit"
+          if ! CHANGED=$(git diff --name-only HEAD~1 HEAD); then
+            echo "::error::git diff failed — is fetch-depth sufficient?"
+            exit 1
+          fi
+
+          if ! COMMIT_MSG=$(git log -1 --format=%s HEAD); then
+            echo "::error::git log failed — cannot read commit message."
+            exit 1
+          fi
+
+          echo "Commit message: $COMMIT_MSG"
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          if [ -z "$COMMIT_MSG" ]; then
+            echo "::warning::Commit message is empty — no release will be triggered."
+          fi
+
+          # grep -q in an `if` conditional is safe under set -eo pipefail;
+          # bash suppresses errexit inside `if` compound commands.
+
+          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
+            echo "cli-release=true" >> $GITHUB_OUTPUT
+            echo "CLI release detected: $COMMIT_MSG"
           else
-            echo "is-release=false" >> $GITHUB_OUTPUT
+            echo "cli-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
+            echo "sdk-release=true" >> $GITHUB_OUTPUT
+            echo "SDK release detected: $COMMIT_MSG"
+          else
+            echo "sdk-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/acp/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-acp\):"; then
+            echo "acp-release=true" >> $GITHUB_OUTPUT
+            echo "ACP release detected: $COMMIT_MSG"
+          else
+            echo "acp-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
+            echo "daytona-release=true" >> $GITHUB_OUTPUT
+            echo "Daytona release detected: $COMMIT_MSG"
+          else
+            echo "daytona-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
+            echo "modal-release=true" >> $GITHUB_OUTPUT
+            echo "Modal release detected: $COMMIT_MSG"
+          else
+            echo "modal-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
+            echo "runloop-release=true" >> $GITHUB_OUTPUT
+            echo "Runloop release detected: $COMMIT_MSG"
+          else
+            echo "runloop-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
+            echo "quickjs-release=true" >> $GITHUB_OUTPUT
+            echo "QuickJS release detected: $COMMIT_MSG"
+          else
+            echo "quickjs-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/repl/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-repl\):"; then
+            echo "repl-release=true" >> $GITHUB_OUTPUT
+            echo "REPL release detected: $COMMIT_MSG"
+          else
+            echo "repl-release=false" >> $GITHUB_OUTPUT
           fi
 
   # Update uv.lock files when release-please creates/updates a PR
@@ -102,4 +182,88 @@ jobs:
       contents: write
       id-token: write
       # write needed to update PR label from "autorelease: pending" to "autorelease: tagged"
+      pull-requests: write
+
+  # Trigger release workflow when SDK release PR is merged
+  release-deepagents:
+    needs: release-please
+    if: needs.release-please.outputs.sdk-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when ACP release PR is merged
+  release-deepagents-acp:
+    needs: release-please
+    if: needs.release-please.outputs.acp-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-acp
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Daytona release PR is merged
+  release-langchain-daytona:
+    needs: release-please
+    if: needs.release-please.outputs.daytona-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-daytona
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Modal release PR is merged
+  release-langchain-modal:
+    needs: release-please
+    if: needs.release-please.outputs.modal-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-modal
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Runloop release PR is merged
+  release-langchain-runloop:
+    needs: release-please
+    if: needs.release-please.outputs.runloop-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-runloop
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when QuickJS release PR is merged
+  release-langchain-quickjs:
+    needs: release-please
+    if: needs.release-please.outputs.quickjs-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-quickjs
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when REPL release PR is merged
+  release-langchain-repl:
+    needs: release-please
+    if: needs.release-please.outputs.repl-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-repl
+    permissions:
+      contents: write
+      id-token: write
       pull-requests: write

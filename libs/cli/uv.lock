@@ -2629,7 +2629,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "../partners/daytona" }
 dependencies = [
     { name = "daytona" },
@@ -2807,7 +2807,7 @@ wheels = [
 
 [[package]]
 name = "langchain-modal"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "../partners/modal" }
 dependencies = [
     { name = "deepagents" },
@@ -2902,7 +2902,7 @@ wheels = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },

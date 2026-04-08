@@ -405,7 +405,7 @@ wheels = [
 [[package]]
 name = "deepagents"
 version = "0.5.1"
-source = { directory = "../../deepagents" }
+source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -864,7 +864,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepagents", directory = "../../deepagents" },
+    { name = "deepagents", editable = "../../deepagents" },
     { name = "quickjs", specifier = ">=1.19.4,<2" },
 ]
 

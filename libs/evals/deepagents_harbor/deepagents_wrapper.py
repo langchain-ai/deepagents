@@ -65,6 +65,20 @@ Your current working directory is:
 - Work in the /app directory unless explicitly instructed otherwise
 """
 
+PLANNING_GUIDANCE = """
+## Planning
+
+For complex tasks that require multiple steps, plan your approach before diving in:
+
+- Break the task into discrete, actionable steps and consider dependencies between them.
+- Work through steps methodically, completing each one before moving to the next.
+- Keep track of what you have finished and what remains so nothing is missed.
+- If you discover new information that changes the plan, revise your approach rather than \
+pressing ahead with an outdated strategy.
+- For simple tasks that only require a few straightforward actions, skip the planning and \
+just proceed directly.
+"""
+
 
 class DeepAgentsWrapper(BaseAgent):
     """Harbor agent implementation using LangChain Deep Agents.
@@ -169,6 +183,10 @@ class DeepAgentsWrapper(BaseAgent):
     async def _get_formatted_system_prompt(self, backend: HarborSandbox) -> str:
         """Format the system prompt with current directory and file listing context.
 
+        When `include_todos` is disabled, appends lightweight planning guidance so
+        the agent still reasons about task decomposition without the `write_todos`
+        tool.
+
         Args:
             backend: Harbor sandbox backend to query for directory information
 
@@ -202,11 +220,16 @@ class DeepAgentsWrapper(BaseAgent):
             file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_files))
 
         # Format the system prompt with context
-        return SYSTEM_MESSAGE.format(
+        prompt = SYSTEM_MESSAGE.format(
             current_directory=current_dir.strip() if current_dir else "/app",
             file_listing_header=file_listing_header,
             file_listing=file_listing,
         )
+
+        if not self._include_todos:
+            prompt += PLANNING_GUIDANCE
+
+        return prompt
 
     async def run(
         self,

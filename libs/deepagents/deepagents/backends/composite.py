@@ -13,6 +13,9 @@ Examples:
     # Bare backends (no restrictions, backwards compatible)
     composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
 
+    composite.write("/temp.txt", "ephemeral")
+    composite.write("/memories/note.md", "persistent")
+
     # With policies
     composite = CompositeBackend(
         default=StateBackend(),
@@ -199,9 +202,17 @@ class CompositeBackend(BackendProtocol):
         default_policy: Policy applied to the default backend and to bare-backend
             routes that lack an explicit policy.
         artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
+            Defaults to `"/"`.
 
     Examples:
         ```python
+        # Bare backend (no restrictions)
+        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
+
+        composite.write("/temp.txt", "data")
+        composite.write("/memories/note.txt", "data")
+
+        # Restricted backend
         composite = CompositeBackend(
             default=StateBackend(),
             routes={
@@ -236,7 +247,7 @@ class CompositeBackend(BackendProtocol):
                 bare-backend routes (without an explicit `Route.policy`).
                 Does **not** override explicit `Route.policy` values.
             artifacts_root: Root path for artifacts, such as messages offloaded
-                by middleware.
+                by middleware. Defaults to `"/"`.
         """
         self.default = default
         self.default_policy = default_policy
@@ -283,36 +294,6 @@ class CompositeBackend(BackendProtocol):
         if policy is not None and not policy.is_allowed(method):
             return f"Method '{method}' is not allowed on path '{path}' (route '{route_prefix}'). Allowed methods: {sorted(policy.allowed_methods)}"
         return None
-
-    def globally_blocked_methods(self, methods: set[str]) -> set[str]:
-        """Return the subset of methods that are blocked on every route and the default.
-
-        A method is "globally blocked" when every effective policy (the default
-        backend's policy *and* every route's resolved policy) disallows it.
-        If any route or the default has *no* policy, that path is unrestricted
-        and no method can be considered globally blocked.
-
-        Args:
-            methods: Candidate backend method names to check
-                (e.g. `{"write", "edit", "execute"}`).
-
-        Returns:
-            The subset of `methods` that are blocked everywhere. Empty set if
-            no policies are configured or if any path is unrestricted.
-        """
-        if not self.has_any_policy():
-            return set()
-
-        effective_policies: list[RoutePolicy | None] = [
-            self.default_policy,
-            *[self.policy_for_route(prefix) for prefix in self.routes],
-        ]
-
-        if any(p is None for p in effective_policies):
-            return set()
-
-        policies = cast("list[RoutePolicy]", effective_policies)
-        return {m for m in methods if all(not p.is_allowed(m) for p in policies)}
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(
@@ -851,7 +832,10 @@ class CompositeBackend(BackendProtocol):
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
         """
+        # Pre-allocate result list
         results: list[FileUploadResponse | None] = [None] * len(files)
+
+        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):
@@ -861,13 +845,19 @@ class CompositeBackend(BackendProtocol):
             else:
                 backend_batches[backend].append((idx, stripped_path, content))
 
+        # Process each backend's batch
         for backend, batch in backend_batches.items():
+            # Extract data for backend call
             indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
+
+            # Call backend once with all its files
             batch_responses = backend.upload_files(batch_files)
+
+            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],
+                    path=files[orig_idx][0],  # Original path
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
@@ -875,7 +865,10 @@ class CompositeBackend(BackendProtocol):
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Async version of upload_files."""
+        # Pre-allocate result list
         results: list[FileUploadResponse | None] = [None] * len(files)
+
+        # Group files by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
 
         for idx, (path, content) in enumerate(files):
@@ -885,13 +878,19 @@ class CompositeBackend(BackendProtocol):
             else:
                 backend_batches[backend].append((idx, stripped_path, content))
 
+        # Process each backend's batch
         for backend, batch in backend_batches.items():
+            # Extract data for backend call
             indices, stripped_paths, contents = zip(*batch, strict=False)
             batch_files = list(zip(stripped_paths, contents, strict=False))
+
+            # Call backend once with all its files
             batch_responses = await backend.aupload_files(batch_files)
+
+            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileUploadResponse(
-                    path=files[orig_idx][0],
+                    path=files[orig_idx][0],  # Original path
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
 
@@ -910,7 +909,10 @@ class CompositeBackend(BackendProtocol):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
         """
+        # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
+
+        # Group paths by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
 
         for idx, path in enumerate(paths):
@@ -920,12 +922,18 @@ class CompositeBackend(BackendProtocol):
             else:
                 backend_batches[backend].append((idx, stripped_path))
 
+        # Process each backend's batch
         for backend, batch in backend_batches.items():
+            # Extract data for backend call
             indices, stripped_paths = zip(*batch, strict=False)
+
+            # Call backend once with all its paths
             batch_responses = backend.download_files(list(stripped_paths))
+
+            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],
+                    path=paths[orig_idx],  # Original path
                     content=batch_responses[i].content if i < len(batch_responses) else None,
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )
@@ -934,7 +942,10 @@ class CompositeBackend(BackendProtocol):
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
+        # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
+
+        # Group paths by backend, tracking original indices
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
 
         for idx, path in enumerate(paths):
@@ -944,12 +955,18 @@ class CompositeBackend(BackendProtocol):
             else:
                 backend_batches[backend].append((idx, stripped_path))
 
+        # Process each backend's batch
         for backend, batch in backend_batches.items():
+            # Extract data for backend call
             indices, stripped_paths = zip(*batch, strict=False)
+
+            # Call backend once with all its paths
             batch_responses = await backend.adownload_files(list(stripped_paths))
+
+            # Place responses at original indices with original paths
             for i, orig_idx in enumerate(indices):
                 results[orig_idx] = FileDownloadResponse(
-                    path=paths[orig_idx],
+                    path=paths[orig_idx],  # Original path
                     content=batch_responses[i].content if i < len(batch_responses) else None,
                     error=batch_responses[i].error if i < len(batch_responses) else None,
                 )

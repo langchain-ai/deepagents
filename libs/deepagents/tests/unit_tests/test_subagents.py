@@ -877,6 +877,107 @@ class TestSubAgents:
             f"Subagent LLM call should have triggered callback with correct name, got: {llm_start_agent_names}"
         )
 
+    @pytest.mark.xfail(
+        reason="callbacks in parent config are not forwarded to subagent invocations (see #2315)",
+        strict=True,
+    )
+    def test_subagent_tool_does_not_receive_parent_callbacks(self) -> None:
+        """Test that callbacks in the parent config are visible inside a subagent tool's runtime config.
+
+        The tool inspects `runtime.config["callbacks"]` and records what it finds.
+        Because callbacks are currently stripped before the subagent is invoked, the
+        captured list will be empty and the assertion below will fail — hence xfail.
+
+        Regression test for https://github.com/langchain-ai/deepagents/issues/2315.
+        """
+        captured_callbacks: list[Any] = []
+
+        class SentinelCallback(BaseCallbackHandler):
+            pass
+
+        @tool
+        def capture_callbacks(runtime: ToolRuntime) -> str:
+            """Capture callbacks from runtime config."""
+            callbacks = runtime.config.get("callbacks") or []
+            captured_callbacks.extend(callbacks)
+            return "OK"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Run the callback capture tool.",
+                                    "subagent_type": "callback-check-subagent",
+                                },
+                                "id": "call_subagent_tool_callbacks",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_callbacks",
+                                "args": {},
+                                "id": "call_capture_callbacks",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Captured."),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            tools=[capture_callbacks],
+            name="callback-check-subagent",
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="callback-check-subagent",
+                    description="A subagent used to check callback propagation.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        sentinel = SentinelCallback()
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the callback capture tool.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                "callbacks": [sentinel],
+            },
+            durability="exit",
+        )
+
+        # The parent's sentinel callback should have been forwarded into the subagent
+        # tool's runtime config. Currently this fails because callbacks are stripped.
+        assert sentinel in captured_callbacks, (
+            f"Expected parent callback to be present in subagent tool config, got: {captured_callbacks}"
+        )
+
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.
 

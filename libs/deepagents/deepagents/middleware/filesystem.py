@@ -346,11 +346,7 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 def _allowed_tools(policy: RoutePolicy, *, supports_execute: bool = True) -> str:
     exclude = set() if supports_execute else {"execute"}
-    tools = sorted(
-        _METHOD_TO_TOOL[m]
-        for m in policy.allowed_methods
-        if m in _METHOD_TO_TOOL and m not in exclude
-    )
+    tools = sorted(_METHOD_TO_TOOL[m] for m in policy.allowed_methods if m in _METHOD_TO_TOOL and m not in exclude)
     return ", ".join(tools)
 
 

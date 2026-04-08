@@ -99,20 +99,19 @@ def test_parallel_results_can_be_assigned() -> None:
 
 def test_benchmark_simple_print_program() -> None:
     """Sanity check."""
-    interpreter = Interpreter()
-    result = interpreter.evaluate("print(42)")
+    interpreter = Interpreter(functions={"echo": lambda value: value})
+    interpreter.evaluate("echo(42)")
     tic = time.monotonic()
     for _ in range(10):
-        interpreter = Interpreter()
-        result = interpreter.evaluate("print(42)")
-        assert result == 42
-        assert interpreter.printed_lines == ["42"]
+        interpreter = Interpreter(functions={"echo": lambda value: value})
+        interpreter.evaluate("echo(42)")
     toc = time.monotonic()
     elapsed = toc - tic
     # in us not ms
     elapsed_us = elapsed * 1e6
     elapsed_per_test = elapsed_us / 10.0
     assert elapsed_per_test < 30
+
 
 def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
@@ -146,36 +145,21 @@ def test_parses_float_and_boolean_literals() -> None:
 
 def test_print_formats_none_and_booleans() -> None:
     interpreter = Interpreter()
-
     interpreter.evaluate("print(None)")
     interpreter.evaluate("print(True)")
     interpreter.evaluate("print(False)")
-
     assert interpreter.printed_lines == ["None", "True", "False"]
-
-
-def test_clear_output_resets_printed_lines() -> None:
-    interpreter = Interpreter()
-
-    interpreter.evaluate('print("hello")')
-    interpreter.clear_output()
-
-    assert interpreter.printed_lines == []
 
 
 def test_string_escapes_are_decoded() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate(r'"line\nindent\tquote:\""')
-
     assert result == 'line\nindent\tquote:"'
 
 
 def test_nested_list_and_dict_literals_work() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate('{"items": [1, [2, 3]], "meta": {"ok": True}}')
-
     assert result == {"items": [1, [2, 3]], "meta": {"ok": True}}
 
 

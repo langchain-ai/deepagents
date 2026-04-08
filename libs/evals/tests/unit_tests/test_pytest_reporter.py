@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import tests.evals.pytest_reporter as reporter
 
@@ -123,3 +124,77 @@ class TestFailuresCapture:
         msg = reporter._FAILURES[0]["failure_message"]
         assert msg.endswith("... [truncated]")
         assert len(msg) < len(long_msg)
+
+
+class _FakeTerminalReporter:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def write_sep(self, sep: str, title: str) -> None:
+        _ = sep
+        self.lines.append(title)
+
+    def write_line(self, line: str) -> None:
+        self.lines.append(line)
+
+
+class _FakePluginManager:
+    def __init__(self, terminal_reporter: _FakeTerminalReporter) -> None:
+        self.terminal_reporter = terminal_reporter
+
+    def getplugin(self, name: str) -> _FakeTerminalReporter | None:
+        if name == "terminalreporter":
+            return self.terminal_reporter
+        return None
+
+
+class _FakeConfig:
+    def __init__(self, report_path: Path | None, terminal_reporter: _FakeTerminalReporter) -> None:
+        self._report_path = report_path
+        self._inicache: dict[str, str] = {}
+        self.pluginmanager = _FakePluginManager(terminal_reporter)
+
+    def getoption(self, name: str):
+        if name == "--model":
+            return "test-model"
+        if name == "--evals-report-file":
+            return str(self._report_path) if self._report_path is not None else None
+        raise AssertionError(f"Unexpected option: {name}")
+
+
+class _FakeSession:
+    def __init__(self, config: _FakeConfig) -> None:
+        self.config = config
+        self.exitstatus = 0
+
+
+class TestSessionSummary:
+    def setup_method(self) -> None:
+        reporter._RESULTS.update(passed=0, failed=0, skipped=0, total=0)
+        reporter._DURATIONS_S.clear()
+        reporter._EFFICIENCY_RESULTS.clear()
+        reporter._NODEID_TO_CATEGORY.clear()
+        reporter._CATEGORY_RESULTS.clear()
+        reporter._EXPERIMENT_LINKS.clear()
+        reporter._FAILURES.clear()
+
+    def test_sessionfinish_writes_total_duration(self, tmp_path: Path) -> None:
+        reporter._RESULTS.update(passed=2, failed=1, skipped=0, total=3)
+        reporter._DURATIONS_S.extend([1.25, 2.5, 3.75])
+        reporter._CATEGORY_RESULTS.update(
+            {
+                "memory": {"passed": 1, "failed": 1, "total": 2},
+                "tool_use": {"passed": 1, "failed": 0, "total": 1},
+            }
+        )
+
+        terminal_reporter = _FakeTerminalReporter()
+        report_path = tmp_path / "summary.json"
+        session = _FakeSession(_FakeConfig(report_path, terminal_reporter))
+
+        reporter.pytest_sessionfinish(session, 0)  # type: ignore[arg-type]
+
+        payload = report_path.read_text(encoding="utf-8")
+        assert '"median_duration_s": 2.5' in payload
+        assert '"total_duration_s": 7.5' in payload
+        assert any(line == "total_duration_s: 7.5000" for line in terminal_reporter.lines)

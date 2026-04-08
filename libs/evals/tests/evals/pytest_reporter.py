@@ -356,6 +356,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     tool_call_ratio = _micro_tool_call_ratio()
     solve_rate = _solve_rate()
     median_duration_s = round(statistics.median(_DURATIONS_S), 4) if _DURATIONS_S else 0.0
+    total_duration_s = round(sum(_DURATIONS_S), 4)
 
     category_scores: dict[str, float] = {}
     for cat, counts in sorted(_CATEGORY_RESULTS.items()):
@@ -375,6 +376,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "tool_call_ratio": tool_call_ratio,
         "solve_rate": solve_rate,
         "median_duration_s": median_duration_s,
+        "total_duration_s": total_duration_s,
         "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
         "experiment_links": _EXPERIMENT_LINKS,
         "failures": _FAILURES,
@@ -404,6 +406,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if solve_rate is not None:
             terminal_reporter.write_line(f"solve_rate: {solve_rate:.4f}")
         terminal_reporter.write_line(f"median_duration_s: {median_duration_s:.4f}")
+        terminal_reporter.write_line(f"total_duration_s: {total_duration_s:.4f}")
         if _EXPERIMENT_LINKS:
             terminal_reporter.write_sep("-", "langsmith experiments")
             for link in _EXPERIMENT_LINKS:

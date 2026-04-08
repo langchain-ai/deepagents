@@ -134,11 +134,12 @@ on:
         default: true
         type: boolean
       analysis_model:
-        description: "Model for failure analysis. Only used when analyze_failures is true."
+        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
         required: false
-        default: "anthropic:claude-haiku-4-5-20251001"
+        default: ""
         type: choice
         options:
+          - ""
           - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-6"
@@ -308,7 +309,7 @@ jobs:
         if: "!cancelled() && inputs.analyze_failures"
         continue-on-error: true
         env:
-          ANALYSIS_MODEL: ${{ inputs.analysis_model }}
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
 
       - name: "📤 Upload failure analysis"

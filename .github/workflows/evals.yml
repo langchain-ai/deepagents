@@ -190,6 +190,8 @@ jobs:
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -239,6 +241,9 @@ jobs:
           fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${ANALYZE_FAILURES}" = "true" ]; then
+            echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"

@@ -378,6 +378,80 @@ def test_compat_wrapper_no_runtime_raises_on_attr_access() -> None:
         _ = compat.context  # type: ignore[union-attr]
 
 
+def test_compat_wrapper_unknown_attr_on_real_runtime_raises() -> None:
+    """Accessing a non-existent attribute when runtime is set propagates AttributeError."""
+    rt = Runtime(context=None)
+    compat = _NamespaceRuntimeCompat(runtime=rt)
+
+    with pytest.raises(AttributeError):
+        _ = compat.nonexistent_attribute_xyz  # type: ignore[union-attr]
+
+
+def test_compat_wrapper_both_deprecated_attrs_warn_independently() -> None:
+    """Accessing both .runtime and .state emits two separate DeprecationWarnings."""
+    rt = Runtime(context=None)
+    compat = _NamespaceRuntimeCompat(runtime=rt, state={"key": "val"})
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _ = compat.runtime
+        _ = compat.state
+        assert len(w) == 2
+        categories = [warning.category for warning in w]
+        assert all(c is DeprecationWarning for c in categories)
+        messages = [str(warning.message) for warning in w]
+        assert any(".runtime" in m for m in messages)
+        assert any(".state" in m for m in messages)
+
+
+def test_compat_wrapper_old_factory_none_runtime_chained_access() -> None:
+    """Old-style factory with runtime=None that chains .runtime.context raises AttributeError."""
+    compat = _NamespaceRuntimeCompat(runtime=None)
+
+    def old_factory_chaining(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
+        return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
+
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        # .runtime returns None (with deprecation warning), chaining .context on None raises
+        with pytest.raises(AttributeError):
+            old_factory_chaining(compat)  # type: ignore[arg-type]
+
+
+def test_get_namespace_outside_graph_execution_with_factory() -> None:
+    """_get_namespace() works with a namespace factory outside graph execution (no runtime)."""
+    mem_store = InMemoryStore()
+    # This factory ignores the runtime arg, so runtime=None is fine
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("myns",))
+
+    # Should not raise — factory ignores rt and runtime=None is gracefully handled
+    be.write("/file.txt", "content")
+    items = mem_store.search(("myns",))
+    assert len(items) == 1
+    assert items[0].key == "/file.txt"
+
+
+def test_compat_wrapper_factory_returning_none_raises() -> None:
+    """A namespace factory returning None triggers ValueError from _validate_namespace."""
+    mem_store = InMemoryStore()
+
+    def bad_factory(_rt: object) -> None:  # type: ignore[return]
+        return None  # type: ignore[return-value]
+
+    be = StoreBackend(store=mem_store, namespace=bad_factory)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        be.write("/test.txt", "content")
+
+
+def test_backend_context_still_instantiatable() -> None:
+    """BackendContext class is still importable and instantiatable for backwards compat."""
+    rt = Runtime(context=None)
+    ctx = BackendContext(state=None, runtime=rt)
+    assert ctx.runtime is rt
+    assert ctx.state is None
+
+
 @pytest.mark.parametrize(
     ("pattern", "expected_file"),
     [

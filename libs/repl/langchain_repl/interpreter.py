@@ -465,10 +465,6 @@ class Interpreter:
         tokens = _Tokenizer(source).tokenize()
         return _Parser(tokens).parse()
 
-    def clear_output(self) -> None:
-        """Clear any previously captured printed output."""
-        self._printed_lines.clear()
-
     def _eval_program(self, program: Program, env: dict[str, Any]) -> Any:
         result: Any = None
         for statement in program.statements:

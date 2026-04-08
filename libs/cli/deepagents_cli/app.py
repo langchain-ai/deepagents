@@ -2626,9 +2626,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
-                "/model [--model-params JSON] [--default], /reload, "
-                "/skill:<name>, /remember, /skill-creator, /theme, /tokens, "
-                "/threads, /trace, "
+                "/model [--model-params JSON] [--default], /notifications, "
+                "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
+                "/tokens, /threads, /trace, "
                 "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -2774,6 +2774,8 @@ class DeepAgentsApp(App):
             await self._show_mcp_viewer()
         elif cmd == "/theme":
             await self._show_theme_selector()
+        elif cmd == "/notifications":
+            await self._show_notification_settings()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -4550,6 +4552,36 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         screen = ThemeSelectorScreen(current_theme=self.theme)
+        self.push_screen(screen, handle_result)
+
+    async def _show_notification_settings(self) -> None:
+        """Show notification settings modal."""
+        from deepagents_cli.model_config import is_warning_suppressed
+        from deepagents_cli.widgets.notification_settings import (
+            WARNING_TOGGLES,
+            NotificationSettingsScreen,
+        )
+
+        suppressed: set[str] = set()
+        try:
+            for key, _ in WARNING_TOGGLES:
+                if await asyncio.to_thread(is_warning_suppressed, key):
+                    suppressed.add(key)
+        except Exception:
+            logger.warning("Failed to read notification settings", exc_info=True)
+            suppressed = set()
+            self.notify(
+                "Could not read notification preferences. Showing defaults.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+        def handle_result(_result: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = NotificationSettingsScreen(suppressed=suppressed)
         self.push_screen(screen, handle_result)
 
     async def _show_mcp_viewer(self) -> None:

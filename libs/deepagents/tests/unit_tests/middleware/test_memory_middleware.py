@@ -27,6 +27,20 @@ from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
+def _assistant_id_namespace(_rt) -> tuple[str, ...]:
+    """Namespace factory mirroring legacy assistant_id-from-config detection."""
+    from langgraph.config import get_config  # noqa: PLC0415
+
+    try:
+        cfg = get_config()
+        assistant_id = cfg.get("metadata", {}).get("assistant_id")
+    except Exception:  # noqa: BLE001
+        assistant_id = None
+    if assistant_id:
+        return (assistant_id, "filesystem")
+    return ("filesystem",)
+
+
 def make_memory_content(title: str, content: str) -> str:
     """Create AGENTS.md content.
 
@@ -614,7 +628,7 @@ def test_memory_middleware_with_store_backend_instance() -> None:
     store = InMemoryStore()
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=sources,
     )
 
@@ -628,7 +642,7 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -689,7 +703,7 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)

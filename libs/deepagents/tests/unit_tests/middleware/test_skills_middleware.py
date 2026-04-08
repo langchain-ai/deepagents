@@ -24,6 +24,20 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
+
+
+def _assistant_id_namespace(_rt) -> tuple[str, ...]:
+    """Namespace factory mirroring legacy assistant_id-from-config detection."""
+    from langgraph.config import get_config  # noqa: PLC0415
+
+    try:
+        cfg = get_config()
+        assistant_id = cfg.get("metadata", {}).get("assistant_id")
+    except Exception:  # noqa: BLE001
+        assistant_id = None
+    if assistant_id:
+        return (assistant_id, "filesystem")
+    return ("filesystem",)
 from deepagents.middleware.skills import (
     MAX_SKILL_COMPATIBILITY_LENGTH,
     MAX_SKILL_DESCRIPTION_LENGTH,
@@ -1123,7 +1137,7 @@ def test_skills_middleware_with_store_backend_instance() -> None:
     store = InMemoryStore()
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=sources,
     )
 
@@ -1445,7 +1459,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -1507,7 +1521,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -1544,7 +1558,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)

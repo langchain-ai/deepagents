@@ -235,7 +235,7 @@ class StoreBackend(BackendProtocol):
         if self._namespace is not None:
             try:
                 runtime = get_runtime()
-            except RuntimeError:
+            except (RuntimeError, KeyError):
                 runtime = None
             compat = _NamespaceRuntimeCompat(runtime)
             return _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]

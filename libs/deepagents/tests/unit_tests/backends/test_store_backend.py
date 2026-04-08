@@ -229,7 +229,7 @@ def test_store_backend_namespace_isolation() -> None:
 def test_store_backend_namespace_error_handling() -> None:
     """Test that factory errors propagate correctly."""
 
-    def bad_factory(_rt: BackendContext[Any, Any]) -> Never:
+    def bad_factory(_rt: Runtime[Any]) -> Never:
         msg = "user_id"
         raise KeyError(msg)
 

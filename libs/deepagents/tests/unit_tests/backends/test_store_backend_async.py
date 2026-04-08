@@ -1,6 +1,5 @@
 """Async tests for StoreBackend."""
 
-from functools import partial
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -284,7 +283,7 @@ async def test_store_backend_intercept_large_tool_result_async(file_format):
     """Test that StoreBackend properly handles large tool result interception in async context."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=partial(StoreBackend, store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
         tool_token_limit_before_evict=1000,
     )
 
@@ -315,7 +314,7 @@ async def test_store_backend_aintercept_large_tool_result_async(file_format):
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=partial(StoreBackend, store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
         tool_token_limit_before_evict=1000,
     )
 

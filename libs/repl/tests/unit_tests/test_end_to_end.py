@@ -148,6 +148,7 @@ def test_deepagent_with_repl_langchain_tool_multi_arg_foreign_function() -> None
                     ],
                 ),
                 AIMessage(content="done"),
+                AIMessage(content="done"),
             ]
         )
     )

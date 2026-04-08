@@ -97,6 +97,25 @@ def test_parallel_results_can_be_assigned() -> None:
     assert interpreter.env == {"results": [1, 2, 3]}
 
 
+def test_parallel_allows_multiline_arguments() -> None:
+    interpreter = Interpreter(functions={"echo": lambda value: value})
+
+    result = interpreter.evaluate(
+        "results = parallel(\n    echo(1),\n    echo(2),\n    echo(3)\n)\nresults"
+    )
+
+    assert result == [1, 2, 3]
+    assert interpreter.env == {"results": [1, 2, 3]}
+
+
+def test_function_calls_allow_multiline_arguments() -> None:
+    interpreter = Interpreter(functions={"add": lambda left, right: left + right})
+
+    result = interpreter.evaluate("add(\n    10,\n    20\n)")
+
+    assert result == 30
+
+
 def test_parses_float_and_boolean_literals() -> None:
     interpreter = Interpreter()
 

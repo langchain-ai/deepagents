@@ -27,6 +27,7 @@ class TestFailuresCapture:
         reporter._DURATIONS_S.clear()
         reporter._EFFICIENCY_RESULTS.clear()
         reporter._NODEID_TO_CATEGORY.clear()
+        reporter._CATEGORY_RESULTS.clear()
 
     def test_failed_test_appends_to_failures(self):
         reporter._NODEID_TO_CATEGORY["tests/evals/test_memory.py::test_recall"] = "memory"
@@ -106,3 +107,19 @@ class TestFailuresCapture:
             "failure 1",
             "failure 2",
         ]
+
+    def test_long_failure_message_truncated(self):
+        long_msg = "x" * (reporter._MAX_FAILURE_MSG_LEN + 1000)
+        report = _FakeReport(
+            nodeid="tests/evals/test_big.py::test_huge",
+            when="call",
+            outcome="failed",
+            duration=1.0,
+            longreprtext=long_msg,
+        )
+        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+
+        assert len(reporter._FAILURES) == 1
+        msg = reporter._FAILURES[0]["failure_message"]
+        assert msg.endswith("... [truncated]")
+        assert len(msg) < len(long_msg)

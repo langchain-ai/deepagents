@@ -287,6 +287,7 @@ jobs:
 
       - name: "🧠 Analyze eval failures"
         if: "!cancelled()"
+        continue-on-error: true
         env:
           ANALYSIS_MODEL: "anthropic:claude-haiku-4-5-20251001"
         run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json

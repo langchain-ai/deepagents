@@ -40,7 +40,10 @@ _EXPERIMENT_LINKS: list[dict[str, str]] = []
 """LangSmith experiment link dicts with "name", "url", and optional "public_url" keys, collected at session teardown."""
 
 _FAILURES: list[dict[str, str]] = []
-"""Per-test failure details (node ID, category, failure message) for post-run analysis."""
+"""Per-test failure details (`test_name`, `category`, `failure_message`) for post-run analysis."""
+
+_MAX_FAILURE_MSG_LEN = 30_000
+"""Truncate failure messages beyond this length (~7500 tokens) to stay within LLM context limits."""
 
 
 def _micro_step_ratio() -> float | None:
@@ -236,11 +239,14 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _RESULTS[outcome] += 1
 
     if outcome == "failed":
+        msg = report.longreprtext
+        if len(msg) > _MAX_FAILURE_MSG_LEN:
+            msg = msg[:_MAX_FAILURE_MSG_LEN] + "\n\n... [truncated]"
         _FAILURES.append(
             {
                 "test_name": report.nodeid,
                 "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
-                "failure_message": report.longreprtext,
+                "failure_message": msg,
             }
         )
 

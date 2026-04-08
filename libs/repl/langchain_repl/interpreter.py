@@ -356,13 +356,16 @@ class _Parser:
 
     def _parse_arguments(self) -> list[Expression]:
         args: list[Expression] = []
+        self._skip_newlines()
         if self._match(")"):
             return args
         while True:
             args.append(self._parse_expression())
+            self._skip_newlines()
             if self._match(")"):
                 return args
             self._expect(",")
+            self._skip_newlines()
 
     def _parse_list(self) -> ListLiteral:
         self._expect("[")

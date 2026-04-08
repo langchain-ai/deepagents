@@ -72,40 +72,45 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
 
 Available foreign functions:
 
-These functions are callable from the REPL. Argument and return types use the same simple value shapes as the language: strings, numbers, booleans, None, lists, and dict-like records.
+These functions are callable from the REPL. The TypeScript-style signatures below document argument and return shapes.
 
-```text
-find_users_by_name
-  args: (name string)
-  returns: UserLookup[]
-  summary: Find users with the given name.
+```ts
+/**
+ * Find users with the given name.
+ *
+ * @param name The user name to search for.
+ */
+function find_users_by_name(name: string): UserLookup[]
 
-get_user_location
-  args: (user_id number)
-  returns: number
-  summary: Get the location id for a user.
+/**
+ * Get the location id for a user.
+ *
+ * @param user_id The user identifier.
+ */
+function get_user_location(user_id: number): number
 
-get_city_for_location
-  args: (location_id number)
-  returns: string
-  summary: Get the city for a location.
+/**
+ * Get the city for a location.
+ *
+ * @param location_id The location identifier.
+ */
+function get_city_for_location(location_id: number): string
 
-normalize_name
-  args: (name string)
-  returns: string
-  summary: Normalize a user name for matching.
+/**
+ * Normalize a user name for matching.
+ */
+function normalize_name(name: string): string
 
-fetch_weather
-  args: (city string)
-  returns: string
-  summary: Fetch the current weather for a city.
-  note: async function
+/**
+ * Fetch the current weather for a city.
+ */
+async function fetch_weather(city: string): Promise<string>
 ```
 
 Referenced types:
-```text
-UserLookup
-  fields:
-    (id number)
-    (name string)
+```ts
+type UserLookup = {
+  id: number
+  name: string
+}
 ```

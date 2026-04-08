@@ -9,8 +9,10 @@ Reimplements the core tau2 evaluation strategy:
 
 The overall reward mirrors tau2: product of DB and COMMUNICATE scores.
 
-Based on τ-bench / τ²-bench by Sierra Research (MIT License).
-See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
+Based on τ-bench / τ²-bench / τ³-bench by Sierra Research (MIT License).
+See LICENSE in this directory.
+
+Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 """
 
 from __future__ import annotations

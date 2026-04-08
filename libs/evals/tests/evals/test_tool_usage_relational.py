@@ -26,6 +26,7 @@ from tests.evals.utils import (
 )
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
 # Static relational data
@@ -439,6 +440,7 @@ def _create_agent(model: BaseChatModel):
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
     """Agent lists all user IDs with a single tool call."""
@@ -467,6 +469,7 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_single_tool_get_user_email(model: BaseChatModel) -> None:
     """Agent retrieves a user's email by ID."""
@@ -490,6 +493,7 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
     """Agent retrieves calorie info for a food by ID."""
@@ -513,6 +517,7 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
     """Agent gets the current user ID, then looks up the name."""
@@ -540,6 +545,7 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_two_tools_city_for_user(model: BaseChatModel) -> None:
     """Agent resolves user 1's location ID, then gets the city name."""
@@ -571,6 +577,7 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
     """Agent searches for a user by name, then gets their email."""
@@ -598,6 +605,7 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_three_tools_current_user_city(model: BaseChatModel) -> None:
     """Agent resolves current user -> location ID -> city name."""
@@ -631,6 +639,7 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
     """Agent searches for Alice by name, gets her location ID, then resolves the city."""
@@ -664,6 +673,7 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
     """Agent resolves current user -> location ID -> weather."""
@@ -697,6 +707,7 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> None:
     """Agent resolves current user -> favorite food IDs -> food names (parallel)."""
@@ -735,6 +746,7 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
     """Agent finds Frank The Cat -> fav foods -> food name + calories (parallel)."""
@@ -773,6 +785,7 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_tools_current_user_location_time_and_weather(
     model: BaseChatModel,
@@ -816,6 +829,7 @@ def test_four_tools_current_user_location_time_and_weather(
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -> None:
     """Agent resolves current user -> fav foods -> names + calories (all parallel)."""
@@ -861,6 +875,7 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
     """Agent finds Bob -> location -> city + time + weather (parallel)."""
@@ -910,6 +925,7 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
     """Agent finds Alice -> fav foods -> food names + allergies (all parallel)."""
@@ -962,6 +978,7 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_steps_current_user_food_names_calories_and_allergies(
     model: BaseChatModel,
@@ -1025,6 +1042,7 @@ def test_four_steps_current_user_food_names_calories_and_allergies(
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_steps_find_user_city_weather_time_and_food_details(
     model: BaseChatModel,
@@ -1094,6 +1112,7 @@ def test_four_steps_find_user_city_weather_time_and_food_details(
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_four_steps_find_user_email_city_foods_calories_and_allergies(
     model: BaseChatModel,

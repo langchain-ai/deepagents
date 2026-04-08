@@ -21,7 +21,7 @@
 
 name: "📊 Evals"
 run-name: >-
-  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
 
 on:
   workflow_dispatch:
@@ -128,6 +128,20 @@ on:
         required: false
         default: ""
         type: string
+      eval_tiers:
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - baseline
+          - hillclimb
+      eval_tiers_override:
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'."
+        required: false
+        default: ""
+        type: string
       openrouter_provider:
         description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
         required: false
@@ -154,6 +168,7 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
@@ -188,6 +203,19 @@ jobs:
               done
               echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
+          fi
+          # Show eval tiers
+          if [ "${EVAL_TIERS}" = "(all)" ]; then
+            echo "| \`eval_tiers\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+            comma_list=""
+            for tier in "${tiers[@]}"; do
+              tier=$(echo "$tier" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${tier}\`"
+            done
+            echo "| \`eval_tiers\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -264,7 +292,22 @@ jobs:
           IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
           for cat in "${cats[@]}"; do
             cat=$(echo "$cat" | xargs)
+            [ -z "$cat" ] && continue
             flags="$flags --eval-category $cat"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+
+      - name: "🏷️ Apply tier filter"
+        if: inputs.eval_tiers_override != '' || inputs.eval_tiers != ''
+        env:
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+        run: |
+          flags=""
+          IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+          for tier in "${tiers[@]}"; do
+            tier=$(echo "$tier" | xargs)
+            [ -z "$tier" ] && continue
+            flags="$flags --eval-tier $tier"
           done
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
@@ -443,11 +486,17 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory.
+          # Copy charts into run-specific directory (light + dark variants).
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then
+            cp "$GITHUB_WORKSPACE/charts/radar-dark.png" "${asset_dir}/radar-dark.png"
+          fi
           if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
             cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/charts/individual-dark" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual-dark" "${asset_dir}/individual-dark"
           fi
 
           git add "${asset_dir}"
@@ -465,13 +514,30 @@ jobs:
         env:
           BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
         run: |
+          # Use <picture> with prefers-color-scheme so GitHub automatically
+          # shows the right variant based on the reader's theme setting.
+          # Direct download links are included for each variant.
+          has_dark=false
+          [ -f charts/radar-dark.png ] && has_dark=true
+
           {
             echo ""
             echo "## Radar charts"
             echo ""
             echo "### Combined"
             echo ""
-            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            if $has_dark; then
+              echo '<picture>'
+              echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\">"
+              echo '</picture>'
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
+            else
+              echo "![Combined radar chart](${BASE_URL}/radar.png)"
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png)"
+            fi
             echo ""
 
             if [ -d charts/individual ]; then
@@ -479,7 +545,18 @@ jobs:
               echo ""
               for img in charts/individual/*.png; do
                 name="$(basename "$img" .png)"
-                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                if [ -d charts/individual-dark ] && [ -f "charts/individual-dark/${name}.png" ]; then
+                  echo '<picture>'
+                  echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\">"
+                  echo '</picture>'
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
+                else
+                  echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png)"
+                fi
                 echo ""
               done
             fi

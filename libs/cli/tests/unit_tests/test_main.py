@@ -635,13 +635,16 @@ class TestFormatToolWarnings:
         assert f"[link={url}]" in msg
         assert "[/link]" in msg
 
-    def test_both_formats_contain_suppress_hint(self) -> None:
-        """Both formats include the config suppression hint."""
-        formatters = (format_tool_warning_tui, format_tool_warning_cli)
-        for fmt in formatters:
-            msg = fmt("ripgrep")
-            assert "\\[warnings]" in msg
-            assert 'suppress = \\["ripgrep"]' in msg
+    def test_tui_format_contains_notifications_hint(self) -> None:
+        """TUI format references /notifications command."""
+        msg = format_tool_warning_tui("ripgrep")
+        assert "/notifications" in msg
+
+    def test_cli_format_contains_config_hint(self) -> None:
+        """CLI format references config.toml for suppression."""
+        msg = format_tool_warning_cli("ripgrep")
+        assert "config.toml" in msg
+        assert 'suppress = \\["ripgrep"]' in msg
 
     def test_unknown_tool_fallback(self) -> None:
         """Unknown tools get a generic message."""
@@ -661,12 +664,16 @@ class TestFormatToolWarnings:
         assert "TAVILY_API_KEY" in msg
         assert "[link=https://tavily.com]" in msg
 
-    def test_both_formats_tavily_contain_suppress_hint(self) -> None:
-        """Both tavily formats include the config suppression hint."""
-        for fmt in (format_tool_warning_tui, format_tool_warning_cli):
-            msg = fmt("tavily")
-            assert "\\[warnings]" in msg
-            assert 'suppress = \\["tavily"]' in msg
+    def test_tui_format_tavily_contains_notifications_hint(self) -> None:
+        """TUI tavily format references /notifications command."""
+        msg = format_tool_warning_tui("tavily")
+        assert "/notifications" in msg
+
+    def test_cli_format_tavily_contains_config_hint(self) -> None:
+        """CLI tavily format references config.toml for suppression."""
+        msg = format_tool_warning_cli("tavily")
+        assert "config.toml" in msg
+        assert 'suppress = \\["tavily"]' in msg
 
 
 class TestRunTextualCliAsyncModelConfigError:

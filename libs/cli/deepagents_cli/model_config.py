@@ -1277,7 +1277,14 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
         if "warnings" not in data:
             data["warnings"] = {}
-        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        suppress_list = data["warnings"].get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            suppress_list = []
         if key not in suppress_list:
             suppress_list.append(key)
         data["warnings"]["suppress"] = suppress_list
@@ -1293,6 +1300,61 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
+def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Remove a warning key from the suppression list in the config file.
+
+    Reads existing config (if any), removes `key` from `[warnings].suppress`,
+    and writes back using atomic temp-file rename. No-op if the key is not
+    present or the file does not exist.
+
+    Args:
+        key: Warning identifier to unsuppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return True  # nothing to remove
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        suppress_list = data.get("warnings", {}).get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            return True  # treat as nothing to remove
+        if key not in suppress_list:
+            return True  # already unsuppressed
+
+        suppress_list.remove(key)
+        data.setdefault("warnings", {})["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     return True
 

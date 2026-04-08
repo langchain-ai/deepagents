@@ -78,6 +78,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
+        name="/notifications",
+        description="Configure startup warning preferences",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="warnings alerts suppress",
+    ),
+    SlashCommand(
         name="/offload",
         description="Free up context window space by offloading older messages",
         bypass_tier=BypassTier.QUEUED,

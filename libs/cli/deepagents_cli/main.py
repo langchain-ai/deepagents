@@ -68,12 +68,19 @@ def check_cli_dependencies() -> None:
 
 
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+"""Fallback installation URL when no platform package manager is detected."""
 
-_RIPGREP_SUPPRESS_HINT = (
-    "To suppress, add to ~/.deepagents/config.toml:\n"
-    "\\[warnings]\n"
-    'suppress = \\["ripgrep"]'
+_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
+"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
+
+_SUPPRESS_HINT_CLI = (
+    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
 )
+"""Suppression hint for non-interactive CLI output.
+
+Contains a `<key>` placeholder that callers replace with the warning key
+(e.g. `"ripgrep"`, `"tavily"`).
+"""
 
 
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
@@ -95,6 +102,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
+
+    from deepagents_cli.config import settings
+
+    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+        missing.append("tavily")
+
     return missing
 
 
@@ -110,8 +123,14 @@ def format_tool_warning_tui(tool: str) -> str:
     if tool == "ripgrep":
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {_RIPGREP_URL}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}"
+            f"\nInstall: {hint}\n\n"
+            f"{_SUPPRESS_HINT_TUI}"
+        )
+    if tool == "tavily":
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "\nGet a key at https://tavily.com\n\n"
+            f"{_SUPPRESS_HINT_TUI}"
         )
     return f"{tool} is not installed."
 
@@ -126,10 +145,22 @@ def format_tool_warning_cli(tool: str) -> str:
         Rich-markup string suitable for `console.print`.
     """
     if tool == "ripgrep":
+        hint = _ripgrep_install_hint()
+        if hint.startswith("http"):
+            hint = f"[link={hint}]{hint}[/link]"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"Install: [link={_RIPGREP_URL}]{_RIPGREP_URL}[/link]\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}\n"
+            f"Install: {hint}\n\n"
+            f"{suppress}\n"
+        )
+    if tool == "tavily":
+        url = "https://tavily.com"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            f"Get a key at [link={url}]{url}[/link]\n\n"
+            f"{suppress}\n"
         )
     return f"{tool} is not installed."
 
@@ -272,24 +303,39 @@ def parse_args() -> argparse.Namespace:
         parents=help_parent(show_help),
     )
 
-    subparsers.add_parser(
+    agents_parser = subparsers.add_parser(
+        "agents",
+        help="Manage agents",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_agents_help")),
+    )
+    add_json_output_arg(agents_parser)
+    agents_sub = agents_parser.add_subparsers(dest="agents_command")
+
+    agents_list = agents_sub.add_parser(
         "list",
-        help="List all available agents",
+        aliases=["ls"],
+        help="List all agents",
         add_help=False,
         parents=help_parent(show_list_help),
     )
-    add_json_output_arg(subparsers.choices["list"])
+    add_json_output_arg(agents_list)
 
-    reset_parser = subparsers.add_parser(
+    agents_reset = agents_sub.add_parser(
         "reset",
-        help="Reset an agent",
+        help="Reset an agent's prompt to default",
         add_help=False,
         parents=help_parent(show_reset_help),
     )
-    add_json_output_arg(reset_parser)
-    reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
-    reset_parser.add_argument(
+    add_json_output_arg(agents_reset)
+    agents_reset.add_argument("--agent", required=True, help="Name of agent to reset")
+    agents_reset.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
+    )
+    agents_reset.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
     )
 
     setup_skills_parser(
@@ -358,6 +404,19 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
+    threads_delete.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
+    )
+
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Check for and install CLI updates",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_update_help")),
+    )
+    add_json_output_arg(update_parser)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -432,6 +491,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--skill",
+        dest="initial_skill",
+        metavar="NAME",
+        help="Invoke a skill when the interactive session starts",
+    )
+
+    parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
@@ -454,6 +520,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read input from stdin explicitly (instead of auto-detection)",
     )
 
     add_json_output_arg(parser, default="text")
@@ -558,6 +630,7 @@ async def run_textual_cli_async(
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
+    initial_skill: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -584,6 +657,7 @@ async def run_textual_cli_async(
             Merged on top of config file profile overrides.
         thread_id: Thread ID to use (new or resumed)
         initial_prompt: Optional prompt to auto-submit when session starts
+        initial_skill: Optional skill name to invoke when the session starts.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -608,9 +682,11 @@ async def run_textual_cli_async(
             profile_overrides=profile_override,
         )
     except ModelConfigError as e:
-        from deepagents_cli.app import AppResult
+        from rich.markup import escape
 
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        from deepagents_cli.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
     result.apply_to_settings()
@@ -621,12 +697,15 @@ async def run_textual_cli_async(
 
     from deepagents_cli.app import AppResult
 
-    # Build kwargs for deferred server startup (runs inside the TUI)
+    # Build kwargs for deferred server startup (runs inside the TUI).
+    # Never pass auto_approve to the server — the interactive server must
+    # always configure full HITL interrupts so that Shift+Tab can toggle
+    # approval mode mid-session. The -y flag is handled client-side via
+    # session_state.auto_approve in textual_adapter.py.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name,
         "model_params": model_params,
-        "auto_approve": auto_approve,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_setup": sandbox_setup,
@@ -652,6 +731,7 @@ async def run_textual_cli_async(
             cwd=Path.cwd(),
             thread_id=thread_id,
             initial_prompt=initial_prompt,
+            initial_skill=initial_skill,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -699,7 +779,7 @@ async def _run_acp_cli_async(
     from deepagents_cli.agent import create_cli_agent
     from deepagents_cli.config import create_model, settings
     from deepagents_cli.model_config import ModelConfigError, save_recent_model
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, web_search
 
     try:
         model_result = create_model(
@@ -716,7 +796,7 @@ async def _run_acp_cli_async(
     # Persist the resolved model so [models].recent is always populated.
     save_recent_model(f"{model_result.provider}:{model_result.model_name}")
 
-    tools: list[Any] = [http_request, fetch_url]
+    tools: list[Any] = [fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
 
@@ -806,6 +886,15 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         # initial_prompt = "{contents of error.log}\n\nexplain this"
         ```
 
+    - If `initial_skill` is already set (`--skill`, but not `-n`), stores the
+        piped text in `initial_prompt` so the skill receives it as the
+        startup request:
+
+        ```bash
+        cat diff.txt | deepagents --skill code-review
+        # initial_prompt = "{contents of diff.txt}"
+        ```
+
     - Otherwise, sets `non_interactive_message` to the piped text, causing
         the CLI to run non-interactively with it as the prompt:
 
@@ -819,15 +908,36 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     """
     from deepagents_cli.config import console
 
+    explicit_stdin = args.stdin
+
     if sys.stdin is None:
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "is not available."
+            )
+            sys.exit(1)
         return
 
     try:
         is_tty = sys.stdin.isatty()
     except (ValueError, OSError):
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "state could not be determined."
+            )
+            sys.exit(1)
         return
 
     if is_tty:
+        if explicit_stdin:
+            console.print(
+                "[bold red]Error:[/bold red] --stdin was passed but stdin "
+                "is a terminal. Pipe input or use -n instead.\n"
+                "  cat prompt.txt | deepagents --stdin -q"
+            )
+            sys.exit(1)
         return
 
     max_stdin_bytes = 10 * 1024 * 1024  # 10 MiB
@@ -839,8 +949,12 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
     except (OSError, ValueError) as exc:
-        msg = f"Failed to read piped input: {exc}"
-        console.print(f"[bold red]Error:[/bold red] {msg}")
+        from rich.markup import escape
+
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to read piped input: "
+            f"{escape(str(exc))}"
+        )
         sys.exit(1)
 
     if len(stdin_text) > max_stdin_bytes:
@@ -856,10 +970,21 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     if not stdin_text:
         return
 
+    # Priority: -n message > -m prompt > --skill (no -m) > fallback to -n.
+    # The initial_prompt branch uses `is not None` (not truthiness) so that
+    # `-m ""` is distinguished from "no -m at all", allowing stdin to land
+    # in initial_prompt even when the explicit value is empty.  The --skill
+    # branch only fires when -m was NOT provided; when both -m and --skill
+    # are set, stdin merges with the -m value (previous branch).
     if args.non_interactive_message:
         args.non_interactive_message = f"{stdin_text}\n\n{args.non_interactive_message}"
-    elif args.initial_prompt:
-        args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+    elif args.initial_prompt is not None:
+        if args.initial_prompt:
+            args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+        else:
+            args.initial_prompt = stdin_text
+    elif getattr(args, "initial_skill", None):
+        args.initial_prompt = stdin_text
     else:
         args.non_interactive_message = stdin_text
 
@@ -1004,10 +1129,10 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Note: LANGSMITH_PROJECT is already overridden in config.py
-    # (before LangChain imports). This ensures agent traces use
-    # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
-    # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
+    # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
+    # _ensure_bootstrap() (triggered on first access of `settings`).
+    # This ensures agent traces use DEEPAGENTS_CLI_LANGSMITH_PROJECT while
+    # shell commands use the user's original LANGSMITH_PROJECT.
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
@@ -1084,7 +1209,12 @@ def cli_main() -> None:
                 sys.exit(1)
 
             if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
-                msg = "Error: --no-mcp and --mcp-config are mutually exclusive\n"
+                msg = (
+                    "Error: --no-mcp and --mcp-config are mutually exclusive."
+                    " Use one or the other.\n"
+                    "  deepagents --mcp-config path/to/config.json\n"
+                    "  deepagents --no-mcp\n"
+                )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
                 sys.exit(2)
@@ -1117,7 +1247,25 @@ def cli_main() -> None:
 
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
-                "are mutually exclusive"
+                "are mutually exclusive. Use one or the other.\n"
+                "  deepagents --mcp-config path/to/config.json\n"
+                "  deepagents --no-mcp"
+            )
+            sys.exit(2)
+
+        if (
+            getattr(args, "initial_skill", None)
+            and not args.non_interactive_message
+            and (args.quiet or args.no_stream)
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --skill requires "
+                "--non-interactive (-n) when combined with --quiet or "
+                "--no-stream.\n"
+                "  deepagents --skill code-review -m 'review this patch'\n"
+                "  deepagents --skill code-review -n 'review this patch'"
             )
             sys.exit(2)
 
@@ -1135,9 +1283,59 @@ def cli_main() -> None:
             flag = " and ".join(flags)
             _Console(stderr=True).print(
                 f"[bold red]Error:[/bold red] {flag} requires "
-                "--non-interactive (-n) or piped stdin"
+                "--non-interactive (-n) or piped stdin\n"
+                "  deepagents -n 'summarize README.md' --quiet"
             )
             sys.exit(2)
+
+        # Handle --update flag or `update` subcommand (headless, no session)
+        if args.update or args.command == "update":
+            try:
+                from rich.markup import escape
+
+                from deepagents_cli._version import __version__ as cli_version
+                from deepagents_cli.update_check import (
+                    is_update_available,
+                    perform_upgrade,
+                    upgrade_command,
+                )
+
+                console.print("Checking for updates...", style="dim")
+                available, latest = is_update_available(bypass_cache=True)
+                if latest is None:
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] Could not "
+                        "reach PyPI. Check your network and try again."
+                    )
+                    sys.exit(1)
+                if not available:
+                    console.print(f"Already on the latest version (v{cli_version}).")
+                    sys.exit(0)
+
+                console.print(
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}). Upgrading..."
+                )
+                success, output = asyncio.run(perform_upgrade())
+                if success:
+                    console.print(f"[green]Updated to v{latest}.[/green]")
+                else:
+                    cmd = upgrade_command()
+                    detail = f": {escape(output[:200])}" if output else ""
+                    console.print(
+                        f"[bold red]Auto-update failed{detail}[/bold red]\n"
+                        f"Run manually: [cyan]{cmd}[/cyan]"
+                    )
+                    sys.exit(1)
+                sys.exit(0)
+            except Exception:
+                logger.warning("--update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Update failed.\n"
+                    "Run manually: [cyan]uv tool upgrade "
+                    "deepagents-cli[/cyan]"
+                )
+                sys.exit(1)
 
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
@@ -1194,14 +1392,22 @@ def cli_main() -> None:
             from deepagents_cli.ui import show_help
 
             show_help()
-        elif args.command == "list":
-            from deepagents_cli.agent import list_agents
+        elif args.command == "agents":
+            from deepagents_cli.agent import list_agents, reset_agent
+            from deepagents_cli.ui import show_agents_help
 
-            list_agents(output_format=output_format)
-        elif args.command == "reset":
-            from deepagents_cli.agent import reset_agent
-
-            reset_agent(args.agent, args.source_agent, output_format=output_format)
+            # "ls" is an argparse alias for "list"
+            if args.agents_command in {"list", "ls"}:
+                list_agents(output_format=output_format)
+            elif args.agents_command == "reset":
+                reset_agent(
+                    args.agent,
+                    args.source_agent,
+                    dry_run=args.dry_run,
+                    output_format=output_format,
+                )
+            else:
+                show_agents_help()
         elif args.command == "skills":
             from deepagents_cli.skills import execute_skills_command
 
@@ -1229,7 +1435,11 @@ def cli_main() -> None:
                 )
             elif args.threads_command == "delete":
                 asyncio.run(
-                    delete_thread_command(args.thread_id, output_format=output_format)
+                    delete_thread_command(
+                        args.thread_id,
+                        dry_run=args.dry_run,
+                        output_format=output_format,
+                    )
                 )
             else:
                 # No subcommand provided, show threads help screen
@@ -1253,6 +1463,20 @@ def cli_main() -> None:
                         )
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
+            # Validate sandbox provider deps before spawning server subprocess
+            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+                from deepagents_cli.integrations.sandbox_factory import (
+                    verify_sandbox_deps,
+                )
+
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    from rich.markup import escape
+
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+                    sys.exit(1)
+
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 
@@ -1266,6 +1490,7 @@ def cli_main() -> None:
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
+                    initial_skill=getattr(args, "initial_skill", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -1311,39 +1536,12 @@ def cli_main() -> None:
                         msg = Text("No previous threads, starting new.", style="yellow")
                     console.print(msg)
 
-            elif args.resume_thread:
-                # -r <ID>: Resume specific thread
-                if asyncio.run(thread_exists(args.resume_thread)):
-                    thread_id = args.resume_thread
-                    if args.agent == _DEFAULT_AGENT_NAME:
-                        agent_name = asyncio.run(get_thread_agent(thread_id))
-                        if agent_name:
-                            args.agent = agent_name
-                else:
-                    error_msg = Text("Thread '", style="red")
-                    error_msg.append(args.resume_thread)
-                    error_msg.append("' not found.", style="red")
-                    console.print(error_msg)
+                try:
+                    verify_sandbox_deps(args.sandbox)
+                except ImportError as exc:
+                    from rich.markup import escape
 
-                    # Check for similar thread IDs
-                    similar = asyncio.run(find_similar_threads(args.resume_thread))
-                    if similar:
-                        console.print()
-                        console.print("[yellow]Did you mean?[/yellow]")
-                        for tid in similar:
-                            hint = Text("  deepagents -r ", style="cyan")
-                            hint.append(str(tid), style="cyan")
-                            console.print(hint)
-                        console.print()
-
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see "
-                        "available threads.[/dim]"
-                    )
-                    console.print(
-                        "[dim]Use 'deepagents -r' to resume the most "
-                        "recent thread.[/dim]"
-                    )
+                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
             # Generate new thread ID if not resuming
@@ -1370,6 +1568,7 @@ def cli_main() -> None:
                         profile_override=profile_override,
                         thread_id=thread_id,
                         initial_prompt=getattr(args, "initial_prompt", None),
+                        initial_skill=getattr(args, "initial_skill", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
@@ -1412,6 +1611,29 @@ def cli_main() -> None:
                 hint = Text("deepagents -r ", style="cyan")
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
+
+            # Warn about available update on exit
+            try:
+                if result.update_available[0]:
+                    from deepagents_cli.update_check import (
+                        is_auto_update_enabled,
+                        upgrade_command,
+                    )
+
+                    latest = result.update_available[1]
+                    console.print()
+                    update_msg = Text("Update available: ", style="yellow bold")
+                    update_msg.append(f"v{latest}", style="yellow")
+                    console.print(update_msg)
+                    cmd_hint = Text("Run: ", style="dim")
+                    cmd_hint.append(upgrade_command(), style="cyan")
+                    console.print(cmd_hint)
+                    if not is_auto_update_enabled():
+                        auto_hint = Text("Enable auto-updates: ", style="dim")
+                        auto_hint.append("/auto-update", style="cyan")
+                        console.print(auto_hint)
+            except Exception:
+                logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

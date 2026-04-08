@@ -30,21 +30,21 @@ if TYPE_CHECKING:
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
-from deepagents_cli._server_constants import ENV_PREFIX as _ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
 
 
 def _set_or_clear_server_env(name: str, value: str | None) -> None:
-    """Set or clear a `DA_SERVER_*` environment variable.
+    """Set or clear a `DEEPAGENTS_CLI_SERVER_*` environment variable.
 
     Args:
-        name: Suffix after `DA_SERVER_`.
+        name: Suffix after `DEEPAGENTS_CLI_SERVER_`.
         value: String value to set, or `None` to clear the variable.
     """
-    key = f"{_ENV_PREFIX}{name}"
+    key = f"{SERVER_ENV_PREFIX}{name}"
     if value is None:
         os.environ.pop(key, None)
     else:
@@ -52,7 +52,7 @@ def _set_or_clear_server_env(name: str, value: str | None) -> None:
 
 
 def _apply_server_config(config: ServerConfig) -> None:
-    """Write a `ServerConfig` to `DA_SERVER_*` env vars.
+    """Write a `ServerConfig` to `DEEPAGENTS_CLI_SERVER_*` env vars.
 
     Uses `ServerConfig.to_env()` so that the set of variables and their
     serialization format are defined in one place (the `ServerConfig` dataclass)
@@ -103,21 +103,22 @@ def _scaffold_workspace(work_dir: Path) -> None:
     _write_checkpointer(work_dir)
     _write_pyproject(work_dir)
 
-    checkpointer_path = work_dir / "checkpointer.py"
+    # Relative paths resolve against the subprocess cwd, which
+    # ServerProcess.start() sets to work_dir (server.py). Using absolute paths
+    # here breaks Windows because importlib treats backslash paths as module names.
     generate_langgraph_json(
         work_dir,
-        graph_ref=f"{server_graph_dst.resolve()}:graph",
-        checkpointer_path=f"{checkpointer_path.resolve()}:create_checkpointer",
+        graph_ref="./server_graph.py:graph",
+        checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 
 
 def _write_checkpointer(work_dir: Path) -> None:
     """Write a checkpointer module that reads its DB path from the environment.
 
-    The generated module reads `DA_SERVER_DB_PATH` at runtime so the path is
-    never baked into generated source. This avoids fragile code-generation via
-    f-string interpolation and is consistent with the `DA_SERVER_*` env-var
-    communication pattern used elsewhere.
+    The generated module reads the DB path env var at runtime so the path
+    is never baked into generated source. This is consistent with the
+    `DEEPAGENTS_CLI_SERVER_*` env-var communication pattern used elsewhere.
 
     Args:
         work_dir: Server working directory.
@@ -125,9 +126,10 @@ def _write_checkpointer(work_dir: Path) -> None:
     from deepagents_cli.sessions import get_db_path
 
     # Set the env var that the generated module will read at import time.
-    os.environ[f"{_ENV_PREFIX}DB_PATH"] = str(get_db_path())
+    os.environ[f"{SERVER_ENV_PREFIX}DB_PATH"] = str(get_db_path())
 
-    content = '''\
+    db_path_var = f"{SERVER_ENV_PREFIX}DB_PATH"
+    content = f'''\
 """Persistent SQLite checkpointer for the LangGraph dev server."""
 
 import os
@@ -138,17 +140,17 @@ from contextlib import asynccontextmanager
 async def create_checkpointer():
     """Yield an AsyncSqliteSaver connected to the CLI sessions DB.
 
-    The database path is read from the `DA_SERVER_DB_PATH` env var
+    The database path is read from the `{db_path_var}` env var
     (set by the CLI before server startup) rather than hard-coded, so
     the checkpointer module works without code generation.
     """
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    db_path = os.environ.get("DA_SERVER_DB_PATH")
+    db_path = os.environ.get("{db_path_var}")
     if not db_path:
         raise RuntimeError(
-            "DA_SERVER_DB_PATH not set. The CLI must set this env var before "
-            "server startup."
+            "{db_path_var} not set. The CLI must set this "
+            "env var before server startup."
         )
     async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
         yield saver
@@ -192,6 +194,8 @@ async def start_server_and_get_agent(
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
+    interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
@@ -211,6 +215,8 @@ async def start_server_and_get_agent(
         model_name: Model spec string.
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
+        interrupt_shell_only: Validate shell commands via middleware instead of HITL.
+        shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.
@@ -239,6 +245,8 @@ async def start_server_and_get_agent(
         model_params=model_params,
         assistant_id=assistant_id,
         auto_approve=auto_approve,
+        interrupt_shell_only=interrupt_shell_only,
+        shell_allow_list=shell_allow_list,
         sandbox_type=sandbox_type,
         sandbox_id=sandbox_id,
         sandbox_setup=sandbox_setup,
@@ -283,6 +291,8 @@ async def server_session(
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     auto_approve: bool = False,
+    interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
@@ -305,6 +315,8 @@ async def server_session(
         model_name: Model spec string.
         model_params: Extra model kwargs.
         auto_approve: Auto-approve all tools.
+        interrupt_shell_only: Validate shell commands via middleware instead of HITL.
+        shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
         sandbox_setup: Path to setup script for the sandbox.
@@ -328,6 +340,8 @@ async def server_session(
             model_name=model_name,
             model_params=model_params,
             auto_approve=auto_approve,
+            interrupt_shell_only=interrupt_shell_only,
+            shell_allow_list=shell_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,

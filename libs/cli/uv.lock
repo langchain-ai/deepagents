@@ -309,6 +309,7 @@ dependencies = [
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/31/9d/a9a7b5a9351e3ff0baae01136f71ba6fc4652fe0dc2da3b0a8ebdfc1be44/boto3-1.42.85.tar.gz", hash = "sha256:1cd3dcbfaba85c6071ba9397c1804b6a94a1a97031b8f1993fdba27c0c5d6eba", size = 112769 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/78/ab/3167b8ec3cf1d87ad08d2ad5f15823a22945cae7870798274c283c3a18f1/boto3-1.42.85-py3-none-any.whl", hash = "sha256:4f6ac066e41d18ec33f532253fac0f35e0fdca373724458f983ce3d531340b7a", size = 140556 },
 ]
@@ -949,22 +950,24 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.4.11"
+version = "0.5.1"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
+    { name = "langsmith" },
     { name = "wcmatch" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.11,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.3.4,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.2.18,<2.0.0" },
-    { name = "langchain-google-genai", specifier = ">=4.2.0,<5.0.0" },
+    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
+    { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]
 
@@ -1013,7 +1016,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.32"
+version = "0.0.35"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1022,6 +1025,8 @@ dependencies = [
     { name = "deepagents-acp" },
     { name = "httpx" },
     { name = "langchain" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-google-genai" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph" },
@@ -1152,13 +1157,15 @@ requires-dist = [
     { name = "deepagents-acp", specifier = ">=0.0.4" },
     { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
-    { name = "langchain", specifier = ">=1.2.10,<2.0.0" },
-    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.1.9,<1.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.5.0,<1.0.0" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.0.0,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertexai'", specifier = ">=3.0.0,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.0.0,<2.0.0" },
@@ -1169,12 +1176,12 @@ requires-dist = [
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "langchain-openai", specifier = ">=1.1.8,<2.0.0" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.1.8,<2.0.0" },
-    { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.1.0,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.1.12,<2.0.0" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.1.12,<2.0.0" },
+    { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.2.0,<2.0.0" },
     { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.1.2,<2.0.0" },
+    { name = "langgraph", specifier = ">=1.1.6,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.15,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.3.11,<1.0.0" },

@@ -335,33 +335,66 @@ class StatusBar(Horizontal):
         """
         self.status_message = message
 
+    _approximate: bool = False
+    """Append "+" to the token count to signal that the displayed value is stale.
+
+    (The actual context is larger because the generation was interrupted before
+    the model reported final usage.)
+    """
+
     def watch_tokens(self, new_value: int) -> None:
         """Update token display when count changes."""
+        self._render_tokens(new_value, approximate=self._approximate)
+
+    def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
+        """Render the token count into the display widget.
+
+        Args:
+            count: Total context token count.
+            approximate: Append "+" suffix to indicate the count is stale
+                (e.g. after an interrupted generation).
+        """
         try:
             display = self.query_one("#tokens-display", Static)
         except NoMatches:
             return
 
-        if new_value > 0:
+        if count > 0:
+            suffix = "+" if approximate else ""
             # Format with K suffix for thousands
-            if new_value >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{new_value / 1000:.1f}K tokens")
+            if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
+                display.update(f"{count / 1000:.1f}K{suffix} tokens")
             else:
-                display.update(f"{new_value} tokens")
+                display.update(f"{count}{suffix} tokens")
         else:
             display.update("")
 
-    def set_tokens(self, count: int) -> None:
+    def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
 
+        Forces a display refresh even when the value is unchanged, because
+        `hide_tokens` clears the widget text without updating the reactive
+        attribute.
+
         Args:
-            count: Current context token count
+            count: Current context token count.
+            approximate: Append "+" to indicate the count is stale.
         """
-        self.tokens = count
+        self._approximate = approximate
+        if self.tokens == count:
+            # Reactive dedup would skip the watcher — call render directly.
+            self._render_tokens(count, approximate=approximate)
+        else:
+            # Reactive assignment triggers watch_tokens, which reads
+            # self._approximate for the suffix.
+            self.tokens = count
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        self.query_one("#tokens-display", Static).update("")
+        try:
+            self.query_one("#tokens-display", Static).update("")
+        except NoMatches:
+            return
 
     def set_model(self, *, provider: str, model: str) -> None:
         """Update the model display text.

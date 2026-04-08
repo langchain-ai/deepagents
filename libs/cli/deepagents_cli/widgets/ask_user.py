@@ -9,7 +9,7 @@ from rich.markup import escape as escape_markup
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
 from textual.message import Message
-from textual.widgets import Input, Static
+from textual.widgets import Input, Markdown, Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -270,8 +270,11 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
-        suffix = " [dim](required)[/dim]" if self._required else ""
-        yield Static(f"[bold]{self._index + 1}. {escape_markup(q_text)}[/bold]{suffix}")
+        num = self._index + 1
+        suffix = " *(required)*" if self._required else ""
+        # q_text is agent-authored; rendered as markdown intentionally so
+        # agents can use inline formatting, links, and code spans in questions.
+        yield Markdown(f"**{num}.** {q_text}{suffix}", classes="ask-user-question-text")
 
         if self._q_type == "multiple_choice" and self._choices:
             glyphs = get_glyphs()

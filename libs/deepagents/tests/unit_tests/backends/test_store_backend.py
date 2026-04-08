@@ -12,20 +12,9 @@ from deepagents.backends.store import BackendContext, StoreBackend, _validate_na
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
-def make_runtime():
-    return ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-
 def test_store_backend_crud_and_search():
-    rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
@@ -56,8 +45,8 @@ def test_store_backend_crud_and_search():
 
 
 def test_store_backend_ls_nested_directories():
-    rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -99,8 +88,8 @@ def test_store_backend_ls_nested_directories():
 
 
 def test_store_backend_ls_trailing_slash():
-    rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -122,18 +111,29 @@ def test_store_backend_ls_trailing_slash():
 
 def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
-    rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
+    mem_store = InMemoryStore()
+    middleware = FilesystemMiddleware(
+        backend=StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t2",
+        store=mem_store,
+        stream_writer=lambda _: None,
+        config={},
+    )
     result = middleware._intercept_large_tool_result(tool_message, rt)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
     assert "/large_tool_results/test_456" in result.content
 
-    stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
+    stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]
 
@@ -147,23 +147,15 @@ class UserContext:
 
 
 def test_store_backend_namespace_user_scoped() -> None:
-    """Test namespace factory with user_id from context."""
-    store = InMemoryStore()
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=UserContext(user_id="alice"),
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id))
+    """Test namespace factory with user_id captured in closure."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "alice"))
 
     # Write a file
     be.write("/test.txt", "hello alice")
 
     # Verify it's stored in the correct namespace
-    items = store.search(("filesystem", "alice"))
+    items = mem_store.search(("filesystem", "alice"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
 
@@ -173,23 +165,15 @@ def test_store_backend_namespace_user_scoped() -> None:
 
 
 def test_store_backend_namespace_multi_level() -> None:
-    """Test namespace factory with multiple values from context."""
-    store = InMemoryStore()
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=UserContext(user_id="bob", workspace_id="ws-123"),
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
+    """Test namespace factory with multiple values."""
+    mem_store = InMemoryStore()
     be = StoreBackend(
-        rt,
-        namespace=lambda ctx: (
+        store=mem_store,
+        namespace=lambda _ctx: (
             "workspace",
-            ctx.runtime.context.workspace_id,
+            "ws-123",
             "user",
-            ctx.runtime.context.user_id,
+            "bob",
         ),
     )
 
@@ -197,40 +181,21 @@ def test_store_backend_namespace_multi_level() -> None:
     be.write("/doc.md", "workspace doc")
 
     # Verify it's stored in the correct namespace
-    items = store.search(("workspace", "ws-123", "user", "bob"))
+    items = mem_store.search(("workspace", "ws-123", "user", "bob"))
     assert len(items) == 1
     assert items[0].key == "/doc.md"
 
 
 def test_store_backend_namespace_isolation() -> None:
     """Test that different users have isolated namespaces."""
-    store = InMemoryStore()
-
-    def user_namespace(ctx: BackendContext[Any, Any]) -> tuple[str, ...]:
-        return ("filesystem", ctx.runtime.context.user_id)
+    mem_store = InMemoryStore()
 
     # User alice
-    rt_alice = ToolRuntime(
-        state={"messages": []},
-        context=UserContext(user_id="alice"),
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    be_alice = StoreBackend(rt_alice, namespace=user_namespace)
+    be_alice = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "alice"))
     be_alice.write("/notes.txt", "alice notes")
 
     # User bob
-    rt_bob = ToolRuntime(
-        state={"messages": []},
-        context=UserContext(user_id="bob"),
-        tool_call_id="t2",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    be_bob = StoreBackend(rt_bob, namespace=user_namespace)
+    be_bob = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "bob"))
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
@@ -241,9 +206,9 @@ def test_store_backend_namespace_isolation() -> None:
     assert "bob notes" in bob_content
 
     # Verify they're in different namespaces
-    alice_items = store.search(("filesystem", "alice"))
+    alice_items = mem_store.search(("filesystem", "alice"))
     assert len(alice_items) == 1
-    bob_items = store.search(("filesystem", "bob"))
+    bob_items = mem_store.search(("filesystem", "bob"))
     assert len(bob_items) == 1
 
 
@@ -254,15 +219,8 @@ def test_store_backend_namespace_error_handling() -> None:
         msg = "user_id"
         raise KeyError(msg)
 
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t1",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={"configurable": {}},
-    )
-    be = StoreBackend(rt, namespace=bad_factory)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=bad_factory)
 
     # Errors from the factory propagate
     with pytest.raises(KeyError):
@@ -271,16 +229,8 @@ def test_store_backend_namespace_error_handling() -> None:
 
 def test_store_backend_namespace_legacy_mode() -> None:
     """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
-    store = InMemoryStore()
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={"metadata": {"assistant_id": "asst-123"}},
-    )
-    be = StoreBackend(rt)  # No namespace - uses legacy mode
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store)  # No namespace - uses legacy mode
 
     # Should emit deprecation warning
     with warnings.catch_warnings(record=True) as w:
@@ -290,36 +240,26 @@ def test_store_backend_namespace_legacy_mode() -> None:
         assert issubclass(w[0].category, DeprecationWarning)
         assert "namespace" in str(w[0].message)
 
-    # Should be in legacy namespace (assistant_id, filesystem)
-    items = store.search(("asst-123", "filesystem"))
+    # Should be in default namespace (no assistant_id in context config)
+    items = mem_store.search(("filesystem",))
     assert len(items) == 1
     assert items[0].key == "/legacy.txt"
 
 
-def test_store_backend_namespace_with_state() -> None:
-    """Test that namespace factory receives state via BackendContext."""
-    store = InMemoryStore()
+def test_store_backend_namespace_with_context() -> None:
+    """Test that namespace factory receives values and stores correctly."""
+    mem_store = InMemoryStore()
 
-    def namespace_from_state(ctx: BackendContext[Any, Any]) -> tuple[str, ...]:
-        # Use something from state to build namespace
-        thread_id = ctx.state.get("thread_id", "default")
-        return ("threads", thread_id)
+    def namespace_from_user(uid: str):
+        return lambda _ctx: ("threads", uid)
 
-    rt = ToolRuntime(
-        state={"messages": [], "thread_id": "thread-abc"},
-        context=None,
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    be = StoreBackend(rt, namespace=namespace_from_state)
+    be = StoreBackend(store=mem_store, namespace=namespace_from_user("ctx-user"))
 
     # Write a file
     be.write("/test.txt", "content")
 
     # Verify it's stored in the correct namespace
-    items = store.search(("threads", "thread-abc"))
+    items = mem_store.search(("threads", "ctx-user"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
 
@@ -338,8 +278,8 @@ def test_store_backend_namespace_with_state() -> None:
 )
 def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_file: str) -> None:
     """Test that grep performs literal search with regex special characters."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Create files with various special regex characters
     files = {
@@ -416,16 +356,8 @@ class TestValidateNamespace:
 
 def test_store_backend_rejects_wildcard_namespace() -> None:
     """Ensure StoreBackend rejects namespace tuples with wildcard characters."""
-    store = InMemoryStore()
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=UserContext(user_id="*"),
-        tool_call_id="t1",
-        store=store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id))
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "*"))
 
     with pytest.raises(ValueError, match="disallowed characters"):
         be.write("/test.txt", "content")

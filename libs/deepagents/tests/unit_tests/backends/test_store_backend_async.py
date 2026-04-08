@@ -9,21 +9,10 @@ from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
-def make_runtime():
-    return ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={},
-    )
-
-
 async def test_store_backend_async_crud_and_search():
     """Test async CRUD and search operations."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # awrite new file
     msg = await be.awrite("/docs/readme.md", "hello store")
@@ -55,8 +44,8 @@ async def test_store_backend_async_crud_and_search():
 
 async def test_store_backend_als_nested_directories():
     """Test async ls with nested directories."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -99,8 +88,8 @@ async def test_store_backend_als_nested_directories():
 
 async def test_store_backend_als_trailing_slash():
     """Test async ls with trailing slash behavior."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -122,8 +111,8 @@ async def test_store_backend_als_trailing_slash():
 
 async def test_store_backend_async_errors():
     """Test async error handling."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # aedit missing file
     err = await be.aedit("/missing.txt", "a", "b")
@@ -136,8 +125,8 @@ async def test_store_backend_async_errors():
 
 async def test_store_backend_aedit_replace_all():
     """Test async edit with replace_all option."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Write file with multiple occurrences
     res = await be.awrite("/test.txt", "foo bar foo baz")
@@ -167,8 +156,8 @@ async def test_store_backend_aedit_replace_all():
 
 async def test_store_backend_aread_with_offset_and_limit():
     """Test async read with offset and limit."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Write file with multiple lines
     lines = "\n".join([f"Line {i}" for i in range(1, 11)])
@@ -186,8 +175,8 @@ async def test_store_backend_aread_with_offset_and_limit():
 
 async def test_store_backend_agrep_with_glob():
     """Test async grep with glob filter."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Write multiple files
     files = {
@@ -209,8 +198,8 @@ async def test_store_backend_agrep_with_glob():
 
 async def test_store_backend_aglob_patterns():
     """Test async glob with various patterns."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Write files in nested directories
     files = {
@@ -241,8 +230,8 @@ async def test_store_backend_aglob_patterns():
 
 async def test_store_backend_aupload_adownload():
     """Test async upload and download operations."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     # Upload files
     files_to_upload = [
@@ -264,8 +253,8 @@ async def test_store_backend_aupload_adownload():
 
 async def test_store_backend_agrep_invalid_regex():
     """Test async grep with special characters (literal search, not regex)."""
-    rt = make_runtime()
-    be = StoreBackend(rt)
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
     res = await be.awrite("/test.txt", "some content")
     assert res.error is None
@@ -277,26 +266,40 @@ async def test_store_backend_agrep_invalid_regex():
 
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
-    rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    mem_store = InMemoryStore()
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t2",
+        store=mem_store,
+        stream_writer=lambda _: None,
+        config={},
+    )
     result = middleware._intercept_large_tool_result(tool_message, rt)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
     assert "/large_tool_results/test_456" in result.content
 
-    stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
+    stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]
 
 
 async def test_store_backend_aintercept_large_tool_result_async():
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
-    rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+    mem_store = InMemoryStore()
+    middleware = FilesystemMiddleware(
+        backend=partial(StoreBackend, store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "z" * 5000
     artifact_payload = {"kind": "structured", "value": {"key": "v"}}
@@ -309,6 +312,15 @@ async def test_store_backend_aintercept_large_tool_result_async():
         status="error",
         additional_kwargs={"trace": "abc"},
         response_metadata={"provider": "mock"},
+    )
+
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t2",
+        store=mem_store,
+        stream_writer=lambda _: None,
+        config={},
     )
 
     # Use the async intercept path (what awrap_tool_call uses)
@@ -325,6 +337,6 @@ async def test_store_backend_aintercept_large_tool_result_async():
     assert result.response_metadata == {"provider": "mock"}
 
     # Verify content was stored via async path
-    stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
+    stored_content = await mem_store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]

@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from deepagents_evals.radar import (
+    ALL_CATEGORIES,
     EVAL_CATEGORIES,
+    THEMES,
     ModelResult,
     generate_individual_radars,
     generate_radar,
@@ -55,6 +58,64 @@ def _load_category_results(path: Path) -> list[ModelResult]:
     return [ModelResult(model=entry["model"], scores=entry["scores"]) for entry in data]
 
 
+def _no_results_hint(outcome: str) -> str:
+    """Return a human-readable hint explaining why there are no results.
+
+    Args:
+        outcome: Upstream eval job result string (e.g. "cancelled", "failure").
+
+    Returns:
+        Diagnostic message tailored to the outcome.
+    """
+    outcome = outcome.strip().lower()
+    if outcome == "cancelled":
+        return (
+            "the upstream eval job was cancelled — most likely it hit the "
+            "workflow timeout-minutes limit. Check the eval job annotations "
+            "for 'exceeded the maximum execution time'."
+        )
+    if outcome == "failure":
+        return (
+            "the upstream eval job failed before producing a report. "
+            "Check the 'Run Evals' step logs for errors."
+        )
+    return (
+        "the summary file is an empty JSON array — all eval jobs may have "
+        "been cancelled (e.g. timeout) or failed before producing a report. "
+        "Check the upstream eval job logs for details."
+    )
+
+
+def _clear_stale_outputs(output: Path, individual_dir: Path | None) -> None:
+    """Remove stale radar artifacts from a previous run.
+
+    This only removes files created by this script: the aggregate chart outputs
+    (light and dark variants) and top-level PNG files inside `individual_dir`
+    and its dark variant.
+
+    Args:
+        output: Base aggregate chart output path.
+
+            Dark variant is derived by appending `-dark` to the stem.
+        individual_dir: Directory containing per-model PNGs, if configured.
+    """
+    for suffix in ("", "-dark"):
+        variant = output.with_stem(output.stem + suffix)
+        if variant.is_file() or variant.is_symlink():
+            variant.unlink()
+
+    if individual_dir is None:
+        return
+
+    for suffix in ("", "-dark"):
+        d = individual_dir.with_name(individual_dir.name + suffix)
+        if not d.is_dir():
+            continue
+        for path in d.glob("*.png"):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+
+
 def main() -> None:
     """Entry point for radar chart generation."""
     parser = argparse.ArgumentParser(description="Generate eval radar charts")
@@ -72,6 +133,19 @@ def main() -> None:
         type=Path,
         default=None,
         help="Directory for per-model radar charts (one PNG each)",
+    )
+    parser.add_argument(
+        "--eval-outcome",
+        default=None,
+        help="Upstream eval job result (e.g. 'cancelled', 'failure'). "
+        "Falls back to EVAL_OUTCOME env var. Used to produce a targeted "
+        "diagnostic message when there are no results to chart.",
+    )
+    parser.add_argument(
+        "--keep-zero-scores",
+        action="store_true",
+        help="Include models with all-zero scores (by default they are "
+        "dropped as likely infrastructure failures).",
     )
 
     args = parser.parse_args()
@@ -100,15 +174,34 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # Drop models whose scores are all zero — they almost certainly failed
+    # (e.g. provider pin mismatch) and would just flatten the chart.
+    zero_models: list[ModelResult] = []
+    if not args.keep_zero_scores:
+        zero_models = [r for r in results if not any(v > 0 for v in r.scores.values())]
+        if zero_models:
+            names = ", ".join(r.model for r in zero_models)
+            print(
+                f"note: dropped {len(zero_models)} model(s) with all-zero scores: {names}",
+                file=sys.stderr,
+            )
+            results = [r for r in results if r not in zero_models]
+
     if not results:
         source = args.summary or args.results or "toy"
-        msg = (
-            f"error: no results to plot from {source}\n"
-            "hint: the summary file may be an empty JSON array (all evals "
-            "cancelled or failed). Check the eval runner logs for details."
-        )
+        if zero_models:
+            msg = (
+                f"skipped: all {len(zero_models)} model(s) had all-zero scores and "
+                "were dropped. Re-run with --keep-zero-scores to force chart generation."
+            )
+        else:
+            outcome = args.eval_outcome or os.environ.get("EVAL_OUTCOME", "")
+            hint = _no_results_hint(outcome)
+            msg = f"skipped: no results to plot from {source}\nhint: {hint}"
+        _clear_stale_outputs(args.output, args.individual_dir)
+        print(msg)
         print(msg, file=sys.stderr)
-        sys.exit(1)
+        sys.exit(0)
 
     # Detect categories from results (use all categories present across models).
     all_cats = set()
@@ -118,45 +211,59 @@ def main() -> None:
     min_axes = 3
     if len(all_cats) < min_axes:
         msg = f"skipped: radar chart needs >= {min_axes} categories, got {len(all_cats)}"
+        _clear_stale_outputs(args.output, args.individual_dir)
         print(msg)
         print(msg, file=sys.stderr)
         sys.exit(0)
 
     # Preserve EVAL_CATEGORIES ordering for known categories, append unknown ones.
+    # Categories in ALL_CATEGORIES but not EVAL_CATEGORIES (e.g. unit_test)
+    # are intentionally excluded from radar charts.
     ordered = [c for c in EVAL_CATEGORIES if c in all_cats]
-    ordered.extend(sorted(all_cats - set(ordered)))
+    excluded = set(ALL_CATEGORIES) - set(EVAL_CATEGORIES)
+    ordered.extend(sorted(all_cats - set(ordered) - excluded))
 
-    try:
-        generate_radar(
-            results,
-            categories=ordered,
-            title=args.title,
-            output=args.output,
-        )
-    except OSError as exc:
-        print(f"error: could not save chart to {args.output}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        print(f"error: chart generation failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-    print(f"saved: {args.output}")
+    # Generate charts for each theme (light + dark).
+    for theme in THEMES:
+        suffix = f"-{theme}" if theme != "light" else ""
+        out = args.output.with_stem(args.output.stem + suffix)
 
-    if args.individual_dir and len(results) > 1:
         try:
-            paths = generate_individual_radars(
+            generate_radar(
                 results,
                 categories=ordered,
-                output_dir=args.individual_dir,
-                title_prefix=args.title,
+                title=args.title,
+                output=out,
+                theme=theme,
             )
         except OSError as exc:
-            print(f"error: could not save individual charts: {exc}", file=sys.stderr)
+            print(f"error: could not save chart to {out}: {exc}", file=sys.stderr)
             sys.exit(1)
-        except Exception as exc:
-            print(f"error: individual chart generation failed: {exc}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001  # top-level script should surface chart backend failures cleanly
+            print(f"error: chart generation failed ({theme}): {exc}", file=sys.stderr)
             sys.exit(1)
-        for p in paths:
-            print(f"saved: {p}")
+        print(f"saved: {out}")
+
+        if args.individual_dir and len(results) > 1:
+            ind_dir = args.individual_dir.with_name(args.individual_dir.name + suffix)
+            try:
+                paths = generate_individual_radars(
+                    results,
+                    categories=ordered,
+                    output_dir=ind_dir,
+                    title_prefix=args.title,
+                    theme=theme,
+                )
+            except OSError as exc:
+                print(f"error: could not save individual charts: {exc}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as exc:  # noqa: BLE001  # top-level script should surface chart backend failures cleanly
+                print(
+                    f"error: individual chart generation failed ({theme}): {exc}", file=sys.stderr
+                )
+                sys.exit(1)
+            for p in paths:
+                print(f"saved: {p}")
 
 
 if __name__ == "__main__":

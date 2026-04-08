@@ -192,3 +192,62 @@ def list_skills(
             )
 
     return list(all_skills.values())
+
+
+def load_skill_content(
+    skill_path: str,
+    *,
+    allowed_roots: Sequence[Path] = (),
+) -> str | None:
+    """Read the full raw SKILL.md content for a skill.
+
+    Returns the complete file content including any YAML frontmatter.
+    Callers are responsible for parsing or stripping frontmatter if needed.
+
+    When `allowed_roots` is provided, the resolved path must fall within at
+    least one root directory. This prevents symlink traversal from reading files
+    outside known skill directories.
+
+    Args:
+        skill_path: Path to the SKILL.md file (from `SkillMetadata['path']`).
+        allowed_roots: Skill root directories the resolved path must be
+            contained within.
+
+            Callers must pre-resolve these via `Path.resolve()` — the resolved
+            skill path is compared directly, so un-resolved roots cause false
+            containment failures.
+
+            If empty, containment is not checked.
+
+    Returns:
+        Full text content of the SKILL.md file, or `None` on read failure.
+
+    Raises:
+        PermissionError: If the resolved path is outside all `allowed_roots`.
+    """
+    from pathlib import Path
+
+    path = Path(skill_path).resolve()
+
+    if allowed_roots and not any(path.is_relative_to(root) for root in allowed_roots):
+        logger.warning(
+            "Skill path %s is outside all allowed roots, refusing to read",
+            skill_path,
+        )
+        from deepagents_cli._env_vars import EXTRA_SKILLS_DIRS
+
+        msg = (
+            f"Skill path {skill_path} resolves outside all allowed skill "
+            "directories. If this is a symlink, add the target directory to "
+            f"{EXTRA_SKILLS_DIRS} or [skills].extra_allowed_dirs "
+            "in ~/.deepagents/config.toml."
+        )
+        raise PermissionError(msg)
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        logger.warning(
+            "Could not read skill content from %s", skill_path, exc_info=True
+        )
+        return None

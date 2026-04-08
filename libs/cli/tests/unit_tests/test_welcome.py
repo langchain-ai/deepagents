@@ -44,14 +44,29 @@ def _make_banner(
     Returns:
         A `WelcomeBanner` instance ready for testing.
     """
+    import deepagents_cli.config as _cfg
+
     env = {}
     if project_name:
         env["LANGSMITH_API_KEY"] = "fake-key"
         env["LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_PROJECT"] = project_name
+        env["DEEPAGENTS_CLI_LANGSMITH_PROJECT"] = project_name
 
-    with patch.dict("os.environ", env, clear=True):
-        return WelcomeBanner(thread_id=thread_id)
+    # Temporarily clear the cached settings singleton so _get_settings()
+    # re-creates it from the patched env vars inside the context manager.
+    saved = _cfg.__dict__.pop("settings", None)
+    saved_bootstrap = _cfg._bootstrap_done
+    _cfg._bootstrap_done = False
+    try:
+        with patch.dict("os.environ", env, clear=True):
+            return WelcomeBanner(thread_id=thread_id)
+    finally:
+        _cfg._bootstrap_done = saved_bootstrap
+        if saved is not None:
+            _cfg.__dict__["settings"] = saved
+        else:
+            _cfg.__dict__.pop("settings", None)
 
 
 class TestBuildBannerThreadLink:

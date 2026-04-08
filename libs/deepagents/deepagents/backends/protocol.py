@@ -134,56 +134,117 @@ class GrepMatch(TypedDict):
     """Content of the matching line."""
 
 
+class FileData(TypedDict):
+    """Data structure for storing file contents with metadata."""
+
+    content: str
+    """File content as a plain string (utf-8 text or base64-encoded binary)."""
+
+    encoding: str
+    """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
+
+    created_at: NotRequired[str]
+    """ISO 8601 timestamp of file creation."""
+
+    modified_at: NotRequired[str]
+    """ISO 8601 timestamp of last modification."""
+
+
 @dataclass
+class ReadResult:
+    """Result from backend read operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        file_data: FileData dict on success, None on failure.
+    """
+
+    error: str | None = None
+    file_data: FileData | None = None
+
+
+class _Unset:
+    """Sentinel type for detecting explicit parameter usage."""
+
+
+Unset = _Unset()
+
+
+def _normalize_files_update(
+    files_update: dict[str, Any] | None | _Unset,
+) -> dict[str, Any] | None:
+    """Normalize file updates."""
+    if isinstance(files_update, _Unset):
+        return None
+
+    warnings.warn(
+        "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return files_update
+
+
+@dataclass(init=False)
 class WriteResult:
     """Result from backend write operations.
 
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of written file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
 
     Examples:
-        >>> # Checkpoint storage
-        >>> WriteResult(path="/f.txt", files_update={"/f.txt": {...}})
-        >>> # External storage
-        >>> WriteResult(path="/f.txt", files_update=None)
-        >>> # Error
+        >>> WriteResult(path="/f.txt")
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None = None
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+    ) -> None:
+        """Initialize WriteResult."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
 
 
-@dataclass
+@dataclass(init=False)
 class EditResult:
     """Result from backend edit operations.
 
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of edited file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
         occurrences: Number of replacements made, None on failure.
 
     Examples:
-        >>> # Checkpoint storage
-        >>> EditResult(path="/f.txt", files_update={"/f.txt": {...}}, occurrences=1)
-        >>> # External storage
-        >>> EditResult(path="/f.txt", files_update=None, occurrences=2)
-        >>> # Error
+        >>> EditResult(path="/f.txt", occurrences=1)
         >>> EditResult(error="File not found")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None = None
-    occurrences: int | None = None
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+    occurrences: int | None
+
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+        occurrences: int | None = None,
+    ) -> None:
+        """Initialize edit result."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
+        self.occurrences = occurrences
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
@@ -208,7 +269,15 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            List of FileInfo dicts containing file metadata:
+            LsResult with directory entries or error.
+        """
+        if type(self).ls_info is not BackendProtocol.ls_info:
+            warnings.warn(
+                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return LsResult(entries=self.ls_info(path))
 
             - `path` (required): Absolute file path
             - `is_dir` (optional): True if directory
@@ -290,10 +359,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
 
         Returns:
-            On success: list[GrepMatch] with structured results containing:
-                - path: Absolute file path
-                - line: Line number (1-indexed)
-                - text: Full line content containing the match
+            `GrepResult` with matches or error.
+        """
+        if type(self).grep_raw is not BackendProtocol.grep_raw:
+            warnings.warn(
+                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            result = self.grep_raw(pattern, path, glob)
+            if isinstance(result, str):
+                return GrepResult(error=result)
+            return GrepResult(matches=result)
 
             On error: str with error message (e.g., invalid path, permission denied)
         """
@@ -330,6 +407,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             list of FileInfo
         """
+        if type(self).glob_info is not BackendProtocol.glob_info:
+            warnings.warn(
+                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return GlobResult(matches=self.glob_info(pattern, path))
+
         raise NotImplementedError
 
     async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
@@ -452,6 +537,124 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
+
+    # -- deprecated methods --------------------------------------------------
+
+    def ls_info(self, path: str) -> list["FileInfo"]:
+        """List all files in a directory with metadata.
+
+        !!! warning "Deprecated"
+
+            Use `ls` instead.
+        """
+        warnings.warn(
+            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = self.ls(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `ls` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
+
+    async def als_info(self, path: str) -> list["FileInfo"]:
+        """Async version of `ls_info`.
+
+        !!! warning "Deprecated"
+
+            Use `als` instead.
+        """
+        warnings.warn(
+            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = await self.als(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `als` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
+
+    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+        """Find files matching a glob pattern.
+
+        !!! warning "Deprecated"
+
+            Use `glob` instead.
+        """
+        warnings.warn(
+            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = self.glob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `glob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+        """Async version of `glob_info`.
+
+        !!! warning "Deprecated"
+
+            Use `aglob` instead.
+        """
+        warnings.warn(
+            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = await self.aglob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `aglob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list["GrepMatch"] | str:
+        """Search for a literal text pattern in files.
+
+        !!! warning "Deprecated"
+
+            Use `grep` instead.
+        """
+        warnings.warn(
+            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = self.grep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list["GrepMatch"] | str:
+        """Async version of `grep_raw`.
+
+        !!! warning "Deprecated"
+
+            Use `agrep` instead.
+        """
+        warnings.warn(
+            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        result = await self.agrep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
 
 @dataclass

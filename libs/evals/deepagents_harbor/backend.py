@@ -10,6 +10,7 @@ from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -21,7 +22,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import check_empty_content, create_file_data
+from deepagents.backends.utils import check_empty_content
 from harbor.environments.base import BaseEnvironment
 
 _SYNC_NOT_SUPPORTED = "This backend only supports async execution. Use the async variant instead."
@@ -179,9 +180,9 @@ awk -v offset={offset} -v limit={limit} '
 
         empty_msg = check_empty_content(content)
         if empty_msg:
-            return ReadResult(file_data=create_file_data(empty_msg))
+            return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
-        return ReadResult(file_data=create_file_data(content))
+        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
 
     def read(
         self,
@@ -241,7 +242,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             except OSError:
                 logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def write(
         self,
@@ -309,7 +310,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
                     raise
                 return EditResult(error=f"Error editing file '{file_path}': {error}")
 
-        return EditResult(path=file_path, files_update=None, occurrences=count)
+        return EditResult(path=file_path, occurrences=count)
 
     def edit(
         self,

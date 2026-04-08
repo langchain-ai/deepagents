@@ -538,6 +538,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
@@ -556,16 +557,20 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        message_kwargs: Extra fields merged into the initial HumanMessage
+            dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
             a fast-follow LangSmith thread link.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
-    state = StreamState(quiet=quiet, stream=stream)
-    stream_input: dict[str, Any] | Command = {
-        "messages": [{"role": "user", "content": message}]
-    }
+    spinner = None if quiet else _ConsoleSpinner(console)
+    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
+    user_msg: dict[str, Any] = {"role": "user", "content": message}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -673,6 +678,7 @@ async def run_non_interactive(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    initial_skill: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
@@ -709,6 +715,8 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
+            the user message before sending it to the agent.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -733,6 +741,85 @@ async def run_non_interactive(
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
+
+    message_kwargs: dict[str, Any] | None = None
+    if initial_skill and initial_skill.strip():
+        from deepagents_cli.skills.invocation import (
+            build_skill_invocation_envelope,
+            discover_skills_and_roots,
+        )
+        from deepagents_cli.skills.load import load_skill_content
+
+        normalized_skill = initial_skill.strip().lower()
+        try:
+            skills, allowed_roots = discover_skills_and_roots(assistant_id)
+            skill = next((s for s in skills if s["name"] == normalized_skill), None)
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+
+        if skill is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill not found: {escape_markup(normalized_skill)}"
+            )
+            return 1
+
+        try:
+            content = load_skill_content(
+                str(skill["path"]),
+                allowed_roots=allowed_roots,
+            )
+        except PermissionError as e:
+            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
+            return 1
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+        if content is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
+            )
+            return 1
+
+        if not content.strip():
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill '{escape_markup(normalized_skill)}' has an empty "
+                "SKILL.md file. "
+                "Add instructions to the file before invoking."
+            )
+            return 1
+
+        envelope = build_skill_invocation_envelope(skill, content, message)
+        message = envelope.prompt
+        message_kwargs = envelope.message_kwargs
+
     try:
         result = create_model(
             model_name,
@@ -801,7 +888,18 @@ async def run_non_interactive(
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
         )
+        # Currently, non-shell tools have no HITL handler in non-interactive
+        # mode, so interrupting on them just fragments LangSmith traces
+        # without adding value. Gate only shell execution via middleware.
         use_auto_approve = not enable_shell or shell_is_unrestricted
+        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        # Extract the concrete allow-list to forward to the server subprocess.
+        # settings.shell_allow_list is already validated at this point.
+        restrictive_allow_list: list[str] | None = (
+            list(settings.shell_allow_list)
+            if use_interrupt_shell_only and settings.shell_allow_list
+            else None
+        )
 
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
@@ -811,6 +909,8 @@ async def run_non_interactive(
             model_name=model_name,
             model_params=model_params,
             auto_approve=use_auto_approve,
+            interrupt_shell_only=use_interrupt_shell_only,
+            shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,
@@ -848,6 +948,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
             )
 

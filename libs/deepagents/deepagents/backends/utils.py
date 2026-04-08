@@ -17,6 +17,50 @@ import wcmatch.glob as wcglob
 from deepagents.backends.protocol import FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+
+FileType = Literal["text", "image", "audio", "video", "file"]
+"""Classification of a file by extension."""
+
+_EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
+    # Images (https://ai.google.dev/gemini-api/docs/image-understanding)
+    ".png": "image",
+    ".jpeg": "image",
+    ".jpg": "image",
+    ".webp": "image",
+    ".gif": "image",
+    ".heic": "image",
+    ".heif": "image",
+    # Video (https://ai.google.dev/gemini-api/docs/video-understanding)
+    ".mp4": "video",
+    ".mpeg": "video",
+    ".mov": "video",
+    ".avi": "video",
+    ".flv": "video",
+    ".mpg": "video",
+    ".webm": "video",
+    ".wmv": "video",
+    ".3gpp": "video",
+    # Audio (https://ai.google.dev/gemini-api/docs/audio)
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".aiff": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+    # Files
+    ".pdf": "file",
+    ".ppt": "file",
+    ".pptx": "file",
+}
+"""Extension-to-type mapping for non-text files.
+
+Derived from Google's multimodal API supported formats:
+
+- Images: https://ai.google.dev/gemini-api/docs/image-understanding
+- Video: https://ai.google.dev/gemini-api/docs/video-understanding
+- Audio: https://ai.google.dev/gemini-api/docs/audio
+"""
+
 MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
@@ -95,7 +139,46 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
-def file_data_to_string(file_data: dict[str, Any]) -> str:
+def _get_file_type(path: str) -> FileType:
+    """Classify a file by its extension.
+
+    Args:
+        path: File path to classify.
+
+    Returns:
+        One of `"text"`, `"image"`, `"audio"`, `"video"`, or `"file"`.
+        Defaults to `"text"` for unrecognized extensions.
+    """
+    return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
+
+
+def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
+    r"""Convert a FileData dict to the legacy (v1) storage format.
+
+    The v1 format stores content as `list[str]` (lines split on `\\n`)
+    and omits the `encoding` field.  Use this when `file_format="v1"`
+    on a backend to preserve backwards compatibility with consumers that
+    expect `list[str]` content.
+
+    Args:
+        file_data: Modern (v2) FileData with `content: str` and `encoding`.
+
+    Returns:
+        Dict with `content` as `list[str]`, plus `created_at` /
+        `modified_at` timestamps.  No `encoding` key.
+    """
+    content = file_data["content"]
+    result: dict[str, Any] = {
+        "content": content.split("\n"),
+    }
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        result["modified_at"] = file_data["modified_at"]
+    return result
+
+
+def file_data_to_string(file_data: FileData) -> str:
     """Convert FileData to plain string content.
 
     Args:
@@ -140,11 +223,14 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     lines = content.split("\n") if isinstance(content, str) else content
     now = datetime.now(UTC).isoformat()
 
-    return {
-        "content": lines,
-        "created_at": file_data["created_at"],
-        "modified_at": now,
-    }
+    result = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    result["modified_at"] = now
+    return result
 
 
 def format_read_response(

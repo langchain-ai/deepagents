@@ -65,22 +65,23 @@ scorer = (
 
 ### Test suites
 
-| File | What it evaluates |
-|---|---|
-| `test_file_operations.py` | File tool usage (read/write/edit/ls/grep/glob), parallel reads & writes, seeded file state |
-| `test_skills.py` | Skill discovery, reading, and application from `SKILL.md` files |
-| `test_hitl.py` | Human-in-the-loop via `interrupt_on` approvals, subagent HITL, custom interrupt configs |
-| `test_memory.py` | Memory recall and behavior guidance from `AGENTS.md` files, preference persistence, composite backends |
-| `test_memory_multiturn.py` | Multi-turn memory: implicit preference extraction, explicit remember instructions, transient info filtering |
-| `test_summarization.py` | Summarization middleware triggers, post-summarization task continuation, history offload to filesystem |
-| `test_subagents.py` | Subagent delegation behavior |
-| `test_system_prompt.py` | System prompt adherence |
-| `test_tool_usage_relational.py` | Multi-step tool chaining with dependent data lookups (user -> location -> weather) |
-| `test_tool_selection.py` | Picking the right tool from intent (direct, indirect, multi-step) with independent mock tools |
-| `test_followup_quality.py` | Followup question relevance for underspecified requests (LLM judge) |
-| `test_external_benchmarks.py` | Curated hard cases from FRAMES (multi-hop retrieval), Nexus (nested function composition), and BFCL v3 (multi-turn stateful tool calling) |
-| `memory_agent_bench/test_memory_agent_bench.py` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
-| `tau2_airline/test_tau2_airline.py` | [tau2-bench](https://github.com/sierra-research/tau-bench) airline tasks: multi-turn agent-user conversations scored on DB state accuracy and communicate info |
+| File | Category | What it evaluates |
+|---|---|---|
+| `test_file_operations.py` | `file_operations`, `retrieval` | File tool usage (read/write/edit/ls), parallel reads & writes, grep/glob search, seeded file state |
+| `test_tool_selection.py` | `tool_use` | Picking the right tool from intent (direct, indirect, multi-step) with independent mock tools |
+| `test_tool_usage_relational.py` | `tool_use` | Multi-step tool chaining with dependent data lookups (user -> location -> weather) |
+| `test_todos.py` | `tool_use` | Todo list tool usage for task planning |
+| `test_external_benchmarks.py` | `retrieval`, `tool_use` | FRAMES (multi-hop retrieval), Nexus (nested function composition), BFCL v3 (multi-turn stateful tool calling) |
+| `test_memory.py` | `memory` | Memory recall and behavior guidance from `AGENTS.md` files, preference persistence, composite backends |
+| `test_memory_multiturn.py` | `memory` | Multi-turn memory: implicit preference extraction, explicit remember instructions, transient info filtering |
+| `memory_agent_bench/test_memory_agent_bench.py` | `memory` | MemoryAgentBench (ICLR 2026): long-context memory recall and QA over chunked context |
+| `test_followup_quality.py` | `conversation` | Followup question relevance for underspecified requests (LLM judge) |
+| `tau2_airline/test_tau2_airline.py` | `conversation` | [tau2-bench](https://github.com/sierra-research/tau-bench) airline tasks: multi-turn agent-user conversations scored on DB state accuracy and communicate info |
+| `test_summarization.py` | `summarization` | Summarization middleware triggers, post-summarization task continuation, history offload to filesystem |
+| `test_hitl.py` | `unit_test` | Human-in-the-loop via `interrupt_on` approvals, subagent HITL, custom interrupt configs |
+| `test_subagents.py` | `unit_test` | Subagent delegation behavior |
+| `test_system_prompt.py` | `unit_test` | System prompt adherence |
+| `test_skills.py` | `unit_test` | Skill discovery, reading, and application from `SKILL.md` files |
 
 ## Writing a new eval
 
@@ -163,6 +164,10 @@ eval_categories: "memory,tool_use,retrieval"
 
 Omit to run all categories.
 
+### CI concurrency
+
+Eval jobs use per-provider concurrency groups. Two jobs hitting the same provider (e.g. both `openai`) queue — the second waits for the first to finish. Jobs on different providers run in parallel, so dispatching `frontier` (anthropic + google_genai + openai) alongside a solo `openrouter` run won't block either side.
+
 ### Per-category reporting
 
 CI runs produce a per-category correctness table in the GitHub Actions step summary, plus a JSON summary artifact (`evals-summary`) for offline analysis.
@@ -182,10 +187,22 @@ python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.pn
 python scripts/generate_radar.py --toy -o charts/radar.png
 ```
 
+### Eval catalog
+
+[`EVAL_CATALOG.md`](EVAL_CATALOG.md) is an auto-generated quick reference listing every eval grouped by category, with links to the source definition on GitHub and the local file path.
+
+Regenerate after adding or removing evals:
+
+```bash
+make eval-catalog
+```
+
+A drift test (`tests/unit_tests/test_eval_catalog.py`) fails CI if the file is stale.
+
 ### Adding a new category
 
-1. Add the category name and label to `deepagents_evals/categories.json`
-2. Tag test(s) with `pytestmark = [pytest.mark.eval_category("your_category")]`
+1. Add the category name and label to `deepagents_evals/categories.json` — add it to `categories` (all), and also to `radar_categories` if it measures model capability (not SDK plumbing)
+2. Tag test(s) with `pytestmark = [pytest.mark.eval_category("your_category")]` for single-category files, or per-function `@pytest.mark.eval_category("your_category")` decorators for files with mixed categories
 3. Add the category to `EXPECTED_CATEGORY_MODULES` in `tests/unit_tests/test_category_tagging.py`
 4. Run `make test` — drift tests will catch any mismatch
 

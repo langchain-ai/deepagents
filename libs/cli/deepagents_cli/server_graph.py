@@ -53,9 +53,9 @@ def _build_tools(
         RuntimeError: If MCP tool loading fails.
     """
     from deepagents_cli.config import settings
-    from deepagents_cli.tools import fetch_url, http_request, web_search
+    from deepagents_cli.tools import fetch_url, web_search
 
-    tools: list[Any] = [http_request, fetch_url]
+    tools: list[Any] = [fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
 
@@ -93,9 +93,9 @@ def _build_tools(
 def make_graph() -> Any:  # noqa: ANN401
     """Create the CLI agent graph from environment-based configuration.
 
-    Reads `DA_SERVER_*` env vars via `ServerConfig.from_env()` (the inverse of
-    `ServerConfig.to_env()` used by the CLI process), resolves a model,
-    assembles tools, and compiles the agent graph.
+    Reads `DEEPAGENTS_CLI_SERVER_*` env vars via `ServerConfig.from_env()`
+    (the inverse of `ServerConfig.to_env()` used by the CLI process), resolves a
+    model, assembles tools, and compiles the agent graph.
 
     Returns:
         Compiled LangGraph agent graph.
@@ -169,6 +169,9 @@ def make_graph() -> Any:  # noqa: ANN401
         system_prompt=config.system_prompt,
         interactive=config.interactive,
         auto_approve=config.auto_approve,
+        interrupt_shell_only=config.interrupt_shell_only,
+        shell_allow_list=config.shell_allow_list,
+        enable_ask_user=config.enable_ask_user,
         enable_memory=config.enable_memory,
         enable_skills=config.enable_skills,
         enable_shell=config.enable_shell,

@@ -22,6 +22,7 @@ from typing import Final
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -29,6 +30,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import _get_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +176,15 @@ for i, line in enumerate(selected_lines):
     print(f'{{line_num:6d}}\\t{{line_content}}')
 " <<'__DEEPAGENTS_EOF__'
 {payload_b64}
-__DEEPAGENTS_EDIT_EOF__"""
+__DEEPAGENTS_EDIT_EOF__
+"""
+# Make sure to maintain a new line at the end of DEEPAGENTS_EDIT_EOF to denote end of
+# feed. This may not matter for some integrations.
+
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
-sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
+sandbox. The payload (path, old/new strings, replace_all flag) is passed as
 base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
 
 Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
@@ -186,6 +192,9 @@ on failure.
 
 Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
 to `_edit_via_upload()` which transfers old/new strings as temp files.
+
+Keeps a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
+detect end-of-input on a newline-delimited heredoc feed can observe completion.
 """
 
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
@@ -257,6 +266,14 @@ files cannot be read.
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os, sys, base64, json
 
+MAX_OUTPUT_BYTES = 500 * 1024
+MAX_BINARY_BYTES = 500 * 1024
+TRUNCATION_MSG = '\\n\\n' + (
+    '[Output was truncated due to size limits. '
+    'This paginated read result exceeded the sandbox stdout limit. '
+    'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'
+)
+
 path = base64.b64decode('{path_b64}').decode('utf-8')
 
 if not os.path.isfile(path):
@@ -267,24 +284,70 @@ if os.path.getsize(path) == 0:
     print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
     sys.exit(0)
 
-with open(path, 'rb') as f:
-    raw = f.read()
-
-try:
-    text = raw.decode('utf-8')
-except UnicodeDecodeError:
+file_type = '{file_type}'
+if file_type != 'text':
+    file_size = os.path.getsize(path)
+    if file_size > MAX_BINARY_BYTES:
+        print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
+        sys.exit(0)
+    with open(path, 'rb') as f:
+        raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
     sys.exit(0)
 
-file_type = '{file_type}'
-if file_type == 'text':
-    lines = text.splitlines()
-    offset = {offset}
-    limit = {limit}
-    if offset >= len(lines):
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(len(lines)) + ' lines)'}}))
-        sys.exit(0)
-    text = chr(10).join(lines[offset:offset + limit])
+with open(path, 'rb') as f:
+    raw_prefix = f.read(8192)
+
+try:
+    raw_prefix.decode('utf-8')
+except UnicodeDecodeError:
+    with open(path, 'rb') as f:
+        raw = f.read()
+    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+    sys.exit(0)
+
+offset = {offset}
+limit = {limit}
+line_count = 0
+returned_lines = 0
+truncated = False
+parts = []
+current_bytes = 0
+msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+
+with open(path, 'r', encoding='utf-8', newline=None) as f:
+    for raw_line in f:
+        line_count += 1
+        if line_count <= offset:
+            continue
+        if returned_lines >= limit:
+            break
+
+        line = raw_line.rstrip('\\n').rstrip('\\r')
+        piece = line if returned_lines == 0 else '\\n' + line
+        piece_bytes = len(piece.encode('utf-8'))
+        if current_bytes + piece_bytes > effective_limit:
+            truncated = True
+            remaining_bytes = effective_limit - current_bytes
+            if remaining_bytes > 0:
+                prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                if prefix:
+                    parts.append(prefix)
+                    current_bytes += len(prefix.encode('utf-8'))
+            break
+
+        parts.append(piece)
+        current_bytes += piece_bytes
+        returned_lines += 1
+
+if returned_lines == 0 and not truncated:
+    print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+    sys.exit(0)
+
+text = ''.join(parts)
+if truncated:
+    text += TRUNCATION_MSG
 
 print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
 " 2>&1"""
@@ -391,7 +454,11 @@ except PermissionError:
 
         Runs a Python script on the sandbox via `execute()` that reads the
         file, detects encoding, and applies offset/limit pagination for text
-        files.  Only the requested page is returned over the wire.
+        files. Only the requested page is returned over the wire, and text
+        output is capped to about 500 KiB to avoid backend stdout/log transport
+        failures. When that cap is exceeded, the returned content is truncated
+        with guidance to continue pagination using a different `offset` or
+        smaller `limit`.
 
         Binary files (non-UTF-8) are returned base64-encoded without
         pagination.
@@ -425,7 +492,19 @@ except PermissionError:
         if exit_code != 0 or "Error: File not found" in output:
             return f"Error: File '{file_path}' not found"
 
-        return output
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            return ReadResult(error=f"File '{file_path}': {data['error']}")
+
+        return ReadResult(
+            file_data=FileData(
+                content=data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            )
+        )
 
     def write(
         self,
@@ -433,9 +512,6 @@ except PermissionError:
         content: str,
     ) -> WriteResult:
         """Create a new file, failing if it already exists.
-
-        Runs a small preflight command to check existence and create parent
-        directories, then transfers content via `upload_files()`.
 
         Args:
             file_path: Absolute path for the new file.
@@ -445,33 +521,25 @@ except PermissionError:
             `WriteResult` with `path` on success or `error` on failure.
         """
         # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below — a concurrent process could create the file in
+        # and the upload below - a concurrent process could create the file in
         # between. This is an inherent limitation of splitting the operation;
-        # the risk is minimal in single-agent sandbox environments.
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        try:
-            result = self.execute(check_cmd)
-        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass execute()
-            msg = f"Failed to write file '{file_path}': {exc}"
-            return WriteResult(error=msg)
-
+        result = self.execute(check_cmd)
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
-        # Transfer content via upload_files()
-        try:
-            responses = self.upload_files([(file_path, content.encode("utf-8"))])
-        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass upload_files()
-            msg = f"Failed to write file '{file_path}': {exc}"
-            return WriteResult(error=msg)
+        responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
-            return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
-        if responses[0].error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
+            # An unreachable condition was reached
+            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
+            raise AssertionError(msg)
+        response = responses[0]
+        if response.error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -544,7 +612,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
@@ -610,7 +677,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
@@ -718,6 +784,9 @@ except PermissionError:
 
         Implementations must support partial success - catch exceptions per-file
         and return errors in `FileUploadResponse` objects rather than raising.
+
+        Upload files is responsible for ensuring that the parent path exists
+        (if user permissions allow the user to write to the given directory)
         """
 
     @abstractmethod

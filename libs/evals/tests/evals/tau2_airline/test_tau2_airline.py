@@ -1,11 +1,13 @@
-"""Parametrized pytest tests for 15 failing tau2 airline tasks.
+"""Parametrized pytest tests for 15 tau2 airline tasks.
 
 Each test creates a fresh airline environment, runs a multi-turn conversation
 between a deepagents agent and an LLM user simulator, then evaluates the
 result using tau2's DB state + communicate info scoring.
 
-Based on τ-bench / τ²-bench by Sierra Research (MIT License).
-See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
+Based on τ-bench / τ²-bench / τ³-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Task data updated to τ³-bench v1.0.0 which
+includes corrections to all 15 evaluated tasks.
+Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 
 Usage:
     uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-20250514
@@ -22,6 +24,7 @@ from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
+from langsmith.run_helpers import get_current_run_tree
 
 from tests.evals.tau2_airline.domain import (
     create_airline_tools,
@@ -37,6 +40,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("conversation")]
+"""Apply conversation category to all tests in this module. Tier is set per-test."""
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,7 @@ def _task_id_label(task_id: str) -> str:
     return f"task_{task_id}"
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
 def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
@@ -85,6 +90,22 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         model: The agent's chat model (from --model CLI option).
         task_id: The tau2 task ID to run.
     """
+    # Immediately override @pytest.mark.langsmith auto-capture so the dataset
+    # example records clean metadata even if run_multi_turn() raises.
+    _clean_inputs = {
+        "task_id": task_id,
+        "model": str(getattr(model, "model", None) or getattr(model, "model_name", "")),
+    }
+    t.log_inputs(_clean_inputs)
+    run_tree = get_current_run_tree()
+    if run_tree is not None:
+        run_tree.inputs = _clean_inputs
+    else:
+        logger.warning(
+            "get_current_run_tree() returned None in @pytest.mark.langsmith test; "
+            "dataset example inputs will not be overridden"
+        )
+
     task = load_task(task_id)
     policy = load_policy()
 
@@ -121,6 +142,10 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         tool_call_log=tool_log,
         max_turns=30,
     )
+
+    # Override per-turn t.log_inputs() calls from run_agent() inside
+    # run_multi_turn() with clean test-level metadata.
+    t.log_inputs(_clean_inputs)
 
     reward = evaluate_task(
         actual_db=db,

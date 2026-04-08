@@ -3,7 +3,6 @@ import uuid
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -20,15 +19,8 @@ from deepagents.middleware.filesystem import (
 from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
 
 
-def build_composite_state_backend(runtime, *, routes):
-    built_routes = {}
-    for prefix, backend_or_factory in routes.items():
-        if callable(backend_or_factory):
-            built_routes[prefix] = backend_or_factory(runtime)
-        else:
-            built_routes[prefix] = backend_or_factory
-    default_state = StateBackend(runtime)
-    return CompositeBackend(default=default_state, routes=built_routes)
+def build_composite_state_backend(*, routes):
+    return CompositeBackend(default=StateBackend(), routes=routes)
 
 
 @pytest.mark.requires("langchain_anthropic")
@@ -38,7 +30,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     system_prompt="In every single response, you must say the word 'pokemon'! You love it!",
                 )
             ],
@@ -88,7 +80,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -148,7 +140,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -194,7 +186,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -235,7 +227,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -285,7 +277,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)})),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -315,7 +307,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -354,7 +346,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -380,7 +372,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -421,7 +413,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -451,7 +443,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -472,7 +464,7 @@ class TestFilesystem:
     def test_shortterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        agent = create_deep_agent(backend=StateBackend, checkpointer=checkpointer, store=store)
+        agent = create_deep_agent(backend=StateBackend(), checkpointer=checkpointer, store=store)
         assert_shortterm_mem_tools(agent)
 
     def test_tool_call_with_tokens_exceeding_limit(self):
@@ -481,7 +473,7 @@ class TestFilesystem:
             tools=[get_nba_standings],
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                 )
             ],
         )
@@ -499,7 +491,7 @@ class TestFilesystem:
             tools=[get_nfl_standings],
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     tool_token_limit_before_evict=1000,
                 )
             ],
@@ -518,7 +510,7 @@ class TestFilesystem:
             tools=[get_la_liga_standings],
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     tool_token_limit_before_evict=1000,
                 )
             ],
@@ -537,7 +529,7 @@ class TestFilesystem:
             tools=[get_premier_league_standings],
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     tool_token_limit_before_evict=1000,
                 ),
                 ResearchMiddleware(),
@@ -563,7 +555,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                 )
             ],
             checkpointer=checkpointer,
@@ -632,7 +624,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -677,7 +669,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -715,7 +707,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                 )
             ],
             checkpointer=checkpointer,
@@ -784,7 +776,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -829,7 +821,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (StoreBackend)}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
                 )
             ],
             checkpointer=checkpointer,
@@ -904,7 +896,7 @@ class TestFilesystem:
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
-                FilesystemMiddleware(backend=StateBackend),
+                FilesystemMiddleware(backend=StateBackend()),
                 CapturingMiddleware(),
             ],
         )
@@ -952,7 +944,7 @@ class TestFilesystem:
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
-                FilesystemMiddleware(backend=StateBackend),
+                FilesystemMiddleware(backend=StateBackend()),
                 CapturingMiddleware(),
             ],
         )
@@ -993,28 +985,17 @@ class TestFilesystem:
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
-        # Create runtimes
-        state = {"messages": [], "files": {}}
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
         # Test CompositeBackend with sandbox default
         comp_with_sandbox = CompositeBackend(
-            default=MockSandboxBackend(rt),
-            routes={"/memories/": StoreBackend(rt)},
+            default=MockSandboxBackend(),
+            routes={"/memories/": StoreBackend()},
         )
         assert _supports_execution(comp_with_sandbox)
 
         # Test CompositeBackend with non-sandbox default
         comp_without_sandbox = CompositeBackend(
-            default=StateBackend(rt),
-            routes={"/memories/": StoreBackend(rt)},
+            default=StateBackend(),
+            routes={"/memories/": StoreBackend()},
         )
         assert not _supports_execution(comp_without_sandbox)
 

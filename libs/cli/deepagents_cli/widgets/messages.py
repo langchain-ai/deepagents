@@ -11,10 +11,12 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
-from rich.markup import escape as escape_markup
-from rich.text import Text
+from textual import on
 from textual.containers import Vertical
-from textual.widgets import Markdown, Static
+from textual.content import Content
+from textual.events import Click
+from textual.reactive import var
+from textual.widgets import Static
 
 from deepagents_cli.config import (
     COLORS,
@@ -24,6 +26,7 @@ from deepagents_cli.config import (
     _detect_charset_mode,
     get_glyphs,
 )
+from deepagents_cli.formatting import format_duration
 from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets._links import open_style_link
@@ -31,7 +34,6 @@ from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click
     from textual.timer import Timer
     from textual.widgets._markdown import MarkdownStream
 
@@ -118,7 +120,6 @@ _MAX_INLINE_ARGS = 3
 # Truncation limits for display
 _MAX_TODO_CONTENT_LEN = 70
 _MAX_WEB_CONTENT_LEN = 100
-_MAX_WEB_PREVIEW_LEN = 150
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -135,11 +136,28 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Web tools
     "web_search",
     "fetch_url",
-    "http_request",
     # Agent tools
     "task",
     "write_todos",
 }
+
+
+_SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
+"""Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
+
+
+def _strip_success_exit_line(text: str) -> str:
+    """Remove the `[Command succeeded with exit code 0]` trailer.
+
+    Non-zero exit codes are left intact (they come through `set_error`).
+
+    Args:
+        text: Raw tool output string.
+
+    Returns:
+        Text with the success exit-code trailer removed, if present.
+    """
+    return _SUCCESS_EXIT_RE.sub("", text)
 
 
 class UserMessage(_TimestampClickMixin, Static):
@@ -149,7 +167,7 @@ class UserMessage(_TimestampClickMixin, Static):
     UserMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
         background: transparent;
         border-left: wide #10b981;
     }
@@ -234,7 +252,7 @@ class QueuedUserMessage(Static):
     QueuedUserMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
         background: transparent;
         border-left: wide #6b7280;
         opacity: 0.6;
@@ -270,9 +288,285 @@ class QueuedUserMessage(Static):
             text.append(f"{glyph} ", style=f"bold {COLORS['dim']}")
             content = content[1:]
         else:
-            text.append("> ", style=f"bold {COLORS['dim']}")
-        text.append(content, style="#9ca3af")
-        yield Static(text)
+            prefix = ("> ", f"bold {colors.muted}")
+        return Content.assemble(prefix, (content, colors.muted))
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter delimited by `---` markers.
+
+    Args:
+        text: Raw `SKILL.md` content.
+
+    Returns:
+        Body text with frontmatter removed and leading whitespace stripped.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return text
+    # Find closing --- (skip the opening line)
+    end = stripped.find("\n---", 3)
+    if end == -1:
+        return text
+    # Skip past the closing --- and its trailing newline
+    after = end + 4  # len("\n---")
+    return stripped[after:].lstrip("\n")
+
+
+class _SkillToggle(Static):
+    """Clickable header/hint area for toggling skill body expansion.
+
+    Referenced by name in `SkillMessage._on_toggle_click`'s `@on(Click)`
+    CSS selector — rename with care.
+    """
+
+
+class SkillMessage(Vertical):
+    """Widget displaying a skill invocation with collapsible body.
+
+    Shows skill name, source badge, description, and user args as a compact
+    header. The full SKILL.md body (frontmatter stripped) is hidden behind a
+    preview/expand toggle (click or Ctrl+O).  The expanded view renders
+    markdown via Rich's `Markdown` inside a single `Static` widget.
+
+    Visibility is driven by a CSS class (`-expanded`) toggled via a Textual
+    reactive `var`. Click handlers are scoped to the header and hint widgets
+    (`_SkillToggle`) so clicks on the rendered markdown body do not trigger
+    expansion toggles (preserving text selection, for instance).
+    """
+
+    DEFAULT_CSS = """
+    SkillMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        background: transparent;
+        border-left: wide $skill;
+    }
+
+    SkillMessage .skill-header {
+        height: auto;
+    }
+
+    SkillMessage .skill-description {
+        color: $text-muted;
+        margin-left: 3;
+    }
+
+    SkillMessage .skill-args {
+        margin-left: 3;
+        margin-top: 0;
+    }
+
+    SkillMessage #skill-md {
+        margin-left: 3;
+        margin-top: 0;
+        padding: 0;
+        display: none;
+    }
+
+    SkillMessage .skill-hint {
+        margin-left: 3;
+        color: $text-muted;
+    }
+
+    SkillMessage.-expanded #skill-md {
+        display: block;
+    }
+
+    SkillMessage:hover {
+        border-left: wide $skill-hover;
+    }
+    """
+
+    _PREVIEW_LINES = 4
+    _PREVIEW_CHARS = 300
+
+    _expanded: var[bool] = var(False, toggle_class="-expanded")
+
+    def __init__(
+        self,
+        skill_name: str,
+        description: str = "",
+        source: str = "",
+        body: str = "",
+        args: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a skill message.
+
+        Args:
+            skill_name: Skill identifier.
+            description: Short description of the skill.
+            source: Origin label (e.g., `'built-in'`, `'user'`).
+            body: Full SKILL.md content (frontmatter included).
+            args: User-provided arguments.
+            **kwargs: Additional arguments passed to parent.
+        """
+        super().__init__(**kwargs)
+        self._skill_name = skill_name
+        self._description = description
+        self._source = source
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        self._args = args
+        self._md_widget: Static | None = None
+        self._hint_widget: _SkillToggle | None = None
+        self._deferred_expanded: bool = False
+        self._md_rendered: bool = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the skill message layout.
+
+        Yields:
+            Widgets for header, description, args, and collapsible body.
+        """
+        colors = theme.get_theme_colors()
+        source_tag = f" [{self._source}]" if self._source else ""
+        yield _SkillToggle(
+            Content.styled(
+                f"/ skill:{self._skill_name}{source_tag}",
+                f"bold {colors.skill}",
+            ),
+            classes="skill-header",
+        )
+        if self._description:
+            yield _SkillToggle(
+                Content.styled(self._description, "dim"),
+                classes="skill-description",
+            )
+        if self._args:
+            yield Static(
+                Content.assemble(
+                    ("User request: ", "bold"),
+                    self._args,
+                ),
+                classes="skill-args",
+            )
+        yield Static("", id="skill-md")
+        yield _SkillToggle("", classes="skill-hint", id="skill-hint")
+
+    def on_mount(self) -> None:
+        """Cache widget references, render initial state.
+
+        Ordering matters: widget refs must be cached before `_prepare_body`
+        or `_deferred_expanded` assignment, because either may set
+        `_expanded` which fires `watch__expanded` synchronously.
+        """
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.skill)
+
+        self._md_widget = self.query_one("#skill-md", Static)
+        self._hint_widget = self.query_one("#skill-hint", _SkillToggle)
+
+        body = self._stripped_body.strip()
+        if body:
+            self._prepare_body(body)
+
+        if self._deferred_expanded:
+            self._expanded = self._deferred_expanded
+            self._deferred_expanded = False
+
+    def _prepare_body(self, body: str) -> None:
+        """Set initial hint text. Full body render is deferred to first expand.
+
+        Args:
+            body: Stripped markdown body text.
+        """
+        lines = body.split("\n")
+        total_lines = len(lines)
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
+        )
+
+        if needs_truncation:
+            remaining = total_lines - self._PREVIEW_LINES
+            ellipsis = get_glyphs().ellipsis
+            if self._hint_widget:
+                self._hint_widget.update(
+                    Content.styled(
+                        f"{ellipsis} {remaining} more lines"
+                        " — click or Ctrl+O to expand",
+                        "dim",
+                    )
+                )
+        else:
+            # Short body — show fully rendered, no preview needed.
+            self._ensure_md_rendered(body)
+            self._expanded = True
+
+    def _ensure_md_rendered(self, body: str) -> None:
+        """Render markdown into the Static widget on first call, then no-op.
+
+        Args:
+            body: Stripped markdown body text.
+        """
+        if self._md_rendered or not self._md_widget:
+            return
+        try:
+            from rich.markdown import Markdown as RichMarkdown
+
+            self._md_widget.update(RichMarkdown(body))
+        except Exception:
+            logger.warning(
+                "Failed to render skill body as markdown; falling back to plain text",
+                exc_info=True,
+            )
+            self._md_widget.update(body)
+        self._md_rendered = True
+
+    def toggle_body(self) -> None:
+        """Toggle between preview and full body display."""
+        if not self._stripped_body.strip():
+            return
+        self._expanded = not self._expanded
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Lazy-render markdown on first expand; update hint text."""
+        body = self._stripped_body.strip()
+        if not body:
+            return
+
+        if expanded:
+            self._ensure_md_rendered(body)
+
+        if not self._hint_widget:
+            return
+
+        lines = body.split("\n")
+        total_lines = len(lines)
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or len(body) > self._PREVIEW_CHARS
+        )
+
+        if not needs_truncation:
+            # Short body — always fully visible, no hint needed.
+            self._hint_widget.display = False
+            return
+
+        if expanded:
+            self._hint_widget.update(
+                Content.styled("click or Ctrl+O to collapse", "dim italic")
+            )
+        else:
+            remaining = total_lines - self._PREVIEW_LINES
+            ellipsis = get_glyphs().ellipsis
+            self._hint_widget.update(
+                Content.styled(
+                    f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
+                    "dim",
+                )
+            )
+
+    @on(Click, "_SkillToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        """Toggle expansion when header or hint is clicked."""
+        event.stop()
+        if self._stripped_body.strip():
+            self.toggle_body()
+        else:
+            _show_timestamp_toast(self)
 
 
 class AssistantMessage(_TimestampClickMixin, Vertical):
@@ -286,7 +580,7 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     AssistantMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0 0 1 0;
     }
 
     AssistantMessage Markdown {
@@ -394,11 +688,19 @@ class ToolCallMessage(Vertical):
         padding: 0 1;
         margin: 0 0 1 0;
         background: transparent;
-        border-left: wide #3b3b3b;
+        border-left: wide $tool;
     }
 
     ToolCallMessage .tool-header {
         height: auto;
+        color: $tool;
+        text-style: bold;
+    }
+
+    ToolCallMessage .tool-task-desc {
+        color: $text-muted;
+        margin-left: 3;
+        text-style: italic;
     }
 
     ToolCallMessage .tool-args {
@@ -444,7 +746,7 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage:hover {
-        border-left: wide #525252;
+        border-left: wide $tool-hover;
     }
     """
 
@@ -491,13 +793,21 @@ class ToolCallMessage(Vertical):
         Yields:
             Widgets for header, arguments, status, and output display.
         """
-        tool_label = escape_markup(format_tool_display(self._tool_name, self._args))
-        yield Static(
-            f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
-            classes="tool-header",
-        )
+        tool_label = format_tool_display(self._tool_name, self._args)
+        yield Static(tool_label, markup=False, classes="tool-header")
+        # Task: dedicated description line (dim, truncated)
+        if self._tool_name == "task":
+            desc = self._args.get("description", "")
+            if desc:
+                max_len = 120
+                suffix = "..." if len(desc) > max_len else ""
+                truncated = desc[:max_len].rstrip() + suffix
+                yield Static(
+                    Content.styled(truncated, "dim"),
+                    classes="tool-task-desc",
+                )
         # Only show args for tools where header doesn't capture the key info
-        if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
+        elif self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
             if args:
                 args_str = ", ".join(
@@ -614,7 +924,7 @@ class ToolCallMessage(Vertical):
         elapsed = ""
         if self._start_time is not None:
             elapsed_secs = int(time() - self._start_time)
-            elapsed = f" ({elapsed_secs}s)"
+            elapsed = f" ({format_duration(elapsed_secs)})"
 
         self._status_widget.update(f"[yellow]{frame} Running...{elapsed}[/yellow]")
 
@@ -632,7 +942,8 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "success"
-        self._output = result
+        # Strip redundant success trailer — the UI already conveys success
+        self._output = _strip_success_exit_line(result)
         if self._status_widget:
             self._status_widget.remove_class("pending")
             # Hide status on success - output speaks for itself
@@ -733,7 +1044,6 @@ class ToolCallMessage(Vertical):
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
-            "http_request": self._format_web_output,
             "task": self._format_task_output,
         }
 
@@ -1000,7 +1310,7 @@ class ToolCallMessage(Vertical):
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Format web_search/fetch_url/http_request output.
+        """Format web_search/fetch_url output.
 
         Returns:
             FormattedOutput with web response and optional truncation info.
@@ -1038,19 +1348,10 @@ class ToolCallMessage(Vertical):
                 data.get("results", []), is_preview=is_preview
             )
 
-        # Handle fetch_url/http_request response
+        # Handle fetch_url response
         if "markdown_content" in data:
             lines = data["markdown_content"].split("\n")
             return self._format_lines_output(lines, is_preview=is_preview)
-
-        if "content" in data:
-            content = str(data["content"])
-            if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
-                return FormattedOutput(
-                    content=escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
-                    truncation="more",
-                )
-            return FormattedOutput(content=escape_markup(content))
 
         # Generic dict - show key fields
         lines = []
@@ -1222,7 +1523,7 @@ class DiffMessage(_TimestampClickMixin, Static):
     DiffMessage {
         height: auto;
         padding: 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         background: $surface;
         border: solid $primary;
     }
@@ -1293,8 +1594,8 @@ class ErrorMessage(_TimestampClickMixin, Static):
     ErrorMessage {
         height: auto;
         padding: 1;
-        margin: 1 0;
-        background: #7f1d1d;
+        margin: 0 0 1 0;
+        background: $error-muted;
         color: white;
         border-left: wide $error;
     }
@@ -1333,7 +1634,7 @@ class AppMessage(Static):
     AppMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
     }
@@ -1367,7 +1668,7 @@ class SummarizationMessage(AppMessage):
     SummarizationMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
+        margin: 0 0 1 0;
         color: $primary;
         background: $surface;
         border-left: wide $primary;

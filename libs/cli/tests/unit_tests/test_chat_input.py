@@ -1989,3 +1989,209 @@ class TestVSCodeSpaceWorkaround:
             await pilot.pause()
 
             assert ta.text == "hello "
+
+
+class TestCtrlUDeleteToLineStart:
+    """Test that ctrl+u deletes from cursor to start of line (readline convention)."""
+
+    async def test_ctrl_u_deletes_to_line_start(self) -> None:
+        """ctrl+u with cursor mid-line should delete text before the cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+            # Cursor at end after insert — move to col 5
+            ta.move_cursor((0, 5))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == " world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_at_end_of_line_clears_line(self) -> None:
+        """ctrl+u at end of single line should clear it entirely."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_on_empty_input_is_noop(self) -> None:
+        """ctrl+u on already empty input should leave text empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == ""
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_at_start_of_line_is_noop(self) -> None:
+        """ctrl+u at column 0 should not delete anything."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "hello world"
+            await pilot.pause()
+            ta.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "hello world"
+            assert ta.cursor_location == (0, 0)
+
+    async def test_ctrl_u_multiline_only_affects_current_line(self) -> None:
+        """ctrl+u in a multiline buffer should only delete on the cursor's line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "line one\nline two\nline three"
+            await pilot.pause()
+            # Place cursor at col 4 on line 1
+            ta.move_cursor((1, 4))
+            await pilot.pause()
+
+            await pilot.press("ctrl+u")
+            await pilot.pause()
+
+            assert ta.text == "line one\n two\nline three"
+            assert ta.cursor_location == (1, 0)
+
+
+class _TextAreaTypingApp(App[None]):
+    """Minimal app that captures ChatTextArea.Typing and ChatInput.Typing events."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_area_typing_count = 0
+        self.chat_input_typing_count = 0
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input")
+
+    def on_chat_text_area_typing(
+        self,
+        event: ChatTextArea.Typing,  # noqa: ARG002
+    ) -> None:
+        self.text_area_typing_count += 1
+
+    def on_chat_input_typing(
+        self,
+        event: ChatInput.Typing,  # noqa: ARG002
+    ) -> None:
+        self.chat_input_typing_count += 1
+
+
+class TestChatTextAreaTypingEmission:
+    """ChatTextArea should emit Typing on printable keys and backspace."""
+
+    async def test_printable_key_emits_typing(self) -> None:
+        """Pressing a printable character should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_backspace_emits_typing(self) -> None:
+        """Pressing backspace should emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("h")
+            await pilot.pause()
+
+            before = app.text_area_typing_count
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert app.text_area_typing_count > before
+
+    async def test_enter_does_not_emit_typing(self) -> None:
+        """Pressing enter should NOT emit ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+            initial = app.text_area_typing_count
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.text_area_typing_count == initial
+
+
+class TestChatInputTypingBubble:
+    """ChatInput.Typing should bubble from ChatTextArea.Typing."""
+
+    async def test_typing_bubbles_to_chat_input(self) -> None:
+        """ChatInput.Typing count should track ChatTextArea.Typing."""
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.press("x")
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert app.chat_input_typing_count == 2
+
+
+class TestScrollCursorVisibleDesync:
+    """scroll_cursor_visible should not crash on cursor/document desync."""
+
+    async def test_returns_zero_offset_on_value_error(self) -> None:
+        """When super() raises ValueError, return Offset(0, 0)."""
+        from unittest.mock import patch
+
+        from textual.geometry import Offset
+        from textual.widgets import TextArea
+
+        app = _TextAreaTypingApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            text_area.focus()
+            await pilot.pause()
+
+            with patch.object(
+                TextArea,
+                "scroll_cursor_visible",
+                side_effect=ValueError("line index out of bounds"),
+            ):
+                result = text_area.scroll_cursor_visible()
+
+            assert result == Offset(0, 0)

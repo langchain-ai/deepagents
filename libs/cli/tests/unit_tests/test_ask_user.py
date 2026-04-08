@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Static
+from textual.widgets import Input, Markdown, Static
 
 from deepagents_cli.tool_display import format_tool_display
 from deepagents_cli.widgets.ask_user import AskUserMenu, _QuestionWidget
@@ -420,8 +420,8 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
-            rendered = str(qw.query_one(Static).render())
-            assert "required" in rendered
+            md = qw.query_one(Markdown)
+            assert "required" in md.source
 
     async def test_required_label_hidden_for_optional_question(self) -> None:
         """Optional questions do not display a (required) indicator."""
@@ -433,8 +433,8 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
-            rendered = str(qw.query_one(Static).render())
-            assert "required" not in rendered
+            md = qw.query_one(Markdown)
+            assert "required" not in md.source
 
     async def test_required_is_true_by_default(self) -> None:
         """Questions without explicit required field default to required."""
@@ -445,8 +445,8 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
             assert qw._required is True
-            rendered = str(qw.query_one(Static).render())
-            assert "required" in rendered
+            md = qw.query_one(Markdown)
+            assert "required" in md.source
 
     async def test_optional_question_submits_with_empty_answer(self) -> None:
         """Non-required questions can be submitted with empty answers."""

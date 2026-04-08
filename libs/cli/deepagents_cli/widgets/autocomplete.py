@@ -216,6 +216,11 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
+        # Space means the user finished picking a command — dismiss popup
+        if " " in search:
+            self.reset()
+            return
+
         if not search:
             # No search text — show all commands (display only cmd + desc)
             suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][

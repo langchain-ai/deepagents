@@ -406,7 +406,7 @@ wheels = [
 [[package]]
 name = "deepagents"
 version = "0.5.1"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -415,14 +415,49 @@ dependencies = [
     { name = "langsmith" },
     { name = "wcmatch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/69/a28e6cd6dd037a28720ae82ef69eacdf8cf8b5291870ac6760e66796b1ae/deepagents-0.5.1.tar.gz", hash = "sha256:5d2b5e1a50dfbf2af97800725d7ac9850e96bab022365e0c2fc3f6291f279635", size = 110322 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/25/97/30b8ca49a72c7bf555732dc33ca623e3883b3e030b1b55f3085d92c6f289/deepagents-0.5.1-py3-none-any.whl", hash = "sha256:714853597feee9b24e7385fa575b72568536dcb263b9e91f3ba5d2fd073967a1", size = 123746 },
+
+[package.metadata]
+requires-dist = [
+    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
+    { name = "langsmith", specifier = ">=0.3.0" },
+    { name = "wcmatch" },
+]
+
+[package.metadata.requires-dev]
+evals = [
+    { name = "datasets", specifier = ">=3.0.0" },
+    { name = "langchain-baseten" },
+    { name = "langchain-deepseek" },
+    { name = "langchain-fireworks" },
+    { name = "langchain-groq" },
+    { name = "langchain-mistralai" },
+    { name = "langchain-ollama" },
+    { name = "langchain-xai" },
+    { name = "langsmith" },
+    { name = "nltk", specifier = ">=3.9.0" },
+    { name = "tiktoken", specifier = ">=0.8.0" },
+]
+test = [
+    { name = "build" },
+    { name = "langchain-openai" },
+    { name = "pytest" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-cov" },
+    { name = "pytest-socket" },
+    { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
+    { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = ">=0.12.2,<0.16.0" },
+    { name = "twine" },
+    { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -446,7 +481,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.8.0" },
-    { name = "deepagents" },
+    { name = "deepagents", editable = "../deepagents" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]
 

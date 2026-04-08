@@ -21,16 +21,25 @@ def _make_remote_agent() -> RemoteAgent:
 class _FakeModelResult:
     """Minimal model result for `_switch_model` tests."""
 
-    def __init__(self, *, model_name: str, provider: str, context_limit: int) -> None:
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        provider: str,
+        context_limit: int,
+        unsupported_modalities: frozenset[str] = frozenset(),
+    ) -> None:
         self.model_name = model_name
         self.provider = provider
         self.context_limit = context_limit
+        self.unsupported_modalities = unsupported_modalities
 
     def apply_to_settings(self) -> None:
         """Mirror `ModelResult.apply_to_settings()` for test isolation."""
         settings.model_name = self.model_name
         settings.model_provider = self.provider
         settings.model_context_limit = self.context_limit
+        settings.model_unsupported_modalities = self.unsupported_modalities
 
 
 @pytest.fixture(autouse=True)
@@ -39,10 +48,12 @@ def _restore_settings() -> Iterator[None]:
     original_name = settings.model_name
     original_provider = settings.model_provider
     original_context_limit = settings.model_context_limit
+    original_modalities = settings.model_unsupported_modalities
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
     settings.model_context_limit = original_context_limit
+    settings.model_unsupported_modalities = original_modalities
 
 
 @pytest.fixture(autouse=True)

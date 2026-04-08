@@ -5,17 +5,19 @@ Single source of truth for color values used in Python code (Rich markup,
 Textual CSS variables: built-in variables
 (`$primary`, `$background`, `$text-muted`, `$error-muted`, etc.) are set via
 `register_theme()` in `DeepAgentsApp.__init__`, while the few app-specific
-variables (`$mode-bash`, `$mode-command`) are backed by these constants via
-`App.get_theme_variable_defaults()`.
+variables (`$mode-bash`, `$mode-command`, `$skill`, `$skill-hover`, `$tool`,
+`$tool-hover`) are backed by these constants via `App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
 up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
 
 Users can define custom themes in `~/.deepagents/config.toml` under
-`[themes.<name>]` sections. Each section must include `label` (str) and `dark`
-(bool); color fields are optional and fall back to the built-in dark/light
-palette based on the `dark` flag. See `_load_user_themes()` for details.
+`[themes.<name>]` sections. Each new theme section must include `label` (str);
+`dark` (bool) defaults to `False` if omitted (set to `True` for dark themes).
+Color fields are optional and fall back to the built-in dark/light palette based
+on the `dark` flag. Sections whose name matches a built-in theme override its
+colors without replacing it. See `_load_user_themes()` for details.
 """
 
 from __future__ import annotations
@@ -67,9 +69,6 @@ LC_AMBER = "#EB8B46"
 LC_PINK = "#F7768E"
 """Error / destructive actions."""
 
-LC_ORANGE = "#FF9E64"
-"""Dev install indicator / warm accent."""
-
 LC_MUTED = "#545C7E"
 """Muted / secondary text."""
 
@@ -81,6 +80,18 @@ LC_PINK_BG = "#2A1F32"
 
 LC_PANEL = "#25283B"
 """Panel — differentiated section background (above surface)."""
+
+LC_SKILL = "#A78BFA"
+"""Skill invocation accent — border and header text."""
+
+LC_SKILL_HOVER = "#C4B5FD"
+"""Skill invocation hover — lighter variant for interactive feedback."""
+
+LC_TOOL = LC_AMBER
+"""Tool call accent — border and header text."""
+
+LC_TOOL_HOVER = "#FFCB91"
+"""Tool call hover — lighter variant for interactive feedback."""
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +127,6 @@ LC_LIGHT_AMBER = "#B45309"
 LC_LIGHT_PINK = "#BE185D"
 """Error / destructive (darkened for light bg contrast)."""
 
-LC_LIGHT_ORANGE = "#C2410C"
-"""Dev install indicator (darkened for light bg contrast)."""
-
 LC_LIGHT_MUTED = "#6B7280"
 """Muted / secondary text on light backgrounds."""
 
@@ -130,6 +138,18 @@ LC_LIGHT_PINK_BG = "#FEE2E2"
 
 LC_LIGHT_PANEL = "#E0E1E6"
 """Panel for light theme — differentiated section background."""
+
+LC_LIGHT_SKILL = "#7C3AED"
+"""Skill invocation accent (darkened for light bg contrast)."""
+
+LC_LIGHT_SKILL_HOVER = "#6D28D9"
+"""Skill invocation hover (darkened for light bg contrast)."""
+
+LC_LIGHT_TOOL = LC_LIGHT_AMBER
+"""Tool call accent (darkened for light bg contrast)."""
+
+LC_LIGHT_TOOL_HOVER = "#78350F"
+"""Tool call hover (darkened for light bg contrast)."""
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +245,6 @@ class ThemeColors:
     primary: str
     """Accent for headings, borders, links, and active elements."""
 
-    primary_dev: str
-    """Accent used when running from an editable (dev) install."""
-
     secondary: str
     """Secondary accent for badges, labels, and decorative highlights."""
 
@@ -254,6 +271,18 @@ class ThemeColors:
 
     mode_command: str
     """Command mode indicator — borders, prompts, and message prefixes."""
+
+    skill: str
+    """Skill invocation accent — border and header text."""
+
+    skill_hover: str
+    """Skill invocation hover — contrasting variant for interactive feedback."""
+
+    tool: str
+    """Tool call accent — border and header text."""
+
+    tool_hover: str
+    """Tool call hover — contrasting variant for interactive feedback."""
 
     foreground: str
     """Primary body text."""
@@ -307,7 +336,6 @@ class ThemeColors:
 
 DARK_COLORS = ThemeColors(
     primary=LC_BLUE,
-    primary_dev=LC_ORANGE,
     secondary=LC_PURPLE,
     accent=LC_GREEN,
     panel=LC_PANEL,
@@ -317,6 +345,10 @@ DARK_COLORS = ThemeColors(
     muted=LC_MUTED,
     mode_bash=LC_PINK,
     mode_command=LC_PURPLE,
+    skill=LC_SKILL,
+    skill_hover=LC_SKILL_HOVER,
+    tool=LC_TOOL,
+    tool_hover=LC_TOOL_HOVER,
     foreground=LC_BODY,
     background=LC_DARK,
     surface=LC_CARD,
@@ -325,7 +357,6 @@ DARK_COLORS = ThemeColors(
 
 LIGHT_COLORS = ThemeColors(
     primary=LC_LIGHT_BLUE,
-    primary_dev=LC_LIGHT_ORANGE,
     secondary=LC_LIGHT_PURPLE,
     accent=LC_LIGHT_GREEN,
     panel=LC_LIGHT_PANEL,
@@ -335,6 +366,10 @@ LIGHT_COLORS = ThemeColors(
     muted=LC_LIGHT_MUTED,
     mode_bash=LC_LIGHT_PINK,
     mode_command=LC_LIGHT_PURPLE,
+    skill=LC_LIGHT_SKILL,
+    skill_hover=LC_LIGHT_SKILL_HOVER,
+    tool=LC_LIGHT_TOOL,
+    tool_hover=LC_LIGHT_TOOL_HOVER,
     foreground=LC_LIGHT_BODY,
     background=LC_LIGHT_BG,
     surface=LC_LIGHT_SURFACE,
@@ -441,9 +476,11 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
 
 
 _BUILTIN_NAMES: frozenset[str] = frozenset(_builtin_themes())
-"""Names reserved for built-in themes — user themes cannot shadow these.
+"""Names of built-in themes.
 
-Derived from `_builtin_themes()` to stay in sync automatically.
+User `[themes.<name>]` sections matching a built-in name override its colors
+rather than creating a new theme. Derived from `_builtin_themes()` to stay in
+sync automatically.
 """
 
 
@@ -454,29 +491,43 @@ def _load_user_themes(
 ) -> None:
     """Load user-defined themes from `config.toml` into `builtins` (mutated).
 
-    Each `[themes.<name>]` section must have:
+    **New themes** — each `[themes.<name>]` section (where `<name>` is not a
+    built-in) must have:
 
     - `label` (str) — human-readable name shown in the theme picker.
-    - `dark` (bool) — whether this is a dark-mode variant.
+    - `dark` (bool, optional) — whether this is a dark-mode variant.
 
-    All `ThemeColors` fields are optional; omitted fields fall back to the
-    built-in dark or light palette based on the `dark` flag.
+        Defaults to `False` (light).
 
-    Invalid themes (bad hex, missing required keys, name collision with
-    built-ins) are logged as warnings and skipped — they never crash startup.
+    **Built-in overrides** — if `<name>` matches a built-in theme, only color
+    fields are read; `label` and `dark` are inherited from the built-in.
+
+    All `ThemeColors` fields are optional. For new themes, omitted fields
+    fall back to the built-in dark or light palette based on the `dark` flag.
+
+    For built-in overrides, omitted fields retain the existing built-in colors.
+
+    Invalid themes (bad hex, missing required keys) are logged as warnings
+    and skipped — they never crash startup.
 
     Example `config.toml` snippet:
 
     ```toml
+    # New custom theme
     [themes.my-solarized]
     label = "My Solarized"
     dark = true
     primary = "#268BD2"
     warning = "#B58900"
+
+    # Override built-in theme colors
+    [themes.langchain]
+    primary = "#FF5500"
     ```
 
     Args:
-        builtins: Mutable dict to append user themes into.
+        builtins: Mutable dict to update (new themes are added, built-in
+            overrides replace existing entries).
         config_path: Override for the config file path (testing).
     """
     if config_path is None:
@@ -506,36 +557,15 @@ def _load_user_themes(
     if not isinstance(themes_section, dict) or not themes_section:
         return
 
+    valid_color_names = {f.name for f in fields(ThemeColors)}
+    reserved = {"label", "dark"}
+
     for name, section in themes_section.items():
         if not isinstance(section, dict):
             logger.warning("Ignoring non-table [themes.%s]", name)
             continue
 
-        if name in _BUILTIN_NAMES:
-            logger.warning(
-                "User theme '%s' shadows a built-in theme and will be ignored",
-                name,
-            )
-            continue
-
-        label = section.get("label")
-        dark = section.get("dark")
-        if not isinstance(label, str) or not label.strip():
-            logger.warning(
-                "User theme '%s' missing required 'label' (str); skipping",
-                name,
-            )
-            continue
-        if not isinstance(dark, bool):
-            logger.warning(
-                "User theme '%s' missing required 'dark' (bool); skipping",
-                name,
-            )
-            continue
-
-        base = DARK_COLORS if dark else LIGHT_COLORS
-        valid_color_names = {f.name for f in fields(ThemeColors)}
-        reserved = {"label", "dark"}
+        # --- Parse color overrides (shared by built-in overrides & new themes)
         color_overrides: dict[str, str] = {}
         for k, v in section.items():
             if k in reserved:
@@ -557,6 +587,55 @@ def _load_user_themes(
                     k,
                 )
 
+        # --- Built-in override: merge color tweaks into the existing entry
+        if name in _BUILTIN_NAMES:
+            existing = builtins.get(name)
+            if existing is None:
+                logger.warning(
+                    "Built-in theme '%s' not in builtins dict; skipping override",
+                    name,
+                )
+                continue
+            if not color_overrides:
+                continue
+            try:
+                colors = ThemeColors.merged(existing.colors, color_overrides)
+            except ValueError as exc:
+                logger.warning(
+                    "Built-in theme '%s' color override invalid: %s; skipping",
+                    name,
+                    exc,
+                )
+                continue
+            builtins[name] = ThemeEntry(
+                label=existing.label,
+                dark=existing.dark,
+                colors=colors,
+                custom=existing.custom,
+            )
+            continue
+
+        # --- New custom theme: label required, dark defaults to False (light)
+        label = section.get("label")
+        if not isinstance(label, str) or not label.strip():
+            logger.warning(
+                "User theme '%s' missing required 'label' (str); skipping",
+                name,
+            )
+            continue
+
+        dark = section.get("dark", False)
+        if not isinstance(dark, bool):
+            logger.warning(
+                "User theme '%s': 'dark' must be true or false, got %s (%r);"
+                " defaulting to light",
+                name,
+                type(dark).__name__,
+                dark,
+            )
+            dark = False
+
+        base = DARK_COLORS if dark else LIGHT_COLORS
         try:
             colors = ThemeColors.merged(base, color_overrides)
         except ValueError as exc:
@@ -636,6 +715,10 @@ def get_css_variable_defaults(
     return {
         "mode-bash": c.mode_bash,
         "mode-command": c.mode_command,
+        "skill": c.skill,
+        "skill-hover": c.skill_hover,
+        "tool": c.tool,
+        "tool-hover": c.tool_hover,
     }
 
 
@@ -659,8 +742,8 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     """Construct `ThemeColors` from the app's active Textual theme.
 
     Reads standard properties (primary, secondary, etc.) from the resolved
-    theme so Python-side styling matches CSS.  `muted` and `primary_dev` fall
-    back to the dark/light base unconditionally (no Textual equivalent).
+    theme so Python-side styling matches CSS.  `muted` falls back to the
+    dark/light base unconditionally (no Textual equivalent).
     `mode_bash` is derived from the theme's `error` color, and `mode_command`
     from `secondary`, falling back to the base palette when non-hex.
 
@@ -678,14 +761,22 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     base = DARK_COLORS if dark else LIGHT_COLORS
 
     def _hex_or(val: str | None, fallback: str) -> str:
-        """Return *val* if it is a valid 7-char hex color, else *fallback*."""
+        """Return `val` if it is a valid `#RRGGBB` hex color, else `fallback`.
+
+        Args:
+            val: Color string from the active Textual theme (may be `None` or
+                a non-hex name like `ansi_blue`).
+            fallback: Guaranteed-hex value from our base palette.
+
+        Returns:
+            `val` if it matches `#RRGGBB`, otherwise `fallback`.
+        """
         if val is not None and _HEX_RE.match(val):
             return val
         return fallback
 
     return ThemeColors(
         primary=_hex_or(ct.primary, base.primary),
-        primary_dev=base.primary_dev,
         secondary=_hex_or(ct.secondary, base.secondary),
         accent=_hex_or(ct.accent, base.accent),
         panel=_hex_or(ct.panel, base.panel),
@@ -695,6 +786,14 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
         muted=base.muted,
         mode_bash=_hex_or(ct.error, base.mode_bash),
         mode_command=_hex_or(ct.secondary, base.mode_command),
+        # No Textual equivalent — always use base palette.
+        skill=base.skill,
+        skill_hover=base.skill_hover,
+        # Derived from Textual's warning color (shared amber hue).
+        tool=_hex_or(ct.warning, base.tool),
+        # No Textual equivalent — always base palette (may diverge from
+        # tool in custom themes that override warning).
+        tool_hover=base.tool_hover,
         foreground=_hex_or(ct.foreground, base.foreground),
         background=_hex_or(ct.background, base.background),
         surface=_hex_or(ct.surface, base.surface),

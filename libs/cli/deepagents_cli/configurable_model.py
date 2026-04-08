@@ -45,6 +45,13 @@ def _is_anthropic_model(model: object) -> bool:
 
     Returns `False` if `langchain-anthropic` is not installed.
 
+    Args:
+        model: A model instance to inspect.
+
+            Typed as `object` (rather than `BaseChatModel`) so the caller can
+            pass any model without an import-time dependency on a specific
+            provider package.
+
     Returns:
         `True` if the model is a `ChatAnthropic` instance.
     """
@@ -65,9 +72,19 @@ must be stripped on cross-provider swap."""
 def _apply_overrides(request: ModelRequest) -> ModelRequest:
     """Apply model/param overrides from `CLIContext` on the runtime.
 
+    Reads `'model'` and `'model_params'` from `runtime.context` and, when
+    present, swaps the model and/or merges extra settings into the request.
+    On a cross-provider swap away from Anthropic, Anthropic-only settings
+    (e.g. `cache_control`) are stripped. The `### Model Identity` section
+    in the system prompt is also patched to reflect the new model.
+
+    Args:
+        request: The incoming model request from the middleware chain.
+
     Returns:
         The original request unchanged when no `CLIContext` is present or it
-            contains no overrides, otherwise a new request with overrides.
+            contains no overrides, otherwise a new request with overrides
+            applied via `request.override()`.
     """
     runtime = request.runtime
     if runtime is None:
@@ -110,18 +127,66 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
                 k: v for k, v in settings.items() if k not in dropped
             }
 
+    # Patch the Model Identity section in the system prompt so the new model
+    # sees its own name/provider/context-limit, not the original's.
+    # We read metadata from model_result (not the CLI settings singleton)
+    # because the middleware runs in the server subprocess where settings
+    # are never updated by /model.
+    if new_model is not None and request.system_prompt:
+        from deepagents_cli.agent import (
+            MODEL_IDENTITY_RE,
+            build_model_identity_section,
+        )
+
+        prompt = request.system_prompt
+        new_identity = build_model_identity_section(
+            model_result.model_name,
+            provider=model_result.provider,
+            context_limit=model_result.context_limit,
+            unsupported_modalities=model_result.unsupported_modalities,
+        )
+        patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
+        if patched != prompt:
+            overrides["system_prompt"] = patched
+        elif "### Model Identity" in prompt:
+            logger.warning(
+                "System prompt contains '### Model Identity' but regex "
+                "did not match; identity section was NOT updated for "
+                "model '%s'. The regex may be out of sync with the "
+                "prompt template.",
+                model_result.model_name,
+            )
+
     return request.override(**overrides)
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
-    """Swap the model or per-call settings from `runtime.context`."""
+    """Swap the model or per-call settings from `runtime.context`.
+
+    Reads two optional keys from the runtime context dict:
+
+    - `'model'` — a `provider:model` spec (e.g. `"openai:gpt-5"`).
+        When present and different from the current model, the request is
+        re-routed to the new model.
+    - `'model_params'` — a dict of extra model settings (e.g.
+        `{"temperature": 0}`) that are shallow-merged into the
+        request's `model_settings`.
+
+    This middleware is typically the outermost layer so it intercepts every
+    model call before provider-specific middleware (like
+    `AnthropicPromptCachingMiddleware`) runs.
+    """
 
     def wrap_model_call(  # noqa: PLR6301
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Apply runtime overrides and delegate to the next handler."""  # noqa: DOC201
+        """Apply runtime overrides and delegate to the next handler.
+
+        Returns:
+            The `ModelResponse` produced by the downstream handler.
+        """
         return handler(_apply_overrides(request))
 
     async def awrap_model_call(  # noqa: PLR6301
@@ -129,5 +194,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Apply runtime overrides and delegate to the next async handler."""  # noqa: DOC201
+        """Apply runtime overrides and delegate to the next async handler.
+
+        Returns:
+            The `ModelResponse` produced by the downstream handler.
+        """
         return await handler(_apply_overrides(request))

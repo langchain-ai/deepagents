@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import tomllib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +15,9 @@ from deepagents_cli.update_check import (
     _latest_from_releases,
     _parse_version,
     get_latest_version,
+    is_auto_update_enabled,
     is_update_available,
+    set_auto_update,
 )
 
 
@@ -378,3 +381,102 @@ class TestIsUpdateAvailable:
 
         assert available is False
         assert latest is None
+
+
+class TestSetAutoUpdate:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_cli.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    def test_enable_creates_config(self, config_path) -> None:
+        """Creates config.toml with auto_update = true when file doesn't exist."""
+        set_auto_update(True)
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["update"]["auto_update"] is True
+
+    def test_disable(self, config_path) -> None:
+        """Sets auto_update = false."""
+        set_auto_update(True)
+        set_auto_update(False)
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["update"]["auto_update"] is False
+
+    def test_preserves_existing_config(self, config_path) -> None:
+        """Doesn't clobber unrelated config sections."""
+        import tomli_w
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with config_path.open("wb") as f:
+            tomli_w.dump({"ui": {"theme": "monokai"}}, f)
+
+        set_auto_update(True)
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["ui"]["theme"] == "monokai"
+        assert data["update"]["auto_update"] is True
+
+    def test_preserves_sibling_update_keys(self, config_path) -> None:
+        """Doesn't clobber sibling keys in [update] section."""
+        import tomli_w
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with config_path.open("wb") as f:
+            tomli_w.dump({"update": {"check": False}}, f)
+
+        set_auto_update(True)
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["update"]["check"] is False
+        assert data["update"]["auto_update"] is True
+
+    def test_round_trip_with_is_auto_update_enabled(self, config_path) -> None:  # noqa: ARG002
+        """set_auto_update(True) makes is_auto_update_enabled() return True."""
+        set_auto_update(True)
+        with (
+            patch("deepagents_cli.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import os
+
+            os.environ.pop("DEEPAGENTS_CLI_AUTO_UPDATE", None)
+            assert is_auto_update_enabled() is True
+
+
+class TestIsAutoUpdateEnabled:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_cli.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    def test_default_is_false(self, config_path) -> None:  # noqa: ARG002
+        """Auto-update defaults to disabled."""
+        with (
+            patch("deepagents_cli.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import os
+
+            os.environ.pop("DEEPAGENTS_CLI_AUTO_UPDATE", None)
+            assert is_auto_update_enabled() is False
+
+    def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
+        """DEEPAGENTS_CLI_AUTO_UPDATE=1 enables auto-update."""
+        with (
+            patch("deepagents_cli.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {"DEEPAGENTS_CLI_AUTO_UPDATE": "1"}),
+        ):
+            assert is_auto_update_enabled() is True
+
+    def test_editable_install_always_disabled(self, config_path) -> None:
+        """Editable installs never auto-update, even with config set."""
+        set_auto_update(True)
+        assert config_path.exists()
+        with patch("deepagents_cli.config._is_editable_install", return_value=True):
+            assert is_auto_update_enabled() is False

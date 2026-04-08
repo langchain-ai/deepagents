@@ -23,6 +23,26 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.widgets._links import open_style_link
 
+_TIPS: list[str] = [
+    "Use @ to reference files and / for commands",
+    "Try /threads to resume a previous conversation",
+    "Use /offload when your conversation gets long",
+    "Use /mcp to see your loaded tools and servers",
+    "Use /remember to save learnings from this conversation",
+    "Use /model to switch models mid-conversation",
+    "Press ctrl+x to compose prompts in your external editor",
+    "Press ctrl+u to delete to the start of the line in the chat input",
+    "Use /skill:<name> to invoke a skill directly",
+    "Type /update to check for and install updates",
+    "Use /theme to customize the CLI colors and style",
+    "Use /skill-creator to build reusable agent skills",
+    "Use /auto-update to toggle automatic CLI updates",
+]
+"""Rotating tips shown in the welcome footer.
+
+One is picked per session.
+"""
+
 
 class WelcomeBanner(Static):
     """Welcome banner displayed at startup."""
@@ -142,7 +162,32 @@ class WelcomeBanner(Static):
         banner_color = (
             COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
         )
-        banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
+
+        if not ansi and _is_editable_install():
+            # Highlight local-install version tag with tool accent; art stays primary.
+            dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
+            version_tag = f"v{__version__} (local)"
+            idx = banner.rfind(version_tag)
+            if idx >= 0:
+                parts.extend(
+                    [
+                        (banner[:idx], primary_style),
+                        (version_tag, dev_style),
+                        (banner[idx + len(version_tag) :] + "\n", primary_style),
+                    ]
+                )
+            else:
+                parts.append((banner + "\n", primary_style))
+        else:
+            parts.append((banner + "\n", primary_style))
+
+        # For ANSI theme, use "bold" (terminal foreground) instead of hex
+        accent: str | TStyle = "bold" if ansi else colors.primary
+        success_color: str = "bold green" if ansi else colors.success
+
+        editable_path = _get_editable_install_path()
+        if editable_path:
+            parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 
         if self._project_name:
             banner.append(f"{get_glyphs().checkmark} ", style="green")

@@ -1,8 +1,11 @@
 """Background update check for deepagents-cli.
 
-Compares the installed version against PyPI and caches the result
-(see `CACHE_TTL`). All errors are silently swallowed to avoid disrupting
-user experience.
+Handles version checking against PyPI (with caching), install-method detection,
+auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
+
+Most public entry points absorb errors and return sentinel values.
+`set_auto_update` raises on write failures so callers can surface
+actionable feedback.
 """
 
 from __future__ import annotations
@@ -112,3 +115,238 @@ def is_update_available() -> tuple[bool, str | None]:
         logger.debug("Failed to compare versions", exc_info=True)
 
     return False, None
+
+
+# ---------------------------------------------------------------------------
+# Install method detection
+# ---------------------------------------------------------------------------
+
+
+def detect_install_method() -> InstallMethod:
+    """Detect how `deepagents-cli` was installed.
+
+    Checks `sys.prefix` against known paths for uv and Homebrew.
+
+    Returns:
+        The detected install method: `'uv'`, `'brew'`, `'pip'`, or `'unknown'`
+            (editable/dev installs).
+    """
+    from deepagents_cli.config import _is_editable_install
+
+    prefix = sys.prefix
+    # uv tool installs live under ~/.local/share/uv/tools/
+    if "/uv/tools/" in prefix or "\\uv\\tools\\" in prefix:
+        return "uv"
+    # Homebrew prefixes
+    if any(
+        prefix.startswith(p)
+        for p in ("/opt/homebrew", "/usr/local/Cellar", "/home/linuxbrew")
+    ):
+        return "brew"
+    # Editable / dev installs — don't auto-upgrade
+    if _is_editable_install():
+        return "unknown"
+    return "pip"
+
+
+def upgrade_command(method: InstallMethod | None = None) -> str:
+    """Return the shell command to upgrade `deepagents-cli`.
+
+    Falls back to the pip command for unrecognized install methods.
+
+    Args:
+        method: Install method override.
+
+            Auto-detected if `None`.
+    """
+    if method is None:
+        method = detect_install_method()
+    return _UPGRADE_COMMANDS.get(method, _UPGRADE_COMMANDS["pip"])
+
+
+async def perform_upgrade() -> tuple[bool, str]:
+    """Attempt to upgrade `deepagents-cli` using the detected install method.
+
+    Only tries the detected method — does not fall back to other package
+    managers to avoid cross-environment contamination.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr.
+    """
+    method = detect_install_method()
+    if method == "unknown":
+        return False, "Editable install detected — skipping auto-update."
+
+    cmd = _UPGRADE_COMMANDS.get(method)
+    if cmd is None:
+        return False, f"No upgrade command for install method: {method}"
+
+    # Skip brew if binary not on PATH
+    if method == "brew" and not shutil.which("brew"):
+        return False, "brew not found on PATH."
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_UPGRADE_TIMEOUT
+        )
+        output = (stdout or b"").decode() + (stderr or b"").decode()
+        if proc.returncode == 0:
+            return True, output.strip()
+        logger.warning(
+            "Upgrade via %s exited with code %d: %s",
+            method,
+            proc.returncode,
+            output.strip(),
+        )
+        return False, output.strip()
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        msg = f"Upgrade command timed out after {_UPGRADE_TIMEOUT}s: {cmd}"
+        logger.warning(msg)
+        return False, msg
+    except OSError:
+        logger.warning("Failed to execute upgrade command: %s", cmd, exc_info=True)
+        return False, f"Failed to execute: {cmd}"
+
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+
+def is_update_check_enabled() -> bool:
+    """Return whether update checks are enabled.
+
+    Checks `DEEPAGENTS_CLI_NO_UPDATE_CHECK` env var and the `[update].check` key
+    in `config.toml`.
+
+    Defaults to enabled.
+    """
+    from deepagents_cli._env_vars import NO_UPDATE_CHECK
+
+    if os.environ.get(NO_UPDATE_CHECK):
+        return False
+    return _read_update_config().get("check", True)
+
+
+def is_auto_update_enabled() -> bool:
+    """Return whether auto-update is enabled.
+
+    Opt-in via `DEEPAGENTS_CLI_AUTO_UPDATE=1` env var or
+    `[update].auto_update = true` in `config.toml`.
+
+    Defaults to `False`.
+
+    Always disabled for editable installs.
+    """
+    from deepagents_cli._env_vars import AUTO_UPDATE
+    from deepagents_cli.config import _is_editable_install
+
+    if _is_editable_install():
+        return False
+    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
+        return True
+    return _read_update_config().get("auto_update", False)
+
+
+def set_auto_update(enabled: bool) -> None:
+    """Persist the auto-update preference to `config.toml`.
+
+    Writes `[update].auto_update` so the setting survives across sessions.
+
+    Args:
+        enabled: Whether auto-update should be enabled.
+    """
+    import contextlib
+    import tempfile
+    from pathlib import Path
+
+    import tomli_w
+
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DEFAULT_CONFIG_PATH.exists():
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
+
+    if "update" not in data:
+        data["update"] = {}
+    data["update"]["auto_update"] = enabled
+
+    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            tomli_w.dump(data, f)
+        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp_path).unlink()
+        raise
+
+
+def _read_update_config() -> dict[str, bool]:
+    """Read `[update]` section from `config.toml`.
+
+    Returns:
+        A dict of boolean config values, empty on missing/unreadable file.
+    """
+    try:
+        if not DEFAULT_CONFIG_PATH.exists():
+            return {}
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+        section = data.get("update", {})
+        return {k: v for k, v in section.items() if isinstance(v, bool)}
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning("Could not read [update] config — using defaults", exc_info=True)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# "What's new" tracking
+# ---------------------------------------------------------------------------
+
+
+def get_seen_version() -> str | None:
+    """Return the last version the user saw the "what's new" banner for."""
+    try:
+        if SEEN_VERSION_FILE.exists():
+            data = json.loads(SEEN_VERSION_FILE.read_text(encoding="utf-8"))
+            return data.get("version")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        logger.debug("Failed to read seen-version file", exc_info=True)
+    return None
+
+
+def mark_version_seen(version: str) -> None:
+    """Record that the user has seen the "what's new" banner for *version*."""
+    try:
+        SEEN_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SEEN_VERSION_FILE.write_text(
+            json.dumps({"version": version, "seen_at": time.time()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.debug("Failed to write seen-version file", exc_info=True)
+
+
+def should_show_whats_new() -> bool:
+    """Return `True` if this is the first launch on a newer version."""
+    seen = get_seen_version()
+    if seen is None:
+        # First run ever — mark current as seen, don't show banner.
+        mark_version_seen(__version__)
+        return False
+    try:
+        return _parse_version(__version__) > _parse_version(seen)
+    except InvalidVersion:
+        logger.debug("Failed to compare versions for what's-new check", exc_info=True)
+        return False

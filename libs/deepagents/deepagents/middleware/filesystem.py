@@ -4,32 +4,42 @@
 import asyncio
 import base64
 import concurrent.futures
+import contextvars
+import mimetypes
+import uuid
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+
+if TYPE_CHECKING:
+    from langchain_core.runnables.config import RunnableConfig
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
-from langchain_core.messages.content import ContentBlock, create_image_block
+from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.runtime import Runtime
 from langgraph.types import Command
-from typing_extensions import TypedDict
+from pydantic import BaseModel, Field
 
-from deepagents.backends import StateBackend
-from deepagents.backends.composite import CompositeBackend
+from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
+    FileData as FileData,  # Re-export for backwards compatibility
+    ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     execute_accepts_timeout,
@@ -130,6 +140,74 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
+class LsSchema(BaseModel):
+    """Input schema for the `ls` tool."""
+
+    path: str = Field(description="Absolute path to the directory to list. Must be absolute, not relative.")
+
+
+class ReadFileSchema(BaseModel):
+    """Input schema for the `read_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
+    offset: int = Field(
+        default=DEFAULT_READ_OFFSET,
+        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+    )
+    limit: int = Field(
+        default=DEFAULT_READ_LIMIT,
+        description="Maximum number of lines to read. Use for pagination of large files.",
+    )
+
+
+class WriteFileSchema(BaseModel):
+    """Input schema for the `write_file` tool."""
+
+    file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+    content: str = Field(description="The text content to write to the file. This parameter is required.")
+
+
+class EditFileSchema(BaseModel):
+    """Input schema for the `edit_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+    old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
+    new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
+    replace_all: bool = Field(
+        default=False,
+        description="If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
+    )
+
+
+class GlobSchema(BaseModel):
+    """Input schema for the `glob` tool."""
+
+    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    path: str = Field(default="/", description="Base directory to search from. Defaults to root '/'.")
+
+
+class GrepSchema(BaseModel):
+    """Input schema for the `grep` tool."""
+
+    pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+    path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
+    glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    output_mode: Literal["files_with_matches", "content", "count"] = Field(
+        default="files_with_matches",
+        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+    )
+
+
+class ExecuteSchema(BaseModel):
+    """Input schema for the `execute` tool."""
+
+    command: str = Field(description="Shell command to execute in the sandbox environment.")
+    timeout: int | None = Field(
+        default=None,
+        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+    )
+
+
 LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
 
 This is useful for exploring the filesystem and finding the right file to read or edit.
@@ -150,12 +228,12 @@ Usage:
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) are returned as multimodal image content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
+- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
 
-For image tasks:
-- Use `read_file(file_path=...)` for `.png/.jpg/.jpeg/.gif/.webp`
+For multimodal reads (image, audio, video, PDF, etc.):
+- Use `read_file(file_path=...)`
 - Do NOT use `offset`/`limit` for images (pagination is text-only)
-- If image details were compacted from history, call `read_file` again on the same path
+- If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
 
@@ -241,7 +319,7 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Following Conventions
+_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
@@ -260,7 +338,11 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`."""
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `{large_tool_results_prefix}/<tool_call_id>`."""
+
+FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+    large_tool_results_prefix="/large_tool_results",
+)
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
@@ -332,6 +414,64 @@ Here is a preview showing the head and tail of the result (lines of the form `..
 {content_sample}
 """
 
+TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
+
+You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
+Here is a preview showing the head and tail of the content:
+
+{content_sample}
+"""
+
+
+def _build_evicted_human_content(
+    message: HumanMessage,
+    replacement_text: str,
+) -> str | list[ContentBlock]:
+    """Build replacement content for an evicted HumanMessage, preserving non-text blocks.
+
+    For plain string content, returns the replacement text directly. For list content
+    with mixed block types (e.g., text + image), replaces all text blocks with a single
+    text block containing the replacement text while keeping non-text blocks intact.
+
+    Args:
+        message: The original HumanMessage being evicted.
+        replacement_text: The truncation notice and preview text.
+
+    Returns:
+        Replacement content: a string or list of content blocks.
+    """
+    if isinstance(message.content, str):
+        return replacement_text
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if not media_blocks:
+        return replacement_text
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
+
+
+def _build_truncated_human_message(message: HumanMessage, file_path: str) -> HumanMessage:
+    """Build a truncated HumanMessage for the model request.
+
+    Computes a preview from the full content still in state and returns a
+    lightweight replacement the model will see. Pure string computation — no
+    backend I/O.
+
+    Args:
+        message: The original HumanMessage (full content in state).
+        file_path: The backend path where the content was evicted.
+
+    Returns:
+        A new HumanMessage with truncated content and the same `id`.
+    """
+    content_str = _extract_text_from_message(message)
+    content_sample = _create_content_preview(content_str)
+    replacement_text = TOO_LARGE_HUMAN_MSG.format(
+        file_path=file_path,
+        content_sample=content_sample,
+    )
+    evicted = _build_evicted_human_content(message, replacement_text)
+    return message.model_copy(update={"content": evicted})
+
 
 def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
     """Create a preview of content showing head and tail with truncation marker.
@@ -362,14 +502,14 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-def _extract_text_from_message(message: ToolMessage) -> str:
-    """Extract text from a ToolMessage using its `content_blocks` property.
+def _extract_text_from_message(message: BaseMessage) -> str:
+    """Extract text from a message using its `content_blocks` property.
 
     Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
     so that binary payloads don't inflate the size measurement.
 
     Args:
-        message: The ToolMessage to extract text from.
+        message: The BaseMessage to extract text from.
 
     Returns:
         Joined text from all text content blocks, or stringified content as fallback.
@@ -461,6 +601,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -471,6 +612,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            human_message_token_limit_before_evict: Optional token limit before
+                evicting a HumanMessage to the filesystem.
             max_execute_timeout: Maximum allowed value in seconds for per-command timeout
                 overrides on the execute tool.
 
@@ -483,13 +626,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (StateBackend)
+        # Use provided backend or default to StateBackend instance
+        self.backend = backend if backend is not None else StateBackend()
+
+        artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
+        self._large_tool_results_prefix = f"{_root}/large_tool_results"
+        self._conversation_history_prefix = f"{_root}/conversation_history"
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
 
         self.tools = [
@@ -512,6 +661,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
+            warnings.warn(
+                "Passing a callable (factory) as `backend` is deprecated and "
+                "will be removed in v0.7. Pass a `BackendProtocol` instance "
+                "directly instead (e.g. `StateBackend()`).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
@@ -529,7 +685,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
+            ls_result = resolved_backend.ls(validated_path)
+            if ls_result.error:
+                return f"Error: {ls_result.error}"
+            infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -544,7 +703,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
+            ls_result = await resolved_backend.als(validated_path)
+            if ls_result.error:
+                return f"Error: {ls_result.error}"
+            infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -554,12 +716,72 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_ls,
             coroutine=async_ls,
+            infer_schema=False,
+            args_schema=LsSchema,
         )
 
     def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
+
+        def _truncate(content: str, file_path: str, limit: int) -> str:
+            lines = content.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                content = "".join(lines)
+
+            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                content = content[:max_content_length] + truncation_msg
+
+            return content
+
+        def _handle_read_result(
+            read_result: ReadResult | str,
+            validated_path: str,
+            tool_call_id: str | None,
+            offset: int,
+            limit: int,
+        ) -> ToolMessage | str:
+            if isinstance(read_result, str):
+                warnings.warn(
+                    "Returning a plain `str` from `backend.read()` is deprecated. "
+                    "Return a `ReadResult` instead. Returning `str` will not be "
+                    "supported in v0.7.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Legacy backends already format with line numbers
+                return _truncate(read_result, validated_path, limit)
+
+            if read_result.error:
+                return f"Error: {read_result.error}"
+
+            if read_result.file_data is None:
+                return f"Error: no data returned for '{validated_path}'"
+
+            file_type = _get_file_type(validated_path)
+            content = read_result.file_data["content"]
+
+            if file_type != "text":
+                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+                return ToolMessage(
+                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
+                )
+
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return empty_msg
+
+            content = format_content_with_line_numbers(content, start_line=offset + 1)
+            # We apply truncation again after formatting content as continuation lines
+            # can increase line count
+            return _truncate(content, validated_path, limit)
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
@@ -664,6 +886,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_read_file,
             coroutine=async_read_file,
+            infer_schema=False,
+            args_schema=ReadFileSchema,
         )
 
     def _create_write_file_tool(self) -> BaseTool:
@@ -674,7 +898,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
+        ) -> str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -684,26 +908,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Updated file {res.path}"
 
         async def async_write_file(
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
+        ) -> str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -713,19 +924,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
-            # If backend returns state update, wrap into Command with ToolMessage
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Updated file {res.path}",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Updated file {res.path}"
 
         return StructuredTool.from_function(
@@ -733,6 +931,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_write_file,
             coroutine=async_write_file,
+            infer_schema=False,
+            args_schema=WriteFileSchema,
         )
 
     def _create_edit_file_tool(self) -> BaseTool:
@@ -746,7 +946,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> Command | str:
+        ) -> str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -756,18 +956,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
         async def async_edit_file(
@@ -777,7 +965,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> Command | str:
+        ) -> str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -787,18 +975,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
-            if res.files_update is not None:
-                return Command(
-                    update={
-                        "files": res.files_update,
-                        "messages": [
-                            ToolMessage(
-                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                                tool_call_id=runtime.tool_call_id,
-                            )
-                        ],
-                    }
-                )
             return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
         return StructuredTool.from_function(
@@ -806,6 +982,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_edit_file,
             coroutine=async_edit_file,
+            infer_schema=False,
+            args_schema=EditFileSchema,
         )
 
     def _create_glob_tool(self) -> BaseTool:
@@ -823,12 +1001,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(resolved_backend.glob_info, pattern, path=validated_path)
+                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
                 try:
                     infos = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if glob_result.error:
+                return f"Error: {glob_result.error}"
+            infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -851,6 +1033,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             except TimeoutError:
                 return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            if glob_result.error:
+                return f"Error: {glob_result.error}"
+            infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -860,6 +1045,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_glob,
             coroutine=async_glob,
+            infer_schema=False,
+            args_schema=GlobSchema,
         )
 
     def _create_grep_tool(self) -> BaseTool:
@@ -878,10 +1065,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            if grep_result.error:
+                return grep_result.error
+            matches = grep_result.matches or []
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         async def async_grep(
@@ -896,10 +1084,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
-            if isinstance(raw, str):
-                return raw
-            formatted = format_grep_matches(raw, output_mode)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            if grep_result.error:
+                return grep_result.error
+            matches = grep_result.matches or []
+            formatted = format_grep_matches(matches, output_mode)
             return truncate_if_too_long(formatted)
 
         return StructuredTool.from_function(
@@ -907,6 +1096,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_grep,
             coroutine=async_grep,
+            infer_schema=False,
+            args_schema=GrepSchema,
         )
 
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
@@ -1027,21 +1218,34 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             description=tool_description,
             func=sync_execute,
             coroutine=async_execute,
+            infer_schema=False,
+            args_schema=ExecuteSchema,
         )
 
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        """Update the system prompt and filter tools based on backend capabilities.
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse:
+        """Update the system prompt, filter tools, and evict oversized HumanMessages.
+
+        In addition to the system-prompt and tool-filtering logic, this method
+        handles large HumanMessage eviction:
+
+        1. Any message already tagged with `lc_evicted_to` in
+           `additional_kwargs` is replaced with a truncated preview for the
+           model request (content in state is unchanged).
+        2. If the most recent message is an untagged HumanMessage exceeding the
+           eviction threshold, its content is written to the backend and the
+           message is tagged in state via `ExtendedModelResponse`.
 
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The model response from the handler.
+            The model response, or an `ExtendedModelResponse` with a state
+            update tagging a newly evicted message.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -1063,7 +1267,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1074,6 +1282,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
+
+        eviction_result = self._evict_and_truncate_messages(request)
+        if eviction_result is not None:
+            messages, state_command = eviction_result
+            request = request.override(messages=messages)
+            response = handler(request)
+            if state_command is not None:
+                return ExtendedModelResponse(model_response=response, command=state_command)
+            return response
 
         return handler(request)
 
@@ -1081,15 +1298,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse:
         """(async) Update the system prompt and filter tools based on backend capabilities.
+
+        Also evicts oversized HumanMessages to the filesystem. See
+        `wrap_model_call` for full documentation.
 
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The model response from the handler.
+            The model response from the handler, or an `ExtendedModelResponse`
+            with a state update tagging newly evicted messages.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -1111,7 +1332,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = self._custom_system_prompt
         else:
             # Build dynamic system prompt based on available tools
-            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
 
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
@@ -1123,13 +1348,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
 
+        eviction_result = await self._aevict_and_truncate_messages(request)
+        if eviction_result is not None:
+            messages, state_command = eviction_result
+            request = request.override(messages=messages)
+            response = await handler(request)
+            if state_command is not None:
+                return ExtendedModelResponse(model_response=response, command=state_command)
+            return response
+
         return await handler(request)
 
     def _process_large_message(
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
-    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+    ) -> tuple[ToolMessage, bool]:
         """Process a large ToolMessage by evicting its content to filesystem.
 
         Args:
@@ -1137,9 +1371,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend: The filesystem backend to write the content to.
 
         Returns:
-            A tuple of (processed_message, files_update):
+            A tuple of (processed_message, evicted):
             - processed_message: New ToolMessage with truncated content and file reference
-            - files_update: Dict of file updates to apply to state, or None if eviction failed
+            - evicted: Whether the content was evicted to the filesystem
 
         Note:
             Text is extracted from all text content blocks, joined, and used for both the
@@ -1149,20 +1383,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         content_str = _extract_text_from_message(message)
 
         # Check if content exceeds eviction threshold
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
-            return message, None
+            return message, False
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -1183,13 +1417,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             additional_kwargs=dict(message.additional_kwargs),
             response_metadata=dict(message.response_metadata),
         )
-        return processed_message, result.files_update
+        return processed_message, True
 
     async def _aprocess_large_message(
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
-    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+    ) -> tuple[ToolMessage, bool]:
         """Async version of _process_large_message.
 
         Uses async backend methods to avoid sync calls in async context.
@@ -1197,19 +1431,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         content_str = _extract_text_from_message(message)
 
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
-            return message, None
+            return message, False
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:
-            return message, None
+            return message, False
 
         # Create preview showing head and tail of the result
         content_sample = _create_content_preview(content_str)
@@ -1230,7 +1464,160 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             additional_kwargs=dict(message.additional_kwargs),
             response_metadata=dict(message.response_metadata),
         )
-        return processed_message, result.files_update
+        return processed_message, True
+
+    def _get_backend_from_runtime(
+        self,
+        state: AgentState[Any],
+        runtime: Runtime[ContextT],
+    ) -> BackendProtocol:
+        """Resolve the backend from a bare `Runtime`.
+
+        Constructs a `ToolRuntime` from the `Runtime` to satisfy the backend
+        factory interface. Used by hooks like `before_agent` that receive
+        `Runtime` rather than `ToolRuntime`.
+
+        Args:
+            state: The current agent state.
+            runtime: The runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if not callable(self.backend):
+            return self.backend
+        config = cast("RunnableConfig", getattr(runtime, "config", {}))
+        tool_runtime = ToolRuntime(
+            state=state,
+            context=runtime.context,
+            stream_writer=runtime.stream_writer,
+            store=runtime.store,
+            config=config,
+            tool_call_id=None,
+        )
+        return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+
+    def _check_eviction_needed(
+        self,
+        messages: list[AnyMessage],
+    ) -> tuple[bool, bool]:
+        """Check whether any message processing is needed.
+
+        Args:
+            messages: The message list to inspect.
+
+        Returns:
+            Tuple of (has_tagged, new_eviction_needed).
+        """
+        if not self._human_message_token_limit_before_evict:
+            return False, False
+
+        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
+        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
+        new_eviction_needed = False
+        if messages and isinstance(messages[-1], HumanMessage):
+            last = messages[-1]
+            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
+                new_eviction_needed = True
+        return has_tagged, new_eviction_needed
+
+    @staticmethod
+    def _apply_eviction_and_truncate(
+        messages: list[AnyMessage],
+        write_result: WriteResult | None,
+        file_path: str | None,
+    ) -> tuple[list[AnyMessage], Command | None]:
+        """Tag a newly evicted message and truncate all tagged messages.
+
+        Args:
+            messages: The message list (may be modified if write succeeded).
+            write_result: Result of the backend write, or `None` if no new
+                eviction was attempted.
+            file_path: Path the content was written to.
+
+        Returns:
+            Tuple of (processed_messages, state_command).
+        """
+        state_command: Command | None = None
+
+        if write_result is not None and file_path is not None and not write_result.error:
+            last = messages[-1]
+            tagged = last.model_copy(
+                update={
+                    "additional_kwargs": {
+                        **last.additional_kwargs,
+                        "lc_evicted_to": file_path,
+                    }
+                }
+            )
+            state_command = Command(update={"messages": [tagged]})
+            messages = [*messages[:-1], tagged]
+
+        processed: list[AnyMessage] = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
+                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
+            else:
+                processed.append(msg)
+
+        return processed, state_command
+
+    def _evict_and_truncate_messages(
+        self,
+        request: ModelRequest[ContextT],
+    ) -> tuple[list[AnyMessage], Command | None] | None:
+        """Evict a new oversized HumanMessage and truncate all tagged messages.
+
+        Returns `None` if no messages needed processing (fast path). Otherwise
+        returns `(processed_messages, command)` where `command` is a state
+        update tagging the newly evicted message, or `None` if only
+        previously-tagged messages were truncated.
+
+        Args:
+            request: The model request being processed.
+
+        Returns:
+            Tuple of (messages, command) if any processing occurred, else `None`.
+        """
+        messages = list(request.messages)
+        has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
+        if not has_tagged and not new_eviction_needed:
+            return None
+
+        write_result: WriteResult | None = None
+        file_path: str | None = None
+        if new_eviction_needed:
+            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
+            write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
+
+        return self._apply_eviction_and_truncate(messages, write_result, file_path)
+
+    async def _aevict_and_truncate_messages(
+        self,
+        request: ModelRequest[ContextT],
+    ) -> tuple[list[AnyMessage], Command | None] | None:
+        """Async version of `_evict_and_truncate_messages`.
+
+        Args:
+            request: The model request being processed.
+
+        Returns:
+            Tuple of (messages, command) if any processing occurred, else `None`.
+        """
+        messages = list(request.messages)
+        has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
+        if not has_tagged and not new_eviction_needed:
+            return None
+
+        write_result: WriteResult | None = None
+        file_path: str | None = None
+        if new_eviction_needed:
+            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
+            write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
+
+        return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
@@ -1240,8 +1627,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: The tool runtime providing access to the filesystem backend.
 
         Returns:
-            Either the original result (if small enough) or a Command with evicted
-            content written to filesystem and truncated message.
+            Either the original result (if small enough) or a processed result with
+            evicted content written to filesystem and truncated message.
 
         Note:
             Handles both single ToolMessage results and Command objects containing
@@ -1250,27 +1637,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = self._process_large_message(
+            processed_message, _evicted = self._process_large_message(
                 tool_result,
                 resolved_backend,
             )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            return processed_message
 
         if isinstance(tool_result, Command):
             update = tool_result.update
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            accumulated_file_updates = dict(update.get("files", {}))
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -1278,14 +1655,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     processed_messages.append(message)
                     continue
 
-                processed_message, files_update = self._process_large_message(
+                processed_message, _evicted = self._process_large_message(
                     message,
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-                if files_update is not None:
-                    accumulated_file_updates.update(files_update)
-            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+            return Command(update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
@@ -1297,27 +1672,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
-            processed_message, files_update = await self._aprocess_large_message(
+            processed_message, _evicted = await self._aprocess_large_message(
                 tool_result,
                 resolved_backend,
             )
-            return (
-                Command(
-                    update={
-                        "files": files_update,
-                        "messages": [processed_message],
-                    }
-                )
-                if files_update is not None
-                else processed_message
-            )
+            return processed_message
 
         if isinstance(tool_result, Command):
             update = tool_result.update
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            accumulated_file_updates = dict(update.get("files", {}))
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -1325,14 +1690,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     processed_messages.append(message)
                     continue
 
-                processed_message, files_update = await self._aprocess_large_message(
+                processed_message, _evicted = await self._aprocess_large_message(
                     message,
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-                if files_update is not None:
-                    accumulated_file_updates.update(files_update)
-            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+            return Command(update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 

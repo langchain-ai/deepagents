@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -205,6 +206,9 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["server_kwargs"] is not None
         assert captured_kwargs["server_kwargs"]["assistant_id"] == "agent"
         assert captured_kwargs["server_kwargs"]["interactive"] is True
+        # auto_approve must NOT be in server_kwargs — the interactive server
+        # must always compile with full HITL interrupts so Shift+Tab works.
+        assert "auto_approve" not in captured_kwargs["server_kwargs"]
 
         # MCP preload kwargs forwarded (no_mcp=False by default)
         assert captured_kwargs["mcp_preload_kwargs"] is not None
@@ -298,6 +302,15 @@ class TestServerCleanupLifecycle:
 class TestCheckOptionalTools:
     """Tests for check_optional_tools() function."""
 
+    @pytest.fixture(autouse=True)
+    def _tavily_available(self) -> Iterator[None]:
+        """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
+        with patch(
+            "deepagents_cli.config.settings",
+            SimpleNamespace(has_tavily=True),
+        ):
+            yield
+
     def test_returns_tool_name_when_rg_not_found(self) -> None:
         """Returns `['ripgrep']` when `rg` is not on PATH."""
         with patch("deepagents_cli.main.shutil.which", return_value=None):
@@ -352,6 +365,42 @@ class TestCheckOptionalTools:
 
         assert missing == ["ripgrep"]
 
+    def test_returns_tavily_when_key_missing(self) -> None:
+        """Returns `'tavily'` when TAVILY_API_KEY is not set."""
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools()
+
+        assert missing == ["tavily"]
+
+    def test_omits_tavily_when_key_present(self) -> None:
+        """Does not include `'tavily'` when TAVILY_API_KEY is set."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            missing = check_optional_tools()
+
+        assert "tavily" not in missing
+
+    def test_tavily_warning_suppressed_via_config(self, tmp_path: Path) -> None:
+        """Returns empty list when tavily warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["tavily"]\n')
+
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == []
+
 
 class TestFormatToolWarnings:
     """Tests for TUI and CLI warning formatters."""
@@ -368,15 +417,77 @@ class TestFormatToolWarnings:
         assert "[link=https://github.com/BurntSushi/ripgrep#installation]" in msg
         assert "[/link]" in msg
 
-    def test_both_formats_contain_suppress_hint(self) -> None:
-        """Both formats include the config suppression hint."""
-        formatters = (format_tool_warning_tui, format_tool_warning_cli)
-        for fmt in formatters:
-            msg = fmt("ripgrep")
-            assert "\\[warnings]" in msg
-            assert 'suppress = \\["ripgrep"]' in msg
+    def test_tui_format_contains_notifications_hint(self) -> None:
+        """TUI format references /notifications command."""
+        msg = format_tool_warning_tui("ripgrep")
+        assert "/notifications" in msg
+
+    def test_cli_format_contains_config_hint(self) -> None:
+        """CLI format references config.toml for suppression."""
+        msg = format_tool_warning_cli("ripgrep")
+        assert "config.toml" in msg
+        assert 'suppress = \\["ripgrep"]' in msg
 
     def test_unknown_tool_fallback(self) -> None:
         """Unknown tools get a generic message."""
         assert format_tool_warning_tui("foo") == "foo is not installed."
         assert format_tool_warning_cli("foo") == "foo is not installed."
+
+    def test_tui_format_tavily_contains_env_hint(self) -> None:
+        """TUI format for tavily mentions the env var."""
+        msg = format_tool_warning_tui("tavily")
+        assert "TAVILY_API_KEY" in msg
+        assert "tavily.com" in msg
+        assert "[link=" not in msg
+
+    def test_cli_format_tavily_contains_env_hint(self) -> None:
+        """CLI format for tavily mentions the env var with Rich link."""
+        msg = format_tool_warning_cli("tavily")
+        assert "TAVILY_API_KEY" in msg
+        assert "[link=https://tavily.com]" in msg
+
+    def test_tui_format_tavily_contains_notifications_hint(self) -> None:
+        """TUI tavily format references /notifications command."""
+        msg = format_tool_warning_tui("tavily")
+        assert "/notifications" in msg
+
+    def test_cli_format_tavily_contains_config_hint(self) -> None:
+        """CLI tavily format references config.toml for suppression."""
+        msg = format_tool_warning_cli("tavily")
+        assert "config.toml" in msg
+        assert 'suppress = \\["tavily"]' in msg
+
+
+class TestRunTextualCliAsyncModelConfigError:
+    """Verify ModelConfigError is caught cleanly before launching the TUI."""
+
+    async def test_returns_error_code_on_no_credentials(self) -> None:
+        """ModelConfigError from _get_default_model_spec gives return code 1."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=ModelConfigError("No credentials configured"),
+            ),
+            patch("deepagents_cli.config._get_console") as mock_console_fn,
+        ):
+            mock_console = MagicMock()
+            mock_console_fn.return_value = mock_console
+
+            result = await run_textual_cli_async("agent")
+
+        assert result.return_code == 1
+        assert result.thread_id is None
+
+    async def test_no_error_when_model_name_provided(self) -> None:
+        """Explicit model_name bypasses _get_default_model_spec."""
+        app_result = AppResult(return_code=0, thread_id="t-1")
+
+        async def _stub(**_kwargs: Any) -> AppResult:  # noqa: RUF029  # must be async for run_textual_app signature
+            return app_result
+
+        with patch("deepagents_cli.app.run_textual_app", new=_stub):
+            result = await run_textual_cli_async("agent", model_name="openai:gpt-4o")
+
+        assert result.return_code == 0

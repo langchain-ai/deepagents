@@ -114,8 +114,8 @@ class MockBackend(BackendProtocol):
     def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         self.read_calls.append(path)
         if self.existing_content is not None:
-            return self.existing_content
-        return ""
+            return ReadResult(file_data={"content": self.existing_content, "encoding": "utf-8"})
+        return ReadResult(file_data={"content": "", "encoding": "utf-8"})
 
     async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         return self.read(path, offset, limit)
@@ -348,6 +348,35 @@ class TestSummarizationMiddlewareInit:
         )
 
         assert callable(middleware._backend)
+
+    def test_deprecated_history_path_prefix_warns_and_applies(self) -> None:
+        """Passing history_path_prefix emits a deprecation warning and is used."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/custom/history",
+            )
+
+        assert middleware._history_path_prefix == "/custom/history"
+
+    def test_deprecated_history_path_prefix_overrides_default(self) -> None:
+        """Deprecated history_path_prefix takes precedence over the default."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/overridden",
+            )
+
+        assert middleware._history_path_prefix == "/overridden"
+        assert middleware._history_path_prefix != "/conversation_history"
 
 
 class TestOffloadingBasic:
@@ -1091,33 +1120,6 @@ class TestBackendFactoryInvocation:
         assert len(factory_called_with) == 1
         # Backend should have received write call
         assert len(backend.write_calls) == 1
-
-
-class TestCustomHistoryPathPrefix:
-    """Tests for custom `history_path_prefix` configuration."""
-
-    def test_custom_history_path_prefix(self) -> None:
-        """Test that custom `history_path_prefix` is used in file paths."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-            history_path_prefix="/custom/path",
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        with mock_get_config(thread_id="test-thread"):
-            call_wrap_model_call(middleware, state, runtime)
-
-        path, _ = backend.write_calls[0]
-        assert path == "/custom/path/test-thread.md"
 
 
 class TestMarkdownFormatting:

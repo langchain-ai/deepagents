@@ -96,11 +96,6 @@ Screen {
     height: auto;
 }
 
-.approval-file-path {
-    color: $primary;
-    text-style: bold;
-}
-
 .approval-description {
     color: $text-muted;
 }
@@ -206,6 +201,11 @@ Screen {
     padding-left: 2;
 }
 
+.ask-user-menu .ask-user-question-text {
+    margin: 0 0 0 2;
+    padding: 0;
+}
+
 .ask-user-menu .ask-user-choice {
     height: 1;
     padding: 0 1;
@@ -219,6 +219,19 @@ Screen {
     margin: 1 1 0 1;
 }
 
+/* ChatTextArea: override TextArea's built-in $surface background */
+ChatTextArea {
+    background: transparent;
+
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
 /* Completion popup styling (used by ChatInput) - appears BELOW input */
 #completion-popup {
     height: auto;
@@ -227,6 +240,5 @@ Screen {
     margin-left: 3;
     margin-top: 0;
     padding: 0;
-    background: $background;
     color: $text;
 }

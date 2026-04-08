@@ -6,7 +6,7 @@
 #
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
-name: "🚀 Package Release"
+name: "⚠️ Manual Package Release"
 run-name: "Release ${{ inputs.package }}"
 on:
   workflow_call:
@@ -20,7 +20,7 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release (⚠️ For deepagents-cli, use release-please by default; manual dispatch is exception-only for recovery/hotfix scenarios — see .github/RELEASING.md)"
+        description: "Package to release (⚠️ Use release-please by default; manual dispatch is exception-only for recovery/hotfix scenarios — see .github/RELEASING.md)"
         options:
           - deepagents
           - deepagents-cli
@@ -29,6 +29,7 @@ on:
           - langchain-daytona
           - langchain-modal
           - langchain-quickjs
+          - langchain-repl
           - langchain-runloop
         default: deepagents
       dangerous-nonmain-release:
@@ -40,7 +41,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
+        description: "(CLI only) Skip SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -48,7 +49,7 @@ env:
   UV_FROZEN: "true"
 
 permissions:
-  contents: write # Required for creating GitHub releases
+  contents: read # Job-level overrides grant write only where needed
 
 jobs:
   # Determine working directory from package input
@@ -87,12 +88,15 @@ jobs:
             langchain-quickjs)
               echo "working-dir=libs/partners/quickjs" >> $GITHUB_OUTPUT
               ;;
+            langchain-repl)
+              echo "working-dir=libs/repl" >> $GITHUB_OUTPUT
+              ;;
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-repl, langchain-runloop"
               exit 1
               ;;
           esac
@@ -123,6 +127,7 @@ jobs:
       # We want to keep this build stage *separate* from the release stage,
       # so that there's no sharing of permissions between them.
       # (Release stage has trusted publishing and GitHub repo contents write access,
+      # which the build stage must not have access to.)
       #
       # Otherwise, a malicious `build` step (e.g. via a compromised dependency)
       # could get access to our GitHub or PyPI credentials.
@@ -302,6 +307,7 @@ jobs:
           # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
           declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
           declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
+          declare -A INTERNAL_USERS   # Map: github_username -> 1 (for dedup)
           SEEN_PRS=""
 
           for sha in $COMMITS; do
@@ -325,10 +331,15 @@ jobs:
                   continue
                 fi
 
-                # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
+                # Separate internal contributors (PRs labeled "internal" by pr_labeler workflow)
                 IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
                 if [ "$IS_INTERNAL" = "true" ]; then
-                  echo "Skipping internal contributor: $GH_USER (PR #$PR_NUM)"
+                  if [ -n "$GH_USER" ]; then
+                    INTERNAL_USERS[$GH_USER]=1
+                    echo "Collected internal contributor: $GH_USER (PR #$PR_NUM)"
+                  else
+                    echo "::warning::Internal PR #$PR_NUM has no author login — contributor will not appear in release notes"
+                  fi
                   continue
                 fi
 
@@ -350,6 +361,13 @@ jobs:
                 fi
               fi
             fi
+          done
+
+          # Dedup: if a user has both internal and community PRs, keep them
+          # in internal only (they are an org member regardless of PR labels)
+          for GH_USER in "${!INTERNAL_USERS[@]}"; do
+            unset "TWITTER_HANDLES[$GH_USER]"
+            unset "LINKEDIN_URLS[$GH_USER]"
           done
 
           # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
@@ -388,11 +406,32 @@ jobs:
             fi
           done
 
-          echo "Found contributors: $CONTRIBUTOR_LIST"
+          echo "Found community contributors: $CONTRIBUTOR_LIST"
+
+          # Build internal maintainers list: @ghuser, @ghuser, ...
+          INTERNAL_LIST=""
+          for GH_USER in "${!INTERNAL_USERS[@]}"; do
+            if [ -z "$INTERNAL_LIST" ]; then
+              INTERNAL_LIST="@$GH_USER"
+            else
+              INTERNAL_LIST="$INTERNAL_LIST, @$GH_USER"
+            fi
+          done
+
+          echo "Found internal maintainers: $INTERNAL_LIST"
 
           # Append contributor shoutouts
+          SEPARATOR_ADDED=false
           if [ -n "$CONTRIBUTOR_LIST" ]; then
             RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTOR_LIST")
+            SEPARATOR_ADDED=true
+          fi
+
+          if [ -n "$INTERNAL_LIST" ]; then
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+            fi
+            RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
           fi
 
           # Output release body using heredoc for proper multiline handling
@@ -427,7 +466,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish to test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -510,15 +549,7 @@ jobs:
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
-        # Here we use:
-        # - The default regular PyPI index as the *primary* index, meaning
-        #   that it takes priority (https://pypi.org/simple)
-        # - The test PyPI index as an extra index, so that any dependencies that
-        #   are not found on test PyPI can be resolved and installed anyway.
-        #   (https://test.pypi.org/simple). This will include the PKG_NAME==VERSION
-        #   package because VERSION will not have been uploaded to regular PyPI yet.
-        # - attempt install again after 5 seconds if it fails because there is
-        #   sometimes a delay in availability on test pypi
+        # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
           VIRTUAL_ENV=.venv uv pip install dist/*.whl
@@ -589,7 +620,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true

@@ -9,6 +9,9 @@ import pytest
 from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     BackendProtocol,
+    GlobResult,
+    GrepResult,
+    LsResult,
     SandboxBackendProtocol,
 )
 
@@ -101,6 +104,85 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
+
+
+class TestDeprecatedMethodsRouteToNewNames:
+    """Old method names warn and delegate to the new implementations."""
+
+    def test_ls_info_delegates_to_ls(self) -> None:
+        class MyBackend(BackendProtocol):
+            def ls(self, path: str) -> LsResult:
+                return LsResult(entries=[{"path": path}])
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().ls_info("/") == [{"path": "/"}]
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_ls_info_raises_for_new_only_ls_behavior(self) -> None:
+        class MyBackend(BackendProtocol):
+            def ls(self, path: str) -> LsResult:
+                return LsResult(error="error")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with pytest.raises(NotImplementedError, match="new `ls` API"):
+                MyBackend().ls_info("/")
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_raw_delegates_to_grep(self) -> None:
+        class MyBackend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
+                return GrepResult(error="error")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().grep_raw("x") == "error"
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_info_delegates_to_glob(self) -> None:
+        class MyBackend(BackendProtocol):
+            def glob(self, pattern: str, path: str = "/") -> GlobResult:
+                return GlobResult(matches=[{"path": f"{path}/{pattern}"}])
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert MyBackend().glob_info("*.py") == [{"path": "//*.py"}]
+        assert any("glob_info" in str(x.message) for x in w)
+
+
+class TestLegacySubclassOverrideRouting:
+    """New method names detect legacy overrides and delegate back."""
+
+    def test_ls_routes_to_ls_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def ls_info(self, path: str) -> list[dict[str, str]]:
+                return [{"path": path}]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().ls("/") == LsResult(entries=[{"path": "/"}])
+        assert any("ls_info" in str(x.message) for x in w)
+
+    def test_grep_routes_to_grep_raw_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict[str, str | int]] | str:
+                return [{"path": "/f", "line": 1, "text": pattern}]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().grep("x") == GrepResult(matches=[{"path": "/f", "line": 1, "text": "x"}])
+        assert any("grep_raw" in str(x.message) for x in w)
+
+    def test_glob_routes_to_glob_info_override(self) -> None:
+        class LegacyBackend(BackendProtocol):
+            def glob_info(self, pattern: str, path: str = "/") -> list[dict[str, str]]:
+                return [{"path": f"{path}/{pattern}"}]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert LegacyBackend().glob("*.py") == GlobResult(matches=[{"path": "//*.py"}])
+        assert any("glob_info" in str(x.message) for x in w)
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):

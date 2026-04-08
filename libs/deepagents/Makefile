@@ -18,7 +18,8 @@ test: ## Run unit tests
 test tests:
 	uv run --group test pytest -n auto -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
-		--cov-report=term-missing
+		--cov-report=term-missing \
+		--benchmark-disable
 
 update-snapshots: ## Update smoke test snapshots
 	# update snapshots for smoke tests
@@ -42,7 +43,7 @@ test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
 
 benchmark: ## Run benchmark tests
-	uv run --group test pytest ./tests -m benchmark
+	uv run --group test pytest ./tests/benchmarks -m benchmark
 
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .

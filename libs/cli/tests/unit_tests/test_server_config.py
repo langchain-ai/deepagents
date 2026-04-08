@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import (
     ServerConfig,
     _normalize_path,
@@ -16,7 +17,6 @@ from deepagents_cli._server_config import (
     _read_env_optional_bool,
     _read_env_str,
 )
-from deepagents_cli._server_constants import ENV_PREFIX
 
 # ------------------------------------------------------------------
 # _read_env_bool
@@ -25,27 +25,27 @@ from deepagents_cli._server_constants import ENV_PREFIX
 
 class TestReadEnvBool:
     def test_true_lowercase(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "true"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "true"}):
             assert _read_env_bool("FOO") is True
 
     def test_true_uppercase(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "TRUE"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "TRUE"}):
             assert _read_env_bool("FOO") is True
 
     def test_true_mixed_case(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "True"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "True"}):
             assert _read_env_bool("FOO") is True
 
     def test_false_lowercase(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "false"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "false"}):
             assert _read_env_bool("FOO") is False
 
     def test_false_uppercase(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "FALSE"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "FALSE"}):
             assert _read_env_bool("FOO") is False
 
     def test_arbitrary_string_is_false(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}FOO": "yes"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO": "yes"}):
             assert _read_env_bool("FOO") is False
 
     def test_missing_returns_default_false(self) -> None:
@@ -64,7 +64,7 @@ class TestReadEnvBool:
 
 class TestReadEnvJson:
     def test_valid_json(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}DATA": '{"a": 1}'}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}DATA": '{"a": 1}'}):
             assert _read_env_json("DATA") == {"a": 1}
 
     def test_missing_returns_none(self) -> None:
@@ -73,14 +73,14 @@ class TestReadEnvJson:
 
     def test_malformed_json_raises(self) -> None:
         with (
-            patch.dict(os.environ, {f"{ENV_PREFIX}DATA": "{bad json"}),
+            patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}DATA": "{bad json"}),
             pytest.raises(ValueError, match="Failed to parse"),
         ):
             _read_env_json("DATA")
 
     def test_malformed_json_includes_value_snippet(self) -> None:
         with (
-            patch.dict(os.environ, {f"{ENV_PREFIX}DATA": "{bad"}),
+            patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}DATA": "{bad"}),
             pytest.raises(ValueError, match=r"\{bad"),
         ):
             _read_env_json("DATA")
@@ -93,7 +93,7 @@ class TestReadEnvJson:
 
 class TestReadEnvStr:
     def test_present(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}X": "val"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}X": "val"}):
             assert _read_env_str("X") == "val"
 
     def test_missing(self) -> None:
@@ -108,11 +108,11 @@ class TestReadEnvStr:
 
 class TestReadEnvOptionalBool:
     def test_true(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}X": "true"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}X": "true"}):
             assert _read_env_optional_bool("X") is True
 
     def test_false(self) -> None:
-        with patch.dict(os.environ, {f"{ENV_PREFIX}X": "false"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}X": "false"}):
             assert _read_env_optional_bool("X") is False
 
     def test_missing_returns_none(self) -> None:
@@ -121,7 +121,7 @@ class TestReadEnvOptionalBool:
 
     def test_false_distinct_from_none(self) -> None:
         """False and None must not be conflated."""
-        with patch.dict(os.environ, {f"{ENV_PREFIX}X": "false"}):
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}X": "false"}):
             result = _read_env_optional_bool("X")
             assert result is not None
             assert result is False
@@ -199,7 +199,7 @@ class TestServerConfigEdgeCases:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored.trust_project_mcp is False
@@ -211,7 +211,7 @@ class TestServerConfigEdgeCases:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_type is None

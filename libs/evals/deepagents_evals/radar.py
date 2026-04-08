@@ -1,7 +1,7 @@
 """Radar chart generation for eval results.
 
 Produces per-model radar (spider) charts where each axis represents an
-eval category (e.g. file_operations, memory, hitl) and the radial position
+eval category (e.g. file_operations, memory, tool_use) and the radial position
 encodes the score (0-1 correctness).
 """
 
@@ -12,6 +12,11 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -47,17 +52,65 @@ CATEGORY_LABELS: dict[str, str] = _categories_raw["labels"]
 
 del _categories_raw
 
-_COLORS: list[str] = [
-    "#2563eb",  # blue
-    "#dc2626",  # red
-    "#16a34a",  # green
-    "#9333ea",  # purple
-    "#ea580c",  # orange
-    "#0891b2",  # cyan
-    "#be185d",  # pink
-    "#854d0e",  # brown
-]
-"""Eight visually distinct hex colors, cycled across models on the radar chart."""
+
+@dataclass(frozen=True)
+class _Theme:
+    """Color scheme for a radar chart."""
+
+    bg: str
+    grid: str
+    label: str
+    tick: str
+    watermark_alpha: float
+    fill_alpha: float
+    pill_alpha: float
+    colors: tuple[str, ...]
+
+
+_LIGHT = _Theme(
+    bg="#f8f9fa",
+    grid="#d5d8dc",
+    label="#2c3e50",
+    tick="#7f8c8d",
+    watermark_alpha=0.6,
+    fill_alpha=0.08,
+    pill_alpha=0.85,
+    colors=(
+        "#1b4f72",  # navy
+        "#b03a2e",  # burgundy
+        "#1e8449",  # forest
+        "#6c3483",  # plum
+        "#ca6f1e",  # amber
+        "#148f77",  # teal
+        "#a04000",  # rust
+        "#2e4053",  # slate
+    ),
+)
+
+_DARK = _Theme(
+    bg="#0d1117",
+    grid="#30363d",
+    label="#c9d1d9",
+    tick="#8b949e",
+    watermark_alpha=0.45,
+    fill_alpha=0.12,
+    pill_alpha=0.92,
+    colors=(
+        "#58a6ff",  # blue
+        "#f97583",  # coral
+        "#56d364",  # green
+        "#d2a8ff",  # lavender
+        "#f0883e",  # orange
+        "#39d2c0",  # teal
+        "#ff7eb6",  # pink
+        "#e3b341",  # gold
+    ),
+)
+
+_THEMES: dict[str, _Theme] = {"light": _LIGHT, "dark": _DARK}
+
+THEMES: list[str] = list(_THEMES.keys())
+"""Supported chart themes, derived from the internal theme registry."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +133,7 @@ def generate_radar(
     title: str = "Eval Results",
     output: str | Path | None = None,
     figsize: tuple[float, float] = (10, 10),
+    theme: str = "light",
     _color_offset: int = 0,
 ) -> Figure:
     """Generate a radar chart comparing models across eval categories.
@@ -90,11 +144,22 @@ def generate_radar(
         title: Chart title.
         output: If provided, save the figure to this path (PNG/SVG/PDF).
         figsize: Figure size in inches.
+        theme: Color scheme — `"light"` or `"dark"`.
+
+            Unrecognized values fall back to `"light"`.
 
     Returns:
         The matplotlib `Figure` object.
     """
-    import matplotlib.pyplot as plt
+    if plt is None:
+        msg = "matplotlib is required for chart generation. Install: pip install deepagents-evals[charts]"
+        raise ImportError(msg)
+
+    try:
+        t = _THEMES[theme]
+    except KeyError:
+        msg = f"Unknown theme {theme!r}; expected one of {sorted(_THEMES)}"
+        raise ValueError(msg) from None
 
     cats = categories or EVAL_CATEGORIES
     n = len(cats)
@@ -106,57 +171,165 @@ def generate_radar(
 
     fig, ax_raw = plt.subplots(figsize=figsize, subplot_kw={"polar": True})
     ax = cast("PolarAxes", ax_raw)
+    fig.patch.set_facecolor(t.bg)
+    ax.set_facecolor(t.bg)
 
     # Start from top (90 degrees) and go clockwise.
     ax.set_theta_offset(math.pi / 2)
     ax.set_theta_direction(-1)
 
-    # Draw grid and axis labels.
+    # --- Grid & spine styling ---
+    ax.grid(color=t.grid, linewidth=0.6, linestyle="-", alpha=0.7)
+    ax.spines["polar"].set_color(t.grid)
+    ax.spines["polar"].set_linewidth(0.8)
+
+    # Axis labels — placed manually so they always render above the data.
+    # Default tick labels sit inside the axes z-order stack and get covered
+    # by polar fills regardless of zorder settings.
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(labels, fontsize=11, fontweight="bold")
+    ax.set_xticklabels([])  # hide default labels
+
+    label_radius = 1.22
+    # The top label (angle ≈ 0) sits directly below the title — pull it in
+    # slightly so the two don't collide.
+    top_radius = 1.12
+    for angle, text in zip(angles[:-1], labels, strict=True):
+        ha = "center"
+        if 0 < angle < math.pi:
+            ha = "left"
+        elif math.pi < angle < 2 * math.pi:
+            ha = "right"
+
+        is_top = abs(angle) < 0.01 or abs(angle - 2 * math.pi) < 0.01  # noqa: PLR2004
+        r = top_radius if is_top else label_radius
+
+        ax.text(
+            angle,
+            r,
+            text,
+            ha=ha,
+            va="center",
+            fontsize=11,
+            fontweight="semibold",
+            color=t.label,
+            zorder=15,
+            bbox={
+                "facecolor": t.bg,
+                "edgecolor": "none",
+                "pad": 3,
+                "alpha": 0.95,
+            },
+        )
 
     # Radial ticks at 0.2 intervals.
     ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
-    ax.set_yticklabels(["0.2", "0.4", "0.6", "0.8", "1.0"], fontsize=8, color="grey")
+    ax.set_yticklabels(
+        ["20%", "40%", "60%", "80%", "100%"],
+        fontsize=7,
+        color=t.tick,
+    )
     ax.set_ylim(0, 1.05)
 
     # Plot each model as a filled polygon.
     for idx, result in enumerate(results):
-        color = _COLORS[(idx + _color_offset) % len(_COLORS)]
+        color = t.colors[(idx + _color_offset) % len(t.colors)]
         values = [result.scores.get(c, 0.0) for c in cats]
         values.append(values[0])  # close polygon
 
+        # Filled area.
+        ax.fill(angles, values, alpha=t.fill_alpha, color=color, zorder=2)
+
+        # Primary line.
         ax.plot(
             angles,
             values,
-            "o-",
-            linewidth=2,
+            "-",
+            linewidth=2.2,
             color=color,
             label=_short_model_name(result.model),
-            markersize=5,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=3,
         )
-        ax.fill(angles, values, alpha=0.1, color=color)
 
-        # Annotate each point with its score.
+        # Data points.
+        ax.plot(
+            angles,
+            values,
+            "o",
+            color=color,
+            markersize=5,
+            markeredgecolor=t.bg,
+            markeredgewidth=1.2,
+            zorder=4,
+        )
+
+        # Score annotations with background pill.  When multiple models are
+        # plotted, stagger radially outward along each spoke so pills don't
+        # pile up at the same point.
+        multi = len(results) > 1
+        radial_bump = 0.05 + idx * 0.06 if multi else 0.04
+
         for angle, val in zip(angles[:-1], values[:-1], strict=True):
-            ax.annotate(
+            ax.text(
+                angle,
+                val + radial_bump,
                 f"{val:.0%}",
-                xy=(angle, val),
-                xytext=(0, 8),
-                textcoords="offset points",
                 ha="center",
-                fontsize=7,
+                va="center",
+                fontsize=6.5 if multi else 7,
+                fontweight="medium",
                 color=color,
+                zorder=6,
+                bbox={
+                    "boxstyle": "round,pad=0.2",
+                    "facecolor": t.bg,
+                    "edgecolor": color,
+                    "linewidth": 0.5,
+                    "alpha": t.pill_alpha,
+                },
             )
 
-    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=10)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=20)
-    fig.tight_layout()
+    # Legend — anchored to the figure's upper-right to avoid wasting space.
+    legend = fig.legend(
+        loc="upper right",
+        fontsize=9,
+        frameon=True,
+        fancybox=True,
+        shadow=False,
+        framealpha=0.95,
+        edgecolor=t.grid,
+        labelcolor=t.label,
+    )
+    legend.get_frame().set_linewidth(0.8)
+    legend.get_frame().set_facecolor(t.bg)
+
+    # Title.
+    ax.set_title(
+        title,
+        fontsize=15,
+        fontweight="bold",
+        color=t.label,
+        pad=60,
+    )
+    # Watermark.
+    fig.text(
+        0.98,
+        0.02,
+        "langchain-ai/deep-agents",
+        ha="right",
+        va="bottom",
+        fontsize=7,
+        color=t.tick,
+        alpha=t.watermark_alpha,
+        style="italic",
+    )
+    fig.tight_layout(pad=2.0)
 
     if output is not None:
         path = Path(output)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=t.bg)
         plt.close(fig)
 
     return fig
@@ -169,6 +342,7 @@ def generate_individual_radars(
     output_dir: str | Path = "charts/individual",
     title_prefix: str = "Eval Results",
     figsize: tuple[float, float] = (10, 10),
+    theme: str = "light",
 ) -> list[Path]:
     """Generate one radar chart per model.
 
@@ -180,6 +354,9 @@ def generate_individual_radars(
         output_dir: Directory to write per-model PNGs.
         title_prefix: Prefix for each chart title (model name is appended).
         figsize: Figure size in inches.
+        theme: Color scheme — `"light"` or `"dark"`.
+
+            Unrecognized values fall back to `"light"`.
 
     Returns:
         List of paths to the saved PNG files.
@@ -198,6 +375,7 @@ def generate_individual_radars(
             title=f"{title_prefix} — {name}",
             output=dest,
             figsize=figsize,
+            theme=theme,
             _color_offset=idx,
         )
         paths.append(dest)
@@ -290,7 +468,7 @@ def toy_data() -> list[ModelResult]:
             },
         ),
         ModelResult(
-            model="openai:gpt-4.1",
+            model="openai:gpt-5.4",
             scores={
                 "file_operations": 0.88,
                 "retrieval": 0.72,

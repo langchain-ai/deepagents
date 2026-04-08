@@ -255,6 +255,14 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+"""Providers that support implicit auth (e.g., ADC, local servers).
+
+These providers can authenticate without the env var listed in
+`PROVIDER_API_KEY_ENV`, so a missing env var should not be treated as a hard
+credential failure. Used by `create_model` to skip the early credential check.
+"""
+
 
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
@@ -707,25 +715,36 @@ def get_model_profiles(
 def has_provider_credentials(provider: str) -> bool | None:
     """Check if credentials are available for a provider.
 
-    Resolution order:
+    Combines two credential sources to decide whether a provider's API key
+    is present *before* attempting model creation:
 
-    1. Config-file providers (`config.toml`) with `api_key_env` — takes
-        priority so user overrides are respected.
-    2. Config-file providers with `class_path` but no `api_key_env` —
-        assumed to manage their own auth (e.g., custom headers, JWT, mTLS).
-    3. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    4. For any other provider (e.g., third-party langchain provider
-        packages), credential status is unknown — the provider itself will
-        report auth failures at model-creation time.
+    1. **Config-file providers** (`config.toml` `[providers.<name>]`):
+        - If the section declares `api_key_env`, that env var is checked
+            via `resolve_env_var()` (which honors `DEEPAGENTS_CLI_` prefixes).
+
+            Returns `True`/`False` accordingly.
+        - If the section has `class_path` but no `api_key_env`, the provider is
+            assumed to manage its own auth (e.g., custom headers, JWT, mTLS) and
+            `True` is returned.
+        - If neither `api_key_env` nor `class_path` is set, falls through
+            to step 2.
+    2. **Hardcoded registry** (`PROVIDER_API_KEY_ENV`): a module-level dict
+        mapping 18 well-known provider names to their canonical env var
+        (e.g., `"anthropic"` → `"ANTHROPIC_API_KEY"`). The env var is checked
+        via `resolve_env_var()`.
+    3. **Unknown providers** not present in either source: returns `None` so
+        callers can decide whether to block or defer to the provider SDK's own
+        auth handling.
 
     Args:
-        provider: Provider name.
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
 
     Returns:
-        True if credentials are confirmed available or the provider is
-            expected to manage its own auth (e.g., `class_path` providers),
-            False if confirmed missing, or None if credential status cannot
-            be determined.
+        `True` if credentials are confirmed available or the provider is
+            expected to manage its own auth (e.g., `class_path` providers).
+        `False` if the required env var is known but not set.
+        `None` if credential status cannot be determined (provider not in
+            config or `PROVIDER_API_KEY_ENV`).
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()

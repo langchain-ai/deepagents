@@ -1,0 +1,71 @@
+[project]
+name = "better-harness"
+version = "0.1.0"
+description = "Small eval-driven harness optimizer for agent systems"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.12.0",
+]
+
+[project.scripts]
+better-harness = "better_harness:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["better_harness_plugin"]
+
+[tool.setuptools.packages.find]
+include = ["better_harness*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".runtime/**", "**/_runtime/**", "examples/**", "runs/**"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN",
+    "C901",
+    "COM812",
+    "D203",
+    "D102",
+    "D213",
+    "D107",
+    "E501",
+    "EM102",
+    "ISC001",
+    "PERF401",
+    "PLR0912",
+    "PLR0915",
+    "PLR2004",
+    "Q000",
+    "S314",
+    "S603",
+    "S607",
+    "TC001",
+    "TC003",
+    "TRY003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",
+    "ANN201",
+    "D",
+    "S101",
+    "TC002",
+    "TC003",
+]
+"better_harness/core.py" = ["PLC0415", "T201", "S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

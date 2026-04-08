@@ -74,6 +74,12 @@ _RIPGREP_SUPPRESS_HINT = (
     'suppress = \\["ripgrep"]'
 )
 
+_TAVILY_SUPPRESS_HINT = (
+    "To suppress, add to ~/.deepagents/config.toml:\n"
+    "\\[warnings]\n"
+    'suppress = \\["tavily"]'
+)
+
 
 def _ripgrep_install_hint() -> str:
     """Return a platform-specific install command for ripgrep.
@@ -133,6 +139,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
+
+    from deepagents_cli.config import settings
+
+    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+        missing.append("tavily")
+
     return missing
 
 
@@ -151,6 +163,12 @@ def format_tool_warning_tui(tool: str) -> str:
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"\nInstall: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}"
+        )
+    if tool == "tavily":
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "\nGet a key at https://tavily.com\n\n"
+            f"{_TAVILY_SUPPRESS_HINT}"
         )
     return f"{tool} is not installed."
 
@@ -172,6 +190,13 @@ def format_tool_warning_cli(tool: str) -> str:
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
             f"{_RIPGREP_SUPPRESS_HINT}\n"
+        )
+    if tool == "tavily":
+        url = "https://tavily.com"
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            f"Get a key at [link={url}]{url}[/link]\n\n"
+            f"{_TAVILY_SUPPRESS_HINT}\n"
         )
     return f"{tool} is not installed."
 

@@ -257,6 +257,21 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+def get_available_agent_names() -> list[str]:
+    """Return a sorted list of available agent names from `~/.deepagents/`.
+
+    Scans the user's `.deepagents` directory and returns the name of every
+    subdirectory (each directory represents a distinct agent).
+
+    Returns:
+        Sorted list of agent names. Empty when no agents exist yet.
+    """
+    agents_dir = settings.user_deepagents_dir
+    if not agents_dir.exists():
+        return []
+    return sorted(p.name for p in agents_dir.iterdir() if p.is_dir())
+
+
 def list_agents(*, output_format: OutputFormat = "text") -> None:
     """List all available agents.
 

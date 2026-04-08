@@ -2625,7 +2625,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /clear, /offload, /editor, /mcp, "
+                "Commands: /quit, /agents, /clear, /offload, /editor, /mcp, "
                 "/model [--model-params JSON] [--default], /notifications, "
                 "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
                 "/tokens, /threads, /trace, "
@@ -2678,6 +2678,8 @@ class DeepAgentsApp(App):
                 logger.warning("Unexpected error looking up SDK version", exc_info=True)
                 sdk_line = "deepagents (SDK) version: unknown"
             await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
+        elif cmd == "/agents":
+            await self._show_agent_selector()
         elif cmd == "/clear":
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -4553,6 +4555,73 @@ class DeepAgentsApp(App):
 
         screen = ThemeSelectorScreen(current_theme=self.theme)
         self.push_screen(screen, handle_result)
+
+    async def _show_agent_selector(self) -> None:
+        """Show interactive agent selector as a modal screen."""
+        from deepagents_cli.agent import get_available_agent_names
+        from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+
+        agent_names = await asyncio.to_thread(get_available_agent_names)
+
+        def handle_result(result: str | None) -> None:
+            """Handle the agent selector result."""
+            if result is not None and result != self._assistant_id:
+                self._switch_agent(result)
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = AgentSelectorScreen(
+            current_agent=self._assistant_id,
+            agent_names=agent_names,
+        )
+        self.push_screen(screen, handle_result)
+
+    def _switch_agent(self, agent_name: str) -> None:
+        """Switch to a different agent by updating the active agent identity.
+
+        Updates `_assistant_id` (and `_server_kwargs` if present) so that
+        subsequent invocations use the new agent's memory and skills
+        directories. A new thread is started immediately so the agent begins
+        fresh without the previous conversation history.
+
+        Args:
+            agent_name: The name of the agent to switch to.
+        """
+        self._assistant_id = agent_name
+        if self._server_kwargs:
+            self._server_kwargs["assistant_id"] = agent_name
+
+        # Re-discover skills for the new agent
+        self.run_worker(
+            self._discover_skills(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
+
+        # Start a new thread so the conversation is fresh for the new agent
+        self._pending_messages.clear()
+        self._queued_widgets.clear()
+        self.call_later(self._apply_agent_switch, agent_name)
+
+    async def _apply_agent_switch(self, agent_name: str) -> None:
+        """Clear the conversation and confirm the agent switch.
+
+        Args:
+            agent_name: The name of the agent that was switched to.
+        """
+        await self._clear_messages()
+        self._context_tokens = 0
+        self._tokens_approximate = False
+        self._update_tokens(0)
+        self._update_status("")
+        if self._session_state:
+            new_thread_id = self._session_state.reset_thread()
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_thread_id(new_thread_id)
+            except NoMatches:
+                pass
+        await self._mount_message(AppMessage(f"Switched to agent: {agent_name}"))
 
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""

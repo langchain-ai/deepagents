@@ -145,7 +145,7 @@ on:
       analyze_failures:
         description: "Run the LLM failure-analysis step after evals."
         required: false
-        default: true
+        default: false
         type: boolean
       analysis_model:
         description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."

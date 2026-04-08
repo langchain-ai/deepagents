@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -286,6 +287,15 @@ class TestServerCleanupLifecycle:
 class TestCheckOptionalTools:
     """Tests for check_optional_tools() function."""
 
+    @pytest.fixture(autouse=True)
+    def _tavily_available(self) -> Iterator[None]:
+        """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
+        with patch(
+            "deepagents_cli.config.settings",
+            SimpleNamespace(has_tavily=True),
+        ):
+            yield
+
     def test_returns_tool_name_when_rg_not_found(self) -> None:
         """Returns `['ripgrep']` when `rg` is not on PATH."""
         with patch("deepagents_cli.main.shutil.which", return_value=None):
@@ -339,6 +349,42 @@ class TestCheckOptionalTools:
             missing = check_optional_tools(config_path=config_path)
 
         assert missing == ["ripgrep"]
+
+    def test_returns_tavily_when_key_missing(self) -> None:
+        """Returns `'tavily'` when TAVILY_API_KEY is not set."""
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools()
+
+        assert missing == ["tavily"]
+
+    def test_omits_tavily_when_key_present(self) -> None:
+        """Does not include `'tavily'` when TAVILY_API_KEY is set."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            missing = check_optional_tools()
+
+        assert "tavily" not in missing
+
+    def test_tavily_warning_suppressed_via_config(self, tmp_path: Path) -> None:
+        """Returns empty list when tavily warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["tavily"]\n')
+
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == []
 
 
 class TestRipgrepInstallHint:
@@ -589,18 +635,45 @@ class TestFormatToolWarnings:
         assert f"[link={url}]" in msg
         assert "[/link]" in msg
 
-    def test_both_formats_contain_suppress_hint(self) -> None:
-        """Both formats include the config suppression hint."""
-        formatters = (format_tool_warning_tui, format_tool_warning_cli)
-        for fmt in formatters:
-            msg = fmt("ripgrep")
-            assert "\\[warnings]" in msg
-            assert 'suppress = \\["ripgrep"]' in msg
+    def test_tui_format_contains_notifications_hint(self) -> None:
+        """TUI format references /notifications command."""
+        msg = format_tool_warning_tui("ripgrep")
+        assert "/notifications" in msg
+
+    def test_cli_format_contains_config_hint(self) -> None:
+        """CLI format references config.toml for suppression."""
+        msg = format_tool_warning_cli("ripgrep")
+        assert "config.toml" in msg
+        assert 'suppress = \\["ripgrep"]' in msg
 
     def test_unknown_tool_fallback(self) -> None:
         """Unknown tools get a generic message."""
         assert format_tool_warning_tui("foo") == "foo is not installed."
         assert format_tool_warning_cli("foo") == "foo is not installed."
+
+    def test_tui_format_tavily_contains_env_hint(self) -> None:
+        """TUI format for tavily mentions the env var."""
+        msg = format_tool_warning_tui("tavily")
+        assert "TAVILY_API_KEY" in msg
+        assert "tavily.com" in msg
+        assert "[link=" not in msg
+
+    def test_cli_format_tavily_contains_env_hint(self) -> None:
+        """CLI format for tavily mentions the env var with Rich link."""
+        msg = format_tool_warning_cli("tavily")
+        assert "TAVILY_API_KEY" in msg
+        assert "[link=https://tavily.com]" in msg
+
+    def test_tui_format_tavily_contains_notifications_hint(self) -> None:
+        """TUI tavily format references /notifications command."""
+        msg = format_tool_warning_tui("tavily")
+        assert "/notifications" in msg
+
+    def test_cli_format_tavily_contains_config_hint(self) -> None:
+        """CLI tavily format references config.toml for suppression."""
+        msg = format_tool_warning_cli("tavily")
+        assert "config.toml" in msg
+        assert 'suppress = \\["tavily"]' in msg
 
 
 class TestRunTextualCliAsyncModelConfigError:

@@ -8,7 +8,7 @@
 [agent]
 name = "deepagents-deploy-coding-agent"
 model = "anthropic:claude-sonnet-4-5"
-system_prompt = "You are an expert software engineer. You work inside a fresh sandbox for each thread. Project context is at /longterm/AGENTS.md, skills are under /longterm/skills/, and the user's coding preferences are at /user-memory/coding-prefs.md. Update that file when you learn something new about how this user wants you to work. Use the sandbox (everything else under /) for actually reading, writing, and executing code."
+system_prompt = "You are an expert software engineer. You work inside a fresh sandbox for each thread. Project context is at /longterm/AGENTS.md and skills are under /longterm/skills/. Use the sandbox (everything else under /) for actually reading, writing, and executing code."
 
 # All hub-resident files (AGENTS.md, skills/, .mcp.json) are pushed to this
 # repo by ``push_to_hub.py``. ``HubBackend`` reads from it at runtime.

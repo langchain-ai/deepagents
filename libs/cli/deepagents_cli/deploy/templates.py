@@ -197,11 +197,9 @@ MCP_TOOLS_TEMPLATE = '''async def _load_mcp_tools():
 # composition mirrors ``examples/deploy-coding-agent/coding_agent.py``:
 #
 #   - ``HubBackend`` mounted at ``/longterm/`` for skills + AGENTS.md
-#   - ``StoreBackend`` mounted at ``/user-memory/``, namespaced
-#     ``(agent, user_id, "memory")`` for per-user coding prefs
 #   - ``LangSmithSandbox`` as the default backend, cached by ``thread_id``
 #     so each thread gets its own sandbox
-#   - ``CompositeBackend`` routing the three above
+#   - ``CompositeBackend`` routing the two above
 #
 # Skills + memory + .mcp.json are NOT bundled into the deployment image —
 # they live in the hub repo, pushed by ``deepagents deploy`` itself.
@@ -221,7 +219,6 @@ from typing import TYPE_CHECKING
 from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.langsmith import LangSmithSandbox
-from deepagents.backends.store import StoreBackend
 
 # ``HubBackend`` is bundled by ``deepagents deploy`` as a sibling module
 # until it ships in the published deepagents package on PyPI.
@@ -241,7 +238,6 @@ SANDBOX_IMAGE = {sandbox_image!r}
 
 # Mount points inside the composite backend.
 HUB_PREFIX = "/longterm/"
-USER_MEMORY_PREFIX = "/user-memory/"
 
 _hub: HubBackend | None = None
 
@@ -249,7 +245,13 @@ _hub: HubBackend | None = None
 def _get_hub() -> HubBackend:
     global _hub
     if _hub is None:
-        _hub = HubBackend.from_env(HUB_REPO)
+        # ``LANGSMITH_API_KEY`` is reserved by LangGraph Platform and stripped
+        # from the deployed env, so prefer the explicit sandbox key.
+        api_key = (
+            os.environ.get("LANGSMITH_SANDBOX_API_KEY")
+            or os.environ.get("LANGSMITH_API_KEY")
+        )
+        _hub = HubBackend.from_env(HUB_REPO, api_key=api_key)
     return _hub
 
 
@@ -279,30 +281,16 @@ def _get_or_create_sandbox(thread_id: str) -> LangSmithSandbox:
     return backend
 
 
-def _user_memory_namespace(runtime):
-    """Per-user memory namespace: ``(agent_name, user_id, "memory")``."""
-    user_id = "anonymous"
-    try:
-        user = runtime.server_info.user
-        if user is not None and user.identity:
-            user_id = str(user.identity)
-    except AttributeError:
-        pass
-    return (AGENT_NAME, user_id, "memory")
-
-
 def _build_backend(runtime):
     from langgraph.config import get_config
 
     thread_id = get_config().get("configurable", {{}}).get("thread_id", "local")
     sandbox = _get_or_create_sandbox(str(thread_id))
-    user_store = StoreBackend(namespace=_user_memory_namespace)
     hub = _get_hub()
     return CompositeBackend(
         default=sandbox,
         routes={{
             HUB_PREFIX: hub,
-            USER_MEMORY_PREFIX: user_store,
         }},
     )
 
@@ -310,7 +298,7 @@ def _build_backend(runtime):
 graph = create_deep_agent(
     model={model!r},
     system_prompt={system_prompt!r},
-    memory=[f"{{HUB_PREFIX}}AGENTS.md", f"{{USER_MEMORY_PREFIX}}coding-prefs.md"],
+    memory={memory_sources!r},
     skills=[f"{{HUB_PREFIX}}skills/"],
     backend=_build_backend,
 )

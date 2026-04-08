@@ -97,9 +97,9 @@ def bundle(
 
     # 5. Generate deploy_graph.py
     if _is_hub_backed(config):
-        deploy_graph = _render_deploy_graph_hub(config)
+        deploy_graph = _render_deploy_graph_hub(config, project_root)
     else:
-        deploy_graph = _render_deploy_graph(config, tools_module_name)
+        deploy_graph = _render_deploy_graph(config, project_root, tools_module_name)
     (build_dir / "deploy_graph.py").write_text(deploy_graph)
     logger.info("Generated deploy_graph.py")
 
@@ -257,7 +257,47 @@ def _build_bundle(config: DeployConfig, project_root: Path) -> dict[str, str]:
     return bundle
 
 
-def _render_deploy_graph_hub(config: DeployConfig) -> str:
+def _enumerate_memory_keys(
+    config: DeployConfig,
+    project_root: Path,
+    *,
+    file_prefix: str,
+    dir_root: str,
+) -> list[str]:
+    """Enumerate the runtime store keys for memory sources.
+
+    `MemoryMiddleware` calls ``backend.download_files(sources)`` and treats
+    each entry as a single file path, so the rendered ``memory=[...]`` list
+    must contain real file keys (not directory placeholders). This walks
+    ``config.memory.sources`` the same way the bundlers do and returns one
+    key per file.
+
+    Args:
+        config: Parsed deploy configuration.
+        project_root: Project root directory used to resolve relative paths.
+        file_prefix: Prefix prepended to every key (e.g. ``"/memory/"`` for
+            the StoreBackend bundle, ``"/longterm/"`` for the hub mount).
+        dir_root: For directory sources, controls how the relative path
+            inside the key is computed — ``"source"`` makes it relative to
+            the source directory (matches ``_build_bundle``), ``"project"``
+            makes it relative to the project root (matches
+            ``_collect_hub_files``).
+    """
+    keys: list[str] = []
+    for src in config.memory.sources:
+        src_path = project_root / src
+        if src_path.is_file():
+            keys.append(f"{file_prefix}{src_path.name}")
+        elif src_path.is_dir():
+            base = src_path if dir_root == "source" else project_root
+            for f in sorted(src_path.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    rel = f.relative_to(base).as_posix()
+                    keys.append(f"{file_prefix}{rel}")
+    return keys
+
+
+def _render_deploy_graph_hub(config: DeployConfig, project_root: Path) -> str:
     """Render the hub-backed ``deploy_graph.py``.
 
     Mirrors ``examples/deploy-coding-agent/coding_agent.py``: HubBackend +
@@ -265,6 +305,9 @@ def _render_deploy_graph_hub(config: DeployConfig) -> str:
     CompositeBackend. Files are read from the hub repo named
     ``config.agent.name`` (which `_push_to_hub` populates).
     """
+    memory_sources = _enumerate_memory_keys(
+        config, project_root, file_prefix="/longterm/", dir_root="project"
+    )
     return DEPLOY_GRAPH_HUB_TEMPLATE.format(
         agent_name=config.agent.name,
         hub_repo=config.agent.name,
@@ -272,11 +315,13 @@ def _render_deploy_graph_hub(config: DeployConfig) -> str:
         system_prompt=config.agent.system_prompt,
         sandbox_template=config.sandbox.template,
         sandbox_image=config.sandbox.image,
+        memory_sources=memory_sources,
     )
 
 
 def _render_deploy_graph(
     config: DeployConfig,
+    project_root: Path,
     tools_module_name: str | None,
 ) -> str:
     """Render the deploy_graph.py server entry point.
@@ -336,8 +381,16 @@ def _render_deploy_graph(
             "            backend = sandbox_backend"
         )
 
-    # Compute store paths for memory and skills
-    memory_sources = ["/memory/"]
+    # Compute store paths for memory and skills.
+    #
+    # Memory keys must be enumerated per file: ``MemoryMiddleware`` calls
+    # ``backend.download_files(sources)`` and treats each entry as a single
+    # file path, so a directory placeholder like ``/memory/`` would silently
+    # resolve to ``file_not_found``. Skills, by contrast, are listed via
+    # ``ls``/``glob`` by ``SkillsMiddleware``, so a directory root works.
+    memory_sources = _enumerate_memory_keys(
+        config, project_root, file_prefix="/memory/", dir_root="source"
+    )
     skills_sources = ["/skills/"]
 
     return DEPLOY_GRAPH_TEMPLATE.format(

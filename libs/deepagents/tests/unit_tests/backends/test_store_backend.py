@@ -383,7 +383,7 @@ def test_compat_wrapper_unknown_attr_on_real_runtime_raises() -> None:
     rt = Runtime(context=None)
     compat = _NamespaceRuntimeCompat(runtime=rt)
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(AttributeError, match="nonexistent_attribute_xyz"):
         _ = compat.nonexistent_attribute_xyz  # type: ignore[union-attr]
 
 
@@ -426,6 +426,10 @@ def test_get_namespace_outside_graph_execution_with_factory() -> None:
 
     # Should not raise — factory ignores rt and runtime=None is gracefully handled
     be.write("/file.txt", "content")
+    read = be.read("/file.txt")
+    assert read.error is None
+    assert read.file_data is not None
+    assert "content" in read.file_data["content"]
     items = mem_store.search(("myns",))
     assert len(items) == 1
     assert items[0].key == "/file.txt"
@@ -435,10 +439,10 @@ def test_compat_wrapper_factory_returning_none_raises() -> None:
     """A namespace factory returning None triggers ValueError from _validate_namespace."""
     mem_store = InMemoryStore()
 
-    def bad_factory(_rt: object) -> None:  # type: ignore[return]
+    def none_returning_factory(_rt: object) -> None:  # type: ignore[return]
         return None  # type: ignore[return-value]
 
-    be = StoreBackend(store=mem_store, namespace=bad_factory)  # type: ignore[arg-type]
+    be = StoreBackend(store=mem_store, namespace=none_returning_factory)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="must not be empty"):
         be.write("/test.txt", "content")

@@ -249,7 +249,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:nvidia", "harbor:nvidia"}),
+        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(

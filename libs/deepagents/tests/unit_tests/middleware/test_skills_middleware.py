@@ -24,6 +24,19 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.skills import (
+    MAX_SKILL_COMPATIBILITY_LENGTH,
+    MAX_SKILL_DESCRIPTION_LENGTH,
+    MAX_SKILL_FILE_SIZE,
+    SkillMetadata,
+    SkillsMiddleware,
+    _format_skill_annotations,
+    _list_skills,
+    _parse_skill_metadata,
+    _validate_metadata,
+    _validate_skill_name,
+)
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def _assistant_id_namespace(_rt) -> tuple[str, ...]:
@@ -38,19 +51,6 @@ def _assistant_id_namespace(_rt) -> tuple[str, ...]:
     if assistant_id:
         return (assistant_id, "filesystem")
     return ("filesystem",)
-from deepagents.middleware.skills import (
-    MAX_SKILL_COMPATIBILITY_LENGTH,
-    MAX_SKILL_DESCRIPTION_LENGTH,
-    MAX_SKILL_FILE_SIZE,
-    SkillMetadata,
-    SkillsMiddleware,
-    _format_skill_annotations,
-    _list_skills,
-    _parse_skill_metadata,
-    _validate_metadata,
-    _validate_skill_name,
-)
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 @contextmanager

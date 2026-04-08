@@ -46,11 +46,10 @@ if TYPE_CHECKING:
 class BackendContext(Generic[StateT, ContextT]):
     """Context passed to namespace factory functions.
 
-    .. deprecated::
-        `BackendContext` is deprecated and will be removed in v0.7.
-        Namespace factories now receive a ``Runtime`` instance directly.
-        Migrate from ``lambda ctx: (ctx.runtime.context.user_id, "fs")``
-        to ``lambda rt: (rt.context.user_id, "fs")``.
+    Deprecated: `BackendContext` will be removed in version 0.7.0.
+    Namespace factories now receive a `Runtime` instance directly.
+    Migrate from `lambda ctx: (ctx.runtime.context.user_id, "fs")`
+    to `lambda rt: (rt.context.user_id, "fs")`.
     """
 
     state: StateT

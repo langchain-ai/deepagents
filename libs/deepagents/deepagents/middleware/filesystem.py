@@ -33,6 +33,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends.composite import RoutePolicy
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -56,20 +57,17 @@ from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 
-# Maps tool names to the backend method names used by RoutePolicy.
-# Only entries where the names diverge are listed; tools whose name
-# matches the backend method exactly (ls, glob, grep, execute) are
-# handled by the identity fallback in _tool_name_to_method().
-_TOOL_TO_METHOD: dict[str, str] = {
-    "read_file": "read",
-    "write_file": "write",
-    "edit_file": "edit",
+# Maps every backend method name to its corresponding filesystem tool name.
+_METHOD_TO_TOOL: dict[str, str] = {
+    "read": "read_file",
+    "write": "write_file",
+    "edit": "edit_file",
+    "ls": "ls",
+    "glob": "glob",
+    "grep": "grep",
+    "execute": "execute",
 }
 
-# The set of backend method names that correspond to filesystem tools
-# the LLM can invoke. Used by globally_blocked_methods() to determine
-# which tools to filter.
-_FILESYSTEM_TOOL_METHODS: set[str] = {"ls", "read", "write", "edit", "glob", "grep", "execute"}
 
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
@@ -346,6 +344,11 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
+def _allowed_tools(policy: RoutePolicy) -> str:
+    tools = sorted(_METHOD_TO_TOOL[m] for m in policy.allowed_methods if m in _METHOD_TO_TOOL)
+    return ", ".join(tools)
+
+
 def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     """Build a system prompt section describing route policies, if any.
 
@@ -360,17 +363,17 @@ def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     lines = [
         "## Route Policies",
         "",
-        "The following paths have access restrictions. Operations not listed in the allowed methods will be rejected.",
+        "The following paths have access restrictions. Tools not listed as allowed will be rejected.",
         "",
     ]
 
     for prefix in sorted(backend.routes):
         policy = backend.policy_for_route(prefix)
         if policy is not None:
-            lines.append(f"- `{prefix}`: {policy.describe()}")
+            lines.append(f"- `{prefix}`: allowed tools: {_allowed_tools(policy)}")
 
     if backend.default_policy is not None:
-        lines.append(f"- Default policy (all other paths): {backend.default_policy.describe()}")
+        lines.append(f"- Default policy (all other paths): allowed tools: {_allowed_tools(backend.default_policy)}")
 
     return "\n".join(lines)
 
@@ -1184,48 +1187,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Extract the name from a tool object or dict."""
         return tool.name if hasattr(tool, "name") else tool.get("name")  # type: ignore[union-attr]
 
-    def _filter_tools_by_backend(
-        self,
-        request: ModelRequest[ContextT],
-        resolved_backend: BackendProtocol,
-    ) -> tuple[ModelRequest[ContextT], bool, bool]:
-        """Filter tools based on backend capabilities and policies.
-
-        Removes tools that can never succeed given the backend configuration:
-        1. `execute` when the backend doesn't implement `SandboxBackendProtocol`.
-        2. Any filesystem tool whose backend method is globally blocked by
-           policies on every route and the default.
-
-        Args:
-            request: The model request to filter tools from.
-            resolved_backend: The resolved backend instance.
-
-        Returns:
-            A tuple of (updated_request, has_execute_tool, backend_supports_execution).
-        """
-        # Filter execute tool if backend doesn't support it (SandboxBackendProtocol)
-        has_execute_tool = any(self._get_tool_name(t) == "execute" for t in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            backend_supports_execution = _supports_execution(resolved_backend)
-            if not backend_supports_execution:
-                request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) != "execute"])
-                has_execute_tool = False
-
-        # Filter tools whose backend methods are blocked on every route + default
-        if isinstance(resolved_backend, CompositeBackend):
-            blocked = resolved_backend.globally_blocked_methods(_FILESYSTEM_TOOL_METHODS)
-            if blocked:
-                blocked_tools = {name for name, method in _TOOL_TO_METHOD.items() if method in blocked}
-                blocked_tools |= blocked & _FILESYSTEM_TOOL_METHODS
-                if "execute" in blocked:
-                    has_execute_tool = False
-                    backend_supports_execution = False
-                request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) not in blocked_tools])
-
-        return request, has_execute_tool, backend_supports_execution
-
     def _build_and_attach_system_prompt(
         self,
         request: ModelRequest[ContextT],
@@ -1299,7 +1260,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update tagging a newly evicted message.
         """
         resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-        request, has_execute_tool, backend_supports_execution = self._filter_tools_by_backend(request, resolved_backend)
+        has_execute_tool = any(self._get_tool_name(t) == "execute" for t in request.tools)
+        backend_supports_execution = _supports_execution(resolved_backend) if has_execute_tool else False
+        if has_execute_tool and not backend_supports_execution:
+            request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) != "execute"])
+            has_execute_tool = False
         request = self._build_and_attach_system_prompt(
             request,
             resolved_backend,
@@ -1337,7 +1302,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             with a state update tagging newly evicted messages.
         """
         resolved_backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-        request, has_execute_tool, backend_supports_execution = self._filter_tools_by_backend(request, resolved_backend)
+        has_execute_tool = any(self._get_tool_name(t) == "execute" for t in request.tools)
+        backend_supports_execution = _supports_execution(resolved_backend) if has_execute_tool else False
+        if has_execute_tool and not backend_supports_execution:
+            request = request.override(tools=[t for t in request.tools if self._get_tool_name(t) != "execute"])
+            has_execute_tool = False
         request = self._build_and_attach_system_prompt(
             request,
             resolved_backend,

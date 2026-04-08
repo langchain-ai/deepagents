@@ -29,7 +29,6 @@ from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
 from deepagents.middleware.summarization import create_summarization_tool_middleware
-from tests.unit_tests.backends.test_composite_backend import MockSandboxBackend
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -2476,120 +2475,6 @@ class TestRoutePolicyEndToEnd:
         system_content = str(capturing_middleware.captured_system_messages[0].content)
         assert "/vendor/" in system_content
         assert "/data/" in system_content
-
-
-class TestPolicyBasedToolFiltering:
-    """Tests that globally-blocked methods cause tools to be removed from the model request."""
-
-    def test_globally_read_only_policy_removes_write_edit_execute(self) -> None:
-        """When default_policy is read-only and no route overrides, write/edit/execute are removed."""
-        mem_store = InMemoryStore()
-        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-        backend = CompositeBackend(
-            default=default,
-            routes={},
-            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
-        )
-
-        tool_capture = ToolCapturingMiddleware()
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
-
-        agent = create_deep_agent(model=model, backend=backend, middleware=[tool_capture])
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        tool_names = tool_capture.captured_tool_names[0]
-        assert "write_file" not in tool_names
-        assert "edit_file" not in tool_names
-        assert "execute" not in tool_names
-        assert "ls" in tool_names
-        assert "read_file" in tool_names
-        assert "glob" in tool_names
-        assert "grep" in tool_names
-
-    def test_one_route_allows_write_tool_kept(self) -> None:
-        """Write allowed on one route means write_file stays in tools."""
-        mem_store = InMemoryStore()
-        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-        store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",))
-        backend = CompositeBackend(
-            default=default,
-            routes={
-                "/writable/": Route(
-                    backend=store,
-                    policy=RoutePolicy(allowed_methods={"ls", "read", "write", "glob", "grep"}),
-                ),
-            },
-            default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
-        )
-
-        tool_capture = ToolCapturingMiddleware()
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
-
-        agent = create_deep_agent(model=model, backend=backend, middleware=[tool_capture])
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        tool_names = tool_capture.captured_tool_names[0]
-        assert "write_file" in tool_names
-        assert "edit_file" not in tool_names
-
-    def test_no_policies_all_tools_present(self) -> None:
-        """No policies means all filesystem tools are present (except execute without sandbox)."""
-        mem_store = InMemoryStore()
-        default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-        backend = CompositeBackend(default=default, routes={})
-
-        tool_capture = ToolCapturingMiddleware()
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
-
-        agent = create_deep_agent(model=model, backend=backend, middleware=[tool_capture])
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        tool_names = tool_capture.captured_tool_names[0]
-        assert "write_file" in tool_names
-        assert "edit_file" in tool_names
-        assert "ls" in tool_names
-        assert "read_file" in tool_names
-        assert "glob" in tool_names
-        assert "grep" in tool_names
-
-    def test_execute_blocked_by_policy_despite_sandbox_backend(self) -> None:
-        """Execute removed when backend supports it but policy blocks it."""
-        mem_store = InMemoryStore()
-        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-        backend = CompositeBackend(
-            default=sandbox,
-            routes={},
-            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
-        )
-
-        tool_capture = ToolCapturingMiddleware()
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
-
-        agent = create_deep_agent(model=model, backend=backend, middleware=[tool_capture])
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        tool_names = tool_capture.captured_tool_names[0]
-        assert "execute" not in tool_names
-        assert "write_file" in tool_names
-
-    def test_system_prompt_excludes_execute_when_blocked_by_policy(self) -> None:
-        """System prompt does not include execute section when policy blocks it."""
-        mem_store = InMemoryStore()
-        sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-        backend = CompositeBackend(
-            default=sandbox,
-            routes={},
-            default_policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
-        )
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
-
-        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing_middleware])
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "Execute Tool" not in system_content
 
 
 class TestAsyncSubagentEndToEnd:

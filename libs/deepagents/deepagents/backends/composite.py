@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -63,8 +63,7 @@ class RoutePolicy:
     Methods are identified by their backend method names: `ls`, `read`, `write`,
     `edit`, `glob`, `grep`, `execute`, `upload_files`, `download_files`.
 
-    Subclass and override `is_allowed` for programmatic policies (e.g.,
-    user-based access control).
+    Subclass and override `is_allowed` for programmatic policies.
 
     Examples:
         ```python
@@ -76,27 +75,16 @@ class RoutePolicy:
 
     allowed_methods: set[str]
 
-    def is_allowed(self, method: str, **context: Any) -> bool:  # noqa: ARG002
+    def is_allowed(self, method: str) -> bool:
         """Check whether a backend method is permitted.
 
         Args:
             method: Backend method name (e.g. `"write"`, `"read"`).
-            **context: Reserved for future use (e.g. user identity).
 
         Returns:
             `True` if the method is allowed, `False` otherwise.
         """
         return method in self.allowed_methods
-
-    def describe(self) -> str:
-        """Return a human-readable description of this policy for system prompts.
-
-        Subclasses should override this to describe their custom constraints.
-
-        Returns:
-            A short description of the policy.
-        """
-        return f"allowed methods: {', '.join(sorted(self.allowed_methods))}"
 
 
 @dataclass

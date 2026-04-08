@@ -1,11 +1,13 @@
-"""Parametrized pytest tests for 15 failing tau2 airline tasks.
+"""Parametrized pytest tests for 15 tau2 airline tasks.
 
 Each test creates a fresh airline environment, runs a multi-turn conversation
 between a deepagents agent and an LLM user simulator, then evaluates the
 result using tau2's DB state + communicate info scoring.
 
-Based on τ-bench / τ²-bench by Sierra Research (MIT License).
-See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
+Based on τ-bench / τ²-bench / τ³-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Task data updated to τ³-bench v1.0.0 which
+includes corrections to all 15 evaluated tasks.
+Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 
 Usage:
     uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-20250514

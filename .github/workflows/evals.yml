@@ -293,6 +293,77 @@ jobs:
           path: libs/evals/evals_report.json
           if-no-files-found: error
 
+      - name: "📊 Post results to summary"
+        if: "!cancelled()"
+        run: |
+          python3 << 'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+
+          report_path = Path("evals_report.json")
+          if not report_path.exists():
+              print("evals_report.json not found, skipping summary", file=sys.stderr)
+              sys.exit(0)
+
+          try:
+              report = json.loads(report_path.read_text())
+          except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+              print(f"::error::evals_report.json is malformed: {exc}")
+              sys.exit(1)
+          model = report.get("model", "unknown")
+
+          # Load category labels for friendly display names.
+          labels = {}
+          try:
+              cats_json = Path("deepagents_evals/categories.json")
+              labels = json.loads(cats_json.read_text()).get("labels", {})
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"::warning::Could not load category labels from {cats_json}: {exc}")
+
+          lines = [f"## 📊 {model}", ""]
+
+          # -- Metrics table --
+          metrics = [
+              ("passed", None), ("failed", None), ("skipped", None),
+              ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+              ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+              ("median_duration_s", None),
+          ]
+          lines += ["| Metric | Value |", "|---|---:|"]
+          for key, default in metrics:
+              val = report.get(key, default)
+              if val is None:
+                  val = 0
+              lines.append(f"| `{key}` | {val} |")
+
+          # -- Per-category scores --
+          cat_scores = report.get("category_scores")
+          if isinstance(cat_scores, dict) and cat_scores:
+              lines += ["", "### Per-category correctness", "", "| Category | Score |", "|---|---:|"]
+              for cat, score in sorted(cat_scores.items()):
+                  lines.append(f"| {labels.get(cat, cat)} | {score} |")
+
+          # -- Experiment links --
+          exp_links = report.get("experiment_links")
+          if isinstance(exp_links, list) and exp_links:
+              lines += ["", "### LangSmith experiments", ""]
+              for link in exp_links:
+                  name = link.get("name", "")
+                  url = link.get("url", "")
+                  public_url = link.get("public_url", "")
+                  if public_url:
+                      lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                  elif url:
+                      lines.append(f"- [{name or url}]({url})")
+
+          text = "\n".join(lines) + "\n"
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write(text)
+          print(text)
+          PYEOF
+
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest

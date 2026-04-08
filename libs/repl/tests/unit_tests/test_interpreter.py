@@ -97,6 +97,23 @@ def test_parallel_results_can_be_assigned() -> None:
     assert interpreter.env == {"results": [1, 2, 3]}
 
 
+def test_benchmark_simple_print_program() -> None:
+    """Sanity check."""
+    interpreter = Interpreter()
+    result = interpreter.evaluate("print(42)")
+    tic = time.monotonic()
+    for _ in range(10):
+        interpreter = Interpreter()
+        result = interpreter.evaluate("print(42)")
+        assert result == 42
+        assert interpreter.printed_lines == ["42"]
+    toc = time.monotonic()
+    elapsed = toc - tic
+    # in us not ms
+    elapsed_us = elapsed * 1e6
+    elapsed_per_test = elapsed_us / 10.0
+    assert elapsed_per_test < 30
+
 def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 

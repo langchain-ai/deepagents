@@ -49,7 +49,7 @@ class BackendContext(Generic[StateT, ContextT]):
     Deprecated: `BackendContext` will be removed in version 0.7.0.
     Namespace factories now receive a `Runtime` instance directly.
     Migrate from `lambda ctx: (ctx.runtime.context.user_id, "fs")`
-    to `lambda rt: (rt.context.user_id, "fs")`.
+    to `lambda rt: (rt.server_info.user.identity, "fs")`.
     """
 
     state: StateT
@@ -191,7 +191,7 @@ class StoreBackend(BackendProtocol):
                 with an `encoding` field.
 
         Example:
-                    namespace=lambda rt: (rt.context.user_id, "filesystem")
+                    namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
         """
         if runtime is not None:
             warnings.warn(

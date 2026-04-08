@@ -1,5 +1,6 @@
 import warnings
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Never
 
 import pytest
@@ -352,16 +353,13 @@ def test_compat_wrapper_old_style_factory_end_to_end() -> None:
 def test_compat_wrapper_new_style_factory_end_to_end() -> None:
     """A new-style namespace factory using rt.context works without warnings."""
 
-    @dataclass
-    class Ctx:
-        user_id: str
-
-    rt = Runtime(context=Ctx(user_id="carol"))
+    rt = Runtime(context=None)
+    rt.server_info = SimpleNamespace(user=SimpleNamespace(identity="carol"))  # type: ignore[attr-defined]
     compat = _NamespaceRuntimeCompat(runtime=rt)
 
     # New-style factory
     def new_factory(rt: Runtime) -> tuple[str, ...]:  # type: ignore[type-arg]
-        return (rt.context.user_id, "filesystem")
+        return (rt.server_info.user.identity, "filesystem")
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")

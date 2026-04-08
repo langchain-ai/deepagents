@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "skip-github-release": true,
   "draft-pull-request": true,
+  "separate-pull-requests": true,
   "changelog-sections": [
     {
       "type": "feat",
@@ -63,6 +64,90 @@
       "extra-files": [
         "pyproject.toml",
         "deepagents_cli/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/deepagents": {
+      "release-type": "python",
+      "package-name": "deepagents",
+      "component": "deepagents",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/acp": {
+      "release-type": "python",
+      "package-name": "deepagents-acp",
+      "component": "deepagents-acp",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents_acp/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/daytona": {
+      "release-type": "python",
+      "package-name": "langchain-daytona",
+      "component": "langchain-daytona",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_daytona/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/modal": {
+      "release-type": "python",
+      "package-name": "langchain-modal",
+      "component": "langchain-modal",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_modal/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/runloop": {
+      "release-type": "python",
+      "package-name": "langchain-runloop",
+      "component": "langchain-runloop",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_runloop/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/partners/quickjs": {
+      "release-type": "python",
+      "package-name": "langchain-quickjs",
+      "component": "langchain-quickjs",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_quickjs/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "libs/repl": {
+      "release-type": "python",
+      "package-name": "langchain-repl",
+      "component": "langchain-repl",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_repl/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
     }

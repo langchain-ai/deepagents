@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.4"
+version = "0.0.5"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -57,8 +57,12 @@ Twitter = "https://x.com/LangChain"
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = ["../deepagents"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

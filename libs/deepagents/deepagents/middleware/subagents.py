@@ -2,12 +2,11 @@
 
 import asyncio
 import json
+import os
 import warnings
-from langgraph.types import Interrupt
-
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
-from langgraph.errors import GraphInterrupt
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -18,7 +17,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -546,6 +546,33 @@ Available subagent types:
 """
 
 
+def _sanitize_task_id(task_id: str, output_dir: str, fallback: str) -> str:
+    """Sanitize a task ID so it cannot escape the output directory.
+
+    Applies ``os.path.basename`` to strip directory components, then resolves
+    the resulting path and verifies it is still inside *output_dir*.
+
+    Args:
+        task_id: Raw task identifier (may contain path separators or ``..``).
+        output_dir: The directory that output files must stay within.
+        fallback: Value to use when *task_id* is empty after sanitization.
+
+    Returns:
+        A safe filename component (without extension).
+
+    Raises:
+        ValueError: If the resolved path escapes *output_dir*.
+    """
+    name = Path(task_id).name
+    safe = fallback if (not name or name in (".", "..")) else name
+    resolved = os.path.realpath(Path(output_dir) / f"{safe}.txt")
+    real_output_dir = os.path.realpath(output_dir)
+    if not resolved.startswith(real_output_dir + os.sep):
+        msg = f"task id {task_id!r} resolves outside output directory"
+        raise ValueError(msg)
+    return safe
+
+
 class SwarmTaskSpec(TypedDict):
     """A single task entry in a swarm config.
 
@@ -861,6 +888,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     summaries.append(f"Error: {item}")
                     continue
                 task_id, result_text = item
+                task_id = _sanitize_task_id(task_id, output_dir_clean, fallback=str(results.index(item)))
                 output_path = f"{output_dir_clean}/{task_id}.txt"
                 outputs.append((output_path, result_text.encode("utf-8")))
 

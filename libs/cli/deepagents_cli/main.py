@@ -67,12 +67,19 @@ def check_cli_dependencies() -> None:
 
 
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+"""Fallback installation URL when no platform package manager is detected."""
 
-_RIPGREP_SUPPRESS_HINT = (
-    "To suppress, add to ~/.deepagents/config.toml:\n"
-    "\\[warnings]\n"
-    'suppress = \\["ripgrep"]'
+_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
+"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
+
+_SUPPRESS_HINT_CLI = (
+    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
 )
+"""Suppression hint for non-interactive CLI output.
+
+Contains a `<key>` placeholder that callers replace with the warning key
+(e.g. `"ripgrep"`, `"tavily"`).
+"""
 
 
 def _ripgrep_install_hint() -> str:
@@ -133,6 +140,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
+
+    from deepagents_cli.config import settings
+
+    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+        missing.append("tavily")
+
     return missing
 
 
@@ -150,7 +163,13 @@ def format_tool_warning_tui(tool: str) -> str:
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"\nInstall: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}"
+            f"{_SUPPRESS_HINT_TUI}"
+        )
+    if tool == "tavily":
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "\nGet a key at https://tavily.com\n\n"
+            f"{_SUPPRESS_HINT_TUI}"
         )
     return f"{tool} is not installed."
 
@@ -168,10 +187,19 @@ def format_tool_warning_cli(tool: str) -> str:
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
             hint = f"[link={hint}]{hint}[/link]"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}\n"
+            f"{suppress}\n"
+        )
+    if tool == "tavily":
+        url = "https://tavily.com"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            f"Get a key at [link={url}]{url}[/link]\n\n"
+            f"{suppress}\n"
         )
     return f"{tool} is not installed."
 
@@ -505,6 +533,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--skill",
+        dest="initial_skill",
+        metavar="NAME",
+        help="Invoke a skill when the interactive session starts",
+    )
+
+    parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
@@ -649,6 +684,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
+    initial_skill: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -684,6 +720,7 @@ async def run_textual_cli_async(
 
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
+        initial_skill: Optional skill name to invoke when the session starts.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -769,6 +806,7 @@ async def run_textual_cli_async(
             thread_id=thread_id,
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
+            initial_skill=initial_skill,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -929,6 +967,15 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         # initial_prompt = "{contents of error.log}\n\nexplain this"
         ```
 
+    - If `initial_skill` is already set (`--skill`, but not `-n`), stores the
+        piped text in `initial_prompt` so the skill receives it as the
+        startup request:
+
+        ```bash
+        cat diff.txt | deepagents --skill code-review
+        # initial_prompt = "{contents of diff.txt}"
+        ```
+
     - Otherwise, sets `non_interactive_message` to the piped text, causing
         the CLI to run non-interactively with it as the prompt:
 
@@ -1004,10 +1051,21 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     if not stdin_text:
         return
 
+    # Priority: -n message > -m prompt > --skill (no -m) > fallback to -n.
+    # The initial_prompt branch uses `is not None` (not truthiness) so that
+    # `-m ""` is distinguished from "no -m at all", allowing stdin to land
+    # in initial_prompt even when the explicit value is empty.  The --skill
+    # branch only fires when -m was NOT provided; when both -m and --skill
+    # are set, stdin merges with the -m value (previous branch).
     if args.non_interactive_message:
         args.non_interactive_message = f"{stdin_text}\n\n{args.non_interactive_message}"
-    elif args.initial_prompt:
-        args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+    elif args.initial_prompt is not None:
+        if args.initial_prompt:
+            args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+        else:
+            args.initial_prompt = stdin_text
+    elif getattr(args, "initial_skill", None):
+        args.initial_prompt = stdin_text
     else:
         args.non_interactive_message = stdin_text
 
@@ -1278,6 +1336,22 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        if (
+            getattr(args, "initial_skill", None)
+            and not args.non_interactive_message
+            and (args.quiet or args.no_stream)
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --skill requires "
+                "--non-interactive (-n) when combined with --quiet or "
+                "--no-stream.\n"
+                "  deepagents --skill code-review -m 'review this patch'\n"
+                "  deepagents --skill code-review -n 'review this patch'"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -1499,6 +1573,7 @@ def cli_main() -> None:
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
+                    initial_skill=getattr(args, "initial_skill", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -1561,6 +1636,7 @@ def cli_main() -> None:
                         thread_id=thread_id,
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
+                        initial_skill=getattr(args, "initial_skill", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,

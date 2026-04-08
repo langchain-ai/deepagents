@@ -58,12 +58,13 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.2-codex`
 - `openai:gpt-5.4`
 
-### `set2` (16 models)
+### `set2` (17 models)
 
 - `groq:openai/gpt-oss-120b`
 - `groq:qwen/qwen3-32b`
 - `groq:moonshotai/kimi-k2-instruct`
 - `ollama:glm-5`
+- `ollama:glm-5.1`
 - `ollama:minimax-m2.5`
 - `ollama:qwen3.5:397b-cloud`
 - `ollama:nemotron-3-nano:30b`
@@ -89,11 +90,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3-flash-preview`
 - `openai:gpt-5.4-mini`
 
-### `open` (3 models)
+### `open` (4 models)
 
 - `baseten:zai-org/GLM-5`
+- `nvidia:nvidia/nemotron-3-super-120b-a12b`
 - `ollama:minimax-m2.7:cloud`
-- `openrouter:nvidia/nemotron-3-super-120b-a12b`
+- `openrouter:z-ai/glm-5.1`
 
 ## Provider groups
 
@@ -142,9 +144,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 - `nvidia:nvidia/nemotron-3-super-120b-a12b`
 
-### `ollama` (12 models)
+### `ollama` (13 models)
 
 - `ollama:glm-5`
+- `ollama:glm-5.1`
 - `ollama:minimax-m2.5`
 - `ollama:minimax-m2.7:cloud`
 - `ollama:qwen3.5:397b-cloud`
@@ -169,9 +172,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4`
 - `openai:gpt-5.4-mini`
 
-### `openrouter` (2 models)
+### `openrouter` (3 models)
 
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 
 ### `xai` (2 models)
@@ -179,7 +183,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (52 models)
+## `all` (54 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-20250514`
@@ -209,6 +213,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `groq:moonshotai/kimi-k2-instruct`
 - `nvidia:nvidia/nemotron-3-super-120b-a12b`
 - `ollama:glm-5`
+- `ollama:glm-5.1`
 - `ollama:minimax-m2.5`
 - `ollama:minimax-m2.7:cloud`
 - `ollama:qwen3.5:397b-cloud`
@@ -230,6 +235,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4`
 - `openai:gpt-5.4-mini`
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`

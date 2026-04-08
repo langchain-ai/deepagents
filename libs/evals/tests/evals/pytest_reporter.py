@@ -39,6 +39,12 @@ _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 _EXPERIMENT_LINKS: list[dict[str, str]] = []
 """LangSmith experiment link dicts with "name", "url", and optional "public_url" keys, collected at session teardown."""
 
+_FAILURES: list[dict[str, str]] = []
+"""Per-test failure details (`test_name`, `category`, `failure_message`) for post-run analysis."""
+
+_MAX_FAILURE_MSG_LEN = 30_000
+"""Truncate failure messages beyond this length (~7500 tokens) to stay within LLM context limits."""
+
 
 def _micro_step_ratio() -> float | None:
     """Compute sum(actual_steps) / sum(expected_steps).
@@ -232,6 +238,18 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
 
+    if outcome == "failed":
+        msg = report.longreprtext
+        if len(msg) > _MAX_FAILURE_MSG_LEN:
+            msg = msg[:_MAX_FAILURE_MSG_LEN] + "\n\n... [truncated]"
+        _FAILURES.append(
+            {
+                "test_name": report.nodeid,
+                "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
+                "failure_message": msg,
+            }
+        )
+
     category = _NODEID_TO_CATEGORY.get(report.nodeid)
     if category and outcome in {"passed", "failed"}:
         bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
@@ -359,6 +377,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "median_duration_s": median_duration_s,
         "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
         "experiment_links": _EXPERIMENT_LINKS,
+        "failures": _FAILURES,
     }
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")

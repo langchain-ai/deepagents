@@ -1,5 +1,7 @@
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-PACKAGE_DIRS := $(sort $(patsubst %/,%,$(dir $(patsubst $(MAKEFILE_DIR)%,%,$(wildcard $(MAKEFILE_DIR)*/Makefile $(MAKEFILE_DIR)partners/*/Makefile)))))
+LIB_PACKAGE_DIRS := $(patsubst %/,%,$(dir $(patsubst $(MAKEFILE_DIR)%,%,$(wildcard $(MAKEFILE_DIR)*/Makefile $(MAKEFILE_DIR)partners/*/Makefile))))
+EXAMPLE_PACKAGE_DIRS := $(patsubst %/,%,$(patsubst $(MAKEFILE_DIR)%,%,$(dir $(wildcard $(MAKEFILE_DIR)../examples/*/pyproject.toml))))
+PACKAGE_DIRS := $(sort $(LIB_PACKAGE_DIRS) $(EXAMPLE_PACKAGE_DIRS))
 
 # Map package dirs to their required Python version
 # acp requires 3.14, everything else uses 3.12
@@ -45,7 +47,7 @@ lock-check: ## Check all lockfiles are up-to-date
 
 lint: ## Lint all packages
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
+	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🔍 Linting $$dir"; \
 		$(MAKE) -C "$$dir" lint; \
 	done
@@ -53,7 +55,7 @@ lint: ## Lint all packages
 
 format: ## Format all packages
 	@set -e; \
-	for dir in $(PACKAGE_DIRS); do \
+	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \
 		$(MAKE) -C "$$dir" format; \
 	done

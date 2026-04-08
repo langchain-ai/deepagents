@@ -43,7 +43,8 @@ from tests.evals.utils import run_agent
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("memory")]
+pytestmark = [pytest.mark.eval_category("memory"), pytest.mark.eval_tier("baseline")]
+"""Apply memory category and baseline tier to all tests in this module."""
 
 logger = logging.getLogger(__name__)
 

@@ -269,7 +269,7 @@ jobs:
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
       - name: "🔒 Apply OpenRouter provider pin"
-        if: inputs.openrouter_provider != ''
+        if: inputs.openrouter_provider != '' && matrix.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
@@ -292,6 +292,77 @@ jobs:
           name: evals-report-${{ strategy.job-index }}
           path: libs/evals/evals_report.json
           if-no-files-found: error
+
+      - name: "📊 Post results to summary"
+        if: "!cancelled()"
+        run: |
+          python3 << 'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+
+          report_path = Path("evals_report.json")
+          if not report_path.exists():
+              print("evals_report.json not found, skipping summary", file=sys.stderr)
+              sys.exit(0)
+
+          try:
+              report = json.loads(report_path.read_text())
+          except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+              print(f"::error::evals_report.json is malformed: {exc}")
+              sys.exit(1)
+          model = report.get("model", "unknown")
+
+          # Load category labels for friendly display names.
+          labels = {}
+          try:
+              cats_json = Path("deepagents_evals/categories.json")
+              labels = json.loads(cats_json.read_text()).get("labels", {})
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"::warning::Could not load category labels from {cats_json}: {exc}")
+
+          lines = [f"## 📊 {model}", ""]
+
+          # -- Metrics table --
+          metrics = [
+              ("passed", None), ("failed", None), ("skipped", None),
+              ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+              ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+              ("median_duration_s", None),
+          ]
+          lines += ["| Metric | Value |", "|---|---:|"]
+          for key, default in metrics:
+              val = report.get(key, default)
+              if val is None:
+                  val = 0
+              lines.append(f"| `{key}` | {val} |")
+
+          # -- Per-category scores --
+          cat_scores = report.get("category_scores")
+          if isinstance(cat_scores, dict) and cat_scores:
+              lines += ["", "### Per-category correctness", "", "| Category | Score |", "|---|---:|"]
+              for cat, score in sorted(cat_scores.items()):
+                  lines.append(f"| {labels.get(cat, cat)} | {score} |")
+
+          # -- Experiment links --
+          exp_links = report.get("experiment_links")
+          if isinstance(exp_links, list) and exp_links:
+              lines += ["", "### LangSmith experiments", ""]
+              for link in exp_links:
+                  name = link.get("name", "")
+                  url = link.get("url", "")
+                  public_url = link.get("public_url", "")
+                  if public_url:
+                      lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                  elif url:
+                      lines.append(f"- [{name or url}]({url})")
+
+          text = "\n".join(lines) + "\n"
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write(text)
+          print(text)
+          PYEOF
 
   aggregate:
     name: "📋 Aggregate evals"
@@ -372,11 +443,17 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory.
+          # Copy charts into run-specific directory (light + dark variants).
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then
+            cp "$GITHUB_WORKSPACE/charts/radar-dark.png" "${asset_dir}/radar-dark.png"
+          fi
           if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
             cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/charts/individual-dark" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual-dark" "${asset_dir}/individual-dark"
           fi
 
           git add "${asset_dir}"
@@ -394,13 +471,30 @@ jobs:
         env:
           BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
         run: |
+          # Use <picture> with prefers-color-scheme so GitHub automatically
+          # shows the right variant based on the reader's theme setting.
+          # Direct download links are included for each variant.
+          has_dark=false
+          [ -f charts/radar-dark.png ] && has_dark=true
+
           {
             echo ""
             echo "## Radar charts"
             echo ""
             echo "### Combined"
             echo ""
-            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            if $has_dark; then
+              echo '<picture>'
+              echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\">"
+              echo '</picture>'
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
+            else
+              echo "![Combined radar chart](${BASE_URL}/radar.png)"
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png)"
+            fi
             echo ""
 
             if [ -d charts/individual ]; then
@@ -408,7 +502,18 @@ jobs:
               echo ""
               for img in charts/individual/*.png; do
                 name="$(basename "$img" .png)"
-                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                if [ -d charts/individual-dark ] && [ -f "charts/individual-dark/${name}.png" ]; then
+                  echo '<picture>'
+                  echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\">"
+                  echo '</picture>'
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
+                else
+                  echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png)"
+                fi
                 echo ""
               done
             fi

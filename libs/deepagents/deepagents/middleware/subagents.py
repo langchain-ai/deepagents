@@ -609,7 +609,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
-        enable_swarm: bool = True,
+        enable_swarm: bool = False,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()

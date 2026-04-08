@@ -389,6 +389,8 @@ jobs:
               print(f"::error::evals_report.json is malformed: {exc}")
               sys.exit(1)
           model = report.get("model", "unknown")
+          if model == "unknown":
+              print("::warning::evals_report.json has no 'model' key; using 'unknown'")
 
           # Load category labels for friendly display names.
           labels = {}
@@ -398,41 +400,60 @@ jobs:
           except (FileNotFoundError, json.JSONDecodeError) as exc:
               print(f"::warning::Could not load category labels from {cats_json}: {exc}")
 
-          lines = [f"## 📊 {model}", ""]
-
-          # -- Metrics table --
-          metrics = [
-              ("passed", None), ("failed", None), ("skipped", None),
-              ("total", None), ("correctness", None), ("solve_rate", "n/a"),
-              ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
-              ("median_duration_s", None),
+          lines = [
+              "<details>",
+              f"<summary><strong>📊 {model}</strong> (click to expand)</summary>",
+              "",
           ]
-          lines += ["| Metric | Value |", "|---|---:|"]
-          for key, default in metrics:
-              val = report.get(key, default)
-              if val is None:
-                  val = 0
-              lines.append(f"| `{key}` | {val} |")
 
-          # -- Per-category scores --
-          cat_scores = report.get("category_scores")
-          if isinstance(cat_scores, dict) and cat_scores:
-              lines += ["", "### Per-category correctness", "", "| Category | Score |", "|---|---:|"]
-              for cat, score in sorted(cat_scores.items()):
-                  lines.append(f"| {labels.get(cat, cat)} | {score} |")
+          try:
+              # -- Metrics table --
+              metrics = [
+                  ("passed", None), ("failed", None), ("skipped", None),
+                  ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+                  ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+                  ("median_duration_s", None),
+              ]
+              header = "| " + " | ".join(f"`{k}`" for k, _ in metrics) + " |"
+              sep = "|" + "|".join("---:" for _ in metrics) + "|"
+              vals = []
+              for key, default in metrics:
+                  val = report.get(key, default)
+                  if val is None:
+                      val = 0
+                  vals.append(str(val))
+              row = "| " + " | ".join(vals) + " |"
+              lines += [header, sep, row]
 
-          # -- Experiment links --
-          exp_links = report.get("experiment_links")
-          if isinstance(exp_links, list) and exp_links:
-              lines += ["", "### LangSmith experiments", ""]
-              for link in exp_links:
-                  name = link.get("name", "")
-                  url = link.get("url", "")
-                  public_url = link.get("public_url", "")
-                  if public_url:
-                      lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
-                  elif url:
-                      lines.append(f"- [{name or url}]({url})")
+              # -- Per-category scores (horizontal) --
+              cat_scores = report.get("category_scores")
+              if isinstance(cat_scores, dict) and cat_scores:
+                  sorted_cats = sorted(cat_scores.items())
+                  esc = lambda s: str(s).replace("|", "\\|")
+                  cat_header = "| " + " | ".join(esc(labels.get(c, c)) for c, _ in sorted_cats) + " |"
+                  cat_sep = "|" + "|".join("---:" for _ in sorted_cats) + "|"
+                  cat_row = "| " + " | ".join(esc(s) for _, s in sorted_cats) + " |"
+                  lines += ["", "### Per-category correctness", "", cat_header, cat_sep, cat_row]
+
+              # -- Experiment links --
+              exp_links = report.get("experiment_links")
+              if isinstance(exp_links, list) and exp_links:
+                  lines += ["", "### LangSmith experiments", ""]
+                  for link in exp_links:
+                      if not isinstance(link, dict):
+                          continue
+                      name = link.get("name", "")
+                      url = link.get("url", "")
+                      public_url = link.get("public_url", "")
+                      if public_url:
+                          lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                      elif url:
+                          lines.append(f"- [{name or url}]({url})")
+          except Exception as exc:
+              lines.append(f"\n\n**Error building summary:** {exc}\n")
+              print(f"::warning::Error building summary for {model}: {exc}")
+          finally:
+              lines += ["", "</details>"]
 
           text = "\n".join(lines) + "\n"
           summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -564,12 +585,12 @@ jobs:
             if $has_dark; then
               echo '<picture>'
               echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
-              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
               echo '</picture>'
               echo ""
               echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
             else
-              echo "![Combined radar chart](${BASE_URL}/radar.png)"
+              echo "<img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
               echo ""
               echo "Download: [light](${BASE_URL}/radar.png)"
             fi
@@ -583,12 +604,12 @@ jobs:
                 if [ -d charts/individual-dark ] && [ -f "charts/individual-dark/${name}.png" ]; then
                   echo '<picture>'
                   echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
-                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
                   echo '</picture>'
                   echo ""
                   echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
                 else
-                  echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                  echo "<img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
                   echo ""
                   echo "Download: [light](${BASE_URL}/individual/${name}.png)"
                 fi

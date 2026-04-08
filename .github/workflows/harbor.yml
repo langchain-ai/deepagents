@@ -130,6 +130,8 @@ env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET_NAME: "terminal-bench"
   HARBOR_DATASET_VERSION: "2.0"
+  # Todo experiment: 10 curated medium tasks stratified by planning demand
+  HARBOR_EXPERIMENT_TASKS: "constraints-scheduling multi-source-data-merger openssl-selfsigned-cert nginx-request-logging kv-store-grpc log-summary-date-ranges build-pmars db-wal-recovery regex-log sqlite-db-truncate"
 
 jobs:
   prep:
@@ -349,11 +351,18 @@ jobs:
             env_flag="--env $HARBOR_SANDBOX_ENV"
           fi
 
+          # Build task filter flags from experiment task list
+          task_filter_flags=""
+          for task in $HARBOR_EXPERIMENT_TASKS; do
+            task_filter_flags="$task_filter_flags -t $task"
+          done
+
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
+            $task_filter_flags \
             --jobs-dir jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \

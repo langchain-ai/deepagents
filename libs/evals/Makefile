@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment-with-todos run-todo-experiment-without-todos
 
 .DEFAULT_GOAL := help
 
@@ -45,6 +45,49 @@ run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+
+# Todo middleware ablation experiment
+# 10 curated medium tasks from terminal-bench@2.0 stratified by planning demand:
+#   High planning:  constraints-scheduling, multi-source-data-merger,
+#                   openssl-selfsigned-cert, nginx-request-logging, kv-store-grpc
+#   Medium planning: log-summary-date-ranges, build-pmars, db-wal-recovery
+#   Low planning (controls): regex-log, sqlite-db-truncate
+TODO_EXPERIMENT_TASKS = \
+	-t constraints-scheduling \
+	-t multi-source-data-merger \
+	-t openssl-selfsigned-cert \
+	-t nginx-request-logging \
+	-t kv-store-grpc \
+	-t log-summary-date-ranges \
+	-t build-pmars \
+	-t db-wal-recovery \
+	-t regex-log \
+	-t sqlite-db-truncate
+
+EXPERIMENT_ENV ?= docker
+EXPERIMENT_CONCURRENCY ?= 1
+
+run-todo-experiment-with-todos: ## Run todo experiment WITH TodoListMiddleware
+	@mkdir -p jobs/todo-experiment
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+		--dataset terminal-bench@2.0 \
+		$(TODO_EXPERIMENT_TASKS) \
+		-n $(EXPERIMENT_CONCURRENCY) \
+		--jobs-dir jobs/todo-experiment \
+		--env $(EXPERIMENT_ENV) \
+		--agent-kwarg use_cli_agent=false \
+		--agent-kwarg include_todos=true
+
+run-todo-experiment-without-todos: ## Run todo experiment WITHOUT TodoListMiddleware
+	@mkdir -p jobs/todo-experiment
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+		--dataset terminal-bench@2.0 \
+		$(TODO_EXPERIMENT_TASKS) \
+		-n $(EXPERIMENT_CONCURRENCY) \
+		--jobs-dir jobs/todo-experiment \
+		--env $(EXPERIMENT_ENV) \
+		--agent-kwarg use_cli_agent=false \
+		--agent-kwarg include_todos=false
 
 ######################
 # CHARTS

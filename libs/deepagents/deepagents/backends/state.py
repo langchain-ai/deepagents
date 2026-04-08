@@ -1,28 +1,38 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from typing import TYPE_CHECKING
+import base64
+import warnings
+from typing import Any
+
+from langchain_core.runnables import RunnableConfig
+from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
+from langgraph.config import get_config
 
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
-    GrepMatch,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
-
-if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
 
 
 class StateBackend(BackendProtocol):
@@ -32,16 +42,114 @@ class StateBackend(BackendProtocol):
     a conversation thread but not across threads. State is automatically
     checkpointed after each agent step.
 
-    Special handling: Since LangGraph state must be updated via Command objects
-    (not direct mutation), operations return Command objects instead of None.
-    This is indicated by the uses_state=True flag.
+    Reads and writes go through LangGraph's `CONFIG_KEY_READ` /
+    `CONFIG_KEY_SEND` so that state updates are queued as proper channel
+    writes rather than returned as `files_update` dicts.
     """
 
-    def __init__(self, runtime: "ToolRuntime") -> None:
-        """Initialize StateBackend with runtime."""
-        self.runtime = runtime
+    def __init__(
+        self,
+        runtime: object = None,
+        *,
+        file_format: FileFormat = "v2",
+    ) -> None:
+        r"""Initialize StateBackend.
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+        Args:
+            runtime: Deprecated - accepted for backward compatibility but
+                ignored.  State is now read/written via `get_config()`.
+            file_format: Storage format version. `"v1"` stores
+                content as `list[str]` (lines split on `\\n`) without an
+                `encoding` field.  `"v2"` (default) stores content as a
+                plain `str` with an `encoding` field.
+        """
+        if runtime is not None:
+            warnings.warn(
+                "Passing `runtime` to StateBackend is deprecated and will be "
+                "removed in v0.7. StateBackend now reads and writes "
+                "state via `get_config()`. Simply use `StateBackend()` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._file_format = file_format
+
+    # ------------------------------------------------------------------
+    # Internal helpers for reading / writing state via config keys
+    # ------------------------------------------------------------------
+
+    def _get_config(self) -> RunnableConfig:
+        """Return the current LangGraph config, with a clear error if missing."""
+        try:
+            config = get_config()
+        except RuntimeError:
+            msg = (
+                "StateBackend must be used inside a LangGraph graph execution "
+                "(e.g. via create_deep_agent). It cannot read or write state "
+                "outside of a graph context. To pre-populate files, pass them "
+                'on invoke: agent.invoke({"messages": [...], "files": {...}})'
+            )
+            raise RuntimeError(msg) from None
+        configurable = config.get("configurable", {})
+        if CONFIG_KEY_READ not in configurable:
+            msg = (
+                "StateBackend requires CONFIG_KEY_READ / CONFIG_KEY_SEND in "
+                "the LangGraph config. Make sure the backend is used inside "
+                "a graph node or tool, not called directly. To pre-populate "
+                "files, pass them on invoke: "
+                'agent.invoke({"messages": [...], "files": {...}})'
+            )
+            raise RuntimeError(msg)
+        return config
+
+    def _read_files(self) -> dict[str, Any]:
+        """Read the current `files` channel via Pregel internals.
+
+        Uses `CONFIG_KEY_READ` to read state directly — this lets us
+        initialize StateBackend once and fetch state on demand from any
+        graph context (tools, middleware nodes, etc.).
+
+        `fresh=False` reads the value as of the *start* of the current
+        superstep (checkpointed value + writes from prior steps). Writes
+        queued during the current step aren't applied until the node boundary,
+        so every call within the same step sees a consistent snapshot.
+        """
+        config = self._get_config()
+        read = config["configurable"][CONFIG_KEY_READ]
+        fresh = False
+        return read("files", fresh) or {}
+
+    def _send_files_update(self, update: dict[str, Any]) -> None:
+        """Queue a write to the `files` channel via Pregel internals.
+
+        The whole point of this helper is that callers of `backend.write`
+        / `backend.edit` don't need to know about or manage state updates
+        themselves — the backend handles it internally.
+
+        Uses `CONFIG_KEY_SEND` to enqueue a partial `files` update
+        directly — same rationale as `_read_files` for initializing
+        StateBackend once and writing from any graph context. `send`
+        takes a list of `(channel, value)` tuples; the `files` channel
+        uses a dict-merge reducer, so we only need to include changed
+        files — unchanged ones are preserved by the reducer.
+
+        Writes are not applied until the node boundary, so they won't be
+        visible to other calls in the same step (see `_read_files` and
+        its use of `fresh=False`).
+        """
+        config = self._get_config()
+        send = config["configurable"][CONFIG_KEY_SEND]
+        send([("files", update)])
+
+    def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
+        """Convert FileData to the format used for state storage.
+
+        When `file_format="v1"`, returns the legacy format.
+        """
+        if self._file_format == "v1":
+            return _to_legacy_file_data(file_data)
+        return {**file_data}
+
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -51,7 +159,7 @@ class StateBackend(BackendProtocol):
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
 
@@ -74,7 +182,9 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": k,
@@ -88,15 +198,15 @@ class StateBackend(BackendProtocol):
         infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
-        return infos
+        return LsResult(entries=infos)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -104,15 +214,30 @@ class StateBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
         file_data = files.get(file_path)
 
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
+        )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     def write(
         self,
@@ -121,15 +246,16 @@ class StateBackend(BackendProtocol):
     ) -> WriteResult:
         """Create a new file with content.
 
-        Returns WriteResult with files_update to update LangGraph state.
+        The update is queued directly via `CONFIG_KEY_SEND`.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
 
         if file_path in files:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         new_file_data = create_file_data(content)
-        return WriteResult(path=file_path, files_update={file_path: new_file_data})
+        self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -140,9 +266,9 @@ class StateBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        Returns EditResult with files_update and occurrences.
+        The update is queued directly via `CONFIG_KEY_SEND`.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
         file_data = files.get(file_path)
 
         if file_data is None:
@@ -156,29 +282,35 @@ class StateBackend(BackendProtocol):
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=int(occurrences))
+        self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
+        return EditResult(path=file_path, occurrences=int(occurrences))
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search state files for a literal text pattern."""
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
-        files = self.runtime.state.get("files", {})
+        files = self._read_files()
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -187,7 +319,7 @@ class StateBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to state.
@@ -213,7 +345,7 @@ class StateBackend(BackendProtocol):
         Returns:
             List of FileDownloadResponse objects, one per input path
         """
-        state_files = self.runtime.state.get("files", {})
+        state_files = self._read_files()
         responses: list[FileDownloadResponse] = []
 
         for path in paths:
@@ -223,10 +355,10 @@ class StateBackend(BackendProtocol):
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
                 continue
 
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
 
+            encoding = file_data.get("encoding", "utf-8")
+            content_bytes = content_str.encode("utf-8") if encoding == "utf-8" else base64.standard_b64decode(content_str)
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 
         return responses

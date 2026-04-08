@@ -31,6 +31,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_status",
         "tool_output",
         "tool_expanded",
+        "skill_expanded",
         "is_streaming",
         "height_hint",
     }
@@ -43,8 +44,10 @@ class MessageType(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+    SKILL = "skill"
     ERROR = "error"
     APP = "app"
+    SUMMARIZATION = "summarization"
     DIFF = "diff"
 
 
@@ -106,6 +109,25 @@ class MessageData:
     diff_file_path: str | None = None
     """File path associated with the diff (DIFF messages only)."""
 
+    # SKILL message fields - only populated for SKILL messages
+    skill_name: str | None = None
+    """Name of the skill that was invoked."""
+
+    skill_description: str | None = None
+    """Short description of the skill."""
+
+    skill_source: str | None = None
+    """Origin of the skill (e.g., `'built-in'`, `'user'`, `'project'`)."""
+
+    skill_args: str | None = None
+    """User-provided arguments to the skill invocation."""
+
+    skill_body: str | None = None
+    """Full SKILL.md content sent to the agent."""
+
+    skill_expanded: bool = False
+    """Whether the skill body is expanded in the UI."""
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
@@ -129,10 +151,14 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name`.
+            ValueError: If a TOOL message is missing `tool_name` or a SKILL
+                message is missing `skill_name`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
+            raise ValueError(msg)
+        if self.type == MessageType.SKILL and not self.skill_name:
+            msg = "SKILL messages must have a skill_name"
             raise ValueError(msg)
 
     def to_widget(self) -> Widget:
@@ -147,6 +173,8 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -171,11 +199,26 @@ class MessageData:
                 widget._deferred_expanded = self.tool_expanded
                 return widget
 
+            case MessageType.SKILL:
+                widget = SkillMessage(
+                    skill_name=self.skill_name or "unknown",
+                    description=self.skill_description or "",
+                    source=self.skill_source or "",
+                    body=self.skill_body or "",
+                    args=self.skill_args or "",
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.skill_expanded
+                return widget
+
             case MessageType.ERROR:
                 return ErrorMessage(self.content, id=self.id)
 
             case MessageType.APP:
                 return AppMessage(self.content, id=self.id)
+
+            case MessageType.SUMMARIZATION:
+                return SummarizationMessage(self.content, id=self.id)
 
             case MessageType.DIFF:
                 return DiffMessage(
@@ -209,11 +252,26 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
+            SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
 
         widget_id = widget.id or f"msg-{uuid.uuid4().hex[:8]}"
+
+        if isinstance(widget, SkillMessage):
+            return cls(
+                type=MessageType.SKILL,
+                content="",
+                id=widget_id,
+                skill_name=widget._skill_name,
+                skill_description=widget._description,
+                skill_source=widget._source,
+                skill_body=widget._body,
+                skill_args=widget._args,
+                skill_expanded=widget._expanded,
+            )
 
         if isinstance(widget, UserMessage):
             return cls(
@@ -260,15 +318,21 @@ class MessageData:
                 id=widget_id,
             )
 
-        # Check DiffMessage before AppMessage: both extend Static, so check
-        # the more specific type first to avoid misclassification if the
-        # inheritance hierarchy ever changes.
+        # Check specialized subclasses before AppMessage so we keep their type
+        # when serializing and can restore their specific styling later.
         if isinstance(widget, DiffMessage):
             return cls(
                 type=MessageType.DIFF,
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+            )
+
+        if isinstance(widget, SummarizationMessage):
+            return cls(
+                type=MessageType.SUMMARIZATION,
+                content=str(widget._content),
+                id=widget_id,
             )
 
         if isinstance(widget, AppMessage):

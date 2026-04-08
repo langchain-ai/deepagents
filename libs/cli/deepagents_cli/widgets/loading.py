@@ -6,12 +6,16 @@ from time import time
 from typing import TYPE_CHECKING
 
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_cli.config import get_glyphs
+from deepagents_cli.formatting import format_duration
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.await_remove import AwaitRemove
+    from textual.timer import Timer
 
 
 class Spinner:
@@ -66,12 +70,12 @@ class LoadingWidget(Static):
 
     LoadingWidget .loading-spinner {
         width: auto;
-        color: $warning;
+        color: $primary;
     }
 
     LoadingWidget .loading-status {
         width: auto;
-        color: $warning;
+        color: $primary;
     }
 
     LoadingWidget .loading-hint {
@@ -94,6 +98,7 @@ class LoadingWidget(Static):
         self._spinner_widget: Static | None = None
         self._status_widget: Static | None = None
         self._hint_widget: Static | None = None
+        self._animation_timer: Timer | None = None
         self._paused = False
         self._paused_elapsed: int = 0
 
@@ -120,7 +125,26 @@ class LoadingWidget(Static):
     def on_mount(self) -> None:
         """Start animation on mount."""
         self._start_time = time()
-        self.set_interval(0.1, self._update_animation)
+        self._animation_timer = self.set_interval(0.1, self._update_animation)
+
+    def on_unmount(self) -> None:
+        """Stop the animation timer when the widget leaves the DOM."""
+        self._stop_timer()
+
+    def remove(self) -> AwaitRemove:
+        """Stop animation before delegating DOM removal to Textual.
+
+        Returns:
+            Awaitable that completes once the widget is removed from the DOM.
+        """
+        self._stop_timer()
+        return super().remove()
+
+    def _stop_timer(self) -> None:
+        """Stop the animation timer if it is running."""
+        if self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
 
     def _update_animation(self) -> None:
         """Update spinner and elapsed time."""
@@ -129,11 +153,11 @@ class LoadingWidget(Static):
 
         if self._spinner_widget:
             frame = self._spinner.next_frame()
-            self._spinner_widget.update(f"[#FFD800]{frame}[/]")
+            self._spinner_widget.update(frame)
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)
-            self._hint_widget.update(f"({elapsed}s, esc to interrupt)")
+            self._hint_widget.update(f"({format_duration(elapsed)}, esc to interrupt)")
 
     def set_status(self, status: str) -> None:
         """Update the status text.
@@ -158,9 +182,11 @@ class LoadingWidget(Static):
         if self._status_widget:
             self._status_widget.update(f" {status}... ")
         if self._hint_widget:
-            self._hint_widget.update(f"(paused at {self._paused_elapsed}s)")
+            self._hint_widget.update(
+                f"(paused at {format_duration(self._paused_elapsed)})"
+            )
         if self._spinner_widget:
-            self._spinner_widget.update(f"[dim]{get_glyphs().pause}[/dim]")
+            self._spinner_widget.update(Content.styled(get_glyphs().pause, "dim"))
 
     def resume(self) -> None:
         """Resume the animation."""
@@ -171,3 +197,4 @@ class LoadingWidget(Static):
 
     def stop(self) -> None:
         """Stop the animation (widget will be removed by caller)."""
+        self._stop_timer()

@@ -1,0 +1,273 @@
+name: "Deep Agents"
+description: "Run Deep Agents CLI coding assistant in GitHub workflows"
+author: "LangChain AI"
+branding:
+  icon: "cpu"
+  color: "blue"
+
+inputs:
+  prompt:
+    description: "The prompt/instruction to send to the agent"
+    required: true
+  model:
+    description: "Model to use (claude-*, gpt-*, gemini-*). Auto-detects provider."
+    required: false
+  anthropic_api_key:
+    description: "Anthropic API key"
+    required: false
+  openai_api_key:
+    description: "OpenAI API key"
+    required: false
+  google_api_key:
+    description: "Google API key"
+    required: false
+  github_token:
+    description: "GitHub token for API access"
+    required: false
+    default: ${{ github.token }}
+  working_directory:
+    description: "Working directory for the agent"
+    required: false
+    default: "."
+  cli_version:
+    description: "deepagents-cli version (empty = latest)"
+    required: false
+    default: ""
+  skills_repo:
+    description: "GitHub repo of skills to clone (e.g. owner/repo, owner/repo@ref, or full URL)"
+    required: false
+    default: ""
+  enable_memory:
+    description: "Persist agent memory across workflow runs using actions/cache. When enabled, memory is keyed by agent_name + memory_scope so the agent can recall prior context."
+    required: false
+    default: "true"
+  memory_scope:
+    description: "Cache scope: pr (shared per PR), branch (shared per branch), repo (shared across repo)"
+    required: false
+    default: "repo"
+  agent_name:
+    description: "Agent identity name — controls memory namespace (default: agent)"
+    required: false
+    default: "agent"
+  shell_allow_list:
+    description: "Comma-separated shell allow list passed to --shell-allow-list (default: recommended,git,gh)"
+    required: false
+    default: "recommended,git,gh"
+  timeout:
+    description: "Maximum agent runtime in minutes (default: 30)"
+    required: false
+    default: "30"
+
+outputs:
+  response:
+    description: "Full text response from the agent"
+    value: ${{ steps.run-agent.outputs.response }}
+  exit_code:
+    description: "Exit code from the agent"
+    value: ${{ steps.run-agent.outputs.exit_code }}
+  cache_hit:
+    description: "Whether agent memory was restored from cache (empty if enable_memory is false)"
+    value: ${{ steps.restore-memory.outputs.cache-hit }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@0ca8f610542aa7f4acaf39e65cf4eb3c35091883 # v7
+      with:
+        enable-cache: true
+
+    - name: Resolve cache key
+      if: inputs.enable_memory == 'true'
+      id: cache-key
+      shell: bash
+      env:
+        INPUT_MEMORY_SCOPE: ${{ inputs.memory_scope }}
+        INPUT_AGENT_NAME: ${{ inputs.agent_name }}
+        REF_NAME: ${{ github.ref_name }}
+        EVENT_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+      run: |
+        PREFIX="deepagents-memory-${INPUT_AGENT_NAME}"
+        case "$INPUT_MEMORY_SCOPE" in
+          pr)
+            # Use PR number if available, fall back to ref
+            if [ -n "$EVENT_PR_NUMBER" ]; then
+              SCOPE_KEY="pr-${EVENT_PR_NUMBER}"
+            else
+              SCOPE_KEY="ref-${REF_NAME}"
+            fi
+            ;;
+          branch)
+            SCOPE_KEY="ref-${REF_NAME}"
+            ;;
+          repo)
+            SCOPE_KEY="repo"
+            ;;
+          *)
+            # Fallback to pr-scoped (most conservative) rather than repo-scoped to limit blast radius
+            echo "::warning::Unknown memory_scope '${INPUT_MEMORY_SCOPE}', defaulting to 'pr'"
+            if [ -n "$EVENT_PR_NUMBER" ]; then
+              SCOPE_KEY="pr-${EVENT_PR_NUMBER}"
+            else
+              SCOPE_KEY="ref-${REF_NAME}"
+            fi
+            ;;
+        esac
+
+        echo "key=${PREFIX}-${SCOPE_KEY}" >> "$GITHUB_OUTPUT"
+        echo "restore-keys=${PREFIX}-" >> "$GITHUB_OUTPUT"
+
+    - name: Restore agent memory
+      if: inputs.enable_memory == 'true'
+      id: restore-memory
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          ~/.deepagents/${{ inputs.agent_name }}/
+          ~/.deepagents/sessions.db
+          ${{ inputs.working_directory }}/.deepagents/AGENTS.md
+        key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ steps.cache-key.outputs.key }}-
+          ${{ steps.cache-key.outputs.restore-keys }}
+
+    - name: Install deepagents-cli
+      shell: bash
+      env:
+        INPUT_CLI_VERSION: ${{ inputs.cli_version }}
+      run: |
+        # Action requires --agent, --shell-allow-list, -n (available since 0.0.31)
+        MIN_CLI_VERSION="0.0.31"
+
+        if [ -n "$INPUT_CLI_VERSION" ]; then
+          if ! printf '%s\n%s' "$MIN_CLI_VERSION" "$INPUT_CLI_VERSION" \
+               | sort -V | head -1 | grep -qx "$MIN_CLI_VERSION"; then
+            echo "::error::cli_version '${INPUT_CLI_VERSION}' is below the minimum '${MIN_CLI_VERSION}' required by this action"
+            exit 1
+          fi
+          uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents --version
+        else
+          uvx --from deepagents-cli deepagents --version
+        fi
+
+    - name: Install skills
+      if: inputs.skills_repo != ''
+      shell: bash
+      env:
+        INPUT_SKILLS_REPO: ${{ inputs.skills_repo }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # Build clone URL — check for full URLs first to avoid misinterpreting @ in git@... URLs
+        if [[ "$INPUT_SKILLS_REPO" == https://* || "$INPUT_SKILLS_REPO" == git@* ]]; then
+          CLONE_URL="$INPUT_SKILLS_REPO"
+          REF=""
+        elif [[ "$INPUT_SKILLS_REPO" == *"@"* ]]; then
+          REPO="${INPUT_SKILLS_REPO%%@*}"
+          REF="${INPUT_SKILLS_REPO##*@}"
+          CLONE_URL="https://github.com/${REPO}.git"
+        else
+          CLONE_URL="https://github.com/${INPUT_SKILLS_REPO}.git"
+          REF=""
+        fi
+
+        SKILLS_DIR=".deepagents/skills"
+        mkdir -p "$SKILLS_DIR"
+
+        CLONE_DIR=$(mktemp -d)
+        trap 'rm -rf "$CLONE_DIR"' EXIT
+
+        CLONE_ARGS=(gh repo clone "$CLONE_URL" "$CLONE_DIR" --)
+        CLONE_ARGS+=(--depth 1)
+        if [ -n "$REF" ]; then
+          CLONE_ARGS+=(--branch "$REF")
+        fi
+
+        if ! "${CLONE_ARGS[@]}"; then
+          echo "::error::Failed to clone skills repository '${INPUT_SKILLS_REPO}'. Verify the repo exists and your github_token has access."
+          exit 1
+        fi
+
+        # Copy skill directories (those containing SKILL.md) into the skills dir
+        SKILL_COUNT=0
+        while IFS= read -r skill_file; do
+          skill_dir=$(dirname "$skill_file")
+          skill_name=$(basename "$skill_dir")
+          cp -r "$skill_dir" "$SKILLS_DIR/$skill_name"
+          echo "Installed skill: $skill_name"
+          ((++SKILL_COUNT))
+        done < <(find "$CLONE_DIR" -name "SKILL.md" -type f)
+
+        if [ "$SKILL_COUNT" -eq 0 ]; then
+          echo "::error::No skills found in ${INPUT_SKILLS_REPO} — expected at least one directory containing SKILL.md"
+          exit 1
+        fi
+
+    - name: Run Deep Agents
+      id: run-agent
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        GOOGLE_API_KEY: ${{ inputs.google_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_AGENT_NAME: ${{ inputs.agent_name }}
+        INPUT_CLI_VERSION: ${{ inputs.cli_version }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_SHELL_ALLOW_LIST: ${{ inputs.shell_allow_list }}
+      run: |
+        # Build command (pin version if specified, matching the install step)
+        if [ -n "$INPUT_CLI_VERSION" ]; then
+          CMD=(uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents)
+        else
+          CMD=(uvx --from deepagents-cli deepagents)
+        fi
+
+        CMD+=(--agent "$INPUT_AGENT_NAME")
+        CMD+=(--shell-allow-list "$INPUT_SHELL_ALLOW_LIST")
+
+        if [ -n "$INPUT_MODEL" ]; then
+          CMD+=(--model "$INPUT_MODEL")
+        fi
+
+        # Validate timeout is a positive integer
+        if ! [[ "$INPUT_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$INPUT_TIMEOUT" -eq 0 ]; then
+          echo "::error::Invalid timeout '${INPUT_TIMEOUT}' — must be a positive integer (minutes)"
+          exit 1
+        fi
+
+        OUTPUT_FILE=$(mktemp)
+        trap 'rm -f "$OUTPUT_FILE"' EXIT
+
+        # set +e: allow non-zero exit so we can capture the code; pipefail: propagate the agent's exit code through tee
+        TIMEOUT_SECS=$((INPUT_TIMEOUT * 60))
+        set +e
+        set -o pipefail
+        timeout "${TIMEOUT_SECS}" "${CMD[@]}" -n "$INPUT_PROMPT" 2>&1 | tee "$OUTPUT_FILE"
+        EXIT_CODE=$?
+        set +o pipefail
+        set -e
+
+        # Set outputs using heredoc with random delimiter
+        DELIMITER="DEEPAGENTS_$(openssl rand -hex 16)"
+        {
+          echo "exit_code=$EXIT_CODE"
+          echo "response<<${DELIMITER}"
+          cat "$OUTPUT_FILE"
+          echo "${DELIMITER}"
+        } >> "$GITHUB_OUTPUT"
+
+        exit $EXIT_CODE
+
+    - name: Save agent memory
+      if: inputs.enable_memory == 'true' && steps.cache-key.outputs.key != '' && always()
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ~/.deepagents/${{ inputs.agent_name }}/
+          ~/.deepagents/sessions.db
+          ${{ inputs.working_directory }}/.deepagents/AGENTS.md
+        key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}

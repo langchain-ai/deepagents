@@ -10,11 +10,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 import pytest
+from deepagents.backends.protocol import ExecuteResponse
 
 from deepagents_cli.local_context import (
+    _DETECT_SCRIPT_TIMEOUT,
+    _TOOL_NAME_DISPLAY_LIMIT,
     DETECT_CONTEXT_SCRIPT,
     LocalContextMiddleware,
     LocalContextState,
+    _AsyncExecutableBackend,
+    _build_mcp_context,
     _ExecutableBackend,
     _section_files,
     _section_git,
@@ -27,16 +32,72 @@ from deepagents_cli.local_context import (
     _section_tree,
     build_detect_script,
 )
+from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
 
 
-def _make_backend(output: str = "", exit_code: int = 0) -> Mock:
+class _SyncBackendFake:
+    """Concrete test backend satisfying `_ExecutableBackend` protocol."""
+
+    def __init__(
+        self,
+        *,
+        output: str | None = "",
+        exit_code: int = 0,
+        side_effect: Exception | None = None,
+    ) -> None:
+        self._mock = Mock(side_effect=side_effect)
+        if side_effect is None:
+            self._mock.return_value = ExecuteResponse(
+                output=output or "", exit_code=exit_code
+            )
+
+    def execute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ARG002
+    ) -> ExecuteResponse:
+        """Delegate to internal mock so callers can assert calls."""
+        return self._mock(command)
+
+    def reset_mock(self) -> None:
+        """Reset the underlying execute mock between assertions."""
+        self._mock.reset_mock()
+
+
+class _AsyncBackendFake:
+    """Concrete test backend satisfying `_AsyncExecutableBackend` protocol."""
+
+    def __init__(
+        self,
+        *,
+        output: str | None = "",
+        exit_code: int = 0,
+        side_effect: Exception | None = None,
+    ) -> None:
+        self._mock = AsyncMock(side_effect=side_effect)
+        if side_effect is None:
+            self._mock.return_value = ExecuteResponse(
+                output=output or "", exit_code=exit_code
+            )
+
+    async def aexecute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109, ARG002
+    ) -> ExecuteResponse:
+        """Delegate to internal mock so callers can assert calls."""
+        return await self._mock(command)
+
+    def reset_mock(self) -> None:
+        """Reset the underlying async execute mock between assertions."""
+        self._mock.reset_mock()
+
+
+def _make_backend(output: str = "", exit_code: int = 0) -> _SyncBackendFake:
     """Create a mock backend with execute() returning the given output."""
-    backend = Mock()
-    result = Mock()
-    result.output = output
-    result.exit_code = exit_code
-    backend.execute.return_value = result
-    return backend
+    return _SyncBackendFake(output=output, exit_code=exit_code)
 
 
 def _make_summarization_event(cutoff: int) -> dict[str, Any]:
@@ -84,7 +145,7 @@ class TestLocalContextMiddleware:
         assert "local_context" in result
         assert "## Local Context" in result["local_context"]
         assert "Current Directory" in result["local_context"]
-        backend.execute.assert_called_once()
+        backend._mock.assert_called_once()
 
     def test_before_agent_skips_when_already_set(self) -> None:
         """Test before_agent returns None when local_context already exists."""
@@ -99,7 +160,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)
 
         assert result is None
-        backend.execute.assert_not_called()
+        backend._mock.assert_not_called()
 
     def test_before_agent_handles_script_failure(self) -> None:
         """Test before_agent returns None when script exits non-zero."""
@@ -125,8 +186,7 @@ class TestLocalContextMiddleware:
 
     def test_before_agent_handles_execute_exception(self) -> None:
         """Test before_agent returns None when backend.execute() raises."""
-        backend = Mock()
-        backend.execute.side_effect = RuntimeError("connection failed")
+        backend = _SyncBackendFake(side_effect=RuntimeError("connection failed"))
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {"messages": []}
         runtime: Any = Mock()
@@ -137,11 +197,7 @@ class TestLocalContextMiddleware:
 
     def test_before_agent_handles_none_output(self) -> None:
         """Test before_agent returns None when result.output is None."""
-        backend = Mock()
-        result_mock = Mock()
-        result_mock.output = None
-        result_mock.exit_code = 0
-        backend.execute.return_value = result_mock
+        backend = _SyncBackendFake(output=None, exit_code=0)
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {"messages": []}
         runtime: Any = Mock()
@@ -223,7 +279,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(request)
         assert result == "response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_with_local_context(self) -> None:
         """Test that awrap_model_call appends local context to system prompt."""
         backend = _make_backend()
@@ -249,7 +304,6 @@ class TestLocalContextMiddleware:
         handler.assert_called_once_with(overridden_request)
         assert result == "async response"
 
-    @pytest.mark.asyncio
     async def test_awrap_model_call_without_local_context(self) -> None:
         """Test that awrap_model_call passes through when no local context."""
         backend = _make_backend()
@@ -273,7 +327,7 @@ class TestLocalContextMiddleware:
         backend = _make_backend(output=ctx)
         middleware = LocalContextMiddleware(backend=backend)
         event = _make_summarization_event(5)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "stale context",
             "_summarization_event": event,
@@ -285,14 +339,14 @@ class TestLocalContextMiddleware:
         assert result is not None
         assert result["local_context"] == ctx.strip()
         assert result["_local_context_refreshed_at_cutoff"] == 5
-        backend.execute.assert_called_once()
+        backend._mock.assert_called_once()
 
     def test_before_agent_no_rerun_same_cutoff(self) -> None:
         """Test no re-run when cutoff matches last refreshed cutoff."""
         backend = _make_backend(output="anything")
         middleware = LocalContextMiddleware(backend=backend)
         event = _make_summarization_event(5)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "existing context",
             "_summarization_event": event,
@@ -304,14 +358,14 @@ class TestLocalContextMiddleware:
 
         # Falls through to initial-detection guard; local_context set.
         assert result is None
-        backend.execute.assert_not_called()
+        backend._mock.assert_not_called()
 
     def test_before_agent_refresh_failure_records_cutoff(self) -> None:
         """Test failed refresh records cutoff but keeps existing context."""
         backend = _make_backend(output="", exit_code=1)
         middleware = LocalContextMiddleware(backend=backend)
         event = _make_summarization_event(10)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "keep this",
             "_summarization_event": event,
@@ -325,14 +379,14 @@ class TestLocalContextMiddleware:
         assert result["_local_context_refreshed_at_cutoff"] == 10
         # local_context NOT overwritten.
         assert "local_context" not in result
-        backend.execute.assert_called_once()
+        backend._mock.assert_called_once()
 
     def test_before_agent_second_summarization_refreshes(self) -> None:
         """Test a second summarization with different cutoff triggers re-run."""
         backend = _make_backend(output="refreshed again")
         middleware = LocalContextMiddleware(backend=backend)
         event = _make_summarization_event(20)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "first refresh",
             "_summarization_event": event,
@@ -353,7 +407,7 @@ class TestLocalContextMiddleware:
         runtime: Any = Mock()
 
         # Thread A: summarization at cutoff 5, not yet refreshed.
-        state_a: dict[str, Any] = {
+        state_a: Any = {
             "messages": [],
             "local_context": "old A",
             "_summarization_event": _make_summarization_event(5),
@@ -365,7 +419,7 @@ class TestLocalContextMiddleware:
         backend.reset_mock()
 
         # Thread B: already refreshed at cutoff 5 — no re-run.
-        state_b: dict[str, Any] = {
+        state_b: Any = {
             "messages": [],
             "local_context": "old B",
             "_summarization_event": _make_summarization_event(5),
@@ -373,24 +427,23 @@ class TestLocalContextMiddleware:
         }
         result_b = middleware.before_agent(state_b, runtime)  # type: ignore[invalid-argument-type]
         assert result_b is None
-        backend.execute.assert_not_called()
+        backend._mock.assert_not_called()
 
         # Thread C: no summarization event, context already set.
-        state_c: dict[str, Any] = {
+        state_c: Any = {
             "messages": [],
             "local_context": "existing C",
         }
         result_c = middleware.before_agent(state_c, runtime)  # type: ignore[invalid-argument-type]
         assert result_c is None
-        backend.execute.assert_not_called()
+        backend._mock.assert_not_called()
 
     def test_before_agent_refresh_exception_records_cutoff(self) -> None:
         """Test exception during refresh records cutoff and keeps context."""
-        backend = Mock()
-        backend.execute.side_effect = RuntimeError("sandbox unreachable")
+        backend = _SyncBackendFake(side_effect=RuntimeError("sandbox unreachable"))
         middleware = LocalContextMiddleware(backend=backend)
         event = _make_summarization_event(7)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "keep this",
             "_summarization_event": event,
@@ -402,13 +455,13 @@ class TestLocalContextMiddleware:
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 7
         assert "local_context" not in result
-        backend.execute.assert_called_once()
+        backend._mock.assert_called_once()
 
     def test_before_agent_missing_cutoff_index_skips_refresh(self) -> None:
         """Test that a summarization event missing cutoff_index skips refresh."""
         backend = _make_backend(output="anything")
         middleware = LocalContextMiddleware(backend=backend)
-        state: dict[str, Any] = {
+        state: Any = {
             "messages": [],
             "local_context": "existing",
             "_summarization_event": {"summary_message": None, "file_path": None},
@@ -420,7 +473,389 @@ class TestLocalContextMiddleware:
         # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
         # is False. Falls through to initial-detection guard; local_context set.
         assert result is None
-        backend.execute.assert_not_called()
+        backend._mock.assert_not_called()
+
+    def test_before_agent_returns_none_for_async_only_backend(self) -> None:
+        """Test before_agent gracefully returns None for async-only backends.
+
+        Some async-only backends define a sync execute() stub that raises
+        NotImplementedError. The sync before_agent should catch this and
+        return None so the async abefore_agent path handles detection instead.
+        """
+        backend = _SyncBackendFake(side_effect=NotImplementedError("async only"))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)
+
+        assert result is None
+
+    def test_before_agent_returns_none_for_pure_async_backend(self) -> None:
+        """Test before_agent returns None for backends with only aexecute.
+
+        When a backend implements `_AsyncExecutableBackend` but not
+        `_ExecutableBackend`, the sync path should skip detection gracefully
+        so the async `abefore_agent` handles it instead.
+        """
+        backend = _make_async_backend(output=SAMPLE_CONTEXT)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = middleware.before_agent(state, runtime)
+
+        assert result is None
+        backend._mock.assert_not_called()
+
+
+def _make_async_backend(output: str = "", exit_code: int = 0) -> _AsyncBackendFake:
+    """Create a mock backend with aexecute() returning the given output."""
+    return _AsyncBackendFake(output=output, exit_code=exit_code)
+
+
+class TestAsyncLocalContextMiddleware:
+    """Test abefore_agent for async-only backends like HarborSandbox."""
+
+    async def test_abefore_agent_stores_context(self) -> None:
+        """Test abefore_agent runs script via aexecute and stores output."""
+        backend = _make_async_backend(output=SAMPLE_CONTEXT)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is not None
+        assert "## Local Context" in result["local_context"]
+        backend._mock.assert_called_once()
+
+    async def test_abefore_agent_skips_when_already_set(self) -> None:
+        """Test abefore_agent returns None when local_context already exists."""
+        backend = _make_async_backend(output=SAMPLE_CONTEXT)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {
+            "messages": [],
+            "local_context": "already set",
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+        backend._mock.assert_not_called()
+
+    async def test_abefore_agent_handles_script_failure(self) -> None:
+        """Test abefore_agent returns None when script exits non-zero."""
+        backend = _make_async_backend(output="", exit_code=1)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+    async def test_abefore_agent_handles_aexecute_exception(self) -> None:
+        """Test abefore_agent returns None when aexecute raises."""
+        backend = _AsyncBackendFake(side_effect=RuntimeError("connection failed"))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+    async def test_abefore_agent_handles_none_output(self) -> None:
+        """Test abefore_agent returns None when result.output is None."""
+        backend = _AsyncBackendFake(output=None, exit_code=0)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+    async def test_abefore_agent_refreshes_after_summarization(self) -> None:
+        """Test abefore_agent re-runs script after summarization event."""
+        backend = _make_async_backend(output="refreshed context")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "old context",
+            "_summarization_event": _make_summarization_event(3),
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["local_context"] == "refreshed context"
+        assert result["_local_context_refreshed_at_cutoff"] == 3
+
+    async def test_abefore_agent_prefers_async_execute_when_both_exist(self) -> None:
+        """Test abefore_agent uses `aexecute` when both execution hooks exist."""
+
+        class _BothHooks:
+            """Backend exposing both sync and async execution methods."""
+
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002
+            ) -> ExecuteResponse:
+                msg = "abefore_agent should use aexecute when available"
+                raise AssertionError(msg)
+
+            async def aexecute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002, ASYNC109
+            ) -> ExecuteResponse:
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
+
+        middleware = LocalContextMiddleware(backend=_BothHooks())
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is not None
+        assert "## Local Context" in result["local_context"]
+
+    async def test_abefore_agent_falls_back_to_sync(self) -> None:
+        """Test abefore_agent falls back to sync execute for sync-only backends."""
+
+        class _SyncOnly:
+            """Backend with only sync execute (no aexecute)."""
+
+            def __init__(self, result: ExecuteResponse) -> None:
+                self._result = result
+                self.call_count = 0
+
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ARG002
+            ) -> ExecuteResponse:
+                self.call_count += 1
+                return self._result
+
+        backend = _SyncOnly(ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is not None
+        assert "## Local Context" in result["local_context"]
+        assert backend.call_count == 1
+
+    async def test_abefore_agent_refresh_failure_records_cutoff(self) -> None:
+        """Test async refresh failure records cutoff to prevent retry loop."""
+        backend = _make_async_backend(output="", exit_code=1)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "keep this",
+            "_summarization_event": _make_summarization_event(10),
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["_local_context_refreshed_at_cutoff"] == 10
+        assert "local_context" not in result
+
+    async def test_abefore_agent_refresh_exception_records_cutoff(self) -> None:
+        """Test async refresh exception records cutoff to prevent retry loop."""
+        backend = _AsyncBackendFake(side_effect=RuntimeError("unreachable"))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "keep this",
+            "_summarization_event": _make_summarization_event(7),
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["_local_context_refreshed_at_cutoff"] == 7
+        assert "local_context" not in result
+
+    async def test_abefore_agent_no_rerun_same_cutoff(self) -> None:
+        """Test abefore_agent skips detection when cutoff already processed."""
+        backend = _make_async_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "existing",
+            "_summarization_event": _make_summarization_event(5),
+            "_local_context_refreshed_at_cutoff": 5,
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is None
+        backend._mock.assert_not_called()
+
+    async def test_abefore_agent_handles_empty_output(self) -> None:
+        """Test abefore_agent returns None when script produces whitespace only."""
+        backend = _make_async_backend(output="   \n  ", exit_code=0)
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+    async def test_abefore_agent_second_summarization_refreshes(self) -> None:
+        """Test a second summarization with different cutoff triggers re-run."""
+        backend = _make_async_backend(output="refreshed again")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "first refresh",
+            "_summarization_event": _make_summarization_event(20),
+            "_local_context_refreshed_at_cutoff": 10,
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        assert result is not None
+        assert result["local_context"] == "refreshed again"
+        assert result["_local_context_refreshed_at_cutoff"] == 20
+
+    async def test_abefore_agent_missing_cutoff_index_skips_refresh(self) -> None:
+        """Test summarization event missing cutoff_index skips refresh."""
+        backend = _make_async_backend(output="anything")
+        middleware = LocalContextMiddleware(backend=backend)
+        state: Any = {
+            "messages": [],
+            "local_context": "existing",
+            "_summarization_event": {"summary_message": None, "file_path": None},
+        }
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+
+        # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
+        # is False. Falls through to initial-detection guard; local_context set.
+        assert result is None
+        backend._mock.assert_not_called()
+
+    async def test_abefore_agent_sync_fallback_failure(self) -> None:
+        """Test abefore_agent handles failure in asyncio.to_thread fallback."""
+        backend = _SyncBackendFake(side_effect=RuntimeError("connection failed"))
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        result = await middleware.abefore_agent(state, runtime)
+
+        assert result is None
+
+
+class TestTimeoutForwarding:
+    """Verify `_DETECT_SCRIPT_TIMEOUT` is forwarded to backend execution."""
+
+    def test_sync_execute_receives_timeout(self) -> None:
+        """Test _run_detect_script passes timeout to backend.execute()."""
+
+        class _RecordingBackend:
+            received_timeout: int | None = None
+
+            def execute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,
+            ) -> ExecuteResponse:
+                self.received_timeout = timeout
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
+
+        backend = _RecordingBackend()
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        middleware.before_agent(state, runtime)
+
+        assert backend.received_timeout == _DETECT_SCRIPT_TIMEOUT
+
+    async def test_async_execute_receives_timeout(self) -> None:
+        """Test _arun_detect_script passes timeout to backend.aexecute()."""
+
+        class _RecordingAsyncBackend:
+            received_timeout: int | None = None
+
+            async def aexecute(
+                self,
+                command: str,  # noqa: ARG002
+                *,
+                timeout: int | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
+                self.received_timeout = timeout
+                return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
+
+        backend = _RecordingAsyncBackend()
+        middleware = LocalContextMiddleware(backend=backend)
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
+
+        await middleware.abefore_agent(state, runtime)
+
+        assert backend.received_timeout == _DETECT_SCRIPT_TIMEOUT
+
+
+class TestHandleDetectResult:
+    """Tests for the shared _handle_detect_result static method."""
+
+    def test_none_exit_code_returns_none(self) -> None:
+        """Test that exit_code=None is treated as failure."""
+        result = ExecuteResponse(output="some output", exit_code=None)
+        assert LocalContextMiddleware._handle_detect_result(result) is None
+
+    def test_zero_exit_code_with_output(self) -> None:
+        """Test that exit_code=0 with output returns stripped output."""
+        result = ExecuteResponse(output="  hello  ", exit_code=0)
+        assert LocalContextMiddleware._handle_detect_result(result) == "hello"
+
+    def test_zero_exit_code_empty_output(self) -> None:
+        """Test that exit_code=0 with empty output returns None."""
+        result = ExecuteResponse(output="", exit_code=0)
+        assert LocalContextMiddleware._handle_detect_result(result) is None
+
+
+class TestAsyncExecutableBackend:
+    """Protocol tests for _AsyncExecutableBackend."""
+
+    def test_object_with_aexecute_satisfies_protocol(self) -> None:
+        """Test that an object with aexecute satisfies the protocol."""
+
+        class _HasAexecute:
+            async def aexecute(self, command: str) -> None: ...
+
+        assert isinstance(_HasAexecute(), _AsyncExecutableBackend)
+
+    def test_object_without_aexecute_does_not_satisfy(self) -> None:
+        """Test that an object without aexecute does not satisfy the protocol."""
+
+        class _NoAexecute:
+            pass
+
+        assert not isinstance(_NoAexecute(), _AsyncExecutableBackend)
 
 
 # ---------------------------------------------------------------------------
@@ -913,3 +1348,142 @@ class TestSectionGitExtended:
         out = _run_section(_section_git(), tmp_path, with_header=True)
         assert "`main`" in out
         assert "`master`" in out
+
+
+# ---------------------------------------------------------------------------
+# MCP context tests
+# ---------------------------------------------------------------------------
+
+
+def _make_server(
+    name: str, transport: str = "stdio", tool_names: list[str] | None = None
+) -> MCPServerInfo:
+    """Create an MCPServerInfo with the given tool names."""
+    tools = [MCPToolInfo(name=n, description=f"desc-{n}") for n in (tool_names or [])]
+    return MCPServerInfo(name=name, transport=transport, tools=tools)
+
+
+class TestBuildMcpContext:
+    """Tests for _build_mcp_context."""
+
+    def test_empty_servers(self) -> None:
+        assert _build_mcp_context([]) == ""
+
+    def test_single_server_with_tools(self) -> None:
+        server = _make_server("fs", "stdio", ["read_file", "write_file"])
+        result = _build_mcp_context([server])
+        assert "**MCP Servers** (1 servers, 2 tools):" in result
+        assert "- **fs** (stdio): read_file, write_file" in result
+
+    def test_multiple_servers(self) -> None:
+        servers = [
+            _make_server("fs", "stdio", ["read_file"]),
+            _make_server("docs", "http", ["search", "get_page", "list"]),
+        ]
+        result = _build_mcp_context(servers)
+        assert "(2 servers, 4 tools)" in result
+        assert "**fs** (stdio): read_file" in result
+        assert "**docs** (http): search, get_page, list" in result
+
+    def test_server_zero_tools(self) -> None:
+        server = _make_server("empty", "sse", [])
+        result = _build_mcp_context([server])
+        assert "(1 servers, 0 tools)" in result
+        assert "**empty** (sse): (no tools)" in result
+
+    def test_long_tool_list_truncated(self) -> None:
+        names = [f"tool_{i}" for i in range(15)]
+        server = _make_server("big", "stdio", names)
+        result = _build_mcp_context([server])
+        assert f"tool_{_TOOL_NAME_DISPLAY_LIMIT - 1}" in result
+        assert f"tool_{_TOOL_NAME_DISPLAY_LIMIT}" not in result
+        assert "and 5 more" in result
+
+
+class TestMcpContextInMiddleware:
+    """Tests for MCP context integration in LocalContextMiddleware."""
+
+    def test_mcp_context_appended_to_prompt(self) -> None:
+        """MCP info appears in system prompt via wrap_model_call."""
+        backend = _make_backend()
+        server = _make_server("myserver", "stdio", ["my_tool"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "Base prompt" in prompt
+        assert "## Local Context" in prompt
+        assert "**MCP Servers**" in prompt
+        assert "**myserver** (stdio): my_tool" in prompt
+
+    def test_no_mcp_context_when_none(self) -> None:
+        """No MCP section when mcp_server_info is None."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=None)
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "**MCP Servers**" not in prompt
+        assert "## Local Context" in prompt
+
+    def test_both_contexts_combined(self) -> None:
+        """Both bash context and MCP context appear in system prompt."""
+        backend = _make_backend()
+        server = _make_server("docs", "http", ["search"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "## Local Context" in prompt
+        assert "**MCP Servers**" in prompt
+
+    def test_mcp_context_alone(self) -> None:
+        """MCP context still appended when no bash context is available."""
+        backend = _make_backend()
+        server = _make_server("fs", "stdio", ["read"])
+        middleware = LocalContextMiddleware(backend=backend, mcp_server_info=[server])
+
+        request = Mock()
+        request.system_prompt = "Base"
+        request.state = {}  # no local_context
+
+        overridden = Mock()
+        request.override.return_value = overridden
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        call_args = request.override.call_args[1]
+        prompt = call_args["system_prompt"]
+        assert "**MCP Servers**" in prompt
+        assert "**fs** (stdio): read" in prompt

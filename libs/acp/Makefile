@@ -1,4 +1,4 @@
-.PHONY: lint format test help test_watch toad
+.PHONY: lint format type typecheck test help test_watch toad
 
 .DEFAULT_GOAL := help
 
@@ -8,9 +8,10 @@
 
 # Define a variable for the test file path.
 TEST_FILE ?= tests/
+PYTEST_EXTRA ?=
 
 test: ## Run unit tests with coverage
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
+	uv run pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
 
 test_watch: ## Run tests in watch mode
 	uv run ptw . -- $(TEST_FILE)
@@ -31,6 +32,10 @@ lint: ## Run linters and type checker
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES)
+	$(MAKE) type
+
+type: ## Run type checker
+type typecheck:
 	uv run --group test ty check deepagents_acp
 
 format: ## Run code formatters

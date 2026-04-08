@@ -1,6 +1,6 @@
 # Deep Agents ACP integration
 
-This repo contains an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) connector that allows you to run a Python [DeepAgent](https://docs.langchain.com/oss/python/deepagents/overview) within a text editor that supports ACP such as [Zed](https://zed.dev/).
+This directory contains an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) connector that allows you to run a Python [Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview) within a text editor that supports ACP such as [Zed](https://zed.dev/).
 
 ![Deep Agents ACP Demo](./static/img/deepagentsacp.gif)
 
@@ -20,15 +20,15 @@ Then, navigate into the newly created folder and run `uv sync`:
 
 ```sh
 cd deepagents/libs/acp
-uv sync
+uv sync --group examples
 ```
 
-Rename the `.env.example` file to `.env` and add your [Anthropic](https://claude.com/platform/api) API key. You may also optionally set up tracing for your DeepAgent using [LangSmith](https://smith.langchain.com/) by populating the other env vars in the example file:
+Rename the `.env.example` file to `.env` and add your [Anthropic](https://claude.com/platform/api) API key. You may also optionally set up tracing for your Deep Agent using [LangSmith](https://smith.langchain.com/) by populating the other env vars in the example file:
 
 ```ini
 ANTHROPIC_API_KEY=""
 
-# Set up LangSmith tracing for your DeepAgent (optional)
+# Set up LangSmith tracing for your Deep Agent (optional)
 
 # LANGSMITH_TRACING=true
 # LANGSMITH_API_KEY=""
@@ -54,19 +54,25 @@ You must also make sure that the `run_demo_agent.sh` entrypoint file is executab
 chmod +x run_demo_agent.sh
 ```
 
-Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an option to create a new DeepAgent thread:
+Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an option to create a new Deep Agent thread:
 
 ![](./static/img/newdeepagent.png)
 
-And that's it! You can now use the DeepAgent in Zed to interact with your project.
+And that's it! You can now use the Deep Agent in Zed to interact with your project.
 
-If you need to upgrade your version of DeepAgents, run:
+If you need to upgrade your version of Deep Agents, pull the latest changes and re-sync:
 
 ```sh
-uv upgrade deepagents-acp
+git pull && uv sync --group examples
 ```
 
-## Launch a custom DeepAgent with ACP
+Or for specific packages:
+
+```sh
+uv lock --upgrade-package langchain_anthropic # for example
+```
+
+## Launch a custom Deep Agent with ACP
 
 ```sh
 uv add deepagents-acp
@@ -110,3 +116,36 @@ toad acp "python path/to/your_server.py" .
 # or
 toad acp "uv run python path/to/your_server.py" .
 ```
+
+## Model Switching
+
+The ACP adapter supports dynamic model switching using Session Config Options. This allows users to switch between different LLM models mid-session without losing conversation history.
+
+### Quick Example
+
+```python
+from deepagents_acp.server import AgentServerACP, AgentSessionContext
+
+# Define available models
+models = [
+    {"value": "anthropic:claude-opus-4-6", "name": "Claude Opus 4"},
+    {"value": "anthropic:claude-sonnet-4", "name": "Claude Sonnet 4"},
+    {"value": "openai:gpt-4-turbo", "name": "GPT-4 Turbo"},
+]
+
+# Create an agent factory that uses the model from context
+def build_agent(context: AgentSessionContext):
+    model = context.model
+
+    # Pass model string directly - it handles provider:model-name format
+    return create_deep_agent(
+        model=model,
+        checkpointer=checkpointer,
+        backend=create_backend,
+    )
+
+# Pass models to the server
+server = AgentServerACP(agent=build_agent, models=models)
+```
+
+You can see a full example [here](./examples/demo_agent.py) with LangChain's model profile feature.

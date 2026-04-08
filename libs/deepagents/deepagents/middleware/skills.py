@@ -13,9 +13,9 @@ when skills have the same name (last one wins). This enables layering: base -> u
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
 portable across different storage backends (filesystem, state, remote storage, etc.).
 
-For StateBackend (ephemeral/in-memory), use a factory function:
+For StateBackend (ephemeral/in-memory):
 ```python
-SkillsMiddleware(backend=lambda rt: StateBackend(rt), ...)
+SkillsMiddleware(backend=StateBackend(), ...)
 ```
 
 ## Skill Structure
@@ -118,6 +118,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.prebuilt import ToolRuntime
 
+from deepagents.backends.protocol import LsResult
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -422,14 +423,13 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = backend.ls_info(base_path)
+    ls_result = backend.ls(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -501,14 +501,13 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = await backend.als_info(base_path)
+    ls_result = await backend.als(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -636,10 +635,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime and
-                returns a backend.
-
-                Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
+            backend: Backend instance (e.g. ``StateBackend()``).
             sources: List of skill source paths (e.g.,
                 `['/skills/user/', '/skills/project/']`).
         """

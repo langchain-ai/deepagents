@@ -1,33 +1,50 @@
-"""Summarization middleware for offloading conversation history.
+"""Summarization middleware for automatic and tool-based conversation compaction.
 
-Persists conversation history to a backend prior to summarization, enabling retrieval of
-full context if needed later by an agent.
+This module provides two middleware classes and a convenience factory:
+
+- `SummarizationMiddleware` — automatically compacts the conversation when token
+    usage exceeds a configurable threshold.
+
+    Older messages are summarized via an LLM call and the full history is
+    offloaded to a backend for later retrieval.
+- `SummarizationToolMiddleware` — exposes a `compact_conversation` tool that
+    lets the agent (or a human-in-the-loop approval flow) trigger compaction on
+    demand.
+
+    Composes with a `SummarizationMiddleware` instance and reuses its
+    summarization engine.
+- `create_summarization_tool_middleware` — convenience factory that creates both
+    middleware layers with model-aware defaults.
 
 ## Usage
 
 ```python
 from deepagents import create_deep_agent
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+)
 from deepagents.backends import FilesystemBackend
 
 backend = FilesystemBackend(root_dir="/data")
 
-middleware = SummarizationMiddleware(
+summ = SummarizationMiddleware(
     model="gpt-4o-mini",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),
 )
+tool_mw = SummarizationToolMiddleware(summ)
 
-agent = create_deep_agent(middleware=[middleware])
+agent = create_deep_agent(middleware=[summ, tool_mw])
 ```
 
 ## Storage
 
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
-Each summarization event appends a new section to this file, creating a running log
-of all evicted messages.
+Each summarization event appends a new section to this file, creating a running
+log of all evicted messages.
 """
 
 from __future__ import annotations
@@ -54,8 +71,10 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -71,16 +90,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class CompactConversationSchema(BaseModel):
+    """Input schema for the `compact_conversation` tool."""
+
+
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
-You have access to a `compact_conversation` tool. This tool refreshes your context
-window to reduce context bloat and costs.
+You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
 
 You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely
-irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is
-no longer needed.
+- The user asks to move on to a completely new task for which previous context is likely irrelevant.
+- You have finished extracting or synthesizing a result and previous working context is no longer needed.
 """
 
 
@@ -99,13 +120,27 @@ class SummarizationEvent(TypedDict):
 
 
 class TruncateArgsSettings(TypedDict, total=False):
-    """Settings for truncating large tool arguments in old messages.
+    """Settings for truncating large tool-call arguments in older messages.
 
-    Attributes:
-        trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
-        keep: Context retention policy for message truncation (defaults to last 20 messages).
-        max_length: Maximum character length for tool arguments before truncation (defaults to 2000).
-        truncation_text: Text to replace truncated arguments with (defaults to "...(argument truncated)").
+    This is a lightweight, pre-summarization optimization that fires at a lower
+    token threshold than full conversation compaction. When triggered, only the
+    `args` values on `AIMessage.tool_calls` in messages *before* the keep window
+    are shortened — recent messages are left intact.
+
+    Typical large arguments include `write_file` content, `edit_file` patches,
+    and verbose `execute` outputs.
+
+    Args:
+        trigger: Token/message/fraction threshold that activates truncation.
+
+            Uses the same `ContextSize` format as the summarization trigger.
+
+            If `None`, truncation is disabled.
+        keep: How many recent messages (or tokens/fraction of context) to
+            leave untouched.
+        max_length: Character limit per argument value before it is clipped.
+        truncation_text: Replacement suffix appended after the first 20
+            characters of a truncated argument.
     """
 
     trigger: ContextSize | None
@@ -140,8 +175,8 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
 
     Returns:
         Default settings for trigger, keep, and truncate_args_settings.
-        If the model has a profile with max_input_tokens, uses fraction-based
-        settings. Otherwise, uses fixed token/message counts.
+            If the model has a profile with `max_input_tokens`, uses
+            fraction-based settings. Otherwise, uses fixed token/message counts.
     """
     has_profile = (
         model.profile is not None
@@ -159,6 +194,9 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
                 "keep": ("fraction", 0.10),
             },
         }
+
+    # Defaults for models without profile info are more conservative to avoid
+    # overshooting context limits.
     return {
         "trigger": ("tokens", 170000),
         "keep": ("messages", 6),
@@ -184,7 +222,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
@@ -216,7 +253,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
-            history_path_prefix: Path prefix for storing conversation history.
 
         Example:
             ```python
@@ -225,12 +261,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
             middleware = SummarizationMiddleware(
                 model="gpt-4o-mini",
-                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
             ```
         """
+        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
+        if _deprecated_history_prefix is not None:
+            warnings.warn(
+                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
+                " and will be removed in 0.7."
+                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -242,9 +288,15 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
-        # DeepAgents-specific attributes
+        # Deep Agents specific attributes
         self._backend = backend
-        self._history_path_prefix = history_path_prefix
+
+        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
+        self._history_path_prefix = f"{_root}/conversation_history"
+
+        if _deprecated_history_prefix is not None:
+            self._history_path_prefix = _deprecated_history_prefix
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -693,7 +745,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -701,7 +753,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -767,7 +819,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -775,7 +827,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -841,6 +893,14 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
+        Control flow details:
+
+        - If thresholds say "do not summarize", we still attempt one normal
+            model call with the current effective/truncated messages.
+        - If that call raises `ContextOverflowError`, we immediately fall back to
+            the summarization path and retry the model call with
+            `summary_message + preserved_recent_messages`.
+
         Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
         Instead, it tracks summarization events in middleware state and modifies the model
         request directly.
@@ -850,7 +910,12 @@ A condensed summary follows:
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            The model response from the handler.
+            A plain `ModelResponse` when no summarization event is created, or
+                an `ExtendedModelResponse` that updates `_summarization_event`
+                with `cutoff_index`, `summary_message`, and `file_path`.
+
+                If `cutoff_index <= 0`, no compaction occurs and no
+                `_summarization_event` update is emitted.
         """
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -932,6 +997,14 @@ A condensed summary follows:
         Then truncates large tool arguments in old messages if configured.
         Finally offloads messages to backend before summarization if thresholds are met.
 
+        Control flow details:
+
+        - If thresholds say "do not summarize", we still attempt one normal
+            model call with the current effective/truncated messages.
+        - If that call raises `ContextOverflowError`, we immediately fall back
+            to the summarization path and retry the model call with
+            `summary_message + preserved_recent_messages`.
+
         Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
         Instead, it tracks summarization events in middleware state and modifies the model
         request directly.
@@ -941,7 +1014,12 @@ A condensed summary follows:
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            The model response from the handler.
+            A plain `ModelResponse` when no summarization event is created, or
+                an `ExtendedModelResponse` that updates `_summarization_event`
+                with `cutoff_index`, `summary_message`, and `file_path`.
+
+                If `cutoff_index <= 0`, no compaction occurs and no
+                `_summarization_event` update is emitted.
         """
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -1013,8 +1091,115 @@ A condensed summary follows:
         )
 
 
-# Public alias
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
+"""Public alias for `_DeepAgentsSummarizationMiddleware`.
+
+This is the name external callers should import and reference.
+"""
+
+
+def create_summarization_middleware(
+    model: BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> _DeepAgentsSummarizationMiddleware:
+    """Create a `SummarizationMiddleware` with model-aware defaults.
+
+    Computes trigger, keep, and truncation settings from the model's profile
+    (or uses fixed-token fallbacks) and returns a configured middleware.
+
+    Args:
+        model: Resolved `BaseChatModel` instance.
+
+            Use `resolve_model()` first if needed for model strings.
+        backend: Backend instance or factory for persisting conversation history.
+
+    Returns:
+        Configured `SummarizationMiddleware` instance.
+
+    Raises:
+        TypeError: If `model` is not a `BaseChatModel` instance.
+    """
+    from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
+
+    if not isinstance(model, RuntimeBaseChatModel):
+        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
+        raise TypeError(msg)
+
+    defaults = compute_summarization_defaults(model)
+    return SummarizationMiddleware(
+        model=model,
+        backend=backend,
+        trigger=defaults["trigger"],
+        keep=defaults["keep"],
+        trim_tokens_to_summarize=None,
+        truncate_args_settings=defaults["truncate_args_settings"],
+    )
+
+
+def create_summarization_tool_middleware(
+    model: str | BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> SummarizationToolMiddleware:
+    """Create a `SummarizationToolMiddleware` with model-aware defaults.
+
+    Convenience factory that creates a `SummarizationMiddleware` via
+    `create_summarization_middleware` and wraps it in a
+    `SummarizationToolMiddleware`.
+
+    Args:
+        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
+        backend: Backend instance or factory for persisting conversation history.
+
+    Returns:
+        Configured `SummarizationToolMiddleware` instance.
+
+    Example:
+        Using the default `StateBackend`:
+
+        ```python
+        from deepagents import create_deep_agent
+        from deepagents.backends import StateBackend
+        from deepagents.middleware.summarization import (
+            create_summarization_tool_middleware,
+        )
+
+        model = "openai:gpt-5.4"
+        agent = create_deep_agent(
+            model=model,
+            middleware=[
+                create_summarization_tool_middleware(model, StateBackend),
+            ],
+        )
+        ```
+
+        Using a custom backend instance (e.g., Daytona Sandbox):
+
+        ```python
+        from daytona import Daytona
+        from deepagents import create_deep_agent
+        from deepagents.middleware.summarization import (
+            create_summarization_tool_middleware,
+        )
+        from langchain_daytona import DaytonaSandbox
+
+        sandbox = Daytona().create()
+        backend = DaytonaSandbox(sandbox=sandbox)
+        model = "openai:gpt-5.4"
+        agent = create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[
+                create_summarization_tool_middleware(model, backend),
+            ],
+        )
+        ```
+    """
+    from deepagents._models import resolve_model  # noqa: PLC0415
+
+    if isinstance(model, str):
+        model = resolve_model(model)
+    summarization = create_summarization_middleware(model, backend)
+    return SummarizationToolMiddleware(summarization)
 
 
 class SummarizationToolMiddleware(AgentMiddleware):
@@ -1022,10 +1207,21 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     This middleware composes with a `SummarizationMiddleware` instance, reusing
     its summarization engine (model, backend, trigger thresholds) to let the
-    agent proactively compact its own context window.
+    agent compact its own context window.
+
+    This middleware never compacts automatically. Compaction only occurs when
+    `compact_conversation` is called as a normal tool call (by the model or by
+    an explicit user action, e.g. as implemented in the deepagents-cli).
+
+    To avoid compacting too early, compact tool execution is gated by
+    `_is_eligible_for_compaction`, which requires reported usage to reach about
+    50% of the configured auto-summarization trigger.
 
     The tool and auto-summarization share the same `_summarization_event` state
     key, so they interoperate correctly.
+
+    For a simpler setup, use `create_summarization_tool_middleware` which
+    handles both steps.
 
     Example:
         ```python
@@ -1093,6 +1289,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+            # infer_schema=False,  # noqa: ERA001
+            # args_schema=CompactConversationSchema,  # noqa: ERA001
         )
 
     def _build_compact_result(
@@ -1113,8 +1311,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or `None`.
-            event: The prior `_summarization_event`, or `None`.
+            file_path: Backend path where history was offloaded, or ``None``.
+            event: The prior `_summarization_event`, or ``None``.
             cutoff: The cutoff index within the effective message list.
 
         Returns:
@@ -1192,7 +1390,18 @@ class SummarizationToolMiddleware(AgentMiddleware):
         )
 
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
-        """Check if conversation is over 50% of the token budget."""
+        """Check if manual compaction is currently allowed.
+
+        This is an eligibility gate for `compact_conversation` tool calls, not a
+        background trigger. The conversation must be at or above about 50% of
+        the configured auto-summarization trigger:
+
+        - For `("tokens", N)`, eligibility starts at `0.5 * N`.
+        - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
+            input tokens.
+
+        Uses reported usage metadata when available.
+        """
         lc = self._summarization._lc_helper
         trigger_conditions = lc._trigger_conditions
         if not trigger_conditions:
@@ -1289,7 +1498,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Inject compact tool system prompt into the model request.
+        """Inject a compact-tool usage nudge into the system prompt.
+
+        This only updates prompt text so the model can decide whether to call
+        `compact_conversation` earlier in long sessions. It does not execute the
+        tool automatically.
 
         Args:
             request: The model request to process.
@@ -1306,7 +1519,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Inject compact tool system prompt into the model request (async).
+        """Inject a compact-tool usage nudge into the system prompt (async).
+
+        This only updates prompt text so the model can decide whether to call
+        `compact_conversation` earlier in long sessions. It does not execute the
+        tool automatically.
 
         Args:
             request: The model request to process.

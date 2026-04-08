@@ -1,0 +1,404 @@
+name: "⚓ Harbor"
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - all
+          - set0
+          - set1
+          - set2
+          - frontier
+          - fast
+          - open
+          - anthropic
+          - baseten
+          - fireworks
+          - google_genai
+          - groq
+          - nvidia
+          - openai
+          - ollama
+          - openrouter
+          - xai
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-20250514"
+          - "anthropic:claude-sonnet-4-5-20250929"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-1"
+          - "anthropic:claude-opus-4-5-20251101"
+          - "anthropic:claude-opus-4-6"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:nvidia/Nemotron-120B-A12B"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
+          - "fireworks:fireworks/deepseek-v3p2"
+          - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/minimax-m2p1"
+          - "fireworks:fireworks/kimi-k2p5"
+          - "fireworks:fireworks/glm-5"
+          - "fireworks:fireworks/minimax-m2p5"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
+          - "ollama:glm-5"
+          - "ollama:glm-5.1"
+          - "ollama:minimax-m2.5"
+          - "ollama:minimax-m2.7:cloud"
+          - "ollama:qwen3.5:397b-cloud"
+          - "ollama:nemotron-3-nano:30b"
+          - "ollama:nemotron-3-super"
+          - "ollama:cogito-2.1:671b"
+          - "ollama:devstral-2:123b"
+          - "ollama:ministral-3:14b"
+          - "ollama:qwen3-next:80b"
+          - "ollama:qwen3-coder:480b-cloud"
+          - "ollama:deepseek-v3.2:cloud"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
+          - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:z-ai/glm-5.1"
+          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
+          - "xai:grok-4"
+          - "xai:grok-3-mini-fast"
+      models_override:
+        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        required: false
+        default: ""
+        type: string
+      sandbox_env:
+        description: "Harbor sandbox environment"
+        required: true
+        default: "docker"
+        type: choice
+        options:
+          - docker
+          - daytona
+          - langsmith
+          - modal
+          - runloop
+      n_tasks:
+        description: "Maximum number of tasks to run (0 = all tasks in dataset)"
+        required: true
+        default: "0"
+        type: string
+      concurrency:
+        description: "Number of concurrent trials (parallel sandbox slots)"
+        required: true
+        default: "1"
+        type: string
+      agent_mode:
+        description: "Agent implementation to use"
+        required: true
+        default: "sdk"
+        type: choice
+        options:
+          - sdk
+          # - cli # need to support properly first
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+  HARBOR_DATASET_NAME: "terminal-bench"
+  HARBOR_DATASET_VERSION: "2.0"
+
+jobs:
+  prep:
+    name: "🔧 Prepare matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+    steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models }}
+          MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
+          SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          N_TASKS: ${{ inputs.n_tasks }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          AGENT_MODE: ${{ inputs.agent_mode }}
+        run: |
+          echo "### ⚓ Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${MODELS_OVERRIDE}" != "(empty)" ]; then
+            echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${N_TASKS}" = "0" ]; then
+            echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`n_tasks\` | \`${N_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Compute Harbor matrix"
+        id: set-matrix
+        run: python .github/scripts/models.py harbor
+        env:
+          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor-prep
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🧪 Ensure LangSmith dataset"
+        working-directory: libs/evals
+        run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
+
+  harbor:
+    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING_V2: "true"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
+      HARBOR_N_TASKS: ${{ inputs.n_tasks }}
+      HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+      HARBOR_MODEL: ${{ matrix.model }}
+      HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
+    steps:
+      - name: "🔑 Verify sandbox credentials"
+        working-directory: .
+        run: |
+          missing=()
+
+          # LangSmith is always required (experiment tracking)
+          [ -z "$LANGSMITH_API_KEY" ] && missing+=("LANGSMITH_API_KEY")
+
+          # Sandbox provider credentials
+          case "$HARBOR_SANDBOX_ENV" in
+            docker)
+              ;; # No additional credentials needed
+            daytona)
+              [ -z "$DAYTONA_API_KEY" ] && missing+=("DAYTONA_API_KEY")
+              ;;
+            langsmith)
+              ;; # LANGSMITH_API_KEY already checked above
+            modal)
+              [ -z "$MODAL_TOKEN_ID" ] && missing+=("MODAL_TOKEN_ID")
+              [ -z "$MODAL_TOKEN_SECRET" ] && missing+=("MODAL_TOKEN_SECRET")
+              ;;
+            runloop)
+              [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
+              ;;
+            *)
+              echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
+              exit 1
+              ;;
+          esac
+
+          # Model provider key (infer from model prefix)
+          model_provider="${HARBOR_MODEL%%:*}"
+          case "$model_provider" in
+            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
+            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
+            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
+            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
+            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
+            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
+            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
+            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
+            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
+            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
+            *)
+              echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
+              ;;
+          esac
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
+
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "🧪 Create LangSmith experiment"
+        id: langsmith
+        run: |
+          set -euo pipefail
+          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          line_count=$(echo "$output" | wc -l | tr -d ' ')
+          if [ "$line_count" -ne 2 ]; then
+            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
+            echo "$output" | head -5
+            exit 1
+          fi
+          experiment_name=$(echo "$output" | head -1)
+          experiment_url=$(echo "$output" | tail -1)
+          if [ -z "$experiment_name" ] || [ -z "$experiment_url" ]; then
+            echo "::error::create-experiment returned empty name or URL: name='$experiment_name' url='$experiment_url'"
+            exit 1
+          fi
+          echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
+          echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
+          echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
+
+      - name: "🔇 Suppress Harbor first-run tips"
+        run: |
+          mkdir -p ~/.cache/harbor
+          echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
+
+      - name: "⚓ Run Harbor"
+        run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
+          n_tasks_flag=""
+          if [ "$HARBOR_N_TASKS" != "0" ]; then
+            n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
+          fi
+          uv run harbor run \
+            --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+            --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
+            -n "$HARBOR_CONCURRENCY" \
+            $n_tasks_flag \
+            --jobs-dir jobs/terminal-bench \
+            --env "$HARBOR_SANDBOX_ENV" \
+            --model "$HARBOR_MODEL" \
+            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
+
+      - name: "🔍 Find latest Harbor job"
+        id: latest-job
+        run: |
+          latest_job=$(python - <<'PY'
+          from pathlib import Path
+
+          jobs_dir = Path("jobs/terminal-bench")
+          job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
+          if not job_dirs:
+              raise SystemExit("No Harbor job directory found")
+          print(job_dirs[-1])
+          PY
+          )
+          echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
+
+      - name: "⭐ Add Harbor rewards to LangSmith"
+        if: always() && steps.latest-job.outcome == 'success' && steps.langsmith.outcome == 'success'
+        env:
+          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+        run: |
+          uv run python scripts/harbor_langsmith.py add-feedback \
+            "$HARBOR_JOB_DIR" \
+            --project-name "$LANGSMITH_EXPERIMENT_NAME"
+
+      - name: "📝 Write workflow summary"
+        if: always()
+        env:
+          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+          LANGSMITH_EXPERIMENT_URL: ${{ steps.langsmith.outputs.experiment_url }}
+          LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
+        run: |
+          {
+            echo "## Harbor run"
+            echo
+            echo "- Model: $HARBOR_MODEL"
+            echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
+            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
+            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
+            if [ "$HARBOR_N_TASKS" = "0" ]; then
+              echo "- Max tasks: all"
+            else
+              echo "- Max tasks: ${HARBOR_N_TASKS}"
+            fi
+            echo "- Agent mode: ${HARBOR_AGENT_MODE}"
+            if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
+              echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
+            else
+              echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            fi
+            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
+              echo "- Harbor job dir: $HARBOR_JOB_DIR"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📤 Upload Harbor artifacts"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harbor-${{ strategy.job-index }}
+          path: |
+            libs/evals/jobs/terminal-bench
+          if-no-files-found: warn

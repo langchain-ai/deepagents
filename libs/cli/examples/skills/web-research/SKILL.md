@@ -1,19 +1,9 @@
 ---
 name: web-research
-description: Use this skill for requests related to web research; it provides a structured approach to conducting comprehensive web research
+description: Searches multiple web sources, synthesizes findings, and produces cited research reports using delegated subagents. Use when the user asks to research a topic online, search the web, look something up, find current information, compare options, or produce a research report.
 ---
 
 # Web Research Skill
-
-This skill provides a structured approach to conducting comprehensive web research using the `task` tool to spawn research subagents. It emphasizes planning, efficient delegation, and systematic synthesis of findings.
-
-## When to Use This Skill
-
-Use this skill when you need to:
-- Research complex topics requiring multiple information sources
-- Gather and synthesize current information from the web
-- Conduct comparative analysis across multiple subjects
-- Produce well-sourced research reports with clear citations
 
 ## Research Process
 
@@ -77,21 +67,6 @@ After all subagents complete:
 3. **Write final report** (optional) - Use `write_file` to create `research_[topic_name]/research_report.md` if requested
 
 **Note**: If you need to fetch additional information from URLs, use the `fetch_url` tool, not `read_file`.
-
-## Available Tools
-
-You have access to:
-- **write_file**: Save research plans and findings to local files
-- **read_file**: Read local files (e.g., findings saved by subagents)
-- **list_files**: See what local files exist in a directory
-- **fetch_url**: Fetch content from URLs and convert to markdown (use this for web pages, not read_file)
-- **task**: Spawn research subagents with web_search access
-
-## Research Subagent Configuration
-
-Each subagent you spawn will have access to:
-- **web_search**: Search the web using Tavily (parameters: query, max_results, topic, include_raw_content)
-- **write_file**: Save their findings to the filesystem
 
 ## Best Practices
 

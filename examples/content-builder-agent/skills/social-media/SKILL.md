@@ -1,19 +1,9 @@
 ---
 name: social-media
-description: Use this skill when creating short-form social media content for LinkedIn, Twitter/X, or other platforms
+description: Drafts engaging social media posts, writes hooks, suggests hashtags, creates thread structures, and generates companion images. Use when the user asks to write a LinkedIn post, tweet, Twitter/X thread, social media caption, social post, or repurpose content for social platforms.
 ---
 
 # Social Media Content Skill
-
-This skill provides guidelines for creating engaging social media content that drives engagement and shares.
-
-## When to Use This Skill
-
-Use this skill when asked to:
-- Write a LinkedIn post
-- Create a Twitter/X thread
-- Draft social media announcements
-- Repurpose blog content for social
 
 ## Research First (Required)
 

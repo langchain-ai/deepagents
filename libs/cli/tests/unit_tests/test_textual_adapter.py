@@ -1,19 +1,35 @@
 """Unit tests for textual_adapter functions."""
 
+import asyncio
 from asyncio import Future
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from datetime import datetime
-from typing import Any
-from unittest.mock import MagicMock
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
+from pydantic import ValidationError
+from rich.console import Console
 
+from deepagents_cli import config as config_module
+from deepagents_cli.config import build_stream_config
 from deepagents_cli.textual_adapter import (
+    ModelStats,
+    SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
-    _build_stream_config,
+    _handle_interrupt_cleanup,
     _is_summarization_chunk,
+    execute_task_textual,
+    format_token_count,
+    print_usage_table,
 )
+from deepagents_cli.widgets.messages import SummarizationMessage
 
 
 async def _mock_mount(widget: object) -> None:
@@ -65,26 +81,40 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._current_tool_messages == {}
 
-    def test_token_tracker_initialized_none(self) -> None:
-        """Verify `_token_tracker` is initialized as `None`."""
+    def test_token_callbacks_initialized_none(self) -> None:
+        """Verify token callbacks are initialized as `None`."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        assert adapter._token_tracker is None
+        assert adapter._on_tokens_update is None
+        assert adapter._on_tokens_hide is None
+        assert adapter._on_tokens_show is None
 
-    def test_set_token_tracker(self) -> None:
-        """Verify `set_token_tracker` stores the tracker."""
+    def test_set_token_callbacks(self) -> None:
+        """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
 
-        mock_tracker = object()
-        adapter.set_token_tracker(mock_tracker)
-        assert adapter._token_tracker is mock_tracker
+        def update_cb(count: int, *, approximate: bool = False) -> None:
+            pass
+
+        def hide_cb() -> None:
+            pass
+
+        def show_cb(*, approximate: bool = False) -> None:
+            pass
+
+        adapter._on_tokens_update = update_cb
+        adapter._on_tokens_hide = hide_cb
+        adapter._on_tokens_show = show_cb
+        assert adapter._on_tokens_update is update_cb
+        assert adapter._on_tokens_hide is hide_cb
+        assert adapter._on_tokens_show is show_cb
 
     def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
         """Pending tool widgets should be marked error and then cleared."""
@@ -108,19 +138,87 @@ class TestTextualUIAdapterInit:
         set_active.assert_called_once_with(None)
 
 
+class TestInterruptCleanup:
+    """Tests for interrupt cleanup token handling."""
+
+    async def test_tool_only_interrupt_marks_tokens_approximate(self) -> None:
+        """Tool-only interrupted turns should keep the stale-token marker."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        set_spinner = AsyncMock()
+        set_active = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+            set_active_message=set_active,
+        )
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        show_calls: list[bool] = []
+
+        def show_cb(*, approximate: bool = False) -> None:
+            show_calls.append(approximate)
+
+        adapter._on_tokens_show = show_cb
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        turn_stats = SessionStats()
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        with patch("deepagents_cli.textual_adapter.time.monotonic", return_value=101.0):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config=config,  # type: ignore[arg-type]
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=turn_stats,
+                start_time=100.0,
+            )
+
+        assert mounted
+        assert show_calls == [True]
+        assert turn_stats.wall_time_seconds == 1.0
+        set_active.assert_called_once_with(None)
+        set_spinner.assert_awaited_once_with(None)
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
+
+        interrupted_payload = agent.aupdate_state.await_args_list[0].args[1]
+        interrupted_msg = interrupted_payload["messages"][0]
+        assert interrupted_msg.tool_calls[0]["id"] == "call-1"
+        assert interrupted_msg.tool_calls[0]["name"] == "read_file"
+
+
 class TestBuildStreamConfig:
-    """Tests for `_build_stream_config` metadata construction."""
+    """Tests for `build_stream_config` metadata construction."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        config_module._git_branch_cache.clear()
 
     def test_assistant_fields_present(self) -> None:
         """Assistant-specific metadata should be present when `assistant_id` is set."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         assert config["metadata"]["assistant_id"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
+        assert "cwd" in config["metadata"]
 
     def test_updated_at_is_valid_iso_timestamp(self) -> None:
         """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
-        config = _build_stream_config("t-456", assistant_id="my-agent")
+        config = build_stream_config("t-456", assistant_id="my-agent")
         raw = config["metadata"]["updated_at"]
         assert isinstance(raw, str)
         parsed = datetime.fromisoformat(raw)
@@ -128,18 +226,164 @@ class TestBuildStreamConfig:
 
     def test_no_assistant_fields_when_none(self) -> None:
         """Assistant-specific fields should be absent when `assistant_id` is `None`."""
-        config = _build_stream_config("t-789", assistant_id=None)
-        assert config["metadata"] == {}
+        config = build_stream_config("t-789", assistant_id=None)
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
+        assert "cwd" in metadata
 
     def test_no_assistant_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
-        config = _build_stream_config("t-000", assistant_id="")
-        assert config["metadata"] == {}
+        config = build_stream_config("t-000", assistant_id="")
+        metadata = config["metadata"]
+        assert "assistant_id" not in metadata
+        assert "agent_name" not in metadata
+        assert "updated_at" not in metadata
+        assert "cwd" in metadata
+
+    def test_git_branch_included_when_available(self) -> None:
+        """Git branch should be included in metadata when in a git repo."""
+        with patch(
+            "deepagents_cli.config._get_git_branch",
+            return_value="feature-branch",
+        ):
+            config = build_stream_config("t-git", assistant_id="agent")
+        assert config["metadata"]["git_branch"] == "feature-branch"
+
+    def test_git_branch_absent_when_not_in_repo(self) -> None:
+        """Git branch should be absent when not in a git repo."""
+        with patch(
+            "deepagents_cli.config._get_git_branch",
+            return_value=None,
+        ):
+            config = build_stream_config("t-nogit", assistant_id="agent")
+        assert "git_branch" not in config["metadata"]
 
     def test_configurable_thread_id(self) -> None:
         """`configurable.thread_id` should match the provided thread ID."""
-        config = _build_stream_config("t-abc", assistant_id=None)
+        config = build_stream_config("t-abc", assistant_id=None)
         assert config["configurable"]["thread_id"] == "t-abc"
+
+    def test_sandbox_type_included_when_set(self) -> None:
+        """Sandbox type should appear in metadata when provided."""
+        config = build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
+        assert config["metadata"]["sandbox_type"] == "daytona"
+
+    def test_sandbox_type_absent_when_none(self) -> None:
+        """Sandbox type should be absent from metadata when not provided."""
+        config = build_stream_config("t-nosb", assistant_id=None)
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_sandbox_type_none_string_excluded(self) -> None:
+        """The argparse sentinel `"none"` should not leak into metadata."""
+        config = build_stream_config("t-none", assistant_id=None, sandbox_type="none")
+        assert "sandbox_type" not in config["metadata"]
+
+    def test_no_model_keys_in_configurable(self) -> None:
+        """Model/model_params should not be in configurable."""
+        config = build_stream_config("t-no-model", assistant_id=None)
+        assert "model" not in config["configurable"]
+        assert "model_params" not in config["configurable"]
+
+    def test_versions_contains_cli_version(self) -> None:
+        """CLI version should always be present in metadata.versions."""
+        from deepagents_cli._version import __version__
+
+        config = build_stream_config("t-ver", assistant_id=None)
+        assert config["metadata"]["versions"]["deepagents-cli"] == __version__
+
+    def test_versions_contains_sdk_version_when_installed(self) -> None:
+        """SDK version should be in versions when deepagents is installed."""
+        with patch(
+            "importlib.metadata.version",
+            return_value="0.5.0",
+        ):
+            config = build_stream_config("t-sdk", assistant_id=None)
+        assert config["metadata"]["versions"]["deepagents"] == "0.5.0"
+
+    def test_versions_omits_sdk_when_not_installed(self) -> None:
+        """SDK version key should be absent when deepagents is not installed."""
+        from importlib.metadata import PackageNotFoundError
+
+        with patch(
+            "importlib.metadata.version",
+            side_effect=PackageNotFoundError("deepagents"),
+        ):
+            config = build_stream_config("t-nosdk", assistant_id=None)
+        assert "deepagents" not in config["metadata"]["versions"]
+        from deepagents_cli._version import __version__
+
+        assert config["metadata"]["versions"]["deepagents-cli"] == __version__
+
+    def test_user_id_included_when_set(self) -> None:
+        """DEEPAGENTS_CLI_USER_ID should appear in metadata when set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": "mason"}):
+            config = build_stream_config("t-uid", assistant_id=None)
+        assert config["metadata"]["user_id"] == "mason"
+
+    def test_user_id_absent_when_unset(self) -> None:
+        """user_id should be absent from metadata when env var is not set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": ""}):
+            config = build_stream_config("t-nouid", assistant_id=None)
+        assert "user_id" not in config["metadata"]
+
+
+class TestGetGitBranch:
+    """Tests for `_get_git_branch` caching."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        config_module._git_branch_cache.clear()
+
+    def test_reuses_cached_branch_for_same_working_directory(self) -> None:
+        """Repeated lookups in one repo should only spawn `git` once."""
+        result = MagicMock(returncode=0, stdout="feature-branch\n")
+
+        with (
+            patch(
+                "deepagents_cli.config.Path.cwd",
+                return_value=Path("/tmp/repo"),
+            ),
+            patch("subprocess.run", return_value=result) as mock_run,
+        ):
+            assert config_module._get_git_branch() == "feature-branch"
+            assert config_module._get_git_branch() == "feature-branch"
+
+        assert mock_run.call_count == 1
+
+
+class TestGetGitBranchOSError:
+    """Tests for _get_git_branch when Path.cwd() raises OSError."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        config_module._git_branch_cache.clear()
+
+    def test_returns_none_on_cwd_oserror(self) -> None:
+        """_get_git_branch should return None when cwd is inaccessible."""
+        with patch(
+            "deepagents_cli.config.Path.cwd",
+            side_effect=OSError("deleted"),
+        ):
+            assert config_module._get_git_branch() is None
+
+
+class TestBuildStreamConfigOSError:
+    """Tests for build_stream_config when Path.cwd() raises OSError."""
+
+    def setup_method(self) -> None:
+        """Clear the git-branch cache between tests."""
+        config_module._git_branch_cache.clear()
+
+    def test_cwd_absent_on_oserror(self) -> None:
+        """Cwd should be absent from metadata when Path.cwd() raises."""
+        with patch(
+            "deepagents_cli.config.Path.cwd",
+            side_effect=OSError("deleted"),
+        ):
+            config = build_stream_config("t-err", assistant_id="agent")
+        assert "cwd" not in config["metadata"]
 
 
 class TestIsSummarizationChunk:
@@ -165,6 +409,599 @@ class TestIsSummarizationChunk:
 
         metadata_missing = {"other_key": "value"}
         assert _is_summarization_chunk(metadata_missing) is False
+
+    def test_returns_false_for_unrelated_metadata(self) -> None:
+        """Should return `False` when only unrelated keys are present."""
+        assert _is_summarization_chunk({"langgraph_node": "model"}) is False
+        assert _is_summarization_chunk({"langgraph_node": None}) is False
+
+
+class _FakeAgent:
+    """Minimal async stream agent used for adapter execution tests."""
+
+    def __init__(self, chunks: list[tuple]) -> None:
+        self._chunks = chunks
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield preconfigured stream chunks."""
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _SequencedAgent:
+    """Agent test double that returns a different stream per call."""
+
+    def __init__(self, streams_by_call: list[list[tuple[Any, ...]]]) -> None:
+        self._streams_by_call = streams_by_call
+        self.stream_inputs: list[dict | Command] = []
+
+    async def astream(
+        self,
+        stream_input: dict | Command,
+        *_: Any,
+        **__: Any,
+    ) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield chunks for this invocation and record stream inputs."""
+        self.stream_inputs.append(stream_input)
+        chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
+        for chunk in chunks:
+            yield chunk
+
+
+def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
+    """Build an updates-stream chunk containing one ask_user interrupt."""
+    interrupt = SimpleNamespace(id="interrupt-1", value=payload)
+    return ((), "updates", {"__interrupt__": [interrupt]})
+
+
+class TestExecuteTaskTextualSummarizationFeedback:
+    """Tests for summarization spinner and notification feedback."""
+
+    async def test_spinner_transitions_for_summarization_stream(self) -> None:
+        """Spinner should move Thinking -> Offloading -> Thinking."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            ((), "messages", (HumanMessage(content="regular chunk"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        assert "Offloading" in statuses
+        assert statuses[-1] == "Thinking"
+
+    async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
+        """Notification should render when regular chunks resume after summarization."""
+        statuses: list[str | None] = []
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+            # Regular chunk from the actual model — signals summarization ended.
+            ((), "messages", (HumanMessage(content="regular"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
+
+    async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
+        """Notification should still render if stream exhausts during summarization."""
+        mounted_widgets: list[object] = []
+
+        async def record_spinner(_status: str | None) -> None:
+            await asyncio.sleep(0)
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted_widgets.append(widget)
+
+        # Only summarization chunks, no regular chunks follow.
+        chunks = [
+            (
+                (),
+                "messages",
+                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert any(
+            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
+        )
+
+
+def _tool_call_message(
+    name: str, args: dict[str, Any], tool_id: str
+) -> SimpleNamespace:
+    """Build a message-like object with content_blocks containing one tool call."""
+    return SimpleNamespace(
+        content_blocks=[
+            {"type": "tool_call", "name": name, "args": args, "id": tool_id}
+        ]
+    )
+
+
+class TestExecuteTaskTextualParallelToolSpinner:
+    """Regression tests for #1796: premature spinner with parallel tools."""
+
+    async def test_spinner_not_shown_until_all_parallel_tools_complete(self) -> None:
+        """With two parallel tools, Thinking appears only at start and after last."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("task", {"task": "a"}, "tool-a"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("task", {"task": "b"}, "tool-b"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="result a", tool_call_id="tool-a"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="result b", tool_call_id="tool-b"),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert statuses[0] == "Thinking"
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            "Expected exactly 2 Thinking calls (start + after last tool); "
+            f"got {thinking_count}: {statuses}"
+        )
+
+    async def test_spinner_shown_after_single_tool_completes(self) -> None:
+        """Spinner should show Thinking after the only tool completes."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message("ls", {"path": "."}, "tool-1"),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="file1.py", tool_call_id="tool-1"),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="list files",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert statuses[-1] == "Thinking"
+
+    async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
+        """Three parallel tools completed out of order; Thinking after all."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
+            ((), "messages", (tc("task", {"task": "c"}, "tool-c"), {})),
+            # Complete out of dispatch order: B, A, C
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result b",
+                        tool_call_id="tool-b",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result a",
+                        tool_call_id="tool-a",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result c",
+                        tool_call_id="tool-c",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            "Expected exactly 2 Thinking calls (start + after last tool); "
+            f"got {thinking_count}: {statuses}"
+        )
+
+    async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
+        """Spinner still shows Thinking with an untracked tool_call_id."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            # Result with a tool_call_id that was never dispatched
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="result a",
+                        tool_call_id="tool-a",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="unknown",
+                        tool_call_id="tool-unknown",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        # After the tracked tool completes, dict is empty so spinner should show.
+        # The untracked ToolMessage should not break spinner recovery.
+        thinking_calls = [i for i, s in enumerate(statuses) if s == "Thinking"]
+        assert len(thinking_calls) >= 2, (
+            f"Expected at least 2 Thinking calls; got {len(thinking_calls)}: {statuses}"
+        )
+
+
+class TestExecuteTaskTextualAskUser:
+    """Tests for ask_user interrupt handling in the Textual adapter."""
+
+    async def test_request_ask_user_returning_none_is_reported_as_error(self) -> None:
+        """A `None` callback result should resume with explicit error status."""
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return None
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(agent.stream_inputs) >= 2
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "ask_user callback returned no response"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_request_ask_user_mount_error_is_not_treated_as_cancel(self) -> None:
+        """UI mount failures should resume with explicit error status."""
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "failed to display ask_user prompt"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_request_ask_user_missing_callback_is_reported_as_error(self) -> None:
+        """ask_user interrupts without a UI callback should resume with error."""
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        ask_user_resume = resume_payload["interrupt-1"]
+        assert ask_user_resume["status"] == "error"
+        assert ask_user_resume["error"] == "ask_user not supported by this UI"
+        assert ask_user_resume["answers"] == [""]
+
+    async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
+        self,
+    ) -> None:
+        """Missing required ask_user keys should fail validation at ingestion."""
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            # Missing required keys: `questions` and `tool_call_id`.
+                        }
+                    )
+                ]
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with pytest.raises(ValidationError):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(
+                    thread_id="thread-1",
+                    auto_approve=False,
+                ),
+                adapter=adapter,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -303,3 +1140,179 @@ class TestDictIterationSafety:
         """Returns None when there is no text and no tool calls."""
         result = _build_interrupted_ai_message({}, {})
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SessionStats tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStats:
+    """Tests for `SessionStats` recording and merging."""
+
+    def test_record_request_named_model(self) -> None:
+        """record_request updates totals and per_model for a named model."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 50
+        assert "gpt-4" in stats.per_model
+        assert stats.per_model["gpt-4"].request_count == 1
+        assert stats.per_model["gpt-4"].input_tokens == 100
+        assert stats.per_model["gpt-4"].output_tokens == 50
+
+    def test_record_request_empty_model(self) -> None:
+        """record_request with empty model skips per_model entry."""
+        stats = SessionStats()
+        stats.record_request("", 200, 80)
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 200
+        assert stats.output_tokens == 80
+        assert stats.per_model == {}
+
+    def test_record_request_multiple_models(self) -> None:
+        """Multiple models create separate per_model entries."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("claude-opus-4-6", 200, 80)
+
+        assert stats.request_count == 2
+        assert stats.input_tokens == 300
+        assert stats.output_tokens == 130
+        assert len(stats.per_model) == 2
+        assert stats.per_model["gpt-4"].request_count == 1
+        assert stats.per_model["claude-opus-4-6"].request_count == 1
+
+    def test_merge(self) -> None:
+        """merge() folds another SessionStats into self."""
+        a = SessionStats(
+            request_count=1, input_tokens=100, output_tokens=50, wall_time_seconds=1.0
+        )
+        a.per_model["gpt-4"] = ModelStats(
+            request_count=1, input_tokens=100, output_tokens=50
+        )
+
+        b = SessionStats(
+            request_count=2, input_tokens=300, output_tokens=120, wall_time_seconds=2.5
+        )
+        b.per_model["claude-opus-4-6"] = ModelStats(
+            request_count=2, input_tokens=300, output_tokens=120
+        )
+
+        a.merge(b)
+
+        assert a.request_count == 3
+        assert a.input_tokens == 400
+        assert a.output_tokens == 170
+        assert a.wall_time_seconds == pytest.approx(3.5)
+        assert len(a.per_model) == 2
+        assert a.per_model["claude-opus-4-6"].request_count == 2
+
+    def test_merge_overlapping_models(self) -> None:
+        """merge() combines per_model entries for the same model."""
+        a = SessionStats()
+        a.record_request("gpt-4", 100, 50)
+
+        b = SessionStats()
+        b.record_request("gpt-4", 200, 80)
+
+        a.merge(b)
+
+        assert a.request_count == 2
+        assert a.input_tokens == 300
+        assert a.output_tokens == 130
+        assert a.per_model["gpt-4"].request_count == 2
+        assert a.per_model["gpt-4"].input_tokens == 300
+        assert a.per_model["gpt-4"].output_tokens == 130
+
+
+# ---------------------------------------------------------------------------
+# format_token_count tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatTokenCount:
+    """Tests for `format_token_count` shared formatter."""
+
+    def test_small_count(self) -> None:
+        assert format_token_count(500) == "500"
+
+    def test_thousands(self) -> None:
+        assert format_token_count(12_500) == "12.5K"
+
+    def test_millions(self) -> None:
+        assert format_token_count(1_200_000) == "1.2M"
+
+    def test_exact_thousand(self) -> None:
+        assert format_token_count(1000) == "1.0K"
+
+    def test_zero(self) -> None:
+        assert format_token_count(0) == "0"
+
+
+# ---------------------------------------------------------------------------
+# print_usage_table tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrintUsageTable:
+    """Tests for `print_usage_table` output."""
+
+    def test_no_model_called_skips_unknown_row(self) -> None:
+        """When no model was called, the table should not show 'unknown'."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=1.5, console=console)
+        output = buf.getvalue()
+        assert "unknown" not in output
+        assert "Usage Stats" not in output
+        assert "Agent active" in output
+
+    def test_single_model_shows_name(self) -> None:
+        """Single-model session should display the model name."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "unknown" not in output
+
+    def test_multi_model_shows_all_names_and_total(self) -> None:
+        """Multi-model session should show each model and a Total row."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("claude-opus-4-6", 200, 80)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "claude-opus-4-6" in output
+        assert "Total" in output
+        assert "unknown" not in output
+
+    def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
+        """Token table should print but timing line should be absent."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "Agent active" not in output
+
+    def test_no_requests_no_time_prints_nothing(self) -> None:
+        """Empty stats with negligible wall time should print nothing."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.01, console=console)
+        output = buf.getvalue()
+        assert output.strip() == ""

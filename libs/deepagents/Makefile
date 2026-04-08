@@ -1,4 +1,4 @@
-.PHONY: format lint test tests evals integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck update-snapshots
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -12,13 +12,15 @@ UV_FROZEN = true
 # Define a variable for the test file path.
 TEST_FILE ?= tests/unit_tests/
 SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
+PYTEST_EXTRA ?=
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+	uv run --group test pytest -n auto -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
-		--cov-report=term-missing
+		--cov-report=term-missing \
+		--benchmark-disable
 
 update-snapshots: ## Update smoke test snapshots
 	# update snapshots for smoke tests
@@ -35,14 +37,12 @@ integration_test: ## Run integration tests
 integration_test integration_tests:
 	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
 
-evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest -n auto tests/evals
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
 
 benchmark: ## Run benchmark tests
-	uv run --group test pytest ./tests -m benchmark
+	uv run --group test pytest ./tests/benchmarks -m benchmark
 
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .
@@ -65,9 +65,10 @@ lint: ## Run linters and type checker
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	uv run --all-groups ty check deepagents
+	$(MAKE) type
 
-typecheck: ## Run type checker
+type: ## Run type checker
+type typecheck:
 	uv run --all-groups ty check deepagents
 
 format: ## Run code formatters

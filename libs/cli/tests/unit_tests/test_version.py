@@ -41,13 +41,10 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-cli {__version__}" in result.stdout
-    from importlib.metadata import version as pkg_version
-
     sdk_version = pkg_version("deepagents")
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
 
 
-@pytest.mark.asyncio
 async def test_version_slash_command_message_format() -> None:
     """Verify the `/version` slash command outputs both CLI and SDK versions."""
     from deepagents_cli.app import DeepAgentsApp
@@ -67,7 +64,6 @@ async def test_version_slash_command_message_format() -> None:
         assert f"deepagents (SDK) version: {sdk_version}" in content
 
 
-@pytest.mark.asyncio
 async def test_version_slash_command_sdk_unavailable() -> None:
     """Verify `/version` shows 'unknown' when SDK package metadata is missing."""
     from importlib.metadata import PackageNotFoundError
@@ -93,7 +89,6 @@ async def test_version_slash_command_sdk_unavailable() -> None:
         assert "deepagents (SDK) version: unknown" in content
 
 
-@pytest.mark.asyncio
 async def test_version_slash_command_cli_version_unavailable() -> None:
     """Verify `/version` shows 'unknown' when CLI _version module is missing."""
     from deepagents_cli.app import DeepAgentsApp

@@ -2005,8 +2005,8 @@ class TestSubAgents:
 
         # Build a minimal graph that returns an AIMessage with content blocks.
 
-        def produce_blocks(_state: MessagesState) -> MessagesState:
-            return {"messages": [AIMessage(content=content_blocks)]}  # type: ignore[return-value]
+        def produce_blocks(_state: MessagesState) -> dict:
+            return {"messages": [AIMessage(content=content_blocks)]}
 
         graph_builder = StateGraph(MessagesState)
         graph_builder.add_node("produce", produce_blocks)
@@ -2067,8 +2067,8 @@ class TestSubAgents:
         """
         structured_payload = {"sql": "SELECT 1", "rows": 5}
 
-        def produce_artifact(_state: MessagesState) -> MessagesState:
-            return {  # type: ignore[return-value]
+        def produce_artifact(_state: MessagesState) -> dict:
+            return {
                 "messages": [
                     ToolMessage(
                         content="Short summary.",

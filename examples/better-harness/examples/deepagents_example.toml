@@ -1,33 +1,33 @@
-# Focused Deep Agents example for better-harness.
+# Worked example for optimizing a Deep Agents-based harness.
 #
-# This example is intentionally minimal and targets the real Deep Agents prompt
-# surface plus the focused eval slice we used for harness work:
-# - tool_selection
-# - followup_quality
+# Copy this file and replace the placeholder paths, targets, and eval cases
+# with the ones from your repo.
 #
-# It is meant to run from this vendored copy inside the Deep Agents repo.
-# No external better-harness checkout is required.
+# Learn more:
+# - Deep Agents repo: https://github.com/langchain-ai/deepagents
+# - Custom middleware in LangChain: https://docs.langchain.com/oss/python/langchain/middleware/custom
+# - Middleware in Deep Agents customization: https://docs.langchain.com/oss/python/deepagents/customization#middleware
 #
-# To extend this beyond prompt optimization:
-# - add workspace_file surfaces for any tool / skill / middleware files your
-#   agent actually imports
-# - for middleware, expose both the middleware implementation file and the file
-#   that passes middleware=[...] into create_deep_agent(...)
+# Notes:
+# - This example is intentionally one file. It uses `base_value` so the outer
+#   agent can see the starting prompt/tools/skills/middleware directly.
+# - Middleware usually needs two surfaces:
+#   1. the middleware implementation file
+#   2. the file that wires that middleware into `create_deep_agent(...)`
 
 [experiment]
-name = "deepagents-better-harness"
+name = "my-deepagents-harness"
 runner = "pytest"
-workspace_root = "../../.."
+workspace_root = "${DEEPAGENTS_ROOT}"
 model = "claude-sonnet-4-6"
 max_iterations = 3
 
 [better_agent]
 model = "claude-sonnet-4-6"
 max_turns = 11000
-deepagents_root = "../../.."
 
 [runner.pytest]
-project_root = "../../../libs/evals"
+project_root = "${DEEPAGENTS_ROOT}/libs/evals"
 model_flag = "--model"
 summary_flag = "--evals-report-file"
 pytest_args = ["-q"]
@@ -37,66 +37,73 @@ kind = "module_attr"
 target = "deepagents.graph:BASE_AGENT_PROMPT"
 filename = "prompt.txt"
 base_value = """
-You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+You are a helpful agent.
 
-## Core Behavior
-
-- Be concise and direct. Don't over-explain unless asked.
-- NEVER add unnecessary preamble ("Sure!", "Great question!", "I'll now...").
-- Don't say "I'll now do X" — just do it.
-- If the request is underspecified, ask only the minimum followup needed to take the next useful action.
-- If asked how to approach something, explain first, then act.
-
-## Professional Objectivity
-
-- Prioritize accuracy over validating the user's beliefs
-- Disagree respectfully when the user is incorrect
-- Avoid unnecessary superlatives, praise, or emotional validation
-
-## Doing Tasks
-
-When the user asks you to do something:
-
-1. **Understand first** — read relevant files, check existing patterns. Quick but thorough — gather enough evidence to start, then iterate.
-2. **Act** — implement the solution. Work quickly but accurately.
-3. **Verify** — check your work against what was asked, not against your own output. Your first attempt is rarely correct — iterate.
-
-Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
-
-**When things go wrong:**
-- If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
-- If you're blocked, tell the user what's wrong and ask for guidance.
-
-## Clarifying Requests
-
-- Do not ask for details the user already supplied.
-- Use reasonable defaults when the request clearly implies them.
-- Prioritize missing semantics like content, delivery, detail level, or alert criteria.
-- Avoid opening with a long explanation of tool, scheduling, or integration limitations when a concise blocking followup question would move the task forward.
-- Ask domain-defining questions before implementation questions.
-- For monitoring or alerting requests, ask what signals, thresholds, or conditions should trigger an alert.
-
-## Progress Updates
-
-For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next.
+If a request is underspecified, ask the minimum followup needed to make the next useful move.
+Do not ask for details the user already supplied.
+Use reasonable defaults when the request clearly implies them.
 """
 
-# Optional extension surfaces:
-#
-# [surfaces.middleware_impl]
-# kind = "workspace_file"
-# target = "libs/deepagents/deepagents/my_custom_middleware.py"
-# base_file = "my_custom_middleware.py"
-#
-# [surfaces.middleware_registration]
-# kind = "workspace_file"
-# target = "libs/deepagents/deepagents/my_agent_setup.py"
-# base_file = "my_agent_setup.py"
-#
-# [surfaces.skill]
-# kind = "workspace_file"
-# target = "libs/deepagents/deepagents/skills/my-skill/SKILL.md"
-# base_file = "my-skill.md"
+[surfaces.tools]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/custom_tools.py"
+filename = "custom_tools.py"
+base_value = """
+from langchain.tools import tool
+
+
+@tool
+def send_report(recipient: str, subject: str, body: str) -> str:
+    \"\"\"Send a report to a user.\"\"\"
+    return f"sent report to {recipient} with subject {subject}"
+"""
+
+[surfaces.skills]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/skills/reporting.md"
+filename = "reporting.md"
+base_value = """
+# Reporting skill
+
+- Ask domain-defining questions before implementation questions.
+- For recurring summaries, clarify format or detail level before broad setup details.
+- Prefer acting when the destination and core intent are already clear.
+"""
+
+[surfaces.middleware_impl]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/custom_middleware.py"
+filename = "custom_middleware.py"
+base_value = """
+from langchain.agents.middleware import wrap_tool_call
+
+
+@wrap_tool_call
+def log_tool_calls(request, handler):
+    \"\"\"Simple example middleware that logs tool calls.\"\"\"
+    result = handler(request)
+    return result
+"""
+
+[surfaces.middleware_registration]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/agent_setup.py"
+filename = "agent_setup.py"
+base_value = """
+from deepagents import create_deep_agent
+
+from deepagents.custom_middleware import log_tool_calls
+from deepagents.custom_tools import send_report
+
+
+def build_agent(model: str):
+    return create_deep_agent(
+        model=model,
+        tools=[send_report],
+        middleware=[log_tool_calls],
+        system_prompt="You are a helpful agent.",
+    )
+"""
 
 [[cases]]
 case_id = "tests/evals/test_tool_selection.py::test_indirect_email_report[{model}]"

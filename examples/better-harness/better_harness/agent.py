@@ -483,15 +483,9 @@ def _is_transient_model_error(message: str) -> bool:
 def _resolve_deepagents_root(root: Path | None) -> Path | None:
     resolved_root = root
     if resolved_root is None:
-        current = Path(__file__).resolve()
-        for parent in current.parents:
-            if (parent / "libs" / "deepagents").exists():
-                resolved_root = parent
-                break
-        if resolved_root is None:
-            sibling = Path(__file__).resolve().parents[2] / "deepagents"
-            if sibling.exists():
-                resolved_root = sibling
+        sibling = Path(__file__).resolve().parents[2] / "deepagents"
+        if sibling.exists():
+            resolved_root = sibling
     return resolved_root
 
 

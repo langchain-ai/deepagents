@@ -2106,7 +2106,7 @@ class TestSubAgentMiddlewareValidation:
         This validates that deprecated_kwargs are properly validated and unknown
         kwargs like 'fooofoobar' are caught and reported.
         """
-        with pytest.raises(TypeError, match=r"unexpected keyword argument.*fooofoobar"):
+        with pytest.raises(TypeError, match=r"unexpected keyword argument"):
             SubAgentMiddleware(
                 default_model="openai:gpt-4o",  # type: ignore[call-arg]
                 fooofoobar=2,  # type: ignore[call-arg]

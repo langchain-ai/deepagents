@@ -74,6 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -221,7 +222,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
@@ -253,7 +253,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
-            history_path_prefix: Path prefix for storing conversation history.
 
         Example:
             ```python
@@ -268,6 +267,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
+        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
+        if _deprecated_history_prefix is not None:
+            warnings.warn(
+                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
+                " and will be removed in 0.7."
+                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -281,7 +290,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Deep Agents specific attributes
         self._backend = backend
-        self._history_path_prefix = history_path_prefix
+
+        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
+        self._history_path_prefix = f"{_root}/conversation_history"
+
+        if _deprecated_history_prefix is not None:
+            self._history_path_prefix = _deprecated_history_prefix
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:

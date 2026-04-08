@@ -2,6 +2,7 @@ import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Never
+from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -474,3 +475,22 @@ def test_store_backend_rejects_wildcard_namespace() -> None:
 
     with pytest.raises(ValueError, match="disallowed characters"):
         be.write("/test.txt", "content")
+
+
+def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
+    """Ensure the legacy namespace path validates assistant_id from config metadata.
+
+    A wildcard or otherwise malformed assistant_id must raise ValueError and
+    never reach the store, closing the injection gap in _get_namespace_legacy.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store)  # No namespace factory — triggers legacy path
+
+    malicious_ids = ["*", "user*", "a b", "path/to", "$var", "ns[0]", "ns{a}"]
+
+    for bad_id in malicious_ids:
+        fake_cfg = {"metadata": {"assistant_id": bad_id}}
+        with patch("deepagents.backends.store.get_config", return_value=fake_cfg), warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with pytest.raises(ValueError, match="disallowed characters"):
+                be.write("/test.txt", "content")

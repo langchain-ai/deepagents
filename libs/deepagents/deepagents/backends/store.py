@@ -269,7 +269,7 @@ class StoreBackend(BackendProtocol):
             assistant_id = None
 
         if assistant_id:
-            return (assistant_id, namespace)
+            return _validate_namespace((assistant_id, namespace))
         return (namespace,)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:

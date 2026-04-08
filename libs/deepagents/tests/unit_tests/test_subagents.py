@@ -15,11 +15,11 @@ from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START, MessagesState, StateGraph
 from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -1990,3 +1990,140 @@ class TestSubAgents:
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         assert tool_messages[0].content == "Override response."
+
+    def test_compiled_subagent_preserves_content_blocks(self) -> None:
+        """Test that content blocks in a subagent's last message are forwarded intact.
+
+        When the final message from a CompiledSubAgent has a list content (e.g. text
+        block + non_standard block), the ToolMessage returned to the parent agent must
+        carry the full list rather than only the text extracted via `.text`.
+        """
+        content_blocks: list[dict] = [
+            {"type": "text", "text": "Summary of results."},
+            {"type": "non_standard", "value": {"rows": 14, "tier": 2}},
+        ]
+
+        # Build a minimal graph that returns an AIMessage with content blocks.
+
+        def produce_blocks(_state: MessagesState) -> MessagesState:
+            return {"messages": [AIMessage(content=content_blocks)]}  # type: ignore[return-value]
+
+        graph_builder = StateGraph(MessagesState)
+        graph_builder.add_node("produce", produce_blocks)
+        graph_builder.add_edge(START, "produce")
+        graph_builder.add_edge("produce", END)
+        subagent_graph = graph_builder.compile()
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Produce blocks",
+                                    "subagent_type": "blocks-agent",
+                                },
+                                "id": "call_blocks",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="blocks-agent",
+                    description="Returns content blocks.",
+                    runnable=subagent_graph,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run blocks agent")]},
+            config={"configurable": {"thread_id": "test_content_blocks"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        # The full content list must be preserved, not flattened to text only.
+        assert tool_messages[0].content == content_blocks
+
+    def test_compiled_subagent_preserves_artifact(self) -> None:
+        """Test that `artifact` on the subagent's last message is forwarded to the ToolMessage.
+
+        When the final message from a CompiledSubAgent is a ToolMessage (or any message)
+        carrying an `artifact`, that artifact must be propagated to the ToolMessage
+        returned to the parent agent.
+        """
+        structured_payload = {"sql": "SELECT 1", "rows": 5}
+
+        def produce_artifact(_state: MessagesState) -> MessagesState:
+            return {  # type: ignore[return-value]
+                "messages": [
+                    ToolMessage(
+                        content="Short summary.",
+                        tool_call_id="inner_call",
+                        artifact=structured_payload,
+                    )
+                ]
+            }
+
+        graph_builder = StateGraph(MessagesState)
+        graph_builder.add_node("produce", produce_artifact)
+        graph_builder.add_edge(START, "produce")
+        graph_builder.add_edge("produce", END)
+        subagent_graph = graph_builder.compile()
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Produce artifact",
+                                    "subagent_type": "artifact-agent",
+                                },
+                                "id": "call_artifact",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="artifact-agent",
+                    description="Returns an artifact.",
+                    runnable=subagent_graph,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run artifact agent")]},
+            config={"configurable": {"thread_id": "test_artifact_propagation"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "Short summary."
+        assert tool_messages[0].artifact == structured_payload

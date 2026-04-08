@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-OUT=$(mktemp "${TMPDIR:-/tmp}/deepagents_debug_XXXXXX.txt")
+OUT=$(mktemp "${TMPDIR:-/tmp}deepagents_debug_XXXXXX")
 
 {
     echo "=== deepagents debug dump ==="

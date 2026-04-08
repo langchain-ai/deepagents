@@ -101,7 +101,8 @@ def sanitize_tool_call_id(tool_call_id: str) -> str:
 
     Replaces dangerous characters (., /, \) with underscores.
     """
-    return tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
+    sanitized = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
+    return sanitized[:200]
 
 
 def format_content_with_line_numbers(

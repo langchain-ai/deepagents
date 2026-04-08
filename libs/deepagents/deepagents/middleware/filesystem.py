@@ -1305,6 +1305,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        # Ensure the resulting file name does not exceed OS filename length limits (255 characters)
+        max_len = max(0, 255 - len(self._large_tool_results_prefix) - 1)
+        sanitized_id = sanitized_id[:max_len]
         file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = resolved_backend.write(file_path, content_str)
         if result.error:
@@ -1352,6 +1355,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        # Ensure the resulting file name does not exceed OS filename length limits (255 characters)
+        max_len = max(0, 255 - len(self._large_tool_results_prefix) - 1)
+        sanitized_id = sanitized_id[:max_len]
         file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
         result = await resolved_backend.awrite(file_path, content_str)
         if result.error:

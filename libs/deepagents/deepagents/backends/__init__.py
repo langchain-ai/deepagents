@@ -1,6 +1,6 @@
 """Memory backends for pluggable file storage."""
 
-from deepagents.backends.composite import CompositeBackend, Route, RoutePolicy
+from deepagents.backends.composite import DEFAULT_BACKEND_METHODS, CompositeBackend, Route, RoutePolicy
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
@@ -13,6 +13,7 @@ from deepagents.backends.store import (
 )
 
 __all__ = [
+    "DEFAULT_BACKEND_METHODS",
     "DEFAULT_EXECUTE_TIMEOUT",
     "BackendContext",
     "BackendProtocol",

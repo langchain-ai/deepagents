@@ -2437,6 +2437,7 @@ class TestRoutePolicyEndToEnd:
         backend = CompositeBackend(
             default=default,
             routes={"/memories/": store},
+            default_policy=None,
         )
 
         capturing_middleware = SystemMessageCapturingMiddleware()

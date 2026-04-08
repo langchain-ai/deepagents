@@ -6,7 +6,7 @@ from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
 from deepagents.backends.composite import Route, RoutePolicy
 from deepagents.middleware.filesystem import (
     WRITE_FILE_TOOL_DESCRIPTION,
@@ -22,7 +22,7 @@ class TestBuildPolicyPrompt:
         assert _build_policy_prompt(StateBackend()) is None
 
     def test_returns_none_when_no_policies(self) -> None:
-        backend = CompositeBackend(default=StateBackend(), routes={})
+        backend = CompositeBackend(default=StateBackend(), routes={}, default_policy=None)
         assert _build_policy_prompt(backend) is None
 
     def test_default_policy_shows_tool_names(self) -> None:
@@ -54,7 +54,8 @@ class TestBuildPolicyPrompt:
         assert "`/docs/`" in prompt
         assert "write_file" in prompt
         assert "read_file" in prompt
-        assert "edit_file" not in prompt
+        docs_line = next(line for line in prompt.splitlines() if "`/docs/`" in line)
+        assert "edit_file" not in docs_line
 
     def test_non_tool_methods_are_excluded(self) -> None:
         backend = CompositeBackend(
@@ -67,6 +68,26 @@ class TestBuildPolicyPrompt:
         assert "upload_files" not in prompt
         assert "download_files" not in prompt
         assert "read_file" in prompt
+
+    def test_execute_excluded_for_non_sandbox_default(self) -> None:
+        backend = CompositeBackend(
+            default=StateBackend(),
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "execute"}),
+        )
+        prompt = _build_policy_prompt(backend)
+        assert prompt is not None
+        assert "execute" not in prompt
+
+    def test_execute_included_for_sandbox_default(self) -> None:
+        backend = CompositeBackend(
+            default=LocalShellBackend(virtual_mode=True),
+            routes={},
+            default_policy=RoutePolicy(allowed_methods={"ls", "read", "execute"}),
+        )
+        prompt = _build_policy_prompt(backend)
+        assert prompt is not None
+        assert "execute" in prompt
 
     def test_multiple_routes_sorted(self) -> None:
         backend = CompositeBackend(

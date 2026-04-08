@@ -58,6 +58,18 @@ from deepagents.backends.protocol import (
 if TYPE_CHECKING:
     from deepagents.backends.state import StateBackend
 
+DEFAULT_BACKEND_METHODS: set[str] = {
+    "ls", "read", "write", "edit", "glob", "grep", "execute", "upload_files", "download_files"
+}
+"""Default set of method names permitted by `RoutePolicy` when no explicit policy is given.
+
+Use as `allowed_methods` in a `RoutePolicy` to permit all standard operations:
+
+```python
+RoutePolicy(allowed_methods=DEFAULT_BACKEND_METHODS)
+```
+"""
+
 
 @dataclass
 class RoutePolicy:
@@ -232,7 +244,7 @@ class CompositeBackend(BackendProtocol):
         default: BackendProtocol | StateBackend,
         routes: dict[str, Route | BackendProtocol],
         *,
-        default_policy: RoutePolicy | None = None,
+        default_policy: RoutePolicy | None = RoutePolicy(allowed_methods=DEFAULT_BACKEND_METHODS),
         artifacts_root: str = "/",
     ) -> None:
         """Initialize composite backend.
@@ -246,6 +258,8 @@ class CompositeBackend(BackendProtocol):
             default_policy: Policy applied to the default backend and to
                 bare-backend routes (without an explicit `Route.policy`).
                 Does **not** override explicit `Route.policy` values.
+                Defaults to `RoutePolicy(allowed_methods=DEFAULT_BACKEND_METHODS)`,
+                which permits all default operations.
             artifacts_root: Root path for artifacts, such as messages offloaded
                 by middleware. Defaults to `"/"`.
         """

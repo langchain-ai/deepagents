@@ -344,8 +344,13 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
-def _allowed_tools(policy: RoutePolicy) -> str:
-    tools = sorted(_METHOD_TO_TOOL[m] for m in policy.allowed_methods if m in _METHOD_TO_TOOL)
+def _allowed_tools(policy: RoutePolicy, *, supports_execute: bool = True) -> str:
+    exclude = set() if supports_execute else {"execute"}
+    tools = sorted(
+        _METHOD_TO_TOOL[m]
+        for m in policy.allowed_methods
+        if m in _METHOD_TO_TOOL and m not in exclude
+    )
     return ", ".join(tools)
 
 
@@ -360,6 +365,8 @@ def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     if not backend.has_any_policy():
         return None
 
+    supports_execute = _supports_execution(backend)
+
     lines = [
         "## Route Policies",
         "",
@@ -370,10 +377,12 @@ def _build_policy_prompt(backend: BackendProtocol) -> str | None:
     for prefix in sorted(backend.routes):
         policy = backend.policy_for_route(prefix)
         if policy is not None:
-            lines.append(f"- `{prefix}`: allowed tools: {_allowed_tools(policy)}")
+            lines.append(f"- `{prefix}`: allowed tools: {_allowed_tools(policy, supports_execute=supports_execute)}")
 
     if backend.default_policy is not None:
-        lines.append(f"- Default policy (all other paths): allowed tools: {_allowed_tools(backend.default_policy)}")
+        lines.append(
+            f"- Default policy (all other paths): allowed tools: {_allowed_tools(backend.default_policy, supports_execute=supports_execute)}"
+        )
 
     return "\n".join(lines)
 

@@ -26,7 +26,7 @@ import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClientFactory
 from langsmith import Client
-from langsmith.utils import LangSmithNotFoundError
+from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 
@@ -57,9 +57,13 @@ def _get_git_remote_url() -> str:
     return raw
 
 
-HEADERS = {
-    "x-api-key": os.getenv("LANGSMITH_API_KEY"),
-}
+def _headers() -> dict[str, str | None]:
+    """Build request headers with the current API key.
+
+    Reading the env var at call time (not import time) avoids stale `None`
+    values when `dotenv.load_dotenv()` runs after this module is imported.
+    """
+    return {"x-api-key": os.getenv("LANGSMITH_API_KEY")}
 
 
 # ============================================================================
@@ -258,7 +262,7 @@ async def _create_experiment_session(
     """
     async with session.post(
         f"{LANGSMITH_API_URL}/sessions",
-        headers=HEADERS,
+        headers=_headers(),
         json={
             "start_time": datetime.datetime.now(datetime.UTC).isoformat(),
             "reference_dataset_id": dataset_id,
@@ -291,7 +295,7 @@ async def _get_dataset_by_name(dataset_name: str, session: aiohttp.ClientSession
     """
     async with session.get(
         f"{LANGSMITH_API_URL}/datasets",
-        headers=HEADERS,
+        headers=_headers(),
         params={"name": dataset_name, "limit": "1"},
     ) as response:
         if response.status == 200:  # noqa: PLR2004
@@ -472,7 +476,7 @@ def _process_trial(
                 is_root=True,
             )
         )
-    except Exception as e:  # noqa: BLE001  # LangSmith API; any failure → error status
+    except (LangSmithError, ValueError) as e:  # ValueError: SDK validation (e.g. bad filter)
         return {"status": "error", "message": f"Failed to fetch trace: {e}"}
 
     if not runs:
@@ -494,7 +498,7 @@ def _process_trial(
         feedback_list = list(client.list_feedback(run_ids=[run_id]))
         if any(fb.key == "harbor_reward" for fb in feedback_list):
             return {"status": "skipped", "message": "Feedback already exists"}
-    except Exception as exc:  # noqa: BLE001  # dedup check is best-effort
+    except LangSmithError as exc:  # dedup check is best-effort
         print(
             f"  Warning: feedback dedup check failed ({type(exc).__name__}: {exc}), proceeding anyway",
             file=sys.stderr,
@@ -515,7 +519,7 @@ def _process_trial(
                 score=reward,
                 comment=comment,
             )
-        except Exception as exc:  # noqa: BLE001  # LangSmith API; any failure → error status
+        except (LangSmithError, ValueError) as exc:  # ValueError: invalid ID args
             return {
                 "status": "error",
                 "message": f"Failed to submit feedback: {exc}",

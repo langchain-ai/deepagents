@@ -23,7 +23,7 @@ def test_eval_catalog_up_to_date() -> None:
         timeout=30,
     )
     assert result.returncode == 0, (
-        f"EVAL_CATALOG.md is out of date.\n"
-        f"Run `make eval-catalog` from libs/evals/ to regenerate.\n"
-        f"{result.stdout}{result.stderr}"
+        f"EVAL_CATALOG.md is out of date. "
+        f"Run `make eval-catalog` from libs/evals/ to regenerate.\n\n"
+        f"{result.stdout}"
     )

@@ -249,11 +249,22 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:nvidia", "harbor:nvidia"}),
+        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(
         "ollama:glm-5",
+        frozenset(
+            {
+                "eval:set2",
+                "eval:ollama",
+                "harbor:set2",
+                "harbor:ollama",
+            }
+        ),
+    ),
+    Model(
+        "ollama:glm-5.1",
         frozenset(
             {
                 "eval:set2",
@@ -309,10 +320,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set2",
-                "eval:open",
                 "eval:ollama",
                 "harbor:set2",
-                "harbor:open",
                 "harbor:ollama",
             }
         ),
@@ -422,6 +431,17 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:z-ai/glm-5.1",
+        frozenset(
+            {
+                "eval:open",
+                "eval:openrouter",
+                "harbor:open",
                 "harbor:openrouter",
             }
         ),
@@ -555,7 +575,11 @@ def main() -> None:
     env_var, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
-    matrix = {"model": models}
+    matrix = {
+        "include": [
+            {"model": m, "provider": m.split(":")[0]} for m in models
+        ],
+    }
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     line = f"matrix={json.dumps(matrix, separators=(',', ':'))}"

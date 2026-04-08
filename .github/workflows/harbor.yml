@@ -55,6 +55,7 @@ on:
           - "groq:moonshotai/kimi-k2-instruct"
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
+          - "ollama:glm-5.1"
           - "ollama:minimax-m2.5"
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
@@ -76,6 +77,7 @@ on:
           - "openai:gpt-5.4"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -307,6 +309,7 @@ jobs:
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -315,6 +318,12 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"

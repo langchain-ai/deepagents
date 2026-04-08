@@ -90,9 +90,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3-flash-preview`
 - `openai:gpt-5.4-mini`
 
-### `open` (3 models)
+### `open` (4 models)
 
 - `baseten:zai-org/GLM-5`
+- `nvidia:nvidia/nemotron-3-super-120b-a12b`
 - `ollama:minimax-m2.7:cloud`
 - `openrouter:z-ai/glm-5.1`
 

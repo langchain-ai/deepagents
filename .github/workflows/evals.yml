@@ -142,6 +142,26 @@ on:
         required: false
         default: ""
         type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after evals."
+        required: false
+        default: true
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
+          - "openai:o4-mini"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
         description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
         required: false
@@ -327,6 +347,21 @@ jobs:
             echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
             exit 1
           fi
+
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled() && inputs.analyze_failures"
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
 
       - name: "📤 Upload eval report"
         if: "!cancelled()"

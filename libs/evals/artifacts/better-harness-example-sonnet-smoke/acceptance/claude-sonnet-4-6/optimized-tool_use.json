@@ -1,0 +1,26 @@
+{
+  "category_scores": {
+    "tool_use": 1.0
+  },
+  "correctness": 1.0,
+  "created_at": "2026-04-07T22:41:47+00:00",
+  "experiment_links": [
+    {
+      "name": "TestSuiteResult:54eee49f",
+      "url": "https://smith.langchain.com/o/74293d1c-3f10-4dde-9541-9b997073e6d0/datasets/7005b7e5-3468-4431-b659-e50362475390/compare?selectedSessions=30b6dd38-90a6-4d5a-bbbb-f73db91dd602"
+    }
+  ],
+  "experiment_urls": [
+    "https://smith.langchain.com/o/74293d1c-3f10-4dde-9541-9b997073e6d0/datasets/7005b7e5-3468-4431-b659-e50362475390/compare?selectedSessions=30b6dd38-90a6-4d5a-bbbb-f73db91dd602"
+  ],
+  "failed": 0,
+  "median_duration_s": 3.5614,
+  "model": "claude-sonnet-4-6",
+  "passed": 1,
+  "sdk_version": "0.5.0a3",
+  "skipped": 0,
+  "solve_rate": 0.5616,
+  "step_ratio": 1.0,
+  "tool_call_ratio": 1.0,
+  "total": 1
+}

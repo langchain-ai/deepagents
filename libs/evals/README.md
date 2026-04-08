@@ -27,6 +27,12 @@ LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals/tes
 
 Results are logged to [LangSmith](https://smith.langchain.com/) under the `deepagents-evals` test suite (under Experiments tab). Set `--evals-report-file <path>` (or `DEEPAGENTS_EVALS_REPORT_FILE`) to also write a JSON summary.
 
+## Better Harness
+
+An eval-driven harness-tuning workflow now lives in [`BETTER_HARNESS.md`](BETTER_HARNESS.md). It includes a small hill-climber, a focused baseline-vs-improved comparison runner with artifact reuse/resume support, and fresh same-branch Sonnet 4.6 / Baseten GLM-5 results used to tune the default Deep Agents harness.
+
+For a single runnable example that packages the split, holdout, optimizer, acceptance evals, and artifact layout into one command, see [`BETTER_HARNESS_EXAMPLE.md`](BETTER_HARNESS_EXAMPLE.md).
+
 ## Architecture
 
 ### Two-tier assertion model

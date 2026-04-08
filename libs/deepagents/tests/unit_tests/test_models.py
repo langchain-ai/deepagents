@@ -8,15 +8,24 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
+    _BASETEN_TIMEOUT_S,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
     OPENROUTER_MIN_VERSION,
+    _baseten_auth_kwargs,
     _openrouter_attribution_kwargs,
     _string_value,
     check_openrouter_version,
     get_model_identifier,
     model_matches_spec,
     resolve_model,
+)
+from deepagents.graph import (
+    BASE_AGENT_PROMPT,
+    GLM5_PROMPT_SUPPLEMENT,
+    LEGACY_BASE_AGENT_PROMPT,
+    _get_model_prompt_supplement,
+    _resolve_base_agent_prompt,
 )
 
 
@@ -102,6 +111,33 @@ class TestResolveModel:
         mock.assert_called_once_with("anthropic:claude-sonnet-4-6")
         assert result is mock.return_value
 
+    def test_baseten_prefix_passes_explicit_api_key_when_available(self) -> None:
+        env = {"BASETEN_API_KEY": "secret-key"}
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch.dict("os.environ", env),
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("baseten:zai-org/GLM-5")
+
+        mock.assert_called_once_with(
+            "baseten:zai-org/GLM-5",
+            baseten_api_key="secret-key",
+            timeout=_BASETEN_TIMEOUT_S,
+        )
+        assert result is mock.return_value
+
+    def test_baseten_prefix_omits_api_key_when_unavailable(self) -> None:
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("baseten:zai-org/GLM-5")
+
+        mock.assert_called_once_with("baseten:zai-org/GLM-5", timeout=_BASETEN_TIMEOUT_S)
+        assert result is mock.return_value
+
 
 class TestGetModelIdentifier:
     """Tests for get_model_identifier."""
@@ -149,6 +185,35 @@ class TestModelMatchesSpec:
     def test_bare_spec_without_colon_no_false_positive(self) -> None:
         model = _make_model({"model_name": "gpt-5"})
         assert model_matches_spec(model, "gpt-4o") is False
+
+
+class TestModelPromptSupplements:
+    """Tests for model-specific prompt supplements."""
+
+    def test_glm5_gets_prompt_supplement(self) -> None:
+        model = _make_model({"model_name": "zai-org/GLM-5"})
+        assert _get_model_prompt_supplement(model) == GLM5_PROMPT_SUPPLEMENT
+
+    def test_other_models_do_not_get_prompt_supplement(self) -> None:
+        model = _make_model({"model_name": "claude-sonnet-4-6"})
+        assert _get_model_prompt_supplement(model) == ""
+
+    def test_resolve_base_prompt_uses_current_prompt_by_default(self) -> None:
+        model = _make_model({"model_name": "claude-sonnet-4-6"})
+        with patch.dict(os.environ, {}, clear=True):
+            assert _resolve_base_agent_prompt(model) == BASE_AGENT_PROMPT
+
+    def test_resolve_base_prompt_uses_legacy_prompt_when_requested(self) -> None:
+        model = _make_model({"model_name": "zai-org/GLM-5"})
+        with patch.dict("os.environ", {"DEEPAGENTS_BASE_PROMPT_VARIANT": "legacy"}):
+            assert _resolve_base_agent_prompt(model) == LEGACY_BASE_AGENT_PROMPT
+
+    def test_resolve_base_prompt_appends_model_supplement(self) -> None:
+        model = _make_model({"model_name": "zai-org/GLM-5"})
+        with patch.dict(os.environ, {}, clear=True):
+            assert _resolve_base_agent_prompt(model) == (
+                BASE_AGENT_PROMPT + "\n\n" + GLM5_PROMPT_SUPPLEMENT
+            )
 
 
 class TestCheckOpenRouterVersion:
@@ -238,6 +303,21 @@ class TestOpenRouterAttributionKwargs:
             result = _openrouter_attribution_kwargs()
 
         assert result == {}
+
+
+class TestBasetenAuthKwargs:
+    """Tests for _baseten_auth_kwargs."""
+
+    def test_empty_when_env_missing(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            assert _baseten_auth_kwargs() == {"timeout": _BASETEN_TIMEOUT_S}
+
+    def test_returns_api_key_when_env_present(self) -> None:
+        with patch.dict("os.environ", {"BASETEN_API_KEY": "secret-key"}, clear=True):
+            assert _baseten_auth_kwargs() == {
+                "baseten_api_key": "secret-key",
+                "timeout": _BASETEN_TIMEOUT_S,
+            }
 
 
 class TestStringValue:

@@ -142,4 +142,9 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
         # 5s read timeout. This causes indefinite hangs on TCP stalls.
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
+    if model_name.startswith("baseten:"):
+        # Baseten calls can otherwise sit in long network stalls during evals.
+        kwargs["timeout"] = 90
+        if os.environ.get("BASETEN_API_KEY"):
+            kwargs["baseten_api_key"] = os.environ["BASETEN_API_KEY"]
     return init_chat_model(model_name, **kwargs)

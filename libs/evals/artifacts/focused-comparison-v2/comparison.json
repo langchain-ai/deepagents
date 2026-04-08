@@ -1,0 +1,91 @@
+{
+  "comparisons": [
+    {
+      "baseline": {
+        "combined": {
+          "correctness": 0.6429,
+          "passed": 9,
+          "total": 14
+        },
+        "conversation": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/claude-sonnet-4-6/legacy-conversation.json",
+          "correctness": 0.33,
+          "passed": 2,
+          "total": 6
+        },
+        "prompt_variant": "legacy",
+        "tool_use": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/claude-sonnet-4-6/legacy-tool_use.json",
+          "correctness": 0.88,
+          "passed": 7,
+          "total": 8
+        }
+      },
+      "improved": {
+        "combined": {
+          "correctness": 1.0,
+          "passed": 14,
+          "total": 14
+        },
+        "conversation": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/claude-sonnet-4-6/improved-conversation.json",
+          "correctness": 1.0,
+          "passed": 6,
+          "total": 6
+        },
+        "prompt_variant": "improved",
+        "tool_use": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/claude-sonnet-4-6/improved-tool_use.json",
+          "correctness": 1.0,
+          "passed": 8,
+          "total": 8
+        }
+      },
+      "model_name": "claude-sonnet-4-6"
+    },
+    {
+      "baseline": {
+        "combined": {
+          "correctness": 0.5,
+          "passed": 7,
+          "total": 14
+        },
+        "conversation": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/baseten-zai-org-glm-5/legacy-conversation.json",
+          "correctness": 0.17,
+          "passed": 1,
+          "total": 6
+        },
+        "prompt_variant": "legacy",
+        "tool_use": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/baseten-zai-org-glm-5/legacy-tool_use.json",
+          "correctness": 0.75,
+          "passed": 6,
+          "total": 8
+        }
+      },
+      "improved": {
+        "combined": {
+          "correctness": 1.0,
+          "passed": 14,
+          "total": 14
+        },
+        "conversation": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/baseten-zai-org-glm-5/improved-conversation.json",
+          "correctness": 1.0,
+          "passed": 6,
+          "total": 6
+        },
+        "prompt_variant": "improved",
+        "tool_use": {
+          "artifact_path": "/Users/vivektrivedy/Documents/better-harness/deepagents/libs/evals/artifacts/focused-comparison-v2/baseten-zai-org-glm-5/improved-tool_use.json",
+          "correctness": 1.0,
+          "passed": 8,
+          "total": 8
+        }
+      },
+      "model_name": "baseten:zai-org/GLM-5"
+    }
+  ],
+  "created_at": "2026-04-07T07:26:00+00:00"
+}

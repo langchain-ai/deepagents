@@ -1,0 +1,26 @@
+{
+  "category_scores": {
+    "conversation": 0.83
+  },
+  "correctness": 0.83,
+  "created_at": "2026-04-07T05:45:05+00:00",
+  "experiment_links": [
+    {
+      "name": "TestSuiteResult:8da4996d",
+      "url": "https://smith.langchain.com/o/74293d1c-3f10-4dde-9541-9b997073e6d0/datasets/7223802d-04c7-4abe-b36b-bc2182dd10d0/compare?selectedSessions=4ea45340-a651-45b1-aefd-b711c3e6806f"
+    }
+  ],
+  "experiment_urls": [
+    "https://smith.langchain.com/o/74293d1c-3f10-4dde-9541-9b997073e6d0/datasets/7223802d-04c7-4abe-b36b-bc2182dd10d0/compare?selectedSessions=4ea45340-a651-45b1-aefd-b711c3e6806f"
+  ],
+  "failed": 1,
+  "median_duration_s": 10.9231,
+  "model": "baseten:zai-org/GLM-5",
+  "passed": 5,
+  "sdk_version": "0.5.0a3",
+  "skipped": 0,
+  "solve_rate": null,
+  "step_ratio": null,
+  "tool_call_ratio": null,
+  "total": 6
+}

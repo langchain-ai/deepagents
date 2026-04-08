@@ -26,6 +26,18 @@ See https://openrouter.ai/docs/app-attribution for details.
 _OPENROUTER_APP_TITLE = "Deep Agents"
 """Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
 
+_BASETEN_TIMEOUT_S = 90
+"""Default timeout for Baseten chat models to avoid indefinite network stalls."""
+
+
+def _baseten_auth_kwargs() -> dict[str, Any]:
+    """Build Baseten auth kwargs, deferring to env var overrides."""
+    api_key = os.environ.get("BASETEN_API_KEY")
+    kwargs: dict[str, Any] = {"timeout": _BASETEN_TIMEOUT_S}
+    if api_key:
+        kwargs["baseten_api_key"] = api_key
+    return kwargs
+
 
 def _openrouter_attribution_kwargs() -> dict[str, Any]:
     """Build OpenRouter attribution kwargs, deferring to env var overrides.
@@ -90,6 +102,8 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
         return model
     if model.startswith("openai:"):
         return init_chat_model(model, use_responses_api=True)
+    if model.startswith("baseten:"):
+        return init_chat_model(model, **_baseten_auth_kwargs())
     if model.startswith("openrouter:"):
         check_openrouter_version()
         return init_chat_model(model, **_openrouter_attribution_kwargs())

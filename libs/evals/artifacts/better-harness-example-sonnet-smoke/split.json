@@ -1,0 +1,21 @@
+{
+  "acceptance": [
+    {
+      "key": "tool_use",
+      "label": "Tool Use",
+      "test_path": "tests/evals/test_tool_selection.py::test_direct_request_slack_dm"
+    },
+    {
+      "key": "conversation",
+      "label": "Conversation",
+      "test_path": "tests/evals/test_followup_quality.py::test_followup_question_quality[claude-sonnet-4-6-vague_send_report]"
+    }
+  ],
+  "holdout": [
+    "tool_direct_slack_dm"
+  ],
+  "optimization": [
+    "tool_indirect_email_report",
+    "followup_vague_send_report"
+  ]
+}

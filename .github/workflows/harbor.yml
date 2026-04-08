@@ -114,6 +114,14 @@ on:
         options:
           - sdk
           # - cli # need to support properly first
+      include_todos:
+        description: "Include TodoListMiddleware (write_todos tool). Set to false for ablation experiments."
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: read
@@ -142,6 +150,7 @@ jobs:
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
           AGENT_MODE: ${{ inputs.agent_mode }}
+          INCLUDE_TODOS: ${{ inputs.include_todos }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -160,6 +169,7 @@ jobs:
           fi
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`include_todos\` | \`${INCLUDE_TODOS}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
@@ -347,7 +357,8 @@ jobs:
             --jobs-dir jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
+            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }} \
+            --agent-kwarg include_todos=${{ inputs.include_todos }}
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -395,6 +406,7 @@ jobs:
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
             echo "- Agent mode: ${HARBOR_AGENT_MODE}"
+            echo "- Include todos: ${{ inputs.include_todos }}"
             if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
               echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
             else

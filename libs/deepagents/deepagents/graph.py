@@ -120,6 +120,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    include_todos: bool = True,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -270,6 +271,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        include_todos: Whether to include `TodoListMiddleware` in the
+            middleware stack. Set to `False` to disable the `write_todos`
+            tool for ablation experiments.
         debug: Whether to enable debug mode.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -291,12 +295,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
+    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    if include_todos:
+        gp_middleware.append(TodoListMiddleware())
+    gp_middleware.extend([
         FilesystemMiddleware(backend=backend),
         create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
-    ]
+    ])
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     # "ignore" silently skips cache-control header injection for non-Anthropic
@@ -328,12 +334,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_model = resolve_model(subagent_model)
 
             # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+            if include_todos:
+                subagent_middleware.append(TodoListMiddleware())
+            subagent_middleware.extend([
                 FilesystemMiddleware(backend=backend),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
-            ]
+            ])
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
@@ -360,9 +368,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    if include_todos:
+        deepagent_middleware.append(TodoListMiddleware())
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(

@@ -80,6 +80,7 @@ class DeepAgentsWrapper(BaseAgent):
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
+        include_todos: bool = True,
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -96,6 +97,8 @@ class DeepAgentsWrapper(BaseAgent):
                 (e.g. `"MiniMax"`).
 
                 Requires an `openrouter:` model prefix.
+            include_todos: Whether to include `TodoListMiddleware`.
+                Set to `False` to disable the `write_todos` tool.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
@@ -124,6 +127,7 @@ class DeepAgentsWrapper(BaseAgent):
         self._temperature = temperature
         self._verbose = verbose
         self._use_cli_agent = use_cli_agent
+        self._include_todos = include_todos
 
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None
@@ -254,7 +258,10 @@ class DeepAgentsWrapper(BaseAgent):
             system_prompt = await self._get_formatted_system_prompt(backend)
 
             deep_agent = create_deep_agent(
-                model=self._model, backend=backend, system_prompt=system_prompt
+                model=self._model,
+                backend=backend,
+                system_prompt=system_prompt,
+                include_todos=self._include_todos,
             )
 
         # Build metadata with experiment tracking info
@@ -275,6 +282,7 @@ class DeepAgentsWrapper(BaseAgent):
             "harbor_session_id": environment.session_id,
             # Tag to indicate which agent implementation is being used
             "agent_mode": "cli" if self._use_cli_agent else "sdk",
+            "include_todos": self._include_todos,
         }
         metadata.update(configuration)
 

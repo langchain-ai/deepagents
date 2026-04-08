@@ -3,10 +3,9 @@
 import asyncio
 import json
 import os
-import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -435,7 +434,8 @@ def _build_task_tool(  # noqa: C901
 
 SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
 
-Use this when you need to fan out the same (or similar) work across many chunks of data — for example, processing sections of a large file, classifying batches of entries, or querying multiple documents.
+Use this when you need to fan out the same (or similar) work across many chunks of data — for example,
+processing sections of a large file, classifying batches of entries, or querying multiple documents.
 
 ## Workflow
 1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.
@@ -554,14 +554,6 @@ async def _load_swarm_tasks(
     return {"tasks": tasks, "error": None}
 
 
-class _DeprecatedKwargs(TypedDict, total=False):
-    """TypedDict for deprecated SubAgentMiddleware keyword arguments.
-
-    These arguments are deprecated and will be removed in version 0.5.0.
-    Use `backend` and fully-specified `subagents` instead.
-    """
-
-
 class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for providing subagents to an agent via a `task` tool.
 
@@ -675,10 +667,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             subagents: dict[str, Runnable],
             parent_state: dict[str, Any],
             tasks: list[SwarmTaskSpec],
-        ) -> list[tuple[str, str] | Exception]:
+        ) -> list[tuple[str, str] | BaseException]:
             """Run tasks."""
 
-            async def run_task(task_spec: dict[str, Any], idx: int) -> tuple[str, str]:
+            async def run_task(task_spec: SwarmTaskSpec, idx: int) -> tuple[str, str]:
                 task_id = str(task_spec.get("id", idx))
                 desc = task_spec["description"]
                 subagent_type = task_spec["subagent_type"]
@@ -701,7 +693,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             coros = [run_task(task_spec, idx) for idx, task_spec in enumerate(tasks)]
             return await asyncio.gather(*coros, return_exceptions=True)
 
-        async def aswarm(
+        async def aswarm(  # noqa: C901, PLR0912
             config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
             output_dir: Annotated[
                 str,
@@ -746,7 +738,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             outputs: list[tuple[str, bytes]] = []
             summaries: list[str] = []
             for item in results:
-                if isinstance(item, Exception):
+                if isinstance(item, BaseException):
                     summaries.append(f"Error: {item}")
                     continue
                 task_id, result_text = item

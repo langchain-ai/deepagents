@@ -7,7 +7,6 @@ and child agents.
 
 import json
 import os
-import warnings
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -2113,49 +2112,6 @@ class TestSubAgentMiddlewareValidation:
                 fooofoobar=2,  # type: ignore[call-arg]
             )
 
-        parent_model = GenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "task",
-                                "args": {
-                                    "description": "Do work",
-                                    "subagent_type": "general-purpose",
-                                },
-                                "id": "call_gp",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="Done."),
-                ]
-            )
-        )
-
-        agent = create_deep_agent(
-            model=parent_model,
-            checkpointer=InMemorySaver(),
-            subagents=[
-                SubAgent(
-                    name="general-purpose",
-                    description="Override agent",
-                    system_prompt="You are the override.",
-                    model=override_model,
-                )
-            ],
-        )
-
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Do something")]},
-            config={"configurable": {"thread_id": "test_gp_override"}},
-        )
-
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 1
-        assert tool_messages[0].content == "Override response."
 
 @pytest.mark.parametrize(
     ("task_id", "expected"),

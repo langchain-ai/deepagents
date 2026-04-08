@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("conversation")]
+"""Apply conversation category to all tests in this module. Tier is set per-test."""
 
 logger = logging.getLogger(__name__)
 

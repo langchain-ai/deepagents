@@ -40,7 +40,12 @@ _BFCL_V3_HILLCLIMB = {
 
 
 def _tiered_params(cases: list[dict[str, Any]], hillclimb_ids: set[str]) -> list[Any]:
-    """Wrap each case in `pytest.param` with the appropriate eval_tier mark."""
+    """Wrap each case in `pytest.param` with the appropriate eval_tier mark.
+
+    Args:
+        cases: List of benchmark case dicts, each containing an "id" key.
+        hillclimb_ids: Set of case IDs classified as hillclimb tier.
+    """
     return [
         pytest.param(
             c,

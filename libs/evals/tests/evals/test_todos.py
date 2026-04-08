@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from tests.evals.utils import TrajectoryScorer, final_text_contains, run_agent, tool_call
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 
 @pytest.mark.eval_tier("baseline")

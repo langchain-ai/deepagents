@@ -88,11 +88,14 @@ def _filter_by_marker(
 ) -> None:
     """Deselect items whose *marker_name* value is not in the CLI *option* list.
 
+    Exits the test session with returncode 1 if any requested values are not
+    found among collected tests.
+
     Args:
         config: The pytest config object.
         items: Mutable list of collected test items (modified in-place).
-        option: CLI option name (e.g. ``--eval-category``).
-        marker_name: Pytest marker to read (e.g. ``eval_category``).
+        option: CLI option name (e.g. `--eval-category`).
+        marker_name: Pytest marker to read (e.g. `eval_category`).
     """
     values = config.getoption(option)
     if not values:

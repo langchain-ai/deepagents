@@ -31,6 +31,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from tests.evals.utils import AgentTrajectory, run_agent
 
 pytestmark = [pytest.mark.eval_category("summarization")]
+"""Apply summarization category to all tests in this module. Tier is set per-test."""
 
 LARGE_FILE_URL = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/summarization.py"
 """Pinned URL to a large source file used to trigger the summarization middleware in evals."""

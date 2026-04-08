@@ -27,6 +27,7 @@ from tests.evals.utils import (
 )
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
 # Mock tools — lightweight stubs that return a fixed string

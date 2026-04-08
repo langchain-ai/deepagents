@@ -404,7 +404,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.0a4"
+version = "0.5.1"
 source = { directory = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -419,7 +419,7 @@ dependencies = [
 requires-dist = [
     { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.2.21,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
     { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
@@ -807,7 +807,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.2.26"
+version = "1.2.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch" },
@@ -819,9 +819,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/b0/30ed29e5820580bc13d70b1f8a212b4fe0609a9737164ed1a90167941ca2/langchain_core-1.2.26.tar.gz", hash = "sha256:ba025ec70e19b56467f46b9109de19d30d169d328a174986b353cb23fd0ff0fe", size = 844795, upload-time = "2026-04-03T23:30:32.567Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/5c/56d19a252bbb26247b7a7cd20821d48804d7ca03212fec709cd8db7c2516/langchain_core-1.2.27.tar.gz", hash = "sha256:c18372e4c4c1454d49bf23a2e484431e71bd39b64173a0f621f0fc283d7183a4", size = 844935, upload-time = "2026-04-07T14:56:32.364Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/8b/c184205a52b37a4a3166b3567323495701929b1dbfd528e5ba1df62bd404/langchain_core-1.2.26-py3-none-any.whl", hash = "sha256:3d0a3913dff77a930b017a05afe979e4959d27bec0c77ee51f9a100754510509", size = 508298, upload-time = "2026-04-03T23:30:30.253Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/c3/6e0865bc130c448270eb9511b47863a3f9145cdb519b19f6e4758fa63d6f/langchain_core-1.2.27-py3-none-any.whl", hash = "sha256:9ecd6b0393b969fe88f6b9b309367134080ab095946d79e6937dd3911aa42bd5", size = 508315, upload-time = "2026-04-07T14:56:30.93Z" },
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 from deepagents import create_deep_agent
 from langchain_core.tools import ToolException, tool
+from langchain_repl import ReplMiddleware
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
@@ -434,7 +435,7 @@ def _create_agent(model: BaseChatModel):
     """Create agent."""
     return create_deep_agent(
         model=model,
-        tools=RELATIONAL_TOOLS,
+        middleware=[ReplMiddleware(ptc=RELATIONAL_TOOLS)],
     )
 
 

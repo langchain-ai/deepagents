@@ -352,7 +352,6 @@ def test_compat_wrapper_old_style_factory_end_to_end() -> None:
 
 def test_compat_wrapper_new_style_factory_end_to_end() -> None:
     """A new-style namespace factory using rt.context works without warnings."""
-
     rt = Runtime(
         context=None,
         server_info=SimpleNamespace(user=SimpleNamespace(identity="carol")),  # type: ignore[arg-type]

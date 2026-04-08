@@ -7,7 +7,8 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from deepagents.backends import FilesystemBackend, LocalShellBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends.composite import Route, RoutePolicy
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -269,6 +270,48 @@ description: Systematic code review process following best practices and style g
     assert len(system_messages) >= 1
 
     snapshot_path = snapshots_dir / "system_prompt_with_memory_and_skills.md"
+    _assert_snapshot(
+        snapshot_path,
+        _system_message_as_text(system_messages[0]),
+        update_snapshots=update_snapshots,
+    )
+
+
+def test_system_prompt_snapshot_with_route_policies(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    backend = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/docs/": Route(
+                backend=StateBackend(),
+                policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+            ),
+            "/workspace/": Route(
+                backend=StateBackend(),
+                policy=RoutePolicy(allowed_methods={"ls", "read", "write", "edit", "glob", "grep"}),
+            ),
+        },
+        default_policy=RoutePolicy(allowed_methods={"ls", "read", "glob", "grep"}),
+    )
+    agent = create_deep_agent(model=model, backend=backend)
+
+    agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_route_policies_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
+
+    messages = history[0]["messages"]
+    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+    assert len(system_messages) >= 1
+
+    snapshot_path = snapshots_dir / "system_prompt_with_route_policies.md"
     _assert_snapshot(
         snapshot_path,
         _system_message_as_text(system_messages[0]),

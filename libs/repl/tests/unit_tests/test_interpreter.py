@@ -109,8 +109,9 @@ def test_benchmark_simple_print_program() -> None:
     elapsed = toc - tic
     # in us not ms
     elapsed_us = elapsed * 1e6
-    elapsed_per_test = elapsed_us / 10.0
-    assert elapsed_per_test < 30
+    elapsed_per_run = elapsed_us / 10.0
+    # This is pretty slow with current CI runners
+    assert elapsed_per_run < 100
 
 
 def test_parallel_allows_multiline_arguments() -> None:

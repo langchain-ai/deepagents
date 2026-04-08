@@ -1,19 +1,35 @@
+# Coding-agent example: hub-backed skills/AGENTS.md, user-scoped memory,
+# thread-scoped LangSmith sandbox.
+#
+# This is the only file you need to maintain for the agent. ``deepagents
+# deploy`` generates the runtime graph from this config — there is no
+# hand-written entry point.
+
 [agent]
 name = "deepagents-deploy-coding-agent"
-model = "anthropic:claude-sonnet-4-6"
-system_prompt = "You are an expert software engineer. You solve coding tasks by planning, implementing, and reviewing your work methodically."
+model = "anthropic:claude-sonnet-4-5"
+system_prompt = "You are an expert software engineer. You work inside a fresh sandbox for each thread. Project context is at /longterm/AGENTS.md, skills are under /longterm/skills/, and the user's coding preferences are at /user-memory/coding-prefs.md. Update that file when you learn something new about how this user wants you to work. Use the sandbox (everything else under /) for actually reading, writing, and executing code."
 
+# All hub-resident files (AGENTS.md, skills/, .mcp.json) are pushed to this
+# repo by ``push_to_hub.py``. ``HubBackend`` reads from it at runtime.
+[hub]
+repo = "deepagents/coding-agent"
+push = ["AGENTS.md", "skills/", ".mcp.json"]
+
+# Memory layout. AGENTS.md is shared across all users (lives in hub).
+# Coding preferences are per-user (lives in the LangGraph store, namespaced
+# by user identity inside coding_agent.py).
 [memory]
 sources = ["./AGENTS.md"]
 
 [skills]
 sources = ["./skills/"]
 
-[mcp]
-config = "./.mcp.json"
-
+# One sandbox per thread, lazily created on first tool call. Created from
+# the ``coding-agent`` template (auto-provisioned if missing).
 [sandbox]
 provider = "langsmith"
+scope = "thread"
 template = "coding-agent"
 image = "python:3.12"
 

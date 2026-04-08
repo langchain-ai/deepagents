@@ -2,6 +2,7 @@
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.hub import HubBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
@@ -18,6 +19,7 @@ __all__ = [
     "BackendProtocol",
     "CompositeBackend",
     "FilesystemBackend",
+    "HubBackend",
     "LangSmithSandbox",
     "LocalShellBackend",
     "NamespaceFactory",

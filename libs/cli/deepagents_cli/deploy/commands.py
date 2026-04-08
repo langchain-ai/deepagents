@@ -74,6 +74,29 @@ def setup_deploy_parser(
         help="Overwrite existing deepagents.toml",
     )
 
+    dev_parser = deploy_sub.add_parser(
+        "dev",
+        help="Bundle and run a local langgraph dev server (no deploy)",
+    )
+    dev_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to deepagents.toml (default: ./deepagents.toml)",
+    )
+    dev_parser.add_argument(
+        "--port",
+        type=int,
+        default=2024,
+        help="Port for the langgraph dev server (default: 2024)",
+    )
+    dev_parser.add_argument(
+        "--allow-blocking",
+        action="store_true",
+        default=True,
+        help="Pass --allow-blocking to langgraph dev (default: enabled)",
+    )
+
     return deploy_parser
 
 
@@ -88,6 +111,14 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
     """
     if getattr(args, "deploy_command", None) == "init":
         _init_config(force=args.force)
+        return
+
+    if getattr(args, "deploy_command", None) == "dev":
+        _dev(
+            config_path=args.config,
+            port=args.port,
+            allow_blocking=args.allow_blocking,
+        )
         return
 
     # Default: bundle and deploy
@@ -180,6 +211,80 @@ def _deploy(
             # Keep build dir for inspection on dry run
             raise
         raise
+
+
+def _dev(
+    *,
+    config_path: str | None,
+    port: int,
+    allow_blocking: bool,
+) -> None:
+    """Bundle the project and run a local ``langgraph dev`` server.
+
+    The bundle is identical to what ``deepagents deploy`` would ship, just
+    served locally instead of pushed to LangGraph Platform. Hot-reloading
+    is provided by ``langgraph dev`` itself watching the build directory;
+    edits to the source project (``deepagents.toml``, skills, AGENTS.md)
+    require re-running ``deepagents deploy dev`` to re-bundle.
+
+    Args:
+        config_path: Path to ``deepagents.toml``, or ``None`` for default.
+        port: Local port for the dev server.
+        allow_blocking: Pass ``--allow-blocking`` to ``langgraph dev`` so
+            sync HTTP calls inside the graph (e.g. the LangSmith sandbox
+            client) don't trigger blockbuster errors.
+    """
+    import shutil
+
+    from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
+    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, load_config
+
+    cfg_path = Path(config_path) if config_path else Path.cwd() / DEFAULT_CONFIG_FILENAME
+    project_root = cfg_path.parent
+
+    try:
+        config = load_config(cfg_path)
+    except FileNotFoundError:
+        print(f"Error: Config file not found: {cfg_path}")
+        raise SystemExit(1) from None
+
+    errors = config.validate(project_root)
+    if errors:
+        print("Config validation errors:")
+        for err in errors:
+            print(f"  - {err}")
+        raise SystemExit(1)
+
+    build_dir = Path(tempfile.mkdtemp(prefix="deepagents-dev-"))
+    bundle(config, project_root, build_dir)
+    print_bundle_summary(config, build_dir)
+
+    if shutil.which("langgraph") is None:
+        print(
+            "Error: `langgraph` CLI not found. Install it with:\n"
+            "  pip install 'langgraph-cli[inmem]'"
+        )
+        raise SystemExit(1)
+
+    cmd = [
+        "langgraph",
+        "dev",
+        "--no-browser",
+        "--port",
+        str(port),
+    ]
+    if allow_blocking:
+        cmd.append("--allow-blocking")
+
+    print(f"\nStarting langgraph dev on http://localhost:{port}")
+    print(f"Build directory: {build_dir}")
+    print(f"Running: {' '.join(cmd)}\n")
+
+    # Pass through stdout/stderr so the user sees the dev server logs live.
+    try:
+        subprocess.run(cmd, cwd=str(build_dir), check=False)
+    except KeyboardInterrupt:
+        print("\nShutting down.")
 
 
 def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:

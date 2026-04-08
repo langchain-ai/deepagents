@@ -15,6 +15,7 @@ from typing import Any
 from deepagents_cli.deploy.config import DeployConfig
 from deepagents_cli.deploy.templates import (
     BEFORE_AGENT_SANDBOX_TEMPLATE,
+    DEPLOY_GRAPH_HUB_TEMPLATE,
     DEPLOY_GRAPH_TEMPLATE,
     LANGGRAPH_JSON_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
@@ -24,6 +25,16 @@ from deepagents_cli.deploy.templates import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_hub_backed(config: DeployConfig) -> bool:
+    """Hub-backed deploys are gated on having a real sandbox provider.
+
+    Projects that opt out of sandboxing (``provider = "none"``) keep the
+    legacy ``_bundle.json`` + StoreBackend path so existing examples like
+    ``deploy-content-writer`` deploy unchanged.
+    """
+    return config.sandbox.provider != "none"
 
 
 def bundle(
@@ -43,11 +54,23 @@ def bundle(
     """
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Build the content bundle (memory + skills → _bundle.json)
-    bundle_data = _build_bundle(config, project_root)
-    bundle_path = build_dir / "_bundle.json"
-    bundle_path.write_text(json.dumps(bundle_data, indent=2, ensure_ascii=False))
-    logger.info("Created _bundle.json with %d entries", len(bundle_data))
+    if _is_hub_backed(config):
+        # 1. Push agent files to LangSmith Prompt Hub instead of bundling
+        _push_to_hub(config, project_root)
+
+        # ``deepagents.backends.hub`` is not yet published to PyPI, so the
+        # cloud builder can't import it from the PyPI deepagents release.
+        # Copy the single ``hub.py`` source file into the build dir as a
+        # standalone module; the generated ``deploy_graph.py`` imports it
+        # under that name. Everything else (CompositeBackend, sandbox,
+        # store) comes from the PyPI deepagents install.
+        _bundle_hub_module(build_dir)
+    else:
+        # 1. Build the content bundle (memory + skills → _bundle.json)
+        bundle_data = _build_bundle(config, project_root)
+        bundle_path = build_dir / "_bundle.json"
+        bundle_path.write_text(json.dumps(bundle_data, indent=2, ensure_ascii=False))
+        logger.info("Created _bundle.json with %d entries", len(bundle_data))
 
     # 2. Copy tools.py if configured
     tools_module_name: str | None = None
@@ -73,7 +96,10 @@ def bundle(
         logger.info("Copied env file: %s", config.deploy.env_file)
 
     # 5. Generate deploy_graph.py
-    deploy_graph = _render_deploy_graph(config, tools_module_name)
+    if _is_hub_backed(config):
+        deploy_graph = _render_deploy_graph_hub(config)
+    else:
+        deploy_graph = _render_deploy_graph(config, tools_module_name)
     (build_dir / "deploy_graph.py").write_text(deploy_graph)
     logger.info("Generated deploy_graph.py")
 
@@ -87,7 +113,106 @@ def bundle(
     (build_dir / "pyproject.toml").write_text(pyproject)
     logger.info("Generated pyproject.toml")
 
+    # 8. Write a unique build marker to bust the cloud builder's Docker
+    # layer cache. Without this, the cloud build can serve a stale image
+    # when only file content (not file presence) has changed.
+    import secrets
+    import time as _time
+
+    build_id = f"{int(_time.time())}-{secrets.token_hex(4)}"
+    (build_dir / ".deepagents-build-id").write_text(build_id + "\n")
+    logger.info("Bundle build id: %s", build_id)
+
     return build_dir
+
+
+def _bundle_hub_module(build_dir: Path) -> Path:
+    """Copy ``deepagents.backends.hub`` into the build dir as a standalone module.
+
+    The generated ``deploy_graph.py`` imports ``HubBackend`` from this
+    bundled file (``_deepagents_hub.py``) rather than from
+    ``deepagents.backends.hub``, which doesn't exist in the published
+    PyPI release of deepagents yet.
+
+    Returns the destination path.
+    """
+    import deepagents.backends.hub as hub_module  # noqa: PLC0415
+
+    src = Path(hub_module.__file__)
+    dst = build_dir / "_deepagents_hub.py"
+    shutil.copy2(src, dst)
+    logger.info("Bundled hub backend module into %s", dst)
+    return dst
+
+
+def _collect_hub_files(
+    config: DeployConfig, project_root: Path
+) -> list[tuple[str, bytes]]:
+    """Walk the project for files that should land in the hub repo.
+
+    Returns ``(path, content)`` tuples in the shape `BackendProtocol.upload_files`
+    expects. Memory sources land at the project root layout, skills under
+    ``/skills/``, and the MCP config at ``/.mcp.json``.
+    """
+    files: list[tuple[str, bytes]] = []
+
+    # Memory sources → / (top-level, e.g. /AGENTS.md). Single-file sources
+    # land at /<filename>; directory sources land under /<filename>/.
+    for src in config.memory.sources:
+        src_path = project_root / src
+        if src_path.is_file():
+            files.append((f"/{src_path.name}", src_path.read_bytes()))
+        elif src_path.is_dir():
+            for f in sorted(src_path.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    rel = f.relative_to(project_root).as_posix()
+                    files.append((f"/{rel}", f.read_bytes()))
+
+    # Skills sources → /skills/<skill-name>/SKILL.md
+    for src in config.skills.sources:
+        src_path = project_root / src
+        if not src_path.is_dir():
+            continue
+        for f in sorted(src_path.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                rel = f.relative_to(src_path).as_posix()
+                files.append((f"/skills/{rel}", f.read_bytes()))
+
+    # MCP config → /.mcp.json
+    if config.mcp.config:
+        mcp_path = project_root / config.mcp.config
+        if mcp_path.is_file():
+            files.append(("/.mcp.json", mcp_path.read_bytes()))
+
+    return files
+
+
+def _push_to_hub(config: DeployConfig, project_root: Path) -> None:
+    """Push agent files (memory, skills, mcp config) to a LangSmith hub repo.
+
+    The hub repo handle is derived from ``config.agent.name``. The files
+    are uploaded via `HubBackend.upload_files`, which batches them into a
+    single atomic commit.
+
+    The runtime ``deploy_graph.py`` reads from this same repo via
+    `HubBackend`, so this function and `_render_deploy_graph_hub` must
+    agree on the path layout.
+    """
+    from deepagents.backends.hub import HubBackend  # noqa: PLC0415
+
+    files = _collect_hub_files(config, project_root)
+    if not files:
+        logger.warning("No files to push to hub repo %s.", config.agent.name)
+        return
+
+    hub = HubBackend.from_env(config.agent.name)
+    responses = hub.upload_files(files)
+    failed = [r for r in responses if r.error]
+    if failed:
+        details = "; ".join(f"{r.path}: {r.error}" for r in failed)
+        msg = f"Failed to push to hub repo {config.agent.name}: {details}"
+        raise RuntimeError(msg)
+    logger.info("Pushed %d files to hub repo %s.", len(files), config.agent.name)
 
 
 def _build_bundle(config: DeployConfig, project_root: Path) -> dict[str, str]:
@@ -130,6 +255,24 @@ def _build_bundle(config: DeployConfig, project_root: Path) -> dict[str, str]:
                 bundle[store_key] = f.read_text(encoding="utf-8")
 
     return bundle
+
+
+def _render_deploy_graph_hub(config: DeployConfig) -> str:
+    """Render the hub-backed ``deploy_graph.py``.
+
+    Mirrors ``examples/deploy-coding-agent/coding_agent.py``: HubBackend +
+    user-scoped StoreBackend + per-thread LangSmithSandbox composed via
+    CompositeBackend. Files are read from the hub repo named
+    ``config.agent.name`` (which `_push_to_hub` populates).
+    """
+    return DEPLOY_GRAPH_HUB_TEMPLATE.format(
+        agent_name=config.agent.name,
+        hub_repo=config.agent.name,
+        model=config.agent.model,
+        system_prompt=config.agent.system_prompt,
+        sandbox_template=config.sandbox.template,
+        sandbox_image=config.sandbox.image,
+    )
 
 
 def _render_deploy_graph(
@@ -214,14 +357,7 @@ def _render_deploy_graph(
 
 
 def _render_langgraph_json(config: DeployConfig) -> str:
-    """Render the ``langgraph.json`` configuration.
-
-    Args:
-        config: Parsed deploy configuration.
-
-    Returns:
-        JSON string.
-    """
+    """Render the ``langgraph.json`` configuration."""
     lg_config: dict[str, Any] = {
         "dependencies": ["."],
         "graphs": {

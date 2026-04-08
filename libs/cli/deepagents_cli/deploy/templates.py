@@ -190,6 +190,134 @@ MCP_TOOLS_TEMPLATE = '''async def _load_mcp_tools():
 '''
 
 # ---------------------------------------------------------------------------
+# Hub-backed deploy graph
+#
+# Used when ``[sandbox].provider != "none"`` and the project pushes its
+# agent files to a LangSmith Prompt Hub repo at deploy time. The runtime
+# composition mirrors ``examples/deploy-coding-agent/coding_agent.py``:
+#
+#   - ``HubBackend`` mounted at ``/longterm/`` for skills + AGENTS.md
+#   - ``StoreBackend`` mounted at ``/user-memory/``, namespaced
+#     ``(agent, user_id, "memory")`` for per-user coding prefs
+#   - ``LangSmithSandbox`` as the default backend, cached by ``thread_id``
+#     so each thread gets its own sandbox
+#   - ``CompositeBackend`` routing the three above
+#
+# Skills + memory + .mcp.json are NOT bundled into the deployment image —
+# they live in the hub repo, pushed by ``deepagents deploy`` itself.
+# ---------------------------------------------------------------------------
+
+DEPLOY_GRAPH_HUB_TEMPLATE = '''\
+"""Auto-generated deepagents deploy entry point (hub-backed).
+
+Created by ``deepagents deploy``. Do not edit manually — changes will be
+overwritten on the next deploy.
+"""
+
+import logging
+import os
+from typing import TYPE_CHECKING
+
+from deepagents import create_deep_agent
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.langsmith import LangSmithSandbox
+from deepagents.backends.store import StoreBackend
+
+# ``HubBackend`` is bundled by ``deepagents deploy`` as a sibling module
+# until it ships in the published deepagents package on PyPI.
+from _deepagents_hub import HubBackend  # type: ignore[import-not-found]
+
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
+
+    from deepagents.backends.protocol import BackendProtocol
+
+logger = logging.getLogger(__name__)
+
+AGENT_NAME = {agent_name!r}
+HUB_REPO = {hub_repo!r}
+SANDBOX_TEMPLATE = {sandbox_template!r}
+SANDBOX_IMAGE = {sandbox_image!r}
+
+# Mount points inside the composite backend.
+HUB_PREFIX = "/longterm/"
+USER_MEMORY_PREFIX = "/user-memory/"
+
+_hub: HubBackend | None = None
+
+
+def _get_hub() -> HubBackend:
+    global _hub
+    if _hub is None:
+        _hub = HubBackend.from_env(HUB_REPO)
+    return _hub
+
+
+# Process-local sandbox cache keyed by thread_id.
+_SANDBOXES: dict = {{}}
+
+
+def _get_or_create_sandbox(thread_id: str) -> LangSmithSandbox:
+    """Get or create a LangSmith sandbox cached by ``thread_id``."""
+    if thread_id in _SANDBOXES:
+        return _SANDBOXES[thread_id]
+
+    from langsmith.sandbox import ResourceNotFoundError, SandboxClient
+
+    api_key = os.environ.get("LANGSMITH_SANDBOX_API_KEY") or os.environ["LANGSMITH_API_KEY"]
+    client = SandboxClient(api_key=api_key)
+
+    try:
+        client.get_template(SANDBOX_TEMPLATE)
+    except ResourceNotFoundError:
+        client.create_template(name=SANDBOX_TEMPLATE, image=SANDBOX_IMAGE)
+
+    sandbox = client.create_sandbox(template_name=SANDBOX_TEMPLATE)
+    backend = LangSmithSandbox(sandbox)
+    _SANDBOXES[thread_id] = backend
+    logger.info("Created sandbox %s for thread %s", sandbox.name, thread_id)
+    return backend
+
+
+def _user_memory_namespace(runtime):
+    """Per-user memory namespace: ``(agent_name, user_id, "memory")``."""
+    user_id = "anonymous"
+    try:
+        user = runtime.server_info.user
+        if user is not None and user.identity:
+            user_id = str(user.identity)
+    except AttributeError:
+        pass
+    return (AGENT_NAME, user_id, "memory")
+
+
+def _build_backend(runtime):
+    from langgraph.config import get_config
+
+    thread_id = get_config().get("configurable", {{}}).get("thread_id", "local")
+    sandbox = _get_or_create_sandbox(str(thread_id))
+    user_store = StoreBackend(namespace=_user_memory_namespace)
+    hub = _get_hub()
+    return CompositeBackend(
+        default=sandbox,
+        routes={{
+            HUB_PREFIX: hub,
+            USER_MEMORY_PREFIX: user_store,
+        }},
+    )
+
+
+graph = create_deep_agent(
+    model={model!r},
+    system_prompt={system_prompt!r},
+    memory=[f"{{HUB_PREFIX}}AGENTS.md", f"{{USER_MEMORY_PREFIX}}coding-prefs.md"],
+    skills=[f"{{HUB_PREFIX}}skills/"],
+    backend=_build_backend,
+)
+'''
+
+
+# ---------------------------------------------------------------------------
 # Before-agent middleware for sandbox + skills copying (coding agent pattern)
 # ---------------------------------------------------------------------------
 

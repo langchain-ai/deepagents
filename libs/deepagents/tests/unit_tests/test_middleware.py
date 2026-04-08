@@ -1011,6 +1011,24 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
+    def test_intercept_command_preserves_goto_and_graph(self):
+        """Test that goto and graph are preserved when intercepting a Command (fixes #2500)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        tool_message = ToolMessage(content="small content", tool_call_id="test_123")
+        command = Command(
+            goto="agent_b",
+            graph=Command.PARENT,
+            update={"messages": [tool_message]},
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert result.goto == "agent_b"
+        assert result.graph == Command.PARENT
+
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
         assert sanitize_tool_call_id("call_123") == "call_123"

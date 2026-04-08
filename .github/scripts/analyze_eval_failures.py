@@ -1,8 +1,8 @@
 """Analyze eval failures with an LLM and surface explanations in CI.
 
-Reads per-test failure data from evals_report.json (populated by the
-pytest reporter plugin), sends each failure to an LLM for analysis in
-parallel, and writes results to GITHUB_STEP_SUMMARY and a JSON artifact.
+Reads per-test failure data from evals_report.json (populated by the pytest
+reporter plugin), sends each failure to an LLM for analysis in parallel, and
+writes results to `GITHUB_STEP_SUMMARY` and a JSON artifact.
 
 Usage:
     uv run python .github/scripts/analyze_eval_failures.py [evals_report.json]

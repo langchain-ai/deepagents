@@ -3,9 +3,10 @@ name = "deepagents-deploy-content-writer"
 model = "anthropic:claude-sonnet-4-6"
 system_prompt = "You are a professional content writer for a technology company. Create engaging, informative content about AI, software development, and emerging technologies."
 
-[memory]
+# Agent-scoped files. Backed by the LangGraph store (no hub repo).
+[agent_memories]
+backend = "store"
 sources = ["./AGENTS.md"]
-scope = "user"  # Per-user memory isolation
 
 [skills]
 sources = ["./skills/"]
@@ -13,6 +14,9 @@ sources = ["./skills/"]
 [tools]
 python_file = "./tools.py"
 
+# No sandbox: the runtime composite default falls back to StateBackend
+# (in-process, ephemeral). The agent has no shell execution and no
+# persistent thread filesystem.
 [sandbox]
 provider = "none"
 

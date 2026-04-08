@@ -28,17 +28,40 @@ class AgentConfig:
     system_prompt: str = ""
 
 
-VALID_MEMORY_SCOPES = frozenset({"agent", "user"})
+VALID_AGENT_MEMORIES_BACKENDS = frozenset({"hub", "store"})
 
 
 @dataclass(frozen=True)
-class MemoryConfig:
-    """``[memory]`` section — AGENTS.md file paths."""
+class AgentMemoriesConfig:
+    """``[agent_memories]`` section — agent-scoped memory files.
+
+    Mounted by the runtime composite at ``/agent_memories/``. The
+    ``backend`` field selects between ``"hub"`` (a LangSmith Prompt Hub
+    repo, versioned and visible in the UI) and ``"store"`` (the LangGraph
+    persistent store, namespaced by ``(agent_name, "agent_memories")``).
+    Both options keep the data agent-scoped — every user of the agent
+    sees the same files.
+
+    ``sources`` are local paths the bundler ships into the chosen
+    backend at deploy time.
+    """
+
+    backend: str = "hub"
+    sources: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class UserMemoriesConfig:
+    """``[user_memories]`` section — user-scoped memory files.
+
+    Always backed by the LangGraph store with a namespace of
+    ``(agent_name, user_id, "user_memories")``. Mounted by the runtime
+    composite at ``/user_memories/``. ``sources`` are seed file paths
+    the bundler walks; the runtime middleware reads/writes the same
+    paths under the user-scoped namespace at request time.
+    """
 
     sources: list[str] = field(default_factory=list)
-    scope: str = "agent"
-    """Memory scope: ``"agent"`` shares memory across all users,
-    ``"user"`` isolates memory per user via ``ctx.runtime.context.user_id``."""
 
 
 @dataclass(frozen=True)
@@ -86,7 +109,8 @@ class DeployConfig:
     """Top-level deploy configuration parsed from ``deepagents.toml``."""
 
     agent: AgentConfig
-    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    agent_memories: AgentMemoriesConfig = field(default_factory=AgentMemoriesConfig)
+    user_memories: UserMemoriesConfig = field(default_factory=UserMemoriesConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
@@ -104,10 +128,20 @@ class DeployConfig:
         """
         errors: list[str] = []
 
-        # Memory sources must exist
-        for src in self.memory.sources:
+        if self.agent_memories.backend not in VALID_AGENT_MEMORIES_BACKENDS:
+            errors.append(
+                f"[agent_memories].backend must be one of "
+                f"{sorted(VALID_AGENT_MEMORIES_BACKENDS)}, "
+                f"got {self.agent_memories.backend!r}"
+            )
+
+        for src in self.agent_memories.sources:
             if not (project_root / src).exists():
-                errors.append(f"Memory source not found: {src}")
+                errors.append(f"Agent memory source not found: {src}")
+
+        for src in self.user_memories.sources:
+            if not (project_root / src).exists():
+                errors.append(f"User memory source not found: {src}")
 
         # Skills sources must exist
         for src in self.skills.sources:
@@ -225,18 +259,18 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
         system_prompt=agent_data.get("system_prompt", ""),
     )
 
-    # [memory] section — optional
-    memory_data = data.get("memory", {})
-    memory_scope = memory_data.get("scope", "agent")
-    if memory_scope not in VALID_MEMORY_SCOPES:
-        msg = (
-            f"[memory].scope must be one of {sorted(VALID_MEMORY_SCOPES)}, "
-            f"got {memory_scope!r}"
-        )
-        raise ValueError(msg)
-    memory = MemoryConfig(
-        sources=memory_data.get("sources", []),
-        scope=memory_scope,
+    # [agent_memories] section — optional. Replaces legacy [memory].
+    agent_memories_data = data.get("agent_memories", {})
+    agent_memories = AgentMemoriesConfig(
+        backend=agent_memories_data.get("backend", "hub"),
+        sources=agent_memories_data.get("sources", []),
+    )
+
+    # [user_memories] section — optional. Always store-backed with the
+    # user identity in the namespace.
+    user_memories_data = data.get("user_memories", {})
+    user_memories = UserMemoriesConfig(
+        sources=user_memories_data.get("sources", []),
     )
 
     # [skills] section — optional
@@ -272,7 +306,8 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
     return DeployConfig(
         agent=agent,
-        memory=memory,
+        agent_memories=agent_memories,
+        user_memories=user_memories,
         skills=skills,
         tools=tools,
         mcp=mcp,
@@ -293,9 +328,12 @@ name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
 # system_prompt = "You are a helpful assistant"
 
-[memory]
+[agent_memories]
+backend = "hub"  # or "store" — chooses the storage for /agent_memories/
 sources = ["./AGENTS.md"]
-scope = "agent"  # "agent" = shared across all users, "user" = per-user isolation
+
+# [user_memories]
+# sources = ["./preferences.md"]  # always store-backed, per-user namespace
 
 [skills]
 sources = ["./skills/"]

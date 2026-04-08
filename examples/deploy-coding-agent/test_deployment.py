@@ -4,7 +4,7 @@ Drives the deployment via ``langgraph_sdk`` and asserts the three things
 that have to work for the spike to be useful:
 
 1. **Hub backend wired correctly.** The agent can list and read files
-   under ``/longterm/`` (skills + AGENTS.md served from the LangSmith
+   under ``/agent_memories/`` (skills + AGENTS.md served from the LangSmith
    Prompt Hub repo via ``HubBackend``).
 2. **Sandbox provisioned per thread.** Two distinct ``thread_id`` values
    get two distinct sandboxes, each with its own filesystem.
@@ -88,6 +88,98 @@ async def _run_one(client, prompt: str) -> tuple[str, RunOutput]:
     return thread_id, out
 
 
+async def check_tavily_search(client) -> CheckResult:
+    """Verify that the local Tavily web-search tool is reachable.
+
+    Asks the agent to use ``tavily_search`` to look up something with a
+    distinctive expected token. Passes if any tool output mentions
+    "langchain" anywhere — Tavily's response on a langchain query
+    consistently contains it. We don't pin a specific URL or phrase.
+    """
+    prompt = (
+        "Use the `tavily_search` tool to search for 'langchain create_deep_agent'. "
+        "Then reply with one short sentence summarizing what you found. "
+        "If you don't have a `tavily_search` tool, reply: NO_TAVILY"
+    )
+    _tid, out = await _run_one(client, prompt)
+    saw_search_output = any("langchain" in t.lower() for t in out.tool_outputs)
+    refused = "NO_TAVILY" in out.final_text
+    if saw_search_output:
+        return CheckResult(
+            name="tavily_search local tool",
+            passed=True,
+            detail="agent invoked tavily_search and the response contained 'langchain'",
+        )
+    return CheckResult(
+        name="tavily_search local tool",
+        passed=False,
+        detail=(
+            f"refused={refused} "
+            f"final_text={out.final_text[:200]!r} "
+            f"tool_outputs={[t[:120] for t in out.tool_outputs]}"
+        ),
+    )
+
+
+async def check_local_tool_loaded(client) -> CheckResult:
+    """Verify that a tool defined in the project's ``tools.py`` is wired up.
+
+    The example project ships a ``deepagents_smoke_marker`` tool that
+    returns a fixed string. If ``[tools].python_file`` is correctly
+    bundled and loaded by the generated graph, asking the model to call
+    that tool should round-trip the marker.
+    """
+    prompt = (
+        "Call the `deepagents_smoke_marker` tool with no arguments and "
+        "reply with EXACTLY the string it returned, nothing else. If the "
+        "tool is not available, reply with: NO_LOCAL_TOOL"
+    )
+    _tid, out = await _run_one(client, prompt)
+    saw_marker = any("deepagents-tools-smoke-ok" in t for t in out.tool_outputs) or (
+        "deepagents-tools-smoke-ok" in out.final_text
+    )
+    if saw_marker:
+        return CheckResult(
+            name="local tool from [tools].python_file",
+            passed=True,
+            detail="deepagents_smoke_marker round-tripped its marker string",
+        )
+    return CheckResult(
+        name="local tool from [tools].python_file",
+        passed=False,
+        detail=(
+            f"final_text={out.final_text[:200]!r} "
+            f"tool_outputs={[t[:100] for t in out.tool_outputs]}"
+        ),
+    )
+
+
+async def check_mcp_tool_loaded(client) -> CheckResult:
+    """Verify an MCP tool from ``[mcp].config`` is loaded.
+
+    The example bundles a docs-langchain MCP server. If the loader is
+    wired correctly, the model should report having a docs-search tool.
+    """
+    prompt = (
+        "List every tool you have available. Just the names, one per "
+        "line, no commentary. If no tools, reply NONE."
+    )
+    _tid, out = await _run_one(client, prompt)
+    text = out.final_text.lower()
+    saw_mcp = "search_docs_by_lang_chain" in text or "get_page_docs_by_lang_chain" in text
+    if saw_mcp:
+        return CheckResult(
+            name="MCP tool from [mcp].config",
+            passed=True,
+            detail="docs-langchain MCP tools were exposed to the model",
+        )
+    return CheckResult(
+        name="MCP tool from [mcp].config",
+        passed=False,
+        detail=f"docs MCP tools missing from tool list. final_text={out.final_text[:300]!r}",
+    )
+
+
 async def check_execute_present(client) -> CheckResult:
     """Verify the deployed agent has the ``execute`` tool wired up.
 
@@ -129,8 +221,8 @@ async def check_execute_present(client) -> CheckResult:
 async def check_hub_loading(client) -> CheckResult:
     """Verify the agent can read the hub-backed files via composite routing."""
     prompt = (
-        "Use the file tools to list `/longterm/skills/`, then read "
-        "`/longterm/AGENTS.md`. Quote one exact line from AGENTS.md so I "
+        "Use the file tools to list `/agent_memories/skills/`, then read "
+        "`/agent_memories/AGENTS.md`. Quote one exact line from AGENTS.md so I "
         "know you actually read it. Be terse."
     )
     _tid, out = await _run_one(client, prompt)
@@ -146,7 +238,7 @@ async def check_hub_loading(client) -> CheckResult:
         return CheckResult(
             name="hub loading (skills + AGENTS.md via composite)",
             passed=True,
-            detail="ls /longterm/skills/ saw the skill dirs and AGENTS.md content was read",
+            detail="ls /agent_memories/skills/ saw the skill dirs and AGENTS.md content was read",
         )
     return CheckResult(
         name="hub loading (skills + AGENTS.md via composite)",
@@ -223,14 +315,23 @@ async def main(url: str) -> int:
 
     checks: list[CheckResult] = []
 
-    print("\n[1/3] execute tool wired to sandbox ...")
+    print("\n[1/6] execute tool wired to sandbox ...")
     checks.append(await check_execute_present(client))
 
-    print("[2/3] Hub-backed skills + AGENTS.md ...")
+    print("[2/6] Hub-backed skills + AGENTS.md ...")
     checks.append(await check_hub_loading(client))
 
-    print("[3/3] Per-thread sandbox isolation ...")
+    print("[3/6] Per-thread sandbox isolation ...")
     checks.append(await check_sandbox_isolation(client))
+
+    print("[4/6] Local tool from [tools].python_file ...")
+    checks.append(await check_local_tool_loaded(client))
+
+    print("[5/6] MCP tool from [mcp].config ...")
+    checks.append(await check_mcp_tool_loaded(client))
+
+    print("[6/6] Tavily web search local tool ...")
+    checks.append(await check_tavily_search(client))
 
     print("\n--- results ---")
     for c in checks:

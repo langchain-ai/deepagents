@@ -20,6 +20,7 @@ from deepagents_cli.deploy.templates import (
     LANGGRAPH_JSON_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
+    SANDBOX_BLOCKS,
     TOOLS_IMPORT_AUTODISCOVER_TEMPLATE,
     TOOLS_IMPORT_TEMPLATE,
 )
@@ -28,13 +29,14 @@ logger = logging.getLogger(__name__)
 
 
 def _is_hub_backed(config: DeployConfig) -> bool:
-    """Hub-backed deploys are gated on having a real sandbox provider.
+    """Hub-backed deploys are the new path; the legacy bundle path is kept
+    for content-writer-style examples that haven't migrated yet.
 
-    Projects that opt out of sandboxing (``provider = "none"``) keep the
-    legacy ``_bundle.json`` + StoreBackend path so existing examples like
-    ``deploy-content-writer`` deploy unchanged.
+    For now we treat any project as hub-backed regardless of sandbox
+    provider — the sandbox dispatch in ``SANDBOX_BLOCKS`` handles
+    ``provider = "none"`` by falling back to ``StateBackend``.
     """
-    return config.sandbox.provider != "none"
+    return True
 
 
 def bundle(
@@ -54,23 +56,21 @@ def bundle(
     """
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    if _is_hub_backed(config):
-        # 1. Push agent files to LangSmith Prompt Hub instead of bundling
-        _push_to_hub(config, project_root)
+    # Always copy ``hub.py`` into the build dir as a standalone module —
+    # the generated ``deploy_graph.py`` imports ``HubBackend`` from it
+    # regardless of whether this deploy uses ``backend = "hub"``, because
+    # ``deepagents.backends.hub`` is not yet published to PyPI.
+    _bundle_hub_module(build_dir)
 
-        # ``deepagents.backends.hub`` is not yet published to PyPI, so the
-        # cloud builder can't import it from the PyPI deepagents release.
-        # Copy the single ``hub.py`` source file into the build dir as a
-        # standalone module; the generated ``deploy_graph.py`` imports it
-        # under that name. Everything else (CompositeBackend, sandbox,
-        # store) comes from the PyPI deepagents install.
-        _bundle_hub_module(build_dir)
-    else:
-        # 1. Build the content bundle (memory + skills → _bundle.json)
-        bundle_data = _build_bundle(config, project_root)
-        bundle_path = build_dir / "_bundle.json"
-        bundle_path.write_text(json.dumps(bundle_data, indent=2, ensure_ascii=False))
-        logger.info("Created _bundle.json with %d entries", len(bundle_data))
+    # Bundle the agent_memories sources + skills as a single
+    # ``_agent_memories_seed.json`` artifact. The generated graph reads
+    # this file on first invocation and uploads each entry to the
+    # configured backend via ``BackendProtocol.upload_files`` — same code
+    # path for hub-backed and store-backed agent memories.
+    seed = _build_agent_memories_seed(config, project_root)
+    seed_path = build_dir / "_agent_memories_seed.json"
+    seed_path.write_text(json.dumps(seed, indent=2, ensure_ascii=False))
+    logger.info("Created _agent_memories_seed.json with %d entries", len(seed))
 
     # 2. Copy tools.py if configured
     tools_module_name: str | None = None
@@ -96,10 +96,9 @@ def bundle(
         logger.info("Copied env file: %s", config.deploy.env_file)
 
     # 5. Generate deploy_graph.py
-    if _is_hub_backed(config):
-        deploy_graph = _render_deploy_graph_hub(config, project_root)
-    else:
-        deploy_graph = _render_deploy_graph(config, project_root, tools_module_name)
+    deploy_graph = _render_deploy_graph_hub(
+        config, project_root, tools_module_name
+    )
     (build_dir / "deploy_graph.py").write_text(deploy_graph)
     logger.info("Generated deploy_graph.py")
 
@@ -158,7 +157,7 @@ def _collect_hub_files(
 
     # Memory sources → / (top-level, e.g. /AGENTS.md). Single-file sources
     # land at /<filename>; directory sources land under /<filename>/.
-    for src in config.memory.sources:
+    for src in config.agent_memories.sources:
         src_path = project_root / src
         if src_path.is_file():
             files.append((f"/{src_path.name}", src_path.read_bytes()))
@@ -231,7 +230,7 @@ def _build_bundle(config: DeployConfig, project_root: Path) -> dict[str, str]:
     bundle: dict[str, str] = {}
 
     # Memory sources → /memory/<filename>
-    for src in config.memory.sources:
+    for src in config.agent_memories.sources:
         src_path = project_root / src
         if src_path.is_file():
             store_key = f"/memory/{src_path.name}"
@@ -257,34 +256,73 @@ def _build_bundle(config: DeployConfig, project_root: Path) -> dict[str, str]:
     return bundle
 
 
+def _build_agent_memories_seed(
+    config: DeployConfig, project_root: Path
+) -> dict[str, str]:
+    """Build the seed payload for store-backed ``/agent_memories/``.
+
+    Returns a ``{key: content}`` mapping where each key matches the path
+    the runtime ``MemoryMiddleware`` / ``SkillsMiddleware`` will look up
+    once the file is in the store. Walks the same sources as
+    `_collect_hub_files` (memory + skills) and emits keys *without* the
+    ``/agent_memories/`` mount prefix because the composite strips the
+    prefix before delegating to the store backend.
+    """
+    seed: dict[str, str] = {}
+
+    # Memory sources land at the project-root layout (e.g. ``/AGENTS.md``).
+    for src in config.agent_memories.sources:
+        src_path = project_root / src
+        if src_path.is_file():
+            seed[f"/{src_path.name}"] = src_path.read_text(encoding="utf-8")
+        elif src_path.is_dir():
+            for f in sorted(src_path.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    rel = f.relative_to(project_root).as_posix()
+                    seed[f"/{rel}"] = f.read_text(encoding="utf-8")
+
+    # Skills sources land under ``/skills/``.
+    for src in config.skills.sources:
+        src_path = project_root / src
+        if not src_path.is_dir():
+            continue
+        for f in sorted(src_path.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                rel = f.relative_to(src_path).as_posix()
+                seed[f"/skills/{rel}"] = f.read_text(encoding="utf-8")
+
+    return seed
+
+
 def _enumerate_memory_keys(
-    config: DeployConfig,
+    sources: list[str],
     project_root: Path,
     *,
     file_prefix: str,
     dir_root: str,
 ) -> list[str]:
-    """Enumerate the runtime store keys for memory sources.
+    """Enumerate the runtime store keys for a memory source list.
 
     `MemoryMiddleware` calls ``backend.download_files(sources)`` and treats
     each entry as a single file path, so the rendered ``memory=[...]`` list
     must contain real file keys (not directory placeholders). This walks
-    ``config.memory.sources`` the same way the bundlers do and returns one
-    key per file.
+    ``sources`` the same way the file collectors do and returns one key
+    per file.
 
     Args:
-        config: Parsed deploy configuration.
+        sources: Local paths to enumerate (typically
+            ``config.agent_memories.sources`` or
+            ``config.user_memories.sources``).
         project_root: Project root directory used to resolve relative paths.
-        file_prefix: Prefix prepended to every key (e.g. ``"/memory/"`` for
-            the StoreBackend bundle, ``"/longterm/"`` for the hub mount).
+        file_prefix: Prefix prepended to every key (e.g.
+            ``"/agent_memories/"`` or ``"/user_memories/"``).
         dir_root: For directory sources, controls how the relative path
-            inside the key is computed — ``"source"`` makes it relative to
-            the source directory (matches ``_build_bundle``), ``"project"``
-            makes it relative to the project root (matches
-            ``_collect_hub_files``).
+            inside the key is computed — ``"source"`` makes it relative
+            to the source directory, ``"project"`` makes it relative to
+            the project root.
     """
     keys: list[str] = []
-    for src in config.memory.sources:
+    for src in sources:
         src_path = project_root / src
         if src_path.is_file():
             keys.append(f"{file_prefix}{src_path.name}")
@@ -297,17 +335,76 @@ def _enumerate_memory_keys(
     return keys
 
 
-def _render_deploy_graph_hub(config: DeployConfig, project_root: Path) -> str:
+def _render_deploy_graph_hub(
+    config: DeployConfig,
+    project_root: Path,
+    tools_module_name: str | None,
+) -> str:
     """Render the hub-backed ``deploy_graph.py``.
 
-    Mirrors ``examples/deploy-coding-agent/coding_agent.py``: HubBackend +
-    user-scoped StoreBackend + per-thread LangSmithSandbox composed via
-    CompositeBackend. Files are read from the hub repo named
-    ``config.agent.name`` (which `_push_to_hub` populates).
+    Composes:
+
+    - A per-provider sandbox creation block from
+      :data:`~deepagents_cli.deploy.templates.SANDBOX_BLOCKS` (langsmith,
+      daytona, modal, runloop, or none → ``StateBackend``).
+    - The shared tools loader (only emitted when ``[tools].python_file``
+      is configured).
+    - The MCP loader (only emitted when ``[mcp].config`` is configured).
+    - ``/agent_memories/`` mounted to a hub or store backend depending
+      on ``[agent_memories].backend``, holding skills and shared memory.
+    - ``/user_memories/`` mounted to a user-namespaced StoreBackend.
+
+    The graph is exported as an async ``make_graph`` factory so MCP
+    loading can ``await`` cleanly.
     """
-    memory_sources = _enumerate_memory_keys(
-        config, project_root, file_prefix="/longterm/", dir_root="project"
+    provider = config.sandbox.provider
+    if provider not in SANDBOX_BLOCKS:
+        msg = (
+            f"Unknown sandbox provider {provider!r}. "
+            f"Valid: {sorted(SANDBOX_BLOCKS)}"
+        )
+        raise ValueError(msg)
+    sandbox_block, _partner_pkg = SANDBOX_BLOCKS[provider]
+
+    # Tools loader (same logic as the non-hub template)
+    tools_import_block = ""
+    tools_load_call = "pass  # noqa  (no static tools configured)"
+    if tools_module_name:
+        if config.tools.functions:
+            func_imports = ", ".join(config.tools.functions)
+            func_list = ", ".join(config.tools.functions)
+            tools_import_block = TOOLS_IMPORT_TEMPLATE.format(
+                module_name=tools_module_name,
+                function_imports=func_imports,
+                function_list=func_list,
+            )
+        else:
+            tools_import_block = TOOLS_IMPORT_AUTODISCOVER_TEMPLATE.format(
+                module_name=tools_module_name,
+            )
+        tools_load_call = "tools.extend(_load_tools())"
+
+    # MCP loader (same template as non-hub)
+    mcp_tools_block = ""
+    mcp_tools_load_call = "pass  # noqa  (no MCP servers configured)"
+    if config.mcp.config:
+        mcp_tools_block = MCP_TOOLS_TEMPLATE
+        mcp_tools_load_call = "tools.extend(await _load_mcp_tools())"
+
+    agent_memory_keys = _enumerate_memory_keys(
+        config.agent_memories.sources,
+        project_root,
+        file_prefix="/agent_memories/",
+        dir_root="project",
     )
+    user_memory_keys = _enumerate_memory_keys(
+        config.user_memories.sources,
+        project_root,
+        file_prefix="/user_memories/",
+        dir_root="project",
+    )
+    memory_sources = agent_memory_keys + user_memory_keys
+
     return DEPLOY_GRAPH_HUB_TEMPLATE.format(
         agent_name=config.agent.name,
         hub_repo=config.agent.name,
@@ -316,6 +413,12 @@ def _render_deploy_graph_hub(config: DeployConfig, project_root: Path) -> str:
         sandbox_template=config.sandbox.template,
         sandbox_image=config.sandbox.image,
         memory_sources=memory_sources,
+        agent_memories_backend=config.agent_memories.backend,
+        sandbox_block=sandbox_block,
+        tools_import_block=tools_import_block,
+        tools_load_call=tools_load_call,
+        mcp_tools_block=mcp_tools_block,
+        mcp_tools_load_call=mcp_tools_load_call,
     )
 
 
@@ -389,13 +492,16 @@ def _render_deploy_graph(
     # resolve to ``file_not_found``. Skills, by contrast, are listed via
     # ``ls``/``glob`` by ``SkillsMiddleware``, so a directory root works.
     memory_sources = _enumerate_memory_keys(
-        config, project_root, file_prefix="/memory/", dir_root="source"
+        config.agent_memories.sources,
+        project_root,
+        file_prefix="/memory/",
+        dir_root="source",
     )
     skills_sources = ["/skills/"]
 
     return DEPLOY_GRAPH_TEMPLATE.format(
         agent_name=config.agent.name,
-        memory_scope=config.memory.scope,
+        memory_scope="agent",
         model=config.agent.model,
         system_prompt=config.agent.system_prompt,
         memory_sources=memory_sources,
@@ -410,11 +516,17 @@ def _render_deploy_graph(
 
 
 def _render_langgraph_json(config: DeployConfig) -> str:
-    """Render the ``langgraph.json`` configuration."""
+    """Render the ``langgraph.json`` configuration.
+
+    Hub-backed deploys export an async ``make_graph`` factory so that MCP
+    loading can ``await`` cleanly. Non-hub deploys keep the legacy
+    ``graph`` symbol path.
+    """
+    graph_symbol = "make_graph" if _is_hub_backed(config) else "graph"
     lg_config: dict[str, Any] = {
         "dependencies": ["."],
         "graphs": {
-            "agent": "./deploy_graph.py:graph",
+            "agent": f"./deploy_graph.py:{graph_symbol}",
         },
         "python_version": config.deploy.python_version,
     }
@@ -428,16 +540,21 @@ def _render_langgraph_json(config: DeployConfig) -> str:
 def _render_pyproject(config: DeployConfig) -> str:
     """Render the ``pyproject.toml`` for the deployment package.
 
-    Args:
-        config: Parsed deploy configuration.
+    Adds:
 
-    Returns:
-        TOML string.
+    - ``langchain-mcp-adapters`` when ``[mcp].config`` is set (both
+      hub and non-hub deploy graphs use it).
+    - The matching partner package for non-LangSmith sandbox providers
+      (``langchain-daytona`` / ``langchain-modal`` / ``langchain-runloop``).
+      LangSmith and the no-sandbox path don't need extra deps.
     """
     all_deps = list(config.deploy.dependencies)
-    # Add langchain-mcp-adapters if MCP config is used
     if config.mcp.config:
         all_deps.append("langchain-mcp-adapters")
+
+    _, partner_pkg = SANDBOX_BLOCKS.get(config.sandbox.provider, (None, None))
+    if partner_pkg:
+        all_deps.append(partner_pkg)
 
     extra_deps_lines = ""
     for dep in all_deps:
@@ -481,8 +598,7 @@ def print_bundle_summary(
     # Memory files
     memory_files = [k for k in bundle_data if k.startswith("/memory/")]
     if memory_files:
-        scope_label = "per-user" if config.memory.scope == "user" else "shared"
-        print(f"\n  Memory ({len(memory_files)} file(s), {scope_label}):")
+        print(f"\n  Memory ({len(memory_files)} file(s)):")
         for f in memory_files:
             print(f"    {f}")
 

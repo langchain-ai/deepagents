@@ -5,6 +5,8 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import json
+import os
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
@@ -24,7 +26,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware, _sanitize_task_id
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -43,6 +45,109 @@ Instructions go here.
 
 class TestSubAgents:
     """Tests for sub-agent middleware functionality."""
+
+    async def test_swarm_tool_writes_results_via_backend(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        config_path = str(tmp_path / "swarm_config.json")
+        output_dir = str(tmp_path / "results")
+        config = {
+            "tasks": [
+                {"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"},
+                {"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"},
+            ]
+        }
+        backend.upload_files([(config_path, json.dumps(config).encode("utf-8"))])
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"config_file": config_path, "output_dir": output_dir},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        gp_model = GenericFakeChatModel(messages=iter([AIMessage(content="result"), AIMessage(content="result")]))
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="gp",
+                    system_prompt="you are gp",
+                    model=gp_model,
+                    tools=[],
+                )
+            ],
+            enable_swarm=True,
+        )
+
+        await agent.ainvoke(
+            {"messages": [HumanMessage(content="run swarm")]},
+            config={"configurable": {"thread_id": "test_thread_swarm"}},
+        )
+
+        r0 = backend.download_files([f"{output_dir}/t0.txt"])[0]
+        r1 = backend.download_files([f"{output_dir}/t1.txt"])[0]
+        assert (r0.error, r0.content) == (None, b"result")
+        assert (r1.error, r1.content) == (None, b"result")
+
+    async def test_swarm_tool_surfaces_validation_error_as_tool_message(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        config_path = str(tmp_path / "swarm_config.json")
+        output_dir = str(tmp_path / "results")
+        config = {"tasks": [{"id": "t0", "description": "Say hi"}]}
+        backend.upload_files([(config_path, json.dumps(config).encode("utf-8"))])
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"config_file": config_path, "output_dir": output_dir},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[],
+            enable_swarm=True,
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="run swarm")]},
+            config={"configurable": {"thread_id": "test_thread_swarm_validation_error"}},
+        )
+
+        assert [m.type for m in result["messages"]] == ["human", "ai", "tool", "ai"]
+        tool = result["messages"][2]
+        assert tool.status == "error"
+        assert json.loads(tool.content)[0]["type"] == "missing"
 
     def test_subagent_returns_final_message_as_tool_result(self) -> None:
         """Test that a subagent's final message is returned as a ToolMessage.
@@ -1645,3 +1750,46 @@ class TestSubAgentMiddlewareValidation:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert "deprecated" in str(w[0].message).lower()
+
+
+@pytest.mark.parametrize(
+    ("task_id", "expected"),
+    [
+        ("simple", "simple"),
+        ("with spaces", "with spaces"),
+        ("0", "0"),
+    ],
+)
+def test_sanitize_task_id_allows_safe_ids(tmp_path: Path, task_id: str, expected: str) -> None:
+    assert _sanitize_task_id(task_id, str(tmp_path), fallback="0") == expected
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "../../etc/passwd",
+        "../escape",
+        "foo/../../etc/shadow",
+        "/absolute/path",
+    ],
+)
+def test_sanitize_task_id_strips_directory_components(tmp_path: Path, task_id: str) -> None:
+    result = _sanitize_task_id(task_id, str(tmp_path), fallback="0")
+    resolved = os.path.realpath(str(tmp_path / f"{result}.txt"))
+    assert resolved.startswith(os.path.realpath(str(tmp_path)) + os.sep)
+
+
+def test_sanitize_task_id_empty_after_basename(tmp_path: Path) -> None:
+    result = _sanitize_task_id("..", str(tmp_path), fallback="fallback")
+    assert result == "fallback"
+
+
+def test_sanitize_task_id_rejects_symlink_that_escapes(tmp_path: Path) -> None:
+    jail = tmp_path / "subdir"
+    jail.mkdir(parents=True)
+    escape_target = tmp_path / "escaped.txt"
+    escape_target.write_text("secret")
+    symlink = jail / "evil.txt"
+    symlink.symlink_to(escape_target)
+    with pytest.raises(ValueError, match="resolves outside output directory"):
+        _sanitize_task_id("evil", str(jail), fallback="0")

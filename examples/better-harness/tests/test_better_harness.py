@@ -18,7 +18,7 @@ from better_harness import (
     run_experiment,
 )
 from better_harness.agent import build_proposer_workspace
-from better_harness.core import RunLayout
+from better_harness.core import RunLayout, extract_langsmith_trace_id, write_trace_payloads
 from better_harness.patching import (
     build_baseline_variant,
     build_variant,
@@ -491,6 +491,10 @@ def test_build_proposer_workspace_copies_train_context(tmp_path: Path):
     prior_iteration_dir = layout.visible_iterations_dir / "000"
     prior_iteration_dir.mkdir(parents=True, exist_ok=True)
     (prior_iteration_dir / "decision.json").write_text('{"iteration": 0, "decision": "accepted", "train_passed": 1, "train_total": 1}\n')
+    prior_proposer_dir = prior_iteration_dir / "proposer_workspace"
+    prior_proposer_dir.mkdir(parents=True, exist_ok=True)
+    (prior_proposer_dir / "outer_agent_result.json").write_text('{"final_message":"ok","result":{"messages":[]}}\n')
+    (prior_proposer_dir / "proposal.md").write_text("# Proposal\n")
     prior_train_dir = layout.visible_root / "train" / "baseline"
     prior_train_dir.mkdir(parents=True, exist_ok=True)
     (prior_train_dir / "result.json").write_text('{"split":"train","variant":"baseline","model":"demo-model","passed":0,"total":1,"score":0.0,"correctness":0.0,"returncode":1,"run_dir":"run","outcomes":[]}\n')
@@ -505,8 +509,45 @@ def test_build_proposer_workspace_copies_train_context(tmp_path: Path):
     assert (proposer_workspace.root / "train_failures.json").exists()
     assert (proposer_workspace.root / "train_cases" / "tests" / "test_demo.py").exists()
     assert (proposer_workspace.root / "history" / "prior_visible" / "iterations" / "000" / "decision.json").exists()
+    assert (proposer_workspace.root / "history" / "prior_visible" / "iterations" / "000" / "proposer_workspace" / "outer_agent_result.json").exists()
     assert (proposer_workspace.root / "history" / "prior_visible" / "train" / "baseline" / "result.json").exists()
     assert proposer_workspace.surface_files["prompt"].read_text() == "base"
+
+
+def test_extract_langsmith_trace_id():
+    url = "https://smith.langchain.com/o/demo/projects/p/test/r/019c2754-dcf0-7971-ad86-ee82ed690b8a"
+    assert extract_langsmith_trace_id(url) == "019c2754-dcf0-7971-ad86-ee82ed690b8a"
+
+
+def test_write_trace_payloads_fetches_langsmith_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        def read(self):
+            return b'{"id":"019c2754-dcf0-7971-ad86-ee82ed690b8a","messages":[{"type":"human","content":"hi"}]}'
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        assert request.full_url.endswith("/runs/019c2754-dcf0-7971-ad86-ee82ed690b8a?include_messages=true")
+        return _Response()
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    split_dir = tmp_path / "split"
+    split_dir.mkdir()
+    write_trace_payloads(
+        split_dir,
+        ["https://smith.langchain.com/o/demo/projects/p/test/r/019c2754-dcf0-7971-ad86-ee82ed690b8a"],
+    )
+    trace_json = split_dir / "traces" / "langsmith" / "019c2754-dcf0-7971-ad86-ee82ed690b8a.json"
+    assert trace_json.exists()
+    payload = json.loads(trace_json.read_text())
+    assert payload["messages"][0]["content"] == "hi"
 
 
 def test_run_end_to_end_pytest_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

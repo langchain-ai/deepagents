@@ -8,6 +8,8 @@ import os
 import re
 import sys
 import tomllib
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +26,9 @@ VALID_SURFACE_KINDS = ("module_attr", "workspace_file")
 VALID_RUNNERS = ("pytest", "harbor")
 ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 URL_PATTERN = re.compile(r"https?://[^\s\"'>]+")
+UUID_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+)
 
 
 @dataclass(frozen=True)
@@ -760,6 +765,85 @@ def write_trace_refs(split_dir: Path, refs: list[str]) -> None:
     lines.extend(f"- {ref}" for ref in refs)
     lines.append("")
     (split_dir / "trace_refs.md").write_text("\n".join(lines))
+    write_trace_payloads(split_dir, refs)
+
+
+def write_trace_payloads(split_dir: Path, refs: list[str]) -> None:
+    """Fetch and persist local copies of LangSmith traces when possible."""
+    api_key = os.environ.get("LANGSMITH_API_KEY")
+    if not api_key:
+        return
+
+    endpoint = (
+        os.environ.get("LANGSMITH_ENDPOINT")
+        or os.environ.get("LANGCHAIN_ENDPOINT")
+        or "https://api.smith.langchain.com"
+    ).rstrip("/")
+    traces_dir = split_dir / "traces" / "langsmith"
+    payloads: list[dict[str, Any]] = []
+
+    for ref in refs:
+        trace_id = extract_langsmith_trace_id(ref)
+        if trace_id is None:
+            continue
+        trace_path = traces_dir / f"{trace_id}.json"
+        error_text: str | None = None
+        if not trace_path.exists():
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                payload = fetch_langsmith_trace(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    trace_id=trace_id,
+                )
+            except RuntimeError as exc:
+                error_text = str(exc)
+            else:
+                trace_path.write_text(json.dumps(payload, indent=2) + "\n")
+        payloads.append(
+            {
+                "url": ref,
+                "trace_id": trace_id,
+                "path": str(trace_path) if trace_path.exists() else None,
+                "error": error_text,
+            }
+        )
+
+    if payloads:
+        (split_dir / "trace_payloads.json").write_text(json.dumps(payloads, indent=2) + "\n")
+
+
+def extract_langsmith_trace_id(url: str) -> str | None:
+    """Extract one likely LangSmith run id from a URL."""
+    if "smith.langchain" not in url:
+        return None
+    matches = UUID_PATTERN.findall(url)
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def fetch_langsmith_trace(*, endpoint: str, api_key: str, trace_id: str) -> dict[str, Any]:
+    """Fetch one LangSmith run with messages included."""
+    base_url = f"{endpoint}/runs/{trace_id}?include_messages=true"
+    if not base_url.startswith(("https://", "http://")):
+        msg = f"Unsupported LangSmith endpoint: {endpoint}"
+        raise RuntimeError(msg)
+    request = urllib.request.Request(  # noqa: S310
+        base_url,
+        headers={
+            "X-API-Key": api_key,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"LangSmith fetch failed for {trace_id}: HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"LangSmith fetch failed for {trace_id}: {exc}") from exc
 
 
 def collect_trace_refs(run_dir: Path) -> list[dict[str, Any]]:

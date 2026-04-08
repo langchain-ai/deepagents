@@ -232,7 +232,13 @@ def invoke_deepagents_proposer(
     if result is None:  # pragma: no cover - defensive fallback
         msg = "outer Deep Agent produced no result"
         raise RuntimeError(msg)
-    return _final_ai_message_text(result)
+    final_message = _final_ai_message_text(result)
+    _write_outer_agent_result(
+        workspace_root=workspace.root,
+        result=result,
+        final_message=final_message,
+    )
+    return final_message
 
 
 def _write_train_artifacts(
@@ -312,6 +318,22 @@ def _copy_prior_visible_artifacts(*, layout: RunLayout, root: Path, iteration: i
         markdown_path = decision_path.with_suffix(".md")
         if markdown_path.exists():
             shutil.copy2(markdown_path, target_dir / markdown_path.name)
+        proposer_workspace = decision_path.parent / "proposer_workspace"
+        if proposer_workspace.exists():
+            proposer_target = target_dir / "proposer_workspace"
+            proposer_target.mkdir(parents=True, exist_ok=True)
+            for name in (
+                "outer_agent_request.json",
+                "outer_agent_result.json",
+                "outer_agent_stdout.log",
+                "outer_agent_stderr.log",
+                "proposal.md",
+                "result.json",
+                "task.md",
+            ):
+                source = proposer_workspace / name
+                if source.exists():
+                    shutil.copy2(source, proposer_target / name)
 
 
 def _write_task_file(
@@ -383,6 +405,64 @@ def _final_ai_message_text(result: dict[str, Any]) -> str | None:
                 return "\n".join(str(item) for item in content)
             return None if content is None else str(content)
     return None
+
+
+def _write_outer_agent_result(
+    *,
+    workspace_root: Path,
+    result: dict[str, Any],
+    final_message: str | None,
+) -> None:
+    payload = {
+        "final_message": final_message,
+        "result": _jsonify(result),
+    }
+    (workspace_root / "outer_agent_result.json").write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _jsonify(value: Any) -> Any:  # noqa: PLR0911
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonify(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonify(child) for child in value]
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json")
+        except TypeError:
+            dumped = value.model_dump()
+        return _jsonify(dumped)
+    if hasattr(value, "dict"):
+        try:
+            return _jsonify(value.dict())
+        except TypeError:
+            return repr(value)
+    if hasattr(value, "type"):
+        payload: dict[str, Any] = {"type": value.type}
+        for name in (
+            "id",
+            "name",
+            "content",
+            "content_blocks",
+            "tool_calls",
+            "invalid_tool_calls",
+            "additional_kwargs",
+            "response_metadata",
+            "usage_metadata",
+        ):
+            if hasattr(value, name):
+                payload[name] = _jsonify(getattr(value, name))
+        return payload
+    if hasattr(value, "__dict__"):
+        return {
+            key: _jsonify(child)
+            for key, child in vars(value).items()
+            if not key.startswith("_")
+        }
+    return repr(value)
 
 
 def _invoke_via_uv_project_with_retries(
@@ -549,7 +629,16 @@ def main(argv: list[str] | None = None) -> int:
     final_message = _final_ai_message_text(result)
 
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({"final_message": final_message}, indent=2) + "\n")
+    result_path.write_text(
+        json.dumps(
+            {
+                "final_message": final_message,
+                "result": _jsonify(result),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     return 0
 
 

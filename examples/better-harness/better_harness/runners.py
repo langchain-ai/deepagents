@@ -81,84 +81,113 @@ class PytestRunner:
         split_dir.mkdir(parents=True, exist_ok=True)
         variant_path = layout.variant_path(variant.key)
         variant.save(variant_path)
-        case_ids = experiment.rendered_case_ids(split)
-        junit_path = split_dir / "junit.xml"
-        summary_path = split_dir / "summary.json"
         project_root = Path(str(experiment.runner_config["project_root"]))
-
-        command = self._base_command(experiment)
-        if summary_flag := experiment.runner_config.get("summary_flag", "--evals-report-file"):
-            command.extend([str(summary_flag), str(summary_path)])
-        command.extend(["--junitxml", str(junit_path)])
-        command.extend(str(arg) for arg in experiment.runner_config.get("pytest_args", ["-q"]))
-        command.extend(case_ids)
-
-        env = os.environ.copy()
-        runtime_dir = ensure_sitecustomize(layout.runtime_dir)
-        env[VARIANT_ENV] = str(variant_path)
-        env["PYTHONPATH"] = prepend_pythonpath(
-            [runtime_dir, self.repo_root, experiment.workspace_root],
-            env.get("PYTHONPATH"),
+        env = self._build_env(
+            experiment=experiment,
+            variant_path=variant_path,
+            runtime_dir=ensure_sitecustomize(layout.runtime_dir),
         )
-        env.setdefault("LANGSMITH_TEST_SUITE", f"better-harness-{experiment.name}")
 
-        (split_dir / "command.json").write_text(
-            json.dumps(
-                {
-                    "argv": command,
-                    "shell": shlex.join(command),
-                    "cwd": str(project_root),
-                    "env": {
-                        VARIANT_ENV: str(variant_path),
-                        "PYTHONPATH": env["PYTHONPATH"],
-                        "LANGSMITH_TEST_SUITE": env["LANGSMITH_TEST_SUITE"],
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        outcomes: list[CaseOutcome] = []
+        returncodes: list[int] = []
+        split_stdout: list[str] = []
+        split_stderr: list[str] = []
 
         with workspace_override_context(experiment.workspace_root, variant.file_overrides()):
-            completed = subprocess.run(
-                command,
-                cwd=project_root,
-                env=env,
-                capture_output=True,
-                check=False,
-                text=True,
-            )
+            for case in experiment.cases_for_split(split):
+                rendered = case.render(model=experiment.model)
+                case_slug = safe_slug(rendered)
+                case_dir = split_dir / "cases" / case_slug
+                case_dir.mkdir(parents=True, exist_ok=True)
+                summary_path = case_dir / "summary.json"
+                junit_path = case_dir / "junit.xml"
+                command = self._base_command(experiment)
+                if summary_flag := experiment.runner_config.get("summary_flag", "--evals-report-file"):
+                    command.extend([str(summary_flag), str(summary_path)])
+                command.extend(["--junitxml", str(junit_path)])
+                command.extend(str(arg) for arg in experiment.runner_config.get("pytest_args", ["-q"]))
+                command.append(rendered)
 
-        (split_dir / "stdout.log").write_text(completed.stdout)
-        (split_dir / "stderr.log").write_text(completed.stderr)
-        outcomes = parse_pytest_outcomes(
-            junit_path=junit_path,
-            cases=experiment.cases_for_split(split),
-            model=experiment.model,
-            artifacts_dir=split_dir,
-        )
-        summary_payload: dict[str, Any] | None = None
-        if summary_path.exists():
-            summary_payload = json.loads(summary_path.read_text())
-            passed = int(summary_payload.get("passed", 0))
-            total = int(summary_payload.get("total", len(outcomes)))
-        else:
-            passed = sum(1 for outcome in outcomes if outcome.passed)
-            total = len(outcomes)
-            summary_payload = {
-                "passed": passed,
-                "total": total,
-                "correctness": 0.0 if total == 0 else passed / total,
-            }
-            summary_path.write_text(json.dumps(summary_payload, indent=2) + "\n")
+                (case_dir / "command.json").write_text(
+                    json.dumps(
+                        {
+                            "argv": command,
+                            "shell": shlex.join(command),
+                            "cwd": str(project_root),
+                            "env": {
+                                VARIANT_ENV: str(variant_path),
+                                "PYTHONPATH": env["PYTHONPATH"],
+                                "LANGSMITH_TEST_SUITE": env["LANGSMITH_TEST_SUITE"],
+                            },
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
 
-        trace_refs = extract_trace_refs(
-            payload=summary_payload,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
-        write_trace_refs(split_dir, trace_refs)
+                completed = subprocess.run(
+                    command,
+                    cwd=project_root,
+                    env=env,
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+                (case_dir / "stdout.log").write_text(completed.stdout)
+                (case_dir / "stderr.log").write_text(completed.stderr)
+                split_stdout.append(f"## {rendered}\n{completed.stdout}")
+                split_stderr.append(f"## {rendered}\n{completed.stderr}")
+                returncodes.append(completed.returncode)
+
+                case_outcome = parse_pytest_outcomes(
+                    junit_path=junit_path,
+                    cases=[case],
+                    model=experiment.model,
+                    artifacts_dir=case_dir,
+                )[0]
+
+                if summary_path.exists():
+                    summary_payload: dict[str, Any] | None = json.loads(summary_path.read_text())
+                else:
+                    summary_payload = {
+                        "passed": 1 if case_outcome.passed else 0,
+                        "total": 1,
+                        "correctness": 1.0 if case_outcome.passed else 0.0,
+                    }
+                    summary_path.write_text(json.dumps(summary_payload, indent=2) + "\n")
+
+                trace_refs = extract_trace_refs(
+                    payload=summary_payload,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
+                )
+                write_trace_refs(case_dir, trace_refs)
+                case_outcome = CaseOutcome(
+                    case_id=case_outcome.case_id,
+                    split=case_outcome.split,
+                    stratum=case_outcome.stratum,
+                    status=case_outcome.status,
+                    score=case_outcome.score,
+                    duration_s=case_outcome.duration_s,
+                    failure_message=case_outcome.failure_message,
+                    artifacts_dir=str(case_dir),
+                    trace_ref=trace_refs[0] if trace_refs else None,
+                )
+                outcomes.append(case_outcome)
+
+        (split_dir / "stdout.log").write_text("\n\n".join(split_stdout))
+        (split_dir / "stderr.log").write_text("\n\n".join(split_stderr))
+        passed = sum(1 for outcome in outcomes if outcome.passed)
+        total = len(outcomes)
+        summary_payload = {
+            "passed": passed,
+            "failed": sum(1 for outcome in outcomes if outcome.status == "failed"),
+            "skipped": sum(1 for outcome in outcomes if outcome.status == "skipped"),
+            "total": total,
+            "correctness": 0.0 if total == 0 else passed / total,
+        }
+        (split_dir / "summary.json").write_text(json.dumps(summary_payload, indent=2) + "\n")
 
         result = SplitResult(
             split=split,
@@ -167,12 +196,22 @@ class PytestRunner:
             passed=passed,
             total=total,
             score=float(passed),
-            returncode=completed.returncode,
+            returncode=max(returncodes) if returncodes else 0,
             run_dir=str(split_dir),
             outcomes=tuple(outcomes),
         )
         result.save(result_path)
         return result
+
+    def _build_env(self, *, experiment: Experiment, variant_path: Path, runtime_dir: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        env[VARIANT_ENV] = str(variant_path)
+        env["PYTHONPATH"] = prepend_pythonpath(
+            [runtime_dir, self.repo_root, experiment.workspace_root],
+            env.get("PYTHONPATH"),
+        )
+        env.setdefault("LANGSMITH_TEST_SUITE", f"better-harness-{experiment.name}")
+        return env
 
     def _base_command(self, experiment: Experiment) -> list[str]:
         project_root = Path(str(experiment.runner_config["project_root"]))

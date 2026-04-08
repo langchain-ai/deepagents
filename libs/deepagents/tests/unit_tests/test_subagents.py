@@ -881,7 +881,7 @@ class TestSubAgents:
         reason="callbacks in parent config are not forwarded to subagent invocations (see #2315)",
         strict=True,
     )
-    def test_subagent_tool_does_not_receive_parent_callbacks(self) -> None:
+    def test_subagent_tool_should_receive_parent_callbacks(self) -> None:
         """Test that callbacks in the parent config are visible inside a subagent tool's runtime config.
 
         The tool inspects `runtime.config["callbacks"]` and records what it finds.

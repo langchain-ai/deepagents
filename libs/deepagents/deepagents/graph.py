@@ -109,6 +109,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
+    summarizer_model: str | BaseChatModel | None = None,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
@@ -163,6 +164,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
+        summarizer_model: The model to use for conversation summarization.
+
+            When provided, all ``SummarizationMiddleware`` instances (for the
+            main agent and all declarative subagents) will use this model
+            instead of the main agent model. Useful for substituting a
+            cheaper or faster model for summarization while keeping a more
+            capable model for primary inference.
+
+            Accepts the same forms as ``model``: a ``provider:model`` string
+            or a pre-initialized ``BaseChatModel`` instance. Defaults to
+            ``None``, which falls back to the main ``model``.
         system_prompt: Custom system instructions to prepend before the base
             Deep Agent prompt.
 
@@ -288,13 +300,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             minimum supported version (e.g., `langchain-openrouter`).
     """
     model = get_default_model() if model is None else resolve_model(model)
+    effective_summarizer_model: BaseChatModel = resolve_model(summarizer_model) if summarizer_model is not None else model
     backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
+        create_summarization_middleware(effective_summarizer_model, backend),
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
@@ -331,7 +344,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
+                create_summarization_middleware(effective_summarizer_model, backend),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
@@ -372,7 +385,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 subagents=inline_subagents,
             ),
-            create_summarization_middleware(model, backend),
+            create_summarization_middleware(effective_summarizer_model, backend),
             PatchToolCallsMiddleware(),
         ]
     )

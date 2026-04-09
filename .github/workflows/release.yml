@@ -108,6 +108,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
@@ -160,6 +161,14 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
+
+      - name: Update workflow run name with version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PATCH \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -f "name=Release ${{ steps.check-version.outputs.pkg-name }} ${{ steps.check-version.outputs.version }}"
 
   # Generate release notes from CHANGELOG.md (with git log fallback)
   # and collect contributor shoutouts from merged PRs

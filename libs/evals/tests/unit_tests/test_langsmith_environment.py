@@ -39,6 +39,7 @@ class _FakeTemplate:
     class _Resources:
         cpu: str = "1000m"
         memory: str = "2Gi"
+        storage: str = "10Gi"
 
     resources: _Resources = field(default_factory=_Resources)
 
@@ -309,6 +310,14 @@ class TestSanitizeName:
     def test_empty_string(self) -> None:
         result = LangSmithEnvironment._sanitize_name("")
         assert result[0].isalpha()
+        assert not result.endswith("-")
+
+    def test_no_trailing_hyphen_after_truncation(self) -> None:
+        """Truncation at 63 chars must not leave a trailing hyphen."""
+        raw = "a" * 62 + ":b"
+        result = LangSmithEnvironment._sanitize_name(raw)
+        assert not result.endswith("-")
+        assert len(result) <= 63
 
 
 class TestResourceConversion:
@@ -383,7 +392,7 @@ class TestEnsureTemplate:
         with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 template=_FakeTemplate(
-                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi")
+                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
                 ),
             )
             mock_cls.return_value = mock_client
@@ -399,7 +408,7 @@ class TestEnsureTemplate:
         with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 template=_FakeTemplate(
-                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi")
+                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
                 ),
             )
             mock_cls.return_value = mock_client
@@ -440,6 +449,23 @@ class TestEnsureTemplate:
             mock_client.delete_template.assert_called_once()
             mock_client.create_template.assert_called_once()
 
+    async def test_recreates_template_when_storage_differs(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, storage_mb=20480)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                template=_FakeTemplate(
+                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
+                ),
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            mock_client.delete_template.assert_called_once()
+            mock_client.create_template.assert_called_once()
+            assert mock_client.create_template.call_args.kwargs["storage"] == "20Gi"
+
     async def test_template_name_derived_from_image(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, docker_image="ghcr.io/my-org/my-image:v1.2")
 
@@ -476,6 +502,24 @@ class TestExec:
         _, _, cwd, cmd_env = sandbox._run_calls[0]
         assert cwd == "/app"
         assert cmd_env == {"FOO": "bar"}
+
+    async def test_exec_uses_default_timeout(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        env._sandbox = sandbox  # type: ignore[assignment]
+
+        await env.exec("echo hello")
+
+        assert sandbox._run_calls[0][1] == 30 * 60
+
+    async def test_exec_forwards_custom_timeout(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        env._sandbox = sandbox  # type: ignore[assignment]
+
+        await env.exec("echo hello", timeout_sec=10)
+
+        assert sandbox._run_calls[0][1] == 10
 
     async def test_exec_without_start_raises(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
@@ -544,6 +588,43 @@ class TestFileOps:
         assert (dest / "a.txt").read_bytes() == b"aaa"
         assert (dest / "sub" / "b.txt").read_bytes() == b"bbb"
 
+    async def test_download_dir_partial_failure(self, tmp_path: Path) -> None:
+        """Files that fail to download are skipped; successful ones are kept."""
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        sandbox._read_files["/remote/good.txt"] = b"ok"
+        env._sandbox = sandbox  # type: ignore[assignment]
+
+        async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
+            return _FakeExecResult(stdout="/remote/good.txt\n/remote/bad.txt\n")
+
+        sandbox.run = _fake_run  # type: ignore[assignment]
+
+        # bad.txt is not in _read_files, so download_file → sandbox.read
+        # returns b"" by default, but we override read to raise for bad.txt.
+        original_read = sandbox.read
+
+        async def _failing_read(path: str) -> bytes:
+            if path == "/remote/bad.txt":
+                msg = "not found"
+                raise FileNotFoundError(msg)
+            return await original_read(path)
+
+        sandbox.read = _failing_read  # type: ignore[assignment]
+
+        dest = tmp_path / "downloaded"
+        await env.download_dir("/remote", dest)
+
+        assert (dest / "good.txt").read_bytes() == b"ok"
+        assert not (dest / "bad.txt").exists()
+
+    async def test_upload_dir_without_start_raises(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        with pytest.raises(RuntimeError, match="start"):
+            await env.upload_dir(src_dir, "/app/dest")
+
     async def test_download_dir_empty(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
@@ -592,6 +673,24 @@ class TestStop:
         mock_client.delete_sandbox.assert_not_called()
         mock_client.delete_template.assert_not_called()
         mock_client.aclose.assert_called_once()
+
+    async def test_stop_continues_after_sandbox_delete_fails(self, tmp_path: Path) -> None:
+        """If sandbox deletion fails, template deletion and aclose still run."""
+        env = _make_env(tmp_path)
+        mock_client = AsyncMock()
+        mock_client.delete_sandbox.side_effect = RuntimeError("API timeout")
+        env._sandbox = _FakeSandbox(name="my-sandbox")  # type: ignore[assignment]
+        env._client = mock_client
+        env._template_name = "my-template"
+
+        await env.stop(delete=True)
+
+        mock_client.delete_sandbox.assert_called_once_with("my-sandbox")
+        mock_client.delete_template.assert_called_once_with("my-template")
+        mock_client.aclose.assert_called_once()
+        assert env._sandbox is None
+        assert env._client is None
+        assert env._template_name is None
 
     async def test_stop_clean_after_failed_start(self, tmp_path: Path) -> None:
         """If create_template fails, _template_name stays None and stop is safe."""

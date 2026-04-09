@@ -17,9 +17,9 @@
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
-name: "📊 Evals"
+name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
 
 on:
   workflow_dispatch:
@@ -403,7 +403,7 @@ jobs:
 
           lines = [
               "<details>",
-              f"<summary><strong>📊 {model}</strong> (click to expand)</summary>",
+              "<summary>(click to expand)</summary>",
               "",
           ]
 

@@ -1,14 +1,16 @@
 """Bundle a deepagents project for deployment.
 
-Reads the canonical project layout::
+Reads the canonical project layout:
 
-    src/
-      AGENTS.md       # required — system prompt + seeded memory
-      skills/         # optional — auto-seeded into skills namespace
-      mcp.json        # optional — HTTP/SSE MCP servers
-      deepagents.toml
+```txt
+src/
+    AGENTS.md       # required — system prompt + seeded memory
+    skills/         # optional — auto-seeded into skills namespace
+    mcp.json        # optional — HTTP/SSE MCP servers
+    deepagents.toml
+```
 
-…and writes everything ``langgraph deploy`` needs to a build directory.
+...and writes everything `langgraph deploy` needs to a build directory.
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ from deepagents_cli.deploy.templates import (
 
 logger = logging.getLogger(__name__)
 
-# Dependencies inferred from a ``provider:`` prefix on the model string.
 _MODEL_PROVIDER_DEPS = {
     "anthropic": "langchain-anthropic",
     "openai": "langchain-openai",
@@ -42,6 +43,7 @@ _MODEL_PROVIDER_DEPS = {
     "groq": "langchain-groq",
     "mistralai": "langchain-mistralai",
 }
+"""Dependencies inferred from a provider: prefix on the model string."""
 
 
 def bundle(
@@ -110,25 +112,27 @@ def _build_seed(
     project_root: Path,
     system_prompt: str,
 ) -> dict[str, dict[str, str]]:
-    """Build the ``_seed.json`` payload.
+    """Build the `_seed.json` payload.
 
-    Layout::
+    Layout:
 
-        {
-            "memories": { "AGENTS.md": "..." },
-            "skills":   { "<skill>/SKILL.md": "...", ... }
-        }
+    ```txt
+    {
+        "memories": { "AGENTS.md": "..." },
+        "skills":   { "<skill>/SKILL.md": "...", ... }
+    }
+    ```
 
-    ``memories`` always contains ``AGENTS.md`` — the agent reads it at
-    runtime via ``/memories/AGENTS.md``. Writes and edits to that path
-    are blocked by ``ReadOnlyStoreBackend`` in the generated graph.
+    `memories` always contains `AGENTS.md` — the agent reads it at runtime
+    via `/memories/AGENTS.md`. Writes and edits to that path are blocked
+    by `ReadOnlyStoreBackend` in the generated graph.
 
-    ``skills`` walks ``src/skills/`` if present. Keys are paths relative
-    to the skills dir; the runtime namespace handles the scoping.
+    `skills` walks `src/skills/` if present. Keys are paths relative to the
+    skills dir; the runtime namespace handles the scoping.
     """
     # Keys must match what CompositeBackend passes to the mounted
     # StoreBackend after stripping the route prefix: for a read of
-    # ``/memories/AGENTS.md`` it calls ``store.read("/AGENTS.md")``.
+    # /memories/AGENTS.md it calls store.read("/AGENTS.md").
     # Seed with the same leading-slash convention.
     memories: dict[str, str] = {f"/{AGENTS_MD_FILENAME}": system_prompt}
     skills: dict[str, str] = {}
@@ -149,7 +153,7 @@ def _render_deploy_graph(
     *,
     mcp_present: bool,
 ) -> str:
-    """Render the generated ``deploy_graph.py``."""
+    """Render the generated `deploy_graph.py`."""
     provider = config.sandbox.provider
     if provider not in SANDBOX_BLOCKS:
         msg = f"Unknown sandbox provider {provider!r}. Valid: {sorted(SANDBOX_BLOCKS)}"
@@ -177,7 +181,7 @@ def _render_deploy_graph(
 
 
 def _render_langgraph_json(*, env_present: bool) -> str:
-    """Render ``langgraph.json`` — adds ``"env": ".env"`` when a .env was copied."""
+    """Render `langgraph.json` — adds `"env": ".env"` when a `.env` was copied."""
     data: dict = {
         "dependencies": ["."],
         "graphs": {"agent": "./deploy_graph.py:make_graph"},
@@ -189,12 +193,12 @@ def _render_langgraph_json(*, env_present: bool) -> str:
 
 
 def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
-    """Render the deployment package's ``pyproject.toml``.
+    """Render the deployment package's `pyproject.toml`.
 
     Deps are inferred — the user never writes them. We add:
 
     - the LangChain partner package matching the model provider prefix
-    - ``langchain-mcp-adapters`` if ``mcp.json`` is present
+    - `langchain-mcp-adapters` if `mcp.json` is present
     - the sandbox partner package (daytona/modal/runloop)
     """
     deps: list[str] = []

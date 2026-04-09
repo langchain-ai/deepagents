@@ -1,19 +1,19 @@
 """Deploy configuration parsing and validation.
 
-Reads ``deepagents.toml`` and produces a validated :class:`DeployConfig`.
+Reads `deepagents.toml` and produces a validated `DeployConfig`.
 
 The new minimal surface has exactly two sections:
 
-- ``[agent]``: name + model
-- ``[sandbox]``: sandbox provider settings
+- `[agent]`: name + model
+- `[sandbox]`: sandbox provider settings
 
-``AGENTS.md`` is always seeded into a shared memory namespace so the
-agent can read it at runtime, but writes/edits to that path are blocked
-by a read-only middleware in the generated graph.
+`AGENTS.md` is always seeded into a shared memory namespace so the agent can
+read it at runtime, but writes/edits to that path are blocked by a read-only
+middleware in the generated graph.
 
-Skills (``src/skills/``) and MCP servers (``src/mcp.json``) are auto-detected
+Skills (`src/skills/`) and MCP servers (`src/mcp.json`) are auto-detected
 from the project layout. The agent's system prompt is read from
-``src/AGENTS.md`` at bundle time — there is no ``system_prompt`` key.
+`src/AGENTS.md` at bundle time — there is no `system_prompt` key.
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Valid sandbox providers (mirrors sandbox_factory._PROVIDER_TO_WORKING_DIR)
 VALID_SANDBOX_PROVIDERS = frozenset(
     {"none", "daytona", "langsmith", "modal", "runloop"}
 )
+"""Valid sandbox providers (mirrors sandbox_factory._PROVIDER_TO_WORKING_DIR)"""
 
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
@@ -51,18 +51,18 @@ VALID_SANDBOX_SCOPES = frozenset({"thread", "assistant"})
 
 @dataclass(frozen=True)
 class SandboxConfig:
-    """``[sandbox]`` section — sandbox provider settings.
+    """`[sandbox]` section — sandbox provider settings.
 
-    The whole section is optional. When omitted (or ``provider = "none"``)
-    the runtime falls back to an in-process ``StateBackend`` and tools
-    like ``execute`` become no-ops.
+    The whole section is optional. When omitted (or `provider = "none"`)
+    the runtime falls back to an in-process `StateBackend` and tools
+    like `execute` become no-ops.
 
-    ``scope`` controls how the sandbox cache keys are built:
+    `scope` controls how the sandbox cache keys are built:
 
-    - ``"thread"`` (default): one sandbox per thread. Different threads
-      get different sandboxes, same thread reuses across turns.
-    - ``"assistant"``: one sandbox per assistant. All threads of the
-      same assistant share a single sandbox and its filesystem.
+    - `"thread"` (default): one sandbox per thread. Different threads
+        get different sandboxes, same thread reuses across turns.
+    - `"assistant"`: one sandbox per assistant. All threads of the
+        same assistant share a single sandbox and its filesystem.
     """
 
     provider: str = "none"
@@ -73,7 +73,7 @@ class SandboxConfig:
 
 @dataclass(frozen=True)
 class DeployConfig:
-    """Top-level deploy configuration parsed from ``deepagents.toml``."""
+    """Top-level deploy configuration parsed from `deepagents.toml`."""
 
     agent: AgentConfig
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
@@ -82,8 +82,8 @@ class DeployConfig:
         """Validate config against the filesystem.
 
         Args:
-            project_root: Directory containing ``deepagents.toml`` (i.e.
-                the ``src/`` dir in the canonical layout).
+            project_root: Directory containing `deepagents.toml` (i.e.
+                the `src/` dir in the canonical layout).
 
         Returns:
             List of validation error strings. Empty if valid.
@@ -157,7 +157,7 @@ def _validate_mcp_for_deploy(mcp_path: Path) -> list[str]:
 
 
 def load_config(config_path: Path) -> DeployConfig:
-    """Load and parse a ``deepagents.toml`` file.
+    """Load and parse a `deepagents.toml` file.
 
     Raises:
         FileNotFoundError: If the config file does not exist.
@@ -178,7 +178,7 @@ _ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
-    """Parse raw TOML dict into a DeployConfig."""
+    """Parse raw TOML dict into a `DeployConfig`."""
     # Reject unknown top-level sections up front — the old surface had
     # many more, and silently ignoring them would hide migration bugs.
     unknown = set(data.keys()) - _ALLOWED_SECTIONS
@@ -276,7 +276,7 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
 
 
 def find_config(start_path: Path | None = None) -> Path | None:
-    """Find ``deepagents.toml`` in the current directory.
+    """Find `deepagents.toml` in the current directory.
 
     Returns the path if found, or ``None`` otherwise.
     """
@@ -288,7 +288,7 @@ def find_config(start_path: Path | None = None) -> Path | None:
 
 
 def generate_starter_config() -> str:
-    """Generate a starter ``deepagents.toml`` template."""
+    """Generate a starter `deepagents.toml` template."""
     return """\
 [agent]
 name = "my-agent"
@@ -302,7 +302,7 @@ model = "anthropic:claude-sonnet-4-6"
 
 
 def generate_starter_agents_md() -> str:
-    """Generate a starter ``AGENTS.md`` template."""
+    """Generate a starter `AGENTS.md` template."""
     return """\
 # Agent Instructions
 
@@ -316,7 +316,7 @@ You are a helpful AI agent.
 
 
 def generate_starter_env() -> str:
-    """Generate a starter ``.env`` template."""
+    """Generate a starter `.env` template."""
     return """\
 # Model provider API key (required)
 ANTHROPIC_API_KEY=
@@ -327,7 +327,7 @@ LANGSMITH_API_KEY=
 
 
 def generate_starter_mcp_json() -> str:
-    """Generate a starter ``mcp.json`` template."""
+    """Generate a starter `mcp.json` template."""
     return """\
 {
   "mcpServers": {}
@@ -340,7 +340,7 @@ STARTER_SKILL_NAME = "review"
 
 
 def generate_starter_skill_md() -> str:
-    """Generate a starter ``skills/review/SKILL.md`` for code review."""
+    """Generate a starter `skills/review/SKILL.md` for code review."""
     return """\
 ---
 name: review

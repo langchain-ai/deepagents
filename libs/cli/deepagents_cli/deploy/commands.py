@@ -1,11 +1,11 @@
-"""CLI commands for ``deepagents deploy``.
+"""CLI commands for `deepagents deploy`.
 
-Registered with the CLI via :func:`setup_deploy_parser` in ``main.py``.
+Registered with the CLI via `setup_deploy_parser` in `main.py`.
 
 Commands:
-- ``deepagents deploy`` — Bundle and deploy to LangGraph Platform
-- ``deepagents deploy --dry-run`` — Show what would be generated
-- ``deepagents init [NAME]`` — Scaffold a new deploy project folder
+- `deepagents deploy` — Bundle and deploy to LangGraph Platform
+- `deepagents deploy --dry-run` — Show what would be generated
+- `deepagents init [NAME]` — Scaffold a new deploy project folder
 """
 
 from __future__ import annotations
@@ -25,11 +25,11 @@ def setup_deploy_parsers(
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> None:
-    """Register the top-level ``init``, ``dev``, and ``deploy`` subparsers.
+    """Register the top-level `init`, `dev`, and `deploy` subparsers.
 
-    The three commands used to live under ``deepagents deploy {init,dev}``
-    but are now flat: ``deepagents init``, ``deepagents dev``, and
-    ``deepagents deploy``. This function registers all three on the root
+    The three commands used to live under `deepagents deploy {init,dev}`
+    but are now flat: `deepagents init`, `deepagents dev`, and
+    `deepagents deploy`. This function registers all three on the root
     subparsers object.
     """
     # deepagents init
@@ -116,7 +116,7 @@ _BETA_WARNING = (
 
 
 def execute_init_command(args: argparse.Namespace) -> None:
-    """Execute the ``deepagents init`` command."""
+    """Execute the `deepagents init` command."""
     print(_BETA_WARNING)
     name = args.name
     if name is None:
@@ -132,7 +132,7 @@ def execute_init_command(args: argparse.Namespace) -> None:
 
 
 def execute_dev_command(args: argparse.Namespace) -> None:
-    """Execute the ``deepagents dev`` command."""
+    """Execute the `deepagents dev` command."""
     print(_BETA_WARNING)
     _dev(
         config_path=args.config,
@@ -142,7 +142,7 @@ def execute_dev_command(args: argparse.Namespace) -> None:
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
-    """Execute the ``deepagents deploy`` command."""
+    """Execute the `deepagents deploy` command."""
     print(_BETA_WARNING)
     _deploy(
         config_path=args.config,
@@ -153,18 +153,20 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
 def _init_project(*, name: str, force: bool = False) -> None:
     """Scaffold a deploy project folder.
 
-    Creates ``<name>/`` with the canonical layout::
+    Creates `name/` with the canonical layout:
 
-        <name>/
-          deepagents.toml
-          AGENTS.md
-          .env
-          mcp.json
-          skills/
+    ```txt
+    <name>/
+        deepagents.toml
+        AGENTS.md
+        .env
+        mcp.json
+        skills/
+    ```
 
     Args:
         name: Project folder name (created under cwd).
-        force: Overwrite existing files if ``True``.
+        force: Overwrite existing files if `True`.
     """
     from deepagents_cli.deploy.config import (
         AGENTS_MD_FILENAME,
@@ -222,8 +224,8 @@ def _deploy(
     """Bundle and deploy the agent.
 
     Args:
-        config_path: Path to config file, or ``None`` for default.
-        dry_run: If ``True``, generate artifacts but don't deploy.
+        config_path: Path to config file, or `None` for default.
+        dry_run: If `True`, generate artifacts but don't deploy.
     """
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
     from deepagents_cli.deploy.config import (
@@ -290,18 +292,18 @@ def _dev(
     port: int,
     allow_blocking: bool,
 ) -> None:
-    """Bundle the project and run a local ``langgraph dev`` server.
+    """Bundle the project and run a local `langgraph dev` server.
 
-    The bundle is identical to what ``deepagents deploy`` would ship, just
+    The bundle is identical to what `deepagents deploy` would ship, just
     served locally instead of pushed to LangGraph Platform. Hot-reloading
-    is provided by ``langgraph dev`` itself watching the build directory;
-    edits to the source project (``deepagents.toml``, skills, AGENTS.md)
-    require re-running ``deepagents deploy dev`` to re-bundle.
+    is provided by `langgraph dev` itself watching the build directory;
+    edits to the source project (`deepagents.toml`, skills, `AGENTS.md`)
+    require re-running `deepagents deploy dev` to re-bundle.
 
     Args:
-        config_path: Path to ``deepagents.toml``, or ``None`` for default.
+        config_path: Path to `deepagents.toml`, or `None` for default.
         port: Local port for the dev server.
-        allow_blocking: Pass ``--allow-blocking`` to ``langgraph dev`` so
+        allow_blocking: Pass `--allow-blocking` to `langgraph dev` so
             sync HTTP calls inside the graph (e.g. the LangSmith sandbox
             client) don't trigger blockbuster errors.
     """
@@ -367,14 +369,14 @@ def _dev(
 
 
 def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
-    """Shell out to ``langgraph deploy`` in the build directory.
+    """Shell out to `langgraph deploy` in the build directory.
 
     Args:
         build_dir: Directory containing generated deployment artifacts.
-        name: Deployment name (passed as ``--name`` to avoid interactive prompt).
+        name: Deployment name (passed as `--name` to avoid interactive prompt).
 
     Raises:
-        SystemExit: If ``langgraph`` CLI is not installed or deployment fails.
+        SystemExit: If `langgraph` CLI is not installed or deployment fails.
     """
     import shutil
 

@@ -1,11 +1,11 @@
 """String templates for generated deployment artifacts.
 
 These templates are rendered by the bundler with values from
-:class:`~deepagents_cli.deploy.config.DeployConfig`.
+`~deepagents_cli.deploy.config.DeployConfig`.
 
-The generated ``deploy_graph.py`` is store-only: one ``StoreBackend`` with
-two namespaces (memory and skills) composed with the configured sandbox
-as the default backend. There is no hub path, no custom Python tools, and
+The generated `deploy_graph.py` is store-only: one `StoreBackend` with
+two namespaces (memory and skills) composed with the configured sandbox as
+the default backend. There is no hub path, no custom Python tools, and
 no env-file handling.
 """
 
@@ -14,9 +14,9 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Per-provider sandbox creation blocks
 #
-# Each block defines ``_get_or_create_sandbox(cache_key) -> BackendProtocol``.
+# Each block defines `_get_or_create_sandbox(cache_key) -> BackendProtocol`.
 # The caller builds the cache_key from either the thread_id or the
-# assistant_id depending on ``[sandbox].scope``.
+# assistant_id depending on `[sandbox].scope`.
 # using the canonical SDK init for that provider.
 # ---------------------------------------------------------------------------
 
@@ -133,7 +133,6 @@ def _get_or_create_sandbox(cache_key):  # noqa: ARG001
     return _STATE_BACKEND
 '''
 
-# Map of provider -> (sandbox_block, requires_partner_package).
 SANDBOX_BLOCKS = {
     "langsmith": (SANDBOX_BLOCK_LANGSMITH, None),
     "daytona": (SANDBOX_BLOCK_DAYTONA, "langchain-daytona"),
@@ -141,6 +140,7 @@ SANDBOX_BLOCKS = {
     "runloop": (SANDBOX_BLOCK_RUNLOOP, "langchain-runloop"),
     "none": (SANDBOX_BLOCK_NONE, None),
 }
+"""Map of provider -> (sandbox_block, requires_partner_package)."""
 
 
 # ---------------------------------------------------------------------------
@@ -202,19 +202,19 @@ async def _load_mcp_tools():
 #   /skills/       (assistant_id, "skills")          no
 #   default        sandbox (per-thread)              yes
 #
-# ``make_graph`` takes the ``RunnableConfig`` at factory time, pulls
-# ``assistant_id`` from ``config["configurable"]``, and uses it as the
+# `make_graph` takes the `RunnableConfig` at factory time, pulls
+# `assistant_id` from `config["configurable"]`, and uses it as the
 # top-level namespace component so different assistants built from the
 # same graph have isolated memories and skills.
 #
-# The bundler ships ``_seed.json`` containing both payloads; the factory
+# The bundler ships `_seed.json` containing both payloads; the factory
 # seeds each namespace once per (process, assistant_id).
 # ---------------------------------------------------------------------------
 
 DEPLOY_GRAPH_TEMPLATE = '''\
 """Auto-generated deepagents deploy entry point.
 
-Created by ``deepagents deploy``. Do not edit manually — changes will be
+Created by `deepagents deploy`. Do not edit manually — changes will be
 overwritten on the next deploy.
 """
 

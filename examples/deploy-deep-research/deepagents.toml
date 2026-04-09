@@ -1,0 +1,9 @@
+[agent]
+name = "deep-research"
+model = "anthropic:claude-sonnet-4-6"
+
+[sandbox]
+provider = "langsmith"
+template = "deep-research"
+image = "python:3.12"
+scope = "thread"

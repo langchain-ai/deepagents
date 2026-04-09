@@ -1,0 +1,10 @@
+[agent]
+name = "researcher"
+# Use a fast, cheap model for high-volume web research
+model = "anthropic:claude-haiku-4-5-20251001"
+
+[sandbox]
+provider = "langsmith"
+template = "deep-research"
+image = "python:3.12"
+scope = "thread"

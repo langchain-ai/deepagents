@@ -40,7 +40,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
-from deepagents.permissions import FilesystemPermission, ToolPermission
+from deepagents.permissions import FilesystemPermission
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -116,7 +116,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    permissions: list[FilesystemPermission | ToolPermission] | None = None,
+    permissions: list[FilesystemPermission] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -252,14 +252,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For execution support, use a backend that
             implements `SandboxBackendProtocol`.
-        permissions: Flat list of access rules for the main agent and its subagents.
+        permissions: List of ``FilesystemPermission`` rules for the main agent
+            and its subagents.
 
-            Accepts `FilesystemPermission` and `ToolPermission` instances mixed
-            in the same list. Rules are evaluated in declaration order; the
-            first match wins. If no rule matches, the call is allowed.
-
-            `FilesystemPermission` rules govern file operations by path.
-            `ToolPermission` rules govern tool calls by name and argument value.
+            Rules are evaluated in declaration order; the first match wins.
+            If no rule matches, the call is allowed.
 
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.

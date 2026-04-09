@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.permissions import FilesystemPermission, ToolPermission
+from deepagents.permissions import FilesystemPermission
 
 
 class SubAgent(TypedDict):
@@ -77,16 +77,14 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
 
-    permissions: NotRequired[list[FilesystemPermission | ToolPermission]]
-    """Flat list of access rules for this subagent.
+    permissions: NotRequired[list[FilesystemPermission]]
+    """List of ``FilesystemPermission`` rules for this subagent.
 
     If omitted, inherits the parent agent's permissions. If specified, replaces
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    `FilesystemPermission` rules are passed to `FilesystemMiddleware`.
-    `ToolPermission` rules are enforced by `PermissionMiddleware` (appended
-    last in the middleware stack).
+    ``PermissionMiddleware`` is appended last in the middleware stack.
     """
 
 

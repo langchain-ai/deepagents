@@ -1,4 +1,4 @@
-"""Unit tests for FilesystemPermission, ToolPermission, and PermissionMiddleware."""
+"""Unit tests for FilesystemPermission and PermissionMiddleware."""
 
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -6,10 +6,9 @@ from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import PermissionMiddleware, _check_fs_permission, _check_tool_permission, _filter_paths_by_permission
-from deepagents.permissions import FilesystemPermission, ToolPermission
+from deepagents.middleware.permissions import PermissionMiddleware, _check_fs_permission, _filter_paths_by_permission
+from deepagents.permissions import FilesystemPermission
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
@@ -89,81 +88,6 @@ class TestFilesystemPermission:
         assert "write" in rule.operations
 
 
-class TestToolPermission:
-    def test_default_effect_is_allow(self):
-        rule = ToolPermission(name="execute", args={"command": "pytest *"})
-        assert rule.mode == "allow"
-
-    def test_deny_effect(self):
-        rule = ToolPermission(name="execute", mode="deny")
-        assert rule.mode == "deny"
-
-    def test_no_arguments_matches_all(self):
-        rule = ToolPermission(name="execute", mode="deny")
-        assert rule.args is None
-
-    def test_arguments_dict(self):
-        rule = ToolPermission(name="execute", args={"command": "pytest *"})
-        assert rule.args == {"command": "pytest *"}
-
-
-class TestCheckToolPermission:
-    def test_no_rules_allows_everything(self):
-        assert _check_tool_permission([], "execute", {"command": "rm -rf /"}) == "allow"
-
-    def test_deny_all_invocations(self):
-        rules = [ToolPermission(name="execute", mode="deny")]
-        assert _check_tool_permission(rules, "execute", {}) == "deny"
-
-    def test_allow_matching_arg_pattern(self):
-        rules = [
-            ToolPermission(name="execute", args={"command": "pytest *"}),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "pytest tests/"}) == "allow"
-
-    def test_deny_non_matching_command(self):
-        rules = [
-            ToolPermission(name="execute", args={"command": "pytest *"}),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "deny"
-
-    def test_unrelated_tool_is_allowed(self):
-        rules = [ToolPermission(name="execute", mode="deny")]
-        assert _check_tool_permission(rules, "read_file", {"file_path": "/foo"}) == "allow"
-
-    def test_first_matching_rule_wins(self):
-        rules = [
-            ToolPermission(name="execute", mode="deny"),
-            ToolPermission(name="execute", mode="allow"),
-        ]
-        assert _check_tool_permission(rules, "execute", {}) == "deny"
-
-    def test_multi_arg_matching_all_must_match(self):
-        rules = [
-            ToolPermission(name="grep", args={"path": "/secrets/*", "glob": "*.py"}, mode="deny"),
-        ]
-        # Both match → deny
-        assert _check_tool_permission(rules, "grep", {"path": "/secrets/key.txt", "glob": "*.py"}) == "deny"
-        # Only path matches, glob doesn't → no match → allow
-        assert _check_tool_permission(rules, "grep", {"path": "/secrets/key.txt", "glob": "*.txt"}) == "allow"
-
-    def test_globstar_pattern(self):
-        rules = [
-            ToolPermission(name="execute", args={"command": "make *"}),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "make test"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "make build"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "npm install"}) == "deny"
-
-    def test_missing_arg_treated_as_empty_string(self):
-        rules = [ToolPermission(name="execute", args={"command": "pytest *"})]
-        # arg "command" not present → coerced to "" → doesn't match "pytest *"
-        assert _check_tool_permission(rules, "execute", {}) == "allow"  # falls through to default allow
-
-
 class TestPermissionMiddleware:
     def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
         return ToolCallRequest(
@@ -174,67 +98,45 @@ class TestPermissionMiddleware:
         )
 
     def test_allow_passes_through(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", args={"command": "pytest *"}),
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = self._make_request("execute", {"command": "pytest tests/"})
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])])
+        request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
         expected = ToolMessage(content="ok", tool_call_id="tc1")
 
         result = middleware.wrap_tool_call(request, lambda _: expected)
         assert result is expected
 
     def test_deny_returns_error_message(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = self._make_request("execute", {"command": "rm -rf /"})
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")])
+        request = self._make_request("read_file", {"file_path": "/secrets/key.txt"})
 
         result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
         assert isinstance(result, ToolMessage)
-        assert "denied" in result.content
+        assert "permission denied" in result.content
         assert result.tool_call_id == "tc1"
-        assert result.name == "execute"
+        assert result.name == "read_file"
 
     def test_unrelated_tool_allowed(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = self._make_request("read_file", {"file_path": "/foo.txt"})
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")])
+        request = self._make_request("some_other_tool", {"input": "hello"})
         expected = ToolMessage(content="content", tool_call_id="tc1")
 
         result = middleware.wrap_tool_call(request, lambda _: expected)
         assert result is expected
 
     async def test_async_deny_returns_error_message(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = self._make_request("execute", {"command": "rm -rf /"})
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")])
+        request = self._make_request("write_file", {"file_path": "/foo.txt", "content": "data"})
 
         async def async_handler(_):
             return ToolMessage(content="should not reach", tool_call_id="tc1")
 
         result = await middleware.awrap_tool_call(request, async_handler)
         assert isinstance(result, ToolMessage)
-        assert "denied" in result.content
+        assert "permission denied" in result.content
 
     async def test_async_allow_passes_through(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", args={"command": "pytest *"}),
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = self._make_request("execute", {"command": "pytest tests/"})
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])])
+        request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
         expected = ToolMessage(content="passed", tool_call_id="tc1")
 
         async def async_handler(_):
@@ -360,71 +262,6 @@ class TestFilesystemMiddlewarePermissions:
         assert _check_fs_permission(rules, "read", "/secrets/key.txt") == "deny"
         # A non-canonical path that resolves to the same file is NOT denied — this is the gap
         assert _check_fs_permission(rules, "read", "/secrets/./key.txt") == "allow"
-
-
-class TestCheckToolPermissionGlobbing:
-    """Tests targeting specific glob pattern features in _check_tool_permission."""
-
-    def test_star_crosses_slash_in_tool_args(self):
-        # Tool argument values are matched with fnmatch semantics (no path separator rules),
-        # so * crosses / — matching the design doc example of "pytest *" matching "pytest tests/".
-        rules = [
-            ToolPermission(name="execute", args={"command": "pytest *"}, mode="allow"),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "pytest tests/"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "pytest tests/unit/foo.py"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "deny"
-
-    def test_question_mark_matches_any_single_char_including_slash(self):
-        # With fnmatch semantics, ? matches any single character including /.
-        rules = [
-            ToolPermission(name="execute", args={"command": "ls ?"}, mode="allow"),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "ls a"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "ls /"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "ls ab"}) == "deny"
-
-    def test_brace_expansion(self):
-        rules = [
-            ToolPermission(name="execute", args={"command": "{pytest,make} *"}, mode="allow"),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "pytest tests/"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "make test"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "npm install"}) == "deny"
-
-    def test_non_string_arg_coerced_to_str(self):
-        rules = [
-            ToolPermission(name="execute", args={"timeout": "3*"}, mode="deny"),
-        ]
-        # Integer 30 → "30" → matches "3*"
-        assert _check_tool_permission(rules, "execute", {"timeout": 30}) == "deny"
-        # Integer 60 → "60" → does not match "3*"
-        assert _check_tool_permission(rules, "execute", {"timeout": 60}) == "allow"
-
-    def test_bool_arg_coerced_to_str(self):
-        rules = [
-            ToolPermission(name="execute", args={"flag": "True"}, mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"flag": True}) == "deny"
-        assert _check_tool_permission(rules, "execute", {"flag": False}) == "allow"
-
-    def test_empty_string_arg_with_empty_pattern(self):
-        rules = [ToolPermission(name="execute", args={"command": ""}, mode="deny")]
-        # wcmatch.fnmatch("", "") returns False — empty pattern does not match
-        # empty string, so the rule doesn't fire and falls through to default allow
-        assert _check_tool_permission(rules, "execute", {"command": ""}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "anything"}) == "allow"
-
-    def test_multi_rule_none_match_default_allow(self):
-        rules = [
-            ToolPermission(name="read_file", mode="deny"),
-            ToolPermission(name="write_file", mode="deny"),
-        ]
-        # Neither rule names match "execute" → fall through to permissive default
-        assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "allow"
 
 
 class TestCheckFsPermissionGlobbing:
@@ -735,102 +572,6 @@ class TestGrepToolPermissions:
         assert "/secrets" not in result
 
 
-class TestExecuteToolPermissions:
-    """Tests for ToolPermission rules targeting the execute tool via PermissionMiddleware."""
-
-    def _make_sandbox_backend(self) -> SandboxBackendProtocol:
-        class MockSandbox(SandboxBackendProtocol, StoreBackend):
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(output=f"ran: {command}", exit_code=0, truncated=False)
-
-            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
-                return ExecuteResponse(output=f"ran: {command}", exit_code=0, truncated=False)
-
-            @property
-            def id(self) -> str:
-                return "mock-sandbox"
-
-        mem_store = InMemoryStore()
-        return MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-
-    def test_execute_denied_by_tool_permission(self):
-        rules = [ToolPermission(name="execute", mode="deny")]
-        assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "deny"
-
-    def test_execute_allowed_by_arg_pattern(self):
-        rules = [
-            ToolPermission(name="execute", args={"command": "pytest *"}),
-            ToolPermission(name="execute", mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "execute", {"command": "pytest tests/"}) == "allow"
-        assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "deny"
-
-    def test_execute_middleware_denies(self):
-        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
-        request = ToolCallRequest(
-            runtime=_runtime("tc1"),
-            tool_call={"id": "tc1", "name": "execute", "args": {"command": "rm -rf /"}},
-            state={},
-            tool=None,
-        )
-        result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
-        assert isinstance(result, ToolMessage)
-        assert "denied" in result.content
-
-    def test_execute_middleware_allows_matching_pattern(self):
-        middleware = PermissionMiddleware(
-            rules=[
-                ToolPermission(name="execute", args={"command": "pytest *"}),
-                ToolPermission(name="execute", mode="deny"),
-            ]
-        )
-        request = ToolCallRequest(
-            runtime=_runtime("tc1"),
-            tool_call={"id": "tc1", "name": "execute", "args": {"command": "pytest tests/unit"}},
-            state={},
-            tool=None,
-        )
-        expected = ToolMessage(content="ok", tool_call_id="tc1")
-        result = middleware.wrap_tool_call(request, lambda _: expected)
-        assert result is expected
-
-    def test_execute_tool_invocation_denied_via_middleware(self):
-        """Full integration: execute tool on a sandbox backend, denied by PermissionMiddleware."""
-        backend = self._make_sandbox_backend()
-        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
-        fs_middleware = FilesystemMiddleware(backend=backend)
-        execute_tool = next(t for t in fs_middleware.tools if t.name == "execute")
-
-        request = ToolCallRequest(
-            runtime=_runtime("tc1"),
-            tool_call={"id": "tc1", "name": "execute", "args": {"command": "echo hello"}},
-            state={},
-            tool=execute_tool,
-        )
-        result = middleware.wrap_tool_call(
-            request,
-            lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"),
-        )
-        assert isinstance(result, ToolMessage)
-        assert "denied" in result.content
-
-    async def test_execute_middleware_denies_async(self):
-        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
-        request = ToolCallRequest(
-            runtime=_runtime("tc1"),
-            tool_call={"id": "tc1", "name": "execute", "args": {"command": "rm -rf /"}},
-            state={},
-            tool=None,
-        )
-
-        async def async_handler(_):
-            return ToolMessage(content="should not reach", tool_call_id="tc1")
-
-        result = await middleware.awrap_tool_call(request, async_handler)
-        assert isinstance(result, ToolMessage)
-        assert "denied" in result.content
-
-
 class TestAsyncFilesystemMiddlewarePermissions:
     """Async variants of the core filesystem tool permission checks (read, write, edit, ls)."""
 
@@ -904,44 +645,3 @@ class TestAsyncFilesystemMiddlewarePermissions:
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         result = await _ainvoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/secrets/b.txt" not in result
-
-
-class TestToolPermissionOnFilesystemTools:
-    """Tests for ToolPermission rules targeting filesystem tool names.
-
-    The design doc states: '`ToolPermission` also works on filesystem tools
-    (e.g., `ToolPermission(name="read_file", mode="deny")`)'.
-    """
-
-    def test_tool_permission_denies_read_file_by_name(self):
-        rules = [ToolPermission(name="read_file", mode="deny")]
-        assert _check_tool_permission(rules, "read_file", {"file_path": "/foo.txt"}) == "deny"
-
-    def test_tool_permission_denies_write_file_by_name(self):
-        rules = [ToolPermission(name="write_file", mode="deny")]
-        assert _check_tool_permission(rules, "write_file", {"file_path": "/foo.txt", "content": "x"}) == "deny"
-
-    def test_tool_permission_on_fs_tool_with_arg_pattern(self):
-        rules = [
-            ToolPermission(name="read_file", args={"file_path": "/secrets/*"}, mode="deny"),
-        ]
-        assert _check_tool_permission(rules, "read_file", {"file_path": "/secrets/key.txt"}) == "deny"
-        assert _check_tool_permission(rules, "read_file", {"file_path": "/workspace/file.txt"}) == "allow"
-
-    def test_tool_permission_does_not_affect_other_fs_tools(self):
-        rules = [ToolPermission(name="read_file", mode="deny")]
-        assert _check_tool_permission(rules, "write_file", {"file_path": "/foo.txt"}) == "allow"
-        assert _check_tool_permission(rules, "ls", {"path": "/"}) == "allow"
-        assert _check_tool_permission(rules, "glob", {"pattern": "**"}) == "allow"
-
-    def test_tool_permission_middleware_denies_read_file(self):
-        middleware = PermissionMiddleware(rules=[ToolPermission(name="read_file", mode="deny")])
-        request = ToolCallRequest(
-            runtime=_runtime("tc1"),
-            tool_call={"id": "tc1", "name": "read_file", "args": {"file_path": "/foo.txt"}},
-            state={},
-            tool=None,
-        )
-        result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
-        assert isinstance(result, ToolMessage)
-        assert "denied" in result.content

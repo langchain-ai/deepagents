@@ -296,7 +296,8 @@ class LangSmithEnvironment(BaseEnvironment):
         logger.info("Created LangSmith sandbox '%s'", sandbox.name)
 
         await sandbox.run(
-            f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}",
+            f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}"
+            f" {EnvironmentPaths.artifacts_dir}",
             timeout=30,
         )
 

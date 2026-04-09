@@ -17,7 +17,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from deepagents.backends.protocol import GlobResult, GrepResult, LsResult
+from deepagents.backends.protocol import BackendProtocol, GlobResult, GrepResult, LsResult
 from deepagents.backends.utils import (
     format_grep_matches,
     truncate_if_too_long,
@@ -135,13 +135,30 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(self, *, rules: list[FilesystemPermission]) -> None:
+    def __init__(self, *, rules: list[FilesystemPermission], backend: BackendProtocol) -> None:
         """Initialize the permission middleware.
 
         Args:
             rules: List of ``FilesystemPermission`` rules. Rules are evaluated
                 in declaration order; the first match wins.
+            backend: The backend instance. If it supports execution
+                (``SandboxBackendProtocol``), a ``NotImplementedError`` is
+                raised because tool-level permissions for the ``execute``
+                tool are not yet implemented.
+
+        Raises:
+            NotImplementedError: If the backend supports command execution.
         """
+        from deepagents.middleware.filesystem import _supports_execution
+
+        if _supports_execution(backend):
+            msg = (
+                "PermissionMiddleware does not yet support backends with command "
+                "execution (SandboxBackendProtocol). Tool-level permissions for "
+                "the execute tool are not implemented. Either remove permissions "
+                "or use a backend without execution support."
+            )
+            raise NotImplementedError(msg)
         self._fs_rules = list(rules)
         self._fs_tool_ops: dict[str, FilesystemOperation] = dict(_DEFAULT_FS_TOOL_OPS)
 
@@ -153,7 +170,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Run filesystem pre-checks.  Returns an error ToolMessage on deny, else None."""
         if self._fs_rules and tool_name in self._fs_tool_ops:
             operation = self._fs_tool_ops[tool_name]
-            path = args.get("file_path") or args.get("path")
+            path = args.get("file_path") if "file_path" in args else args.get("path")
             if path is not None:
                 try:
                     canonical = validate_path(path)

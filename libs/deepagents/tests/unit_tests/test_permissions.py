@@ -27,9 +27,9 @@ def _make_backend(files: dict | None = None) -> StoreBackend:
     return StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
 
-def _invoke_with_permissions(tool, args, rules, tool_call_id="test"):
+def _invoke_with_permissions(tool, args, rules, tool_call_id="test", backend=None):
     """Invoke a tool through PermissionMiddleware, return the content string."""
-    perm = PermissionMiddleware(rules=rules)
+    perm = PermissionMiddleware(rules=rules, backend=backend or _make_backend())
     runtime = _runtime(tool_call_id)
 
     def handler(_req):
@@ -50,9 +50,9 @@ def _invoke_with_permissions(tool, args, rules, tool_call_id="test"):
     return str(result)
 
 
-async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test"):
+async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", backend=None):
     """Async version of _invoke_with_permissions."""
-    perm = PermissionMiddleware(rules=rules)
+    perm = PermissionMiddleware(rules=rules, backend=backend or _make_backend())
     runtime = _runtime(tool_call_id)
 
     async def handler(_req):
@@ -89,6 +89,9 @@ class TestFilesystemPermission:
 
 
 class TestPermissionMiddleware:
+    def _backend(self):
+        return _make_backend()
+
     def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
         return ToolCallRequest(
             runtime=_runtime(tool_call_id),
@@ -98,7 +101,7 @@ class TestPermissionMiddleware:
         )
 
     def test_allow_passes_through(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])])
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])], backend=self._backend())
         request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
         expected = ToolMessage(content="ok", tool_call_id="tc1")
 
@@ -106,7 +109,7 @@ class TestPermissionMiddleware:
         assert result is expected
 
     def test_deny_returns_error_message(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")])
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend())
         request = self._make_request("read_file", {"file_path": "/secrets/key.txt"})
 
         result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
@@ -116,7 +119,7 @@ class TestPermissionMiddleware:
         assert result.name == "read_file"
 
     def test_unrelated_tool_allowed(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")])
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend())
         request = self._make_request("some_other_tool", {"input": "hello"})
         expected = ToolMessage(content="content", tool_call_id="tc1")
 
@@ -124,7 +127,7 @@ class TestPermissionMiddleware:
         assert result is expected
 
     async def test_async_deny_returns_error_message(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")])
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")], backend=self._backend())
         request = self._make_request("write_file", {"file_path": "/foo.txt", "content": "data"})
 
         async def async_handler(_):
@@ -135,7 +138,7 @@ class TestPermissionMiddleware:
         assert "permission denied" in result.content
 
     async def test_async_allow_passes_through(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])])
+        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])], backend=self._backend())
         request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
         expected = ToolMessage(content="passed", tool_call_id="tc1")
 
@@ -144,6 +147,98 @@ class TestPermissionMiddleware:
 
         result = await middleware.awrap_tool_call(request, async_handler)
         assert result is expected
+
+    def test_raises_not_implemented_for_sandbox_backend(self):
+        """PermissionMiddleware rejects backends that support execution."""
+        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+        class MockSandbox(SandboxBackendProtocol, StoreBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            @property
+            def id(self) -> str:
+                return "mock"
+
+        mem_store = InMemoryStore()
+        sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        import pytest
+
+        with pytest.raises(NotImplementedError, match="execute"):
+            PermissionMiddleware(
+                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+                backend=sandbox,
+            )
+
+    def test_raises_not_implemented_for_composite_with_sandbox_default(self):
+        """PermissionMiddleware rejects CompositeBackend whose default supports execution."""
+        from deepagents.backends.composite import CompositeBackend
+        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+        class MockSandbox(SandboxBackendProtocol, StoreBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            @property
+            def id(self) -> str:
+                return "mock"
+
+        mem_store = InMemoryStore()
+        sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        composite = CompositeBackend(default=sandbox, routes={})
+        import pytest
+
+        with pytest.raises(NotImplementedError, match="execute"):
+            PermissionMiddleware(
+                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+                backend=composite,
+            )
+
+    def test_allows_composite_without_sandbox_default(self):
+        """PermissionMiddleware accepts CompositeBackend whose default does not support execution."""
+        from deepagents.backends.composite import CompositeBackend
+
+        composite = CompositeBackend(default=self._backend(), routes={})
+        middleware = PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+            backend=composite,
+        )
+        assert middleware._fs_rules
+
+    def test_allows_composite_with_sandbox_route_but_non_sandbox_default(self):
+        """CompositeBackend with sandbox in a route but non-sandbox default is allowed.
+
+        Execution is only delegated to the default backend in CompositeBackend,
+        so a sandbox in a route doesn't expose execution capability.
+        """
+        from deepagents.backends.composite import CompositeBackend
+        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+        class MockSandbox(SandboxBackendProtocol, StoreBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            @property
+            def id(self) -> str:
+                return "mock"
+
+        mem_store = InMemoryStore()
+        sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        composite = CompositeBackend(default=self._backend(), routes={"/sandbox/": sandbox})
+        middleware = PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+            backend=composite,
+        )
+        assert middleware._fs_rules
 
 
 class TestFilesystemMiddlewarePermissions:

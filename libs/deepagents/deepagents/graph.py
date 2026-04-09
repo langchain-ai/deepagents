@@ -318,7 +318,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # models, so this middleware can be added unconditionally.
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if permissions:
-        gp_middleware.append(PermissionMiddleware(rules=permissions))
+        gp_middleware.append(PermissionMiddleware(rules=permissions, backend=backend))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
@@ -361,7 +361,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # "ignore" skips caching for non-Anthropic models (see comment above).
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:
-                subagent_middleware.append(PermissionMiddleware(rules=subagent_permissions))
+                subagent_middleware.append(PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
@@ -417,7 +417,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
     # PermissionMiddleware must be last so it sees all tools from prior middleware
     if permissions:
-        deepagent_middleware.append(PermissionMiddleware(rules=permissions))
+        deepagent_middleware.append(PermissionMiddleware(rules=permissions, backend=backend))
 
     # Combine system_prompt with BASE_AGENT_PROMPT
     if system_prompt is None:

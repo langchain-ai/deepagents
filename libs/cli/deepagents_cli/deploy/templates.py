@@ -33,7 +33,7 @@ def _get_or_create_sandbox(cache_key):
 
     from langsmith.sandbox import ResourceNotFoundError, SandboxClient
 
-    api_key = os.environ.get("LANGSMITH_SANDBOX_API_KEY") or os.environ["LANGSMITH_API_KEY"]
+    api_key = os.environ.get("LANGSMITH_SANDBOX_API_KEY") or os.environ.get("LANGSMITH_API_KEY") or os.environ["LANGCHAIN_API_KEY"]
     client = SandboxClient(api_key=api_key)
 
     try:
@@ -218,11 +218,20 @@ from typing import TYPE_CHECKING
 
 from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import EditResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.store import StoreBackend
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+    PrivateStateAttr,
+)
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import ToolRuntime
 
 if TYPE_CHECKING:
+    from langgraph.runtime import Runtime
     from langgraph_sdk.runtime import ServerRuntime
 
 logger = logging.getLogger(__name__)
@@ -243,6 +252,81 @@ SEED_PATH = Path(__file__).parent / "_seed.json"
 # runtime — writes to /memories/ and /skills/ are blocked by
 # ReadOnlyStoreBackend.
 SYSTEM_PROMPT = {system_prompt!r}
+
+
+class SandboxSyncMiddleware(AgentMiddleware):
+    """Sync skill files from the store into the sandbox filesystem.
+
+    Downloads all files under the configured skill sources from the composite
+    backend (which routes /skills/ to the store) and uploads them directly
+    into the sandbox so scripts can be executed.
+    """
+
+    def __init__(self, *, backend, sources):
+        self._backend = backend
+        self._sources = sources
+        self._synced_keys: set = set()
+
+    def _get_backend(self, state, runtime, config):
+        if callable(self._backend):
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config=config,
+                tool_call_id=None,
+            )
+            return self._backend(tool_runtime)
+        return self._backend
+
+    async def _collect_files(self, backend, path):
+        """Recursively list all files under *path* via ls (not glob)."""
+        result = await backend.als(path)
+        files = []
+        for entry in result.entries or []:
+            if entry.get("is_dir"):
+                files.extend(await self._collect_files(backend, entry["path"]))
+            else:
+                files.append(entry["path"])
+        return files
+
+    async def abefore_agent(self, state, runtime, config):
+        backend = self._get_backend(state, runtime, config)
+        if not isinstance(backend, CompositeBackend):
+            return None
+        sandbox = backend.default
+        if not isinstance(sandbox, SandboxBackendProtocol):
+            return None
+
+        # Only sync once per sandbox instance
+        cache_key = id(sandbox)
+        if cache_key in self._synced_keys:
+            return None
+        self._synced_keys.add(cache_key)
+
+        files_to_upload = []
+        for source in self._sources:
+            paths = await self._collect_files(backend, source)
+            if not paths:
+                continue
+            responses = await backend.adownload_files(paths)
+            for resp in responses:
+                if resp.content is not None:
+                    files_to_upload.append((resp.path, resp.content))
+
+        if files_to_upload:
+            results = await sandbox.aupload_files(files_to_upload)
+            uploaded = sum(1 for r in results if r.error is None)
+            logger.info("Synced %d/%d skill files into sandbox", uploaded, len(files_to_upload))
+
+        return None
+
+    def wrap_model_call(self, request, handler):
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        return await handler(request)
 
 
 class ReadOnlyStoreBackend(StoreBackend):
@@ -374,13 +458,18 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     tools: list = []
     {mcp_tools_load_call}
 
+    backend_factory = _build_backend_factory(assistant_id)
+
     return create_deep_agent(
         model={model!r},
         system_prompt=SYSTEM_PROMPT,
         memory=[f"{{MEMORIES_PREFIX}}AGENTS.md"],
         skills=[SKILLS_PREFIX],
         tools=tools,
-        backend=_build_backend_factory(assistant_id),
+        backend=backend_factory,
+        middleware=[
+            SandboxSyncMiddleware(backend=backend_factory, sources=[SKILLS_PREFIX]),
+        ],
     )
 
 
@@ -398,7 +487,7 @@ name = {agent_name!r}
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents==0.5.0a4",
+    "deepagents==0.5.1",
 {extra_deps}]
 
 [tool.setuptools]

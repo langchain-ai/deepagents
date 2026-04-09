@@ -433,6 +433,47 @@ async def check_sandbox_isolation(client) -> CheckResult:
     )
 
 
+async def check_skill_script_execution(client) -> CheckResult:
+    """Verify that skill scripts are synced into the sandbox and can be executed.
+
+    The ``SandboxSyncMiddleware`` should upload all files under ``/skills/``
+    from the store into the sandbox filesystem. This test asks the agent to
+    run the ``lint_check.py`` helper bundled with the code-review skill.
+    """
+    prompt = (
+        "Use the `execute` tool to run "
+        "`python /skills/code-review/lint_check.py --help 2>&1 || "
+        "python3 /skills/code-review/lint_check.py --help 2>&1`. "
+        "Reply with the raw output."
+    )
+    _tid, out = await _run_one(client, prompt)
+
+    # The script's docstring, usage line, or output should appear in tool output
+    saw_output = any(
+        "lint_check" in t.lower() or "scan" in t.lower() or "usage" in t.lower()
+        or "no warnings found" in t.lower() or "warning(s) found" in t.lower()
+        for t in out.tool_outputs
+    )
+    # Also check for the script actually running (not "No such file")
+    saw_error = any("no such file" in t.lower() for t in out.tool_outputs)
+
+    if saw_output and not saw_error:
+        return CheckResult(
+            name="skill script execution in sandbox",
+            passed=True,
+            detail="lint_check.py executed successfully from /skills/code-review/",
+        )
+    return CheckResult(
+        name="skill script execution in sandbox",
+        passed=False,
+        detail=(
+            f"saw_output={saw_output} saw_error={saw_error} "
+            f"tool_outputs={[t[:120] for t in out.tool_outputs]} "
+            f"final_text={out.final_text[:200]!r}"
+        ),
+    )
+
+
 async def main(url: str) -> int:
     for required in ("ANTHROPIC_API_KEY", "LANGSMITH_API_KEY"):
         if not os.environ.get(required):
@@ -444,26 +485,29 @@ async def main(url: str) -> int:
 
     checks: list[CheckResult] = []
 
-    print("\n[1/7] execute tool wired to sandbox ...")
+    print("\n[1/8] execute tool wired to sandbox ...")
     checks.append(await check_execute_present(client))
 
-    print("[2/7] Store-backed skills + AGENTS.md ...")
+    print("[2/8] Store-backed skills + AGENTS.md ...")
     checks.append(await check_store_loading(client))
 
-    print("[3/7] Per-thread sandbox isolation ...")
+    print("[3/8] Per-thread sandbox isolation ...")
     checks.append(await check_sandbox_isolation(client))
 
-    print("[4/7] Sandbox persists within thread ...")
+    print("[4/8] Sandbox persists within thread ...")
     checks.append(await check_sandbox_persists_within_thread(client))
 
-    print("[5/7] Fresh thread starts with empty sandbox ...")
+    print("[5/8] Fresh thread starts with empty sandbox ...")
     checks.append(await check_fresh_thread_starts_empty(client))
 
-    print("[6/7] Sandbox scoping across assistants ...")
+    print("[6/8] Sandbox scoping across assistants ...")
     checks.append(await check_sandbox_scoping_across_assistants(client))
 
-    print("[7/7] MCP tool from mcp.json ...")
+    print("[7/8] MCP tool from mcp.json ...")
     checks.append(await check_mcp_tool_loaded(client))
+
+    print("[8/8] Skill script execution in sandbox ...")
+    checks.append(await check_skill_script_execution(client))
 
     print("\n--- results ---")
     for c in checks:

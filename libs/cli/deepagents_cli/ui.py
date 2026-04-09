@@ -63,6 +63,17 @@ def show_help() -> None:
         "  deepagents update                              Check for and install updates"
     )
     console.print()
+    console.print("[bold]Deploy:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  deepagents init                                Generate a starter deepagents.toml"
+    )
+    console.print(
+        "  deepagents dev    --config src/deepagents.toml Run a local dev server"
+    )
+    console.print(
+        "  deepagents deploy --config src/deepagents.toml Bundle and deploy to LangSmith"
+    )
+    console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print(
@@ -82,7 +93,7 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Modal/Daytona/Runloop"
         " require downloading extras"
     )
     console.print(

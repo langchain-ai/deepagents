@@ -19,6 +19,7 @@ from the project layout. The agent's system prompt is read from
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,7 +27,7 @@ from typing import Any
 
 # Valid sandbox providers (mirrors sandbox_factory._PROVIDER_TO_WORKING_DIR)
 VALID_SANDBOX_PROVIDERS = frozenset(
-    {"none", "agentcore", "daytona", "langsmith", "modal", "runloop"}
+    {"none", "daytona", "langsmith", "modal", "runloop"}
 )
 
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
@@ -123,6 +124,12 @@ class DeployConfig:
                 f"Valid: {', '.join(sorted(VALID_SANDBOX_SCOPES))}"
             )
 
+        # Validate credentials for model provider.
+        errors.extend(_validate_model_credentials(self.agent.model))
+
+        # Validate credentials for sandbox provider.
+        errors.extend(_validate_sandbox_credentials(self.sandbox.provider))
+
         return errors
 
 
@@ -204,6 +211,62 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     return DeployConfig(agent=agent, sandbox=sandbox)
 
 
+_MODEL_PROVIDER_ENV: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+    "google_vertexai": "GOOGLE_CLOUD_PROJECT",
+    "azure_openai": "AZURE_OPENAI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistralai": "MISTRAL_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "baseten": "BASETEN_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "xai": "XAI_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "perplexity": "PPLX_API_KEY",
+}
+
+_SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
+    "langsmith": ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY", "LANGSMITH_SANDBOX_API_KEY"],
+    "daytona": ["DAYTONA_API_KEY"],
+    "runloop": ["RUNLOOP_API_KEY"],
+    # Modal falls back to default auth if env vars are not set.
+}
+
+
+def _validate_model_credentials(model: str) -> list[str]:
+    """Check that the API key env var is set for the model provider."""
+    if ":" not in model:
+        return []
+    provider = model.split(":", 1)[0]
+    env_var = _MODEL_PROVIDER_ENV.get(provider)
+    if env_var is None:
+        return []
+    if os.environ.get(env_var):
+        return []
+    return [
+        f"Missing API key for model provider '{provider}': "
+        f"set {env_var} in your .env file or environment."
+    ]
+
+
+def _validate_sandbox_credentials(provider: str) -> list[str]:
+    """Check that the API key env var is set for the sandbox provider."""
+    required_vars = _SANDBOX_PROVIDER_ENV.get(provider)
+    if required_vars is None:
+        return []
+    if any(os.environ.get(v) for v in required_vars):
+        return []
+    return [
+        f"Missing API key for sandbox provider '{provider}': "
+        f"set one of {', '.join(required_vars)} in your .env file or environment."
+    ]
+
+
 def generate_starter_config() -> str:
     """Generate a starter ``deepagents.toml`` template."""
     return '''\
@@ -214,6 +277,6 @@ model = "anthropic:claude-sonnet-4-6"
 # [sandbox] is optional. Omit the section to run tools in-process with
 # a StateBackend fallback (no shell, no persistent filesystem).
 # [sandbox]
-# provider = "langsmith"  # none | langsmith | daytona | modal | runloop
+# provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
 '''

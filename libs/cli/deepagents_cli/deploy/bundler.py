@@ -76,11 +76,10 @@ def bundle(
         shutil.copy2(project_root / MCP_FILENAME, build_dir / "_mcp.json")
         logger.info("Copied %s → _mcp.json", MCP_FILENAME)
 
-    # 3b. Copy .env from the project root's *parent* if present. This is
-    # where users keep their deployment secrets (e.g.
-    # ``examples/deploy-coding-agent/.env``) — outside ``src/`` so they
-    # never land in a seed file.
-    env_src = project_root.parent / ".env"
+    # 3b. Copy .env from the project root if present (i.e. alongside
+    # deepagents.toml inside ``src/``). The bundler skips .env when
+    # building the seed payload so secrets never land in _seed.json.
+    env_src = project_root / ".env"
     env_present = env_src.is_file()
     if env_present:
         shutil.copy2(env_src, build_dir / ".env")

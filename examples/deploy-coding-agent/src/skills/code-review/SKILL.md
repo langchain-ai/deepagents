@@ -38,6 +38,13 @@ Use this skill after implementing changes to validate your work before deliverin
 1. Read each modified file end-to-end (not just the diff)
 2. Run the test suite: `execute("python -m pytest -v")`
 3. Run linters if available: `execute("ruff check .")`
-4. Check against each item in the review checklist
-5. If any issues found, fix them and re-review
-6. When everything passes, the review is complete
+4. Run the bundled lint check: `execute("python /skills/code-review/lint_check.py .")`
+5. Check against each item in the review checklist
+6. If any issues found, fix them and re-review
+7. When everything passes, the review is complete
+
+## Helper Scripts
+
+- **`/skills/code-review/lint_check.py`** — Scans Python files for missing
+  docstrings, long functions (>50 lines), and bare `except:` clauses. Run it
+  via `execute("python /skills/code-review/lint_check.py [path ...]")`.

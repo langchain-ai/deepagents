@@ -19,7 +19,7 @@ You configure your agent with a few parameters:
 | --- | --- |
 | **`model`** | The LLM to use. Any provider works — see [Supported Models](#supported-models). |
 | **`AGENTS.md`** | The system prompt, loaded at the start of each session. |
-| **`skills`** | [Agent Skills](https://agentskills.io/) for specialized knowledge and actions. See [Skills docs](https://docs.langchain.com/oss/python/deepagents/skills). |
+| **`skills`** | [Agent Skills](https://agentskills.io/) for specialized knowledge and actions. Skills are synced into the sandbox so the agent can execute them at runtime. See [Skills docs](https://docs.langchain.com/oss/python/deepagents/skills). |
 | **`mcp.json`** | MCP tools (HTTPS/SSE). |
 | **`sandbox`** | Optional execution environment. See [Sandboxes](#sandboxes). |
 
@@ -28,8 +28,7 @@ You configure your agent with a few parameters:
 ```
 my-agent/
   src/
-    .env             # API keys and secrets (gitignored)
-    .env.example     # template for required env vars
+    .env             # API keys and secrets
     AGENTS.md        # required — system prompt
     skills/          # optional — agent skills
     mcp.json         # optional — HTTP/SSE MCP servers
@@ -53,7 +52,7 @@ Skills, MCP servers, and model dependencies are auto-detected.
 
 ### `.env`
 
-Place a `.env` file alongside `deepagents.toml` in `src/` with your API keys. Copy from `.env.example` to get started:
+Place a `.env` file alongside `deepagents.toml` in `src/` with your API keys:
 
 ```bash
 cp src/.env.example src/.env
@@ -323,7 +322,7 @@ The deployed server exposes:
 
 ## Gotchas
 
-- **Read-only at runtime:** `/memories/` and `/skills/` cannot be edited at runtime. Edit source files and redeploy.
+- **Read-only at runtime:** `/memories/` and `/skills/` are synced into the sandbox but cannot be edited at runtime. Edit source files and redeploy.
 - **Full rebuild on deploy:** `deepagents deploy` creates a new revision on every invocation. Use `deepagents dev` for local iteration.
 - **Sandbox lifecycle:** Thread-scoped sandboxes are provisioned per thread and will be re-created if the server restarts. Use `scope = "assistant"` if you need sandbox state that persists across threads.
 - **MCP: HTTP/SSE only.** Stdio transports are rejected at bundle time.

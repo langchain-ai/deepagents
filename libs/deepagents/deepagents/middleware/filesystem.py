@@ -1200,14 +1200,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
-        backendsupports_execution = False
+        backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backendsupports_execution = supports_execution(backend)
+            backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
-            if not backendsupports_execution:
+            if not backend_supports_execution:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
@@ -1224,7 +1224,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ]
 
             # Add execution instructions if execute tool is available
-            if has_execute_tool and backendsupports_execution:
+            if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
@@ -1265,14 +1265,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
-        backendsupports_execution = False
+        backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backendsupports_execution = supports_execution(backend)
+            backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
-            if not backendsupports_execution:
+            if not backend_supports_execution:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
@@ -1289,7 +1289,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ]
 
             # Add execution instructions if execute tool is available
-            if has_execute_tool and backendsupports_execution:
+            if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()

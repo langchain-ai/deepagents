@@ -1,14 +1,12 @@
 """End-to-end SDK test for the content-writer deployment.
 
-Verifies:
-1. Local tool from ``[tools].python_file`` is loaded.
-2. ``user``-scoped memory persists across threads for the same user
-   (write a fact in thread A, read it back in thread B).
+Verifies that the agent can read ``/memories/AGENTS.md`` (seeded from
+``src/AGENTS.md`` at bundle time) and quote content from it.
 
 Usage::
 
     LANGSMITH_API_KEY=... python test_deployment.py \\
-        --url https://deepagents-deploy-content-w-6909480a63d7575eb597d5a1b3c6e61e.us.langgraph.app
+        --url https://your-deployment.us.langgraph.app
 """
 
 from __future__ import annotations
@@ -72,74 +70,36 @@ async def _run_one(client, prompt: str) -> tuple[str, RunOutput]:
     return thread_id, out
 
 
-async def check_local_tool_loaded(client) -> CheckResult:
-    """Verify ``word_count`` from ``tools.py`` is wired up."""
+async def check_memory_loaded(client) -> CheckResult:
+    """Verify the agent can read /memories/AGENTS.md from the store."""
     prompt = (
-        "Use the `word_count` tool on the text 'one two three four five' "
-        "and reply with EXACTLY the integer it returned, nothing else. "
-        "If the tool is not available, reply with: NO_LOCAL_TOOL"
+        "Use the file tools to read `/memories/AGENTS.md` and quote the "
+        "first heading (e.g. '# Content Writer Agent'). Be terse."
     )
     _tid, out = await _run_one(client, prompt)
-    saw = "5" in out.final_text and "NO_LOCAL_TOOL" not in out.final_text
-    if saw:
-        return CheckResult(
-            name="local tool from [tools].python_file",
-            passed=True,
-            detail="word_count returned 5",
-        )
+    saw = any(
+        "Content Writer" in t for t in (*out.tool_outputs, out.final_text)
+    )
     return CheckResult(
-        name="local tool from [tools].python_file",
-        passed=False,
-        detail=(
-            f"final_text={out.final_text[:200]!r} "
-            f"tool_outputs={[t[:100] for t in out.tool_outputs]}"
-        ),
+        name="memory loaded (/memories/AGENTS.md)",
+        passed=saw,
+        detail=f"final={out.final_text[:160]!r}",
     )
 
 
-async def check_user_scoped_memory(client) -> CheckResult:
-    """Write a fact to a file in thread A, read it back in thread B.
-
-    Both threads run as the same authenticated user (same LangSmith key),
-    so a ``user``-scoped store namespace should give them the same
-    filesystem view, even though their thread IDs differ.
-    """
-    marker = f"favorite-color-is-{uuid.uuid4().hex[:8]}"
-
-    prompt_a = (
-        f"Use the file tools to write the file `/notes/profile.txt` "
-        f"with EXACTLY this content: {marker}. Then confirm with 'WROTE'."
+async def check_memory_read_only(client) -> CheckResult:
+    """Verify /memories/AGENTS.md rejects writes/edits."""
+    prompt = (
+        "Try to edit `/memories/AGENTS.md` — replace 'Content' with 'XXX' "
+        "using the edit tool. If it errors, reply with EXACTLY: BLOCKED. "
+        "If it succeeds, reply with EXACTLY: ALLOWED."
     )
-    prompt_b = (
-        "Use the file tools to read `/notes/profile.txt` and reply with "
-        "EXACTLY its content, nothing else. If the file does not exist, "
-        "reply with: NO_FILE"
-    )
-
-    tid_a, out_a = await _run_one(client, prompt_a)
-    tid_b, out_b = await _run_one(client, prompt_b)
-
-    wrote = "WROTE" in out_a.final_text or any(marker in t for t in out_a.tool_outputs)
-    read_back = marker in out_b.final_text or any(marker in t for t in out_b.tool_outputs)
-
-    if wrote and read_back:
-        return CheckResult(
-            name="user-scoped memory persists across threads",
-            passed=True,
-            detail=(
-                f"thread A {tid_a[:8]} wrote marker, "
-                f"thread B {tid_b[:8]} read it back"
-            ),
-        )
+    _tid, out = await _run_one(client, prompt)
+    blocked = "BLOCKED" in out.final_text and "ALLOWED" not in out.final_text
     return CheckResult(
-        name="user-scoped memory persists across threads",
-        passed=False,
-        detail=(
-            f"wrote={wrote} read_back={read_back} "
-            f"a_final={out_a.final_text[:120]!r} "
-            f"b_final={out_b.final_text[:120]!r} "
-            f"b_tools={[t[:100] for t in out_b.tool_outputs]}"
-        ),
+        name="memory is read-only",
+        passed=blocked,
+        detail=f"final={out.final_text[:160]!r}",
     )
 
 
@@ -153,11 +113,11 @@ async def main(url: str) -> int:
 
     checks: list[CheckResult] = []
 
-    print("\n[1/2] local tool from [tools].python_file ...")
-    checks.append(await check_local_tool_loaded(client))
+    print("\n[1/2] memory loaded ...")
+    checks.append(await check_memory_loaded(client))
 
-    print("[2/2] user-scoped memory persists across threads ...")
-    checks.append(await check_user_scoped_memory(client))
+    print("[2/2] memory read-only ...")
+    checks.append(await check_memory_read_only(client))
 
     print("\n--- results ---")
     for c in checks:

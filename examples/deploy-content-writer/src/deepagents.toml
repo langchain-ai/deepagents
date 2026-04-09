@@ -1,0 +1,3 @@
+[agent]
+name = "deepagents-deploy-content-writer"
+model = "anthropic:claude-sonnet-4-6"

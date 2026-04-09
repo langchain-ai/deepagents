@@ -3,9 +3,8 @@
 Drives the deployment via ``langgraph_sdk`` and asserts the three things
 that have to work for the spike to be useful:
 
-1. **Hub backend wired correctly.** The agent can list and read files
-   under ``/agent_memories/`` (skills + AGENTS.md served from the LangSmith
-   Prompt Hub repo via ``HubBackend``).
+1. **Store backend wired correctly.** The agent can list skills under
+   ``/skills/`` and read ``/memories/AGENTS.md`` from the LangGraph store.
 2. **Sandbox provisioned per thread.** Two distinct ``thread_id`` values
    get two distinct sandboxes, each with its own filesystem.
 3. **Sandbox shell actually executes.** Commands run inside the sandbox
@@ -53,11 +52,8 @@ class RunOutput:
     tool_outputs: list[str] = field(default_factory=list)
 
 
-async def _run_one(client, prompt: str) -> tuple[str, RunOutput]:
-    """Drive a single thread to completion. Returns (thread_id, output)."""
-    thread_id = str(uuid.uuid4())
-    await client.threads.create(thread_id=thread_id)
-
+async def _run_turn(client, thread_id: str, prompt: str) -> RunOutput:
+    """Drive one turn of an existing thread to completion."""
     out = RunOutput()
     async for chunk in client.runs.stream(
         thread_id=thread_id,
@@ -85,73 +81,15 @@ async def _run_one(client, prompt: str) -> tuple[str, RunOutput]:
                     out.final_text = content_str
                 elif role == "tool":
                     out.tool_outputs.append(content_str)
+    return out
+
+
+async def _run_one(client, prompt: str) -> tuple[str, RunOutput]:
+    """Drive a fresh thread for a single turn. Returns ``(thread_id, output)``."""
+    thread_id = str(uuid.uuid4())
+    await client.threads.create(thread_id=thread_id)
+    out = await _run_turn(client, thread_id, prompt)
     return thread_id, out
-
-
-async def check_tavily_search(client) -> CheckResult:
-    """Verify that the local Tavily web-search tool is reachable.
-
-    Asks the agent to use ``tavily_search`` to look up something with a
-    distinctive expected token. Passes if any tool output mentions
-    "langchain" anywhere — Tavily's response on a langchain query
-    consistently contains it. We don't pin a specific URL or phrase.
-    """
-    prompt = (
-        "Use the `tavily_search` tool to search for 'langchain create_deep_agent'. "
-        "Then reply with one short sentence summarizing what you found. "
-        "If you don't have a `tavily_search` tool, reply: NO_TAVILY"
-    )
-    _tid, out = await _run_one(client, prompt)
-    saw_search_output = any("langchain" in t.lower() for t in out.tool_outputs)
-    refused = "NO_TAVILY" in out.final_text
-    if saw_search_output:
-        return CheckResult(
-            name="tavily_search local tool",
-            passed=True,
-            detail="agent invoked tavily_search and the response contained 'langchain'",
-        )
-    return CheckResult(
-        name="tavily_search local tool",
-        passed=False,
-        detail=(
-            f"refused={refused} "
-            f"final_text={out.final_text[:200]!r} "
-            f"tool_outputs={[t[:120] for t in out.tool_outputs]}"
-        ),
-    )
-
-
-async def check_local_tool_loaded(client) -> CheckResult:
-    """Verify that a tool defined in the project's ``tools.py`` is wired up.
-
-    The example project ships a ``deepagents_smoke_marker`` tool that
-    returns a fixed string. If ``[tools].python_file`` is correctly
-    bundled and loaded by the generated graph, asking the model to call
-    that tool should round-trip the marker.
-    """
-    prompt = (
-        "Call the `deepagents_smoke_marker` tool with no arguments and "
-        "reply with EXACTLY the string it returned, nothing else. If the "
-        "tool is not available, reply with: NO_LOCAL_TOOL"
-    )
-    _tid, out = await _run_one(client, prompt)
-    saw_marker = any("deepagents-tools-smoke-ok" in t for t in out.tool_outputs) or (
-        "deepagents-tools-smoke-ok" in out.final_text
-    )
-    if saw_marker:
-        return CheckResult(
-            name="local tool from [tools].python_file",
-            passed=True,
-            detail="deepagents_smoke_marker round-tripped its marker string",
-        )
-    return CheckResult(
-        name="local tool from [tools].python_file",
-        passed=False,
-        detail=(
-            f"final_text={out.final_text[:200]!r} "
-            f"tool_outputs={[t[:100] for t in out.tool_outputs]}"
-        ),
-    )
 
 
 async def check_mcp_tool_loaded(client) -> CheckResult:
@@ -218,11 +156,11 @@ async def check_execute_present(client) -> CheckResult:
     )
 
 
-async def check_hub_loading(client) -> CheckResult:
-    """Verify the agent can read the hub-backed files via composite routing."""
+async def check_store_loading(client) -> CheckResult:
+    """Verify the agent can read the store-backed files via composite routing."""
     prompt = (
-        "Use the file tools to list `/agent_memories/skills/`, then read "
-        "`/agent_memories/AGENTS.md`. Quote one exact line from AGENTS.md so I "
+        "Use the file tools to list `/skills/`, then read "
+        "`/memories/AGENTS.md`. Quote one exact line from AGENTS.md so I "
         "know you actually read it. Be terse."
     )
     _tid, out = await _run_one(client, prompt)
@@ -236,16 +174,207 @@ async def check_hub_loading(client) -> CheckResult:
 
     if seen_listing and seen_agents_content:
         return CheckResult(
-            name="hub loading (skills + AGENTS.md via composite)",
+            name="store loading (skills + AGENTS.md)",
             passed=True,
-            detail="ls /agent_memories/skills/ saw the skill dirs and AGENTS.md content was read",
+            detail="ls /skills/ saw the skill dirs and AGENTS.md content was read",
         )
     return CheckResult(
-        name="hub loading (skills + AGENTS.md via composite)",
+        name="store loading (skills + AGENTS.md)",
         passed=False,
         detail=(
             f"saw_listing={seen_listing} saw_agents={seen_agents_content} "
             f"tool_outputs={[t[:120] for t in out.tool_outputs]}"
+        ),
+    )
+
+
+async def check_fresh_thread_starts_empty(client) -> CheckResult:
+    """A brand-new thread should get a fresh sandbox with no leftover state.
+
+    1. Thread A: write a unique marker into ``/tmp/leftover.txt``.
+    2. Thread B (new ``thread_id``): try to ``cat /tmp/leftover.txt``.
+
+    If thread B sees the marker, sandboxes are leaking across threads
+    (cache too aggressive, or all threads share one sandbox). If thread
+    B reports "no such file", thread B got its own fresh sandbox — the
+    expected behavior.
+    """
+    marker = f"leftover-{uuid.uuid4().hex[:8]}"
+
+    write_prompt = (
+        f"Use `execute` to run `echo {marker} > /tmp/leftover.txt`. "
+        f"Just confirm the write."
+    )
+    _tid_a, out_a = await _run_one(client, write_prompt)
+
+    read_prompt = (
+        "Use `execute` to run `cat /tmp/leftover.txt 2>&1`. "
+        "Reply with EXACTLY the file contents (or the error)."
+    )
+    _tid_b, out_b = await _run_one(client, read_prompt)
+
+    saw_marker_in_b = any(marker in t for t in out_b.tool_outputs)
+
+    if not saw_marker_in_b:
+        return CheckResult(
+            name="fresh thread starts with empty sandbox",
+            passed=True,
+            detail=(
+                f"thread B did not see marker '{marker}' from thread A — "
+                f"each new thread provisions its own sandbox"
+            ),
+        )
+    return CheckResult(
+        name="fresh thread starts with empty sandbox",
+        passed=False,
+        detail=(
+            f"thread B saw thread A's marker '{marker}' — "
+            f"sandboxes are leaking across threads. "
+            f"thread_a_tools={[t[:80] for t in out_a.tool_outputs]} "
+            f"thread_b_tools={[t[:80] for t in out_b.tool_outputs]}"
+        ),
+    )
+
+
+async def check_sandbox_scoping_across_assistants(client) -> CheckResult:
+    """Document how the per-thread sandbox cache interacts with assistant_id.
+
+    Creates a fresh thread, runs one turn against the default ``agent``
+    assistant that writes a marker to ``/tmp/marker.txt``, then creates a
+    SECOND assistant on the same graph and runs another turn on the
+    SAME thread asking it to ``cat /tmp/marker.txt``.
+
+    Outcomes:
+
+    - **Marker visible** → sandbox is shared across assistants for the
+      same ``thread_id`` (current implementation: cache key is just
+      ``thread_id``).
+    - **Marker missing** → sandbox is isolated per ``(assistant_id,
+      thread_id)`` (a future improvement we may want).
+
+    Today this PASSES with "shared" semantics. The check name documents
+    the observed behavior so a regression in either direction is loud.
+    """
+    marker = f"cross-assist-{uuid.uuid4().hex[:8]}"
+    thread_id = str(uuid.uuid4())
+    await client.threads.create(thread_id=thread_id)
+
+    write_prompt = (
+        f"Use `execute` to run `echo {marker} > /tmp/marker.txt`. "
+        f"Just confirm the write succeeded."
+    )
+    out_write = await _run_turn(client, thread_id, write_prompt)
+
+    second_assistant = await client.assistants.create(
+        graph_id="agent",
+        name=f"probe-{uuid.uuid4().hex[:8]}",
+    )
+    second_aid = second_assistant["assistant_id"]
+
+    read_prompt = (
+        "Use `execute` to run `cat /tmp/marker.txt 2>&1`. "
+        "Reply with EXACTLY the file contents (or the error)."
+    )
+    out_read = RunOutput()
+    async for chunk in client.runs.stream(
+        thread_id=thread_id,
+        assistant_id=second_aid,
+        input={"messages": [{"role": "user", "content": read_prompt}]},
+        stream_mode="updates",
+    ):
+        if chunk.event != "updates":
+            continue
+        for _node, update in (chunk.data or {}).items():
+            if not isinstance(update, dict):
+                continue
+            for m in update.get("messages", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("type")
+                content = m.get("content")
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") if isinstance(c, dict) else str(c)
+                        for c in content
+                    )
+                content_str = str(content or "")
+                if role == "ai" and content_str.strip():
+                    out_read.final_text = content_str
+                elif role == "tool":
+                    out_read.tool_outputs.append(content_str)
+
+    saw_marker = any(marker in t for t in out_read.tool_outputs) or marker in out_read.final_text
+
+    if saw_marker:
+        return CheckResult(
+            name="sandbox shared across assistants on same thread",
+            passed=True,
+            detail=(
+                f"second assistant on the same thread saw marker '{marker}' — "
+                f"sandbox cache key is thread_id only (current behavior)"
+            ),
+        )
+    return CheckResult(
+        name="sandbox shared across assistants on same thread",
+        passed=False,
+        detail=(
+            f"second assistant did NOT see marker '{marker}' — "
+            f"sandbox is isolated per (assistant_id, thread_id) "
+            f"or some other behavior. "
+            f"write_tools={[t[:80] for t in out_write.tool_outputs]} "
+            f"read_tools={[t[:80] for t in out_read.tool_outputs]} "
+            f"read_final={out_read.final_text[:200]!r}"
+        ),
+    )
+
+
+async def check_sandbox_persists_within_thread(client) -> CheckResult:
+    """Verify the sandbox persists across turns within the same thread.
+
+    Two turns on one thread:
+
+    1. Write a unique marker to ``/tmp/marker.txt``.
+    2. ``cat /tmp/marker.txt`` and report the output.
+
+    If the same sandbox is reused between turns, turn 2 sees the file
+    turn 1 wrote. If a fresh sandbox is created on every turn (cache
+    miss / wrong cache key), turn 2 will report "no such file".
+    """
+    marker = f"persist-{uuid.uuid4().hex[:8]}"
+    thread_id = str(uuid.uuid4())
+    await client.threads.create(thread_id=thread_id)
+
+    write_prompt = (
+        f"Use the `execute` tool to run "
+        f"`echo {marker} > /tmp/marker.txt`. Just confirm the command ran."
+    )
+    out_write = await _run_turn(client, thread_id, write_prompt)
+
+    read_prompt = (
+        "Use the `execute` tool to run `cat /tmp/marker.txt 2>&1`. "
+        "Reply with EXACTLY the file contents (or the error)."
+    )
+    out_read = await _run_turn(client, thread_id, read_prompt)
+
+    saw_marker = any(marker in t for t in out_read.tool_outputs) or marker in out_read.final_text
+    if saw_marker:
+        return CheckResult(
+            name="sandbox persists within thread",
+            passed=True,
+            detail=(
+                f"thread {thread_id[:8]} reused its sandbox across turns; "
+                f"marker '{marker}' round-tripped in turn 2"
+            ),
+        )
+    return CheckResult(
+        name="sandbox persists within thread",
+        passed=False,
+        detail=(
+            f"thread {thread_id[:8]} did NOT see marker '{marker}' in turn 2 — "
+            f"sandbox was likely re-created. "
+            f"turn1_tools={[t[:80] for t in out_write.tool_outputs]} "
+            f"turn2_tools={[t[:80] for t in out_read.tool_outputs]} "
+            f"turn2_final={out_read.final_text[:200]!r}"
         ),
     )
 
@@ -315,23 +444,26 @@ async def main(url: str) -> int:
 
     checks: list[CheckResult] = []
 
-    print("\n[1/6] execute tool wired to sandbox ...")
+    print("\n[1/7] execute tool wired to sandbox ...")
     checks.append(await check_execute_present(client))
 
-    print("[2/6] Hub-backed skills + AGENTS.md ...")
-    checks.append(await check_hub_loading(client))
+    print("[2/7] Store-backed skills + AGENTS.md ...")
+    checks.append(await check_store_loading(client))
 
-    print("[3/6] Per-thread sandbox isolation ...")
+    print("[3/7] Per-thread sandbox isolation ...")
     checks.append(await check_sandbox_isolation(client))
 
-    print("[4/6] Local tool from [tools].python_file ...")
-    checks.append(await check_local_tool_loaded(client))
+    print("[4/7] Sandbox persists within thread ...")
+    checks.append(await check_sandbox_persists_within_thread(client))
 
-    print("[5/6] MCP tool from [mcp].config ...")
+    print("[5/7] Fresh thread starts with empty sandbox ...")
+    checks.append(await check_fresh_thread_starts_empty(client))
+
+    print("[6/7] Sandbox scoping across assistants ...")
+    checks.append(await check_sandbox_scoping_across_assistants(client))
+
+    print("[7/7] MCP tool from mcp.json ...")
     checks.append(await check_mcp_tool_loaded(client))
-
-    print("[6/6] Tavily web search local tool ...")
-    checks.append(await check_tavily_search(client))
 
     print("\n--- results ---")
     for c in checks:

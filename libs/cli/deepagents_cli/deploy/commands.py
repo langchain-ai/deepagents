@@ -21,52 +21,28 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def setup_deploy_parser(
-    subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
+def setup_deploy_parsers(
+    subparsers: Any,  # noqa: ANN401
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
-) -> argparse.ArgumentParser:
-    """Setup the deploy subcommand parser.
+) -> None:
+    """Register the top-level ``init``, ``dev``, and ``deploy`` subparsers.
 
-    Args:
-        subparsers: Parent subparsers object.
-        make_help_action: Factory for help actions.
-
-    Returns:
-        The deploy subparser.
+    The three commands used to live under ``deepagents deploy {init,dev}``
+    but are now flat: ``deepagents init``, ``deepagents dev``, and
+    ``deepagents deploy``. This function registers all three on the root
+    subparsers object.
     """
-
-    def _show_help() -> None:
-        deploy_parser.print_help()
-
-    deploy_parser = subparsers.add_parser(
-        "deploy",
-        help="Bundle and deploy agent to LangGraph Platform",
+    # deepagents init
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Generate a starter deepagents.toml in the current directory",
         add_help=False,
     )
-    deploy_parser.add_argument(
+    init_parser.add_argument(
         "-h",
         "--help",
-        action=make_help_action(_show_help),
-    )
-    deploy_parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to deepagents.toml config file (default: ./deepagents.toml)",
-    )
-    deploy_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be generated without deploying",
-    )
-
-    # Subcommands
-    deploy_sub = deploy_parser.add_subparsers(dest="deploy_command")
-
-    init_parser = deploy_sub.add_parser(
-        "init",
-        help="Generate a starter deepagents.toml",
+        action=make_help_action(lambda: init_parser.print_help()),
     )
     init_parser.add_argument(
         "--force",
@@ -74,9 +50,16 @@ def setup_deploy_parser(
         help="Overwrite existing deepagents.toml",
     )
 
-    dev_parser = deploy_sub.add_parser(
+    # deepagents dev
+    dev_parser = subparsers.add_parser(
         "dev",
-        help="Bundle and run a local langgraph dev server (no deploy)",
+        help="Bundle and run a local langgraph dev server",
+        add_help=False,
+    )
+    dev_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(lambda: dev_parser.print_help()),
     )
     dev_parser.add_argument(
         "--config",
@@ -97,31 +80,43 @@ def setup_deploy_parser(
         help="Pass --allow-blocking to langgraph dev (default: enabled)",
     )
 
-    return deploy_parser
+    # deepagents deploy
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Bundle and deploy agent to LangGraph Platform",
+        add_help=False,
+    )
+    deploy_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(lambda: deploy_parser.print_help()),
+    )
+    deploy_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to deepagents.toml (default: ./deepagents.toml)",
+    )
+    deploy_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be generated without deploying",
+    )
+
+
+def execute_init_command(args: argparse.Namespace) -> None:
+    _init_config(force=args.force)
+
+
+def execute_dev_command(args: argparse.Namespace) -> None:
+    _dev(
+        config_path=args.config,
+        port=args.port,
+        allow_blocking=args.allow_blocking,
+    )
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
-    """Execute deploy subcommands based on parsed arguments.
-
-    Args:
-        args: Parsed command line arguments.
-
-    Raises:
-        SystemExit: On validation errors or deployment failures.
-    """
-    if getattr(args, "deploy_command", None) == "init":
-        _init_config(force=args.force)
-        return
-
-    if getattr(args, "deploy_command", None) == "dev":
-        _dev(
-            config_path=args.config,
-            port=args.port,
-            allow_blocking=args.allow_blocking,
-        )
-        return
-
-    # Default: bundle and deploy
     _deploy(
         config_path=args.config,
         dry_run=args.dry_run,

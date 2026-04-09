@@ -1,11 +1,24 @@
 """Deploy configuration parsing and validation.
 
-Reads ``deepagents.toml`` and produces a validated :class:`DeployConfig`
-dataclass used by the bundler and deploy commands.
+Reads ``deepagents.toml`` and produces a validated :class:`DeployConfig`.
+
+The new minimal surface has exactly two sections:
+
+- ``[agent]``: name + model
+- ``[sandbox]``: sandbox provider settings
+
+``agents.md`` is always seeded into a shared memory namespace so the
+agent can read it at runtime, but writes/edits to that path are blocked
+by a read-only middleware in the generated graph.
+
+Skills (``src/skills/``) and MCP servers (``src/mcp.json``) are auto-detected
+from the project layout. The agent's system prompt is read from
+``src/agents.md`` at bundle time — there is no ``system_prompt`` key.
 """
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +31,11 @@ VALID_SANDBOX_PROVIDERS = frozenset(
 
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
+# Canonical filenames inside the project root.
+AGENTS_MD_FILENAME = "AGENTS.md"
+SKILLS_DIRNAME = "skills"
+MCP_FILENAME = "mcp.json"
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -25,83 +43,31 @@ class AgentConfig:
 
     name: str
     model: str = "anthropic:claude-sonnet-4-6"
-    system_prompt: str = ""
 
 
-VALID_AGENT_MEMORIES_BACKENDS = frozenset({"hub", "store"})
-
-
-@dataclass(frozen=True)
-class AgentMemoriesConfig:
-    """``[agent_memories]`` section — agent-scoped memory files.
-
-    Mounted by the runtime composite at ``/agent_memories/``. The
-    ``backend`` field selects between ``"hub"`` (a LangSmith Prompt Hub
-    repo, versioned and visible in the UI) and ``"store"`` (the LangGraph
-    persistent store, namespaced by ``(agent_name, "agent_memories")``).
-    Both options keep the data agent-scoped — every user of the agent
-    sees the same files.
-
-    ``sources`` are local paths the bundler ships into the chosen
-    backend at deploy time.
-    """
-
-    backend: str = "hub"
-    sources: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class UserMemoriesConfig:
-    """``[user_memories]`` section — user-scoped memory files.
-
-    Always backed by the LangGraph store with a namespace of
-    ``(agent_name, user_id, "user_memories")``. Mounted by the runtime
-    composite at ``/user_memories/``. ``sources`` are seed file paths
-    the bundler walks; the runtime middleware reads/writes the same
-    paths under the user-scoped namespace at request time.
-    """
-
-    sources: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class SkillsConfig:
-    """``[skills]`` section — skill directory paths."""
-
-    sources: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ToolsConfig:
-    """``[tools]`` section — Python file with @tool functions."""
-
-    python_file: str | None = None
-    functions: list[str] | None = None
-
-
-@dataclass(frozen=True)
-class McpConfig:
-    """``[mcp]`` section — MCP server configuration."""
-
-    config: str | None = None
+VALID_SANDBOX_SCOPES = frozenset({"thread", "assistant"})
 
 
 @dataclass(frozen=True)
 class SandboxConfig:
-    """``[sandbox]`` section — sandbox provider settings."""
+    """``[sandbox]`` section — sandbox provider settings.
 
-    provider: str = "langsmith"
+    The whole section is optional. When omitted (or ``provider = "none"``)
+    the runtime falls back to an in-process ``StateBackend`` and tools
+    like ``execute`` become no-ops.
+
+    ``scope`` controls how the sandbox cache keys are built:
+
+    - ``"thread"`` (default): one sandbox per thread. Different threads
+      get different sandboxes, same thread reuses across turns.
+    - ``"assistant"``: one sandbox per assistant. All threads of the
+      same assistant share a single sandbox and its filesystem.
+    """
+
+    provider: str = "none"
     template: str = "deepagents-deploy"
     image: str = "python:3"
-
-
-@dataclass(frozen=True)
-class DeploySettingsConfig:
-    """``[deploy]`` section — deployment build settings."""
-
-    python_version: str = "3.12"
-    dependencies: list[str] = field(default_factory=list)
-    env_file: str | None = None
+    scope: str = "thread"
 
 
 @dataclass(frozen=True)
@@ -109,88 +75,59 @@ class DeployConfig:
     """Top-level deploy configuration parsed from ``deepagents.toml``."""
 
     agent: AgentConfig
-    agent_memories: AgentMemoriesConfig = field(default_factory=AgentMemoriesConfig)
-    user_memories: UserMemoriesConfig = field(default_factory=UserMemoriesConfig)
-    skills: SkillsConfig = field(default_factory=SkillsConfig)
-    tools: ToolsConfig = field(default_factory=ToolsConfig)
-    mcp: McpConfig = field(default_factory=McpConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
-    deploy: DeploySettingsConfig = field(default_factory=DeploySettingsConfig)
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
 
         Args:
-            project_root: Directory containing ``deepagents.toml``.
+            project_root: Directory containing ``deepagents.toml`` (i.e.
+                the ``src/`` dir in the canonical layout).
 
         Returns:
             List of validation error strings. Empty if valid.
         """
         errors: list[str] = []
 
-        if self.agent_memories.backend not in VALID_AGENT_MEMORIES_BACKENDS:
+        # agents.md is required — it's the system prompt.
+        agents_md = project_root / AGENTS_MD_FILENAME
+        if not agents_md.is_file():
             errors.append(
-                f"[agent_memories].backend must be one of "
-                f"{sorted(VALID_AGENT_MEMORIES_BACKENDS)}, "
-                f"got {self.agent_memories.backend!r}"
+                f"{AGENTS_MD_FILENAME} not found in {project_root}. "
+                f"This file is required — it provides the agent's system prompt."
             )
 
-        for src in self.agent_memories.sources:
-            if not (project_root / src).exists():
-                errors.append(f"Agent memory source not found: {src}")
+        # skills/ is optional; if present it must be a directory.
+        skills_dir = project_root / SKILLS_DIRNAME
+        if skills_dir.exists() and not skills_dir.is_dir():
+            errors.append(f"{SKILLS_DIRNAME} must be a directory if present")
 
-        for src in self.user_memories.sources:
-            if not (project_root / src).exists():
-                errors.append(f"User memory source not found: {src}")
-
-        # Skills sources must exist
-        for src in self.skills.sources:
-            p = project_root / src
-            if not p.exists():
-                errors.append(f"Skills source not found: {src}")
-            elif p.is_file():
-                errors.append(f"Skills source must be a directory: {src}")
-
-        # Tools python_file must exist
-        if self.tools.python_file:
-            if not (project_root / self.tools.python_file).exists():
-                errors.append(f"Tools python_file not found: {self.tools.python_file}")
-
-        # MCP config must exist and contain only http/sse servers
-        if self.mcp.config:
-            mcp_path = project_root / self.mcp.config
-            if not mcp_path.exists():
-                errors.append(f"MCP config not found: {self.mcp.config}")
+        # mcp.json is optional; if present it must be a file with only
+        # http/sse transports (stdio is unsupported in deployed contexts).
+        mcp_path = project_root / MCP_FILENAME
+        if mcp_path.exists():
+            if not mcp_path.is_file():
+                errors.append(f"{MCP_FILENAME} must be a file if present")
             else:
-                mcp_errors = _validate_mcp_for_deploy(mcp_path)
-                errors.extend(mcp_errors)
+                errors.extend(_validate_mcp_for_deploy(mcp_path))
 
-        # Sandbox provider must be valid
         if self.sandbox.provider not in VALID_SANDBOX_PROVIDERS:
             errors.append(
                 f"Unknown sandbox provider: {self.sandbox.provider}. "
                 f"Valid: {', '.join(sorted(VALID_SANDBOX_PROVIDERS))}"
             )
 
-        # Env file must exist if specified
-        if self.deploy.env_file:
-            if not (project_root / self.deploy.env_file).exists():
-                errors.append(f"Env file not found: {self.deploy.env_file}")
+        if self.sandbox.scope not in VALID_SANDBOX_SCOPES:
+            errors.append(
+                f"Unknown sandbox scope: {self.sandbox.scope}. "
+                f"Valid: {', '.join(sorted(VALID_SANDBOX_SCOPES))}"
+            )
 
         return errors
 
 
 def _validate_mcp_for_deploy(mcp_path: Path) -> list[str]:
-    """Validate that MCP config only uses http/sse transports (no stdio).
-
-    Args:
-        mcp_path: Path to ``.mcp.json`` file.
-
-    Returns:
-        List of error strings.
-    """
-    import json
-
+    """Validate that MCP config only uses http/sse transports (no stdio)."""
     errors: list[str] = []
     try:
         data = json.loads(mcp_path.read_text(encoding="utf-8"))
@@ -215,15 +152,10 @@ def _validate_mcp_for_deploy(mcp_path: Path) -> list[str]:
 def load_config(config_path: Path) -> DeployConfig:
     """Load and parse a ``deepagents.toml`` file.
 
-    Args:
-        config_path: Path to the TOML config file.
-
-    Returns:
-        Parsed :class:`DeployConfig`.
-
     Raises:
         FileNotFoundError: If the config file does not exist.
-        ValueError: If the config is missing required fields or has invalid values.
+        ValueError: If the config is missing required fields or has an
+            unknown top-level section.
     """
     if not config_path.exists():
         msg = f"Config file not found: {config_path}"
@@ -235,19 +167,22 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
+
+
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
-    """Parse raw TOML dict into a DeployConfig.
+    """Parse raw TOML dict into a DeployConfig."""
+    # Reject unknown top-level sections up front — the old surface had
+    # many more, and silently ignoring them would hide migration bugs.
+    unknown = set(data.keys()) - _ALLOWED_SECTIONS
+    if unknown:
+        msg = (
+            f"Unknown section(s) in deepagents.toml: {sorted(unknown)}. "
+            f"The new surface only accepts: {sorted(_ALLOWED_SECTIONS)}. "
+            f"Skills, MCP, and tools are auto-detected from the project layout."
+        )
+        raise ValueError(msg)
 
-    Args:
-        data: Parsed TOML data.
-
-    Returns:
-        Validated :class:`DeployConfig`.
-
-    Raises:
-        ValueError: If required fields are missing.
-    """
-    # [agent] section — required
     agent_data = data.get("agent", {})
     if "name" not in agent_data:
         msg = "[agent].name is required in deepagents.toml"
@@ -256,102 +191,29 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     agent = AgentConfig(
         name=agent_data["name"],
         model=agent_data.get("model", "anthropic:claude-sonnet-4-6"),
-        system_prompt=agent_data.get("system_prompt", ""),
     )
 
-    # [agent_memories] section — optional. Replaces legacy [memory].
-    agent_memories_data = data.get("agent_memories", {})
-    agent_memories = AgentMemoriesConfig(
-        backend=agent_memories_data.get("backend", "hub"),
-        sources=agent_memories_data.get("sources", []),
-    )
-
-    # [user_memories] section — optional. Always store-backed with the
-    # user identity in the namespace.
-    user_memories_data = data.get("user_memories", {})
-    user_memories = UserMemoriesConfig(
-        sources=user_memories_data.get("sources", []),
-    )
-
-    # [skills] section — optional
-    skills_data = data.get("skills", {})
-    skills = SkillsConfig(sources=skills_data.get("sources", []))
-
-    # [tools] section — optional
-    tools_data = data.get("tools", {})
-    tools = ToolsConfig(
-        python_file=tools_data.get("python_file"),
-        functions=tools_data.get("functions"),
-    )
-
-    # [mcp] section — optional
-    mcp_data = data.get("mcp", {})
-    mcp = McpConfig(config=mcp_data.get("config"))
-
-    # [sandbox] section — optional
     sandbox_data = data.get("sandbox", {})
     sandbox = SandboxConfig(
-        provider=sandbox_data.get("provider", "langsmith"),
+        provider=sandbox_data.get("provider", "none"),
         template=sandbox_data.get("template", "deepagents-deploy"),
         image=sandbox_data.get("image", "python:3"),
+        scope=sandbox_data.get("scope", "thread"),
     )
 
-    # [deploy] section — optional
-    deploy_data = data.get("deploy", {})
-    deploy_settings = DeploySettingsConfig(
-        python_version=deploy_data.get("python_version", "3.12"),
-        dependencies=deploy_data.get("dependencies", []),
-        env_file=deploy_data.get("env_file"),
-    )
-
-    return DeployConfig(
-        agent=agent,
-        agent_memories=agent_memories,
-        user_memories=user_memories,
-        skills=skills,
-        tools=tools,
-        mcp=mcp,
-        sandbox=sandbox,
-        deploy=deploy_settings,
-    )
+    return DeployConfig(agent=agent, sandbox=sandbox)
 
 
 def generate_starter_config() -> str:
-    """Generate a starter ``deepagents.toml`` template.
-
-    Returns:
-        TOML string with commented example configuration.
-    """
+    """Generate a starter ``deepagents.toml`` template."""
     return '''\
 [agent]
 name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
-# system_prompt = "You are a helpful assistant"
 
-[agent_memories]
-backend = "hub"  # or "store" — chooses the storage for /agent_memories/
-sources = ["./AGENTS.md"]
-
-# [user_memories]
-# sources = ["./preferences.md"]  # always store-backed, per-user namespace
-
-[skills]
-sources = ["./skills/"]
-
-# [tools]
-# python_file = "./tools.py"
-# functions = ["my_tool"]  # Optional: explicit list (else auto-discover @tool functions)
-
-# [mcp]
-# config = "./.mcp.json"  # Only http/sse servers supported in deployed context
-
-[sandbox]
-provider = "langsmith"
-# template = "deepagents-deploy"
-# image = "python:3"
-
-[deploy]
-python_version = "3.12"
-# dependencies = []
-# env_file = ".env"
+# [sandbox] is optional. Omit the section to run tools in-process with
+# a StateBackend fallback (no shell, no persistent filesystem).
+# [sandbox]
+# provider = "langsmith"  # none | langsmith | daytona | modal | runloop
+# scope = "thread"         # thread | assistant
 '''

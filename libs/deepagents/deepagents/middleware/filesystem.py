@@ -1556,7 +1556,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-            return Command(update={**update, "messages": processed_messages})
+            return Command(goto=tool_result.goto, graph=tool_result.graph, update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
@@ -1591,7 +1591,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-            return Command(update={**update, "messages": processed_messages})
+            return Command(goto=tool_result.goto, graph=tool_result.graph, update={**update, "messages": processed_messages})
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 

@@ -11,11 +11,19 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from better_harness.core import Experiment, Proposal, RunLayout, SplitResult, Variant
+from better_harness.core import (
+    CaseOutcome,
+    Experiment,
+    Proposal,
+    RunLayout,
+    SplitResult,
+    Variant,
+    summarize_langsmith_trace,
+)
 from better_harness.patching import build_variant, prepend_pythonpath
 
 DEFAULT_SYSTEM_PROMPT = """You are Better Agent, an outer-loop Deep Agent that improves another agent harness.
@@ -80,6 +88,10 @@ def build_proposer_workspace(
     _write_train_artifacts(
         experiment=experiment,
         train_result=train_result,
+        root=root,
+    )
+    _write_train_traces(
+        outcomes=list(train_result.failing_outcomes()),
         root=root,
     )
     _write_visible_history(layout=layout, root=root)
@@ -282,6 +294,51 @@ def _write_train_artifacts(
             task_dir = tasks_root / rendered
             if task_dir.exists():
                 shutil.copytree(task_dir, train_cases_dir / rendered, dirs_exist_ok=True)
+
+
+def _write_train_traces(
+    *,
+    outcomes: list[CaseOutcome],
+    root: Path,
+) -> int:
+    """Write trace summaries for failing cases to the proposer workspace.
+
+    Reads already-fetched LangSmith trace JSON files from each outcome's
+    `artifacts_dir` and writes a single `train_traces.json` containing
+    compact summaries.
+
+    Args:
+        outcomes: Failing case outcomes to summarize.
+        root: Proposer workspace root directory.
+
+    Returns:
+        Number of traces written.
+
+    """
+    traces: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        if not outcome.artifacts_dir:
+            continue
+        traces_dir = Path(outcome.artifacts_dir) / "traces" / "langsmith"
+        if not traces_dir.is_dir():
+            continue
+        for trace_path in sorted(traces_dir.glob("*.json")):
+            try:
+                trace_data = json.loads(trace_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            summary = summarize_langsmith_trace(
+                trace_data,
+                trace_ref=outcome.trace_ref,
+            )
+            traces.append({"case_id": outcome.case_id, **asdict(summary)})
+            break  # one trace per case
+    if not traces:
+        return 0
+    (root / "train_traces.json").write_text(
+        json.dumps(traces, indent=2) + "\n"
+    )
+    return len(traces)
 
 
 def _write_visible_history(*, layout: RunLayout, root: Path) -> None:

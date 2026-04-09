@@ -8,10 +8,13 @@ from better_harness.core import (
     RunReport,
     SplitResult,
     Surface,
+    TraceStep,
+    TraceSummary,
     Variant,
     load_experiment,
     main,
     run_experiment,
+    summarize_langsmith_trace,
     validate_experiment,
 )
 from better_harness.patching import (
@@ -31,6 +34,8 @@ __all__ = [
     "RunReport",
     "SplitResult",
     "Surface",
+    "TraceStep",
+    "TraceSummary",
     "Variant",
     "build_baseline_variant",
     "build_variant",
@@ -41,6 +46,7 @@ __all__ = [
     "patch_from_env",
     "patch_module_attrs",
     "run_experiment",
+    "summarize_langsmith_trace",
     "validate_experiment",
     "workspace_override_context",
 ]

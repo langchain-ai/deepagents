@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -768,6 +769,37 @@ def write_trace_refs(split_dir: Path, refs: list[str]) -> None:
     write_trace_payloads(split_dir, refs)
 
 
+def _resolve_session_run_ids(
+    *,
+    endpoint: str,
+    api_key: str,
+    session_id: str,
+) -> list[str]:
+    """Query LangSmith for root run IDs belonging to an experiment session."""
+    url = f"{endpoint}/runs/query"
+    if not url.startswith(("https://", "http://")):
+        return []
+    body = json.dumps(
+        {"session": [session_id], "is_root": True, "limit": 50, "select": ["id"]},
+    ).encode()
+    request = urllib.request.Request(  # noqa: S310
+        url,
+        data=body,
+        headers={
+            "X-API-Key": api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            data = json.loads(response.read().decode("utf-8"))
+        return [str(run["id"]) for run in data.get("runs", [])]
+    except (urllib.error.HTTPError, urllib.error.URLError, KeyError):
+        return []
+
+
 def write_trace_payloads(split_dir: Path, refs: list[str]) -> None:
     """Fetch and persist local copies of LangSmith traces when possible."""
     api_key = os.environ.get("LANGSMITH_API_KEY")
@@ -796,8 +828,36 @@ def write_trace_payloads(split_dir: Path, refs: list[str]) -> None:
                     api_key=api_key,
                     trace_id=trace_id,
                 )
-            except RuntimeError as exc:
-                error_text = str(exc)
+            except RuntimeError:
+                # The ID may be an experiment session rather than a run
+                # (e.g. from dataset comparison URLs). Resolve actual
+                # run IDs and fetch those instead.
+                for run_id in _resolve_session_run_ids(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    session_id=trace_id,
+                ):
+                    run_path = traces_dir / f"{run_id}.json"
+                    try:
+                        run_payload = fetch_langsmith_trace(
+                            endpoint=endpoint,
+                            api_key=api_key,
+                            trace_id=run_id,
+                        )
+                    except RuntimeError as exc:
+                        error_text = str(exc)
+                    else:
+                        run_path.parent.mkdir(parents=True, exist_ok=True)
+                        run_path.write_text(json.dumps(run_payload, indent=2) + "\n")
+                    payloads.append(
+                        {
+                            "url": ref,
+                            "trace_id": run_id,
+                            "path": str(run_path) if run_path.exists() else None,
+                            "error": error_text,
+                        }
+                    )
+                continue
             else:
                 trace_path.write_text(json.dumps(payload, indent=2) + "\n")
         payloads.append(
@@ -844,6 +904,118 @@ def fetch_langsmith_trace(*, endpoint: str, api_key: str, trace_id: str) -> dict
         raise RuntimeError(f"LangSmith fetch failed for {trace_id}: HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"LangSmith fetch failed for {trace_id}: {exc}") from exc
+
+
+_MAX_TRACE_CONTENT_LEN = 2000
+
+
+@dataclass(frozen=True)
+class TraceStep:
+    """One step in a summarized agent trace."""
+
+    type: str
+    content: str
+    name: str | None = None
+    status: str | None = None
+    tool_calls: tuple[dict[str, Any], ...] | None = None
+
+
+@dataclass(frozen=True)
+class TraceSummary:
+    """Summarized LangSmith trace for the proposer workspace."""
+
+    status: str | None
+    error: str | None
+    trace_ref: str | None
+    steps: tuple[TraceStep, ...]
+
+
+def summarize_langsmith_trace(
+    trace_data: dict[str, Any],
+    *,
+    trace_ref: str | None = None,
+) -> TraceSummary:
+    """Summarize a LangSmith trace into a compact structure.
+
+    Supports both LangChain constructor format (`kwargs.type`) and
+    OpenAI chat format (`role`/`content`) as returned by the LangSmith
+    `include_messages=true` API.
+
+    Args:
+        trace_data: Raw JSON dict from `fetch_langsmith_trace`.
+        trace_ref: Optional LangSmith URL for linking back.
+
+    Returns:
+        A `TraceSummary` with extracted steps. Returns a summary with
+        empty steps if the trace cannot be parsed.
+
+    """
+    messages = trace_data.get("messages") or []
+    steps: list[TraceStep] = []
+    for msg in messages:
+        if "kwargs" in msg:
+            kwargs = msg["kwargs"]
+            msg_type = kwargs.get("type", "unknown")
+            content = kwargs.get("content")
+            raw_tool_calls = kwargs.get("tool_calls")
+            name = kwargs.get("name")
+            status = kwargs.get("status")
+        else:
+            role = msg.get("role", "unknown")
+            # user/assistant/tool/system all pass through; normalize
+            # the two that differ from LC naming.
+            msg_type = {"user": "human", "assistant": "ai"}.get(role, role)
+            content = msg.get("content")
+            raw_tool_calls = msg.get("tool_calls")
+            name = msg.get("name")
+            status = msg.get("status")
+
+        if content is None:
+            content = ""
+        elif isinstance(content, list):
+            text_parts = [
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            content = "\n".join(text_parts)
+        elif not isinstance(content, str):
+            content = str(content)
+
+        if len(content) > _MAX_TRACE_CONTENT_LEN:
+            content = content[:_MAX_TRACE_CONTENT_LEN] + "... [truncated]"
+
+        tool_calls = None
+        if raw_tool_calls:
+            parsed: list[dict[str, Any]] = []
+            for tc in raw_tool_calls:
+                if "function" in tc:
+                    fn = tc["function"]
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        with contextlib.suppress(json.JSONDecodeError, ValueError):
+                            args = json.loads(args)
+                    parsed.append({"name": fn.get("name"), "args": args})
+                else:
+                    parsed.append({"name": tc.get("name"), "args": tc.get("args")})
+            tool_calls = tuple(parsed)
+
+        steps.append(
+            TraceStep(
+                type=msg_type,
+                content=content,
+                name=name,
+                status=status,
+                tool_calls=tool_calls,
+            )
+        )
+
+    return TraceSummary(
+        status=trace_data.get("status"),
+        error=trace_data.get("error"),
+        trace_ref=trace_ref,
+        steps=tuple(steps),
+    )
 
 
 def collect_trace_refs(run_dir: Path) -> list[dict[str, Any]]:

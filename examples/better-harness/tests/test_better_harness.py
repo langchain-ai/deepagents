@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import urllib.error
 from pathlib import Path
 from textwrap import dedent
 
@@ -17,8 +18,13 @@ from better_harness import (
     main,
     run_experiment,
 )
-from better_harness.agent import build_proposer_workspace
-from better_harness.core import RunLayout, extract_langsmith_trace_id, write_trace_payloads
+from better_harness.agent import _write_train_traces, build_proposer_workspace
+from better_harness.core import (
+    RunLayout,
+    extract_langsmith_trace_id,
+    summarize_langsmith_trace,
+    write_trace_payloads,
+)
 from better_harness.patching import (
     build_baseline_variant,
     build_variant,
@@ -550,6 +556,53 @@ def test_write_trace_payloads_fetches_langsmith_json(tmp_path: Path, monkeypatch
     assert payload["messages"][0]["content"] == "hi"
 
 
+def test_write_trace_payloads_resolves_session_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    run_id = "e2561333-8566-4748-b6cf-7e882075b2a1"
+    session_id = "8722e885-4599-49e6-97a0-1e366f7b1b9d"
+    trace_body = json.dumps({"id": run_id, "messages": [{"role": "user", "content": "hello"}]}).encode()
+    query_body = json.dumps({"runs": [{"id": run_id}]}).encode()
+
+    call_count = {"n": 0}
+
+    class _Response:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        call_count["n"] += 1
+        url = request.full_url
+        if url.endswith(f"/runs/{session_id}?include_messages=true"):
+            raise urllib.error.HTTPError(url, 404, "Not found", {}, None)
+        if url.endswith("/runs/query"):
+            return _Response(query_body)
+        if url.endswith(f"/runs/{run_id}?include_messages=true"):
+            return _Response(trace_body)
+        msg = f"unexpected URL: {url}"
+        raise ValueError(msg)
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    split_dir = tmp_path / "split"
+    split_dir.mkdir()
+    ref = f"https://smith.langchain.com/o/org/datasets/ds/compare?selectedSessions={session_id}"
+    write_trace_payloads(split_dir, [ref])
+    trace_json = split_dir / "traces" / "langsmith" / f"{run_id}.json"
+    assert trace_json.exists()
+    payload = json.loads(trace_json.read_text())
+    assert payload["messages"][0]["content"] == "hello"
+
+
 def test_run_end_to_end_pytest_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_proposer(*, experiment, workspace):
         del experiment
@@ -756,3 +809,243 @@ def test_cli_inventory_and_split_commands(tmp_path: Path, capsys: pytest.Capture
 
     captured = capsys.readouterr()
     assert str(inventory_path) in captured.out
+
+
+def test_summarize_langsmith_trace_extracts_steps():
+    trace_data = {
+        "status": "success",
+        "error": None,
+        "messages": [
+            {
+                "lc": 1,
+                "type": "constructor",
+                "id": ["langchain", "schema", "messages", "HumanMessage"],
+                "kwargs": {"type": "human", "content": "Fix the auth bug"},
+            },
+            {
+                "lc": 1,
+                "type": "constructor",
+                "id": ["langchain", "schema", "messages", "AIMessage"],
+                "kwargs": {
+                    "type": "ai",
+                    "content": "I'll investigate the auth module.",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"path": "auth.py"}},
+                    ],
+                },
+            },
+            {
+                "lc": 1,
+                "type": "constructor",
+                "id": ["langchain", "schema", "messages", "ToolMessage"],
+                "kwargs": {
+                    "type": "tool",
+                    "content": "def login(): pass",
+                    "name": "read_file",
+                    "status": "success",
+                },
+            },
+        ],
+    }
+    summary = summarize_langsmith_trace(trace_data)
+    assert summary.status == "success"
+    assert summary.error is None
+    assert len(summary.steps) == 3
+    assert summary.steps[0].type == "human"
+    assert summary.steps[0].content == "Fix the auth bug"
+    assert summary.steps[1].type == "ai"
+    assert summary.steps[1].tool_calls == ({"name": "read_file", "args": {"path": "auth.py"}},)
+    assert summary.steps[2].type == "tool"
+    assert summary.steps[2].name == "read_file"
+    assert summary.steps[2].status == "success"
+
+
+def test_summarize_langsmith_trace_handles_list_content():
+    trace_data = {
+        "status": "success",
+        "error": None,
+        "messages": [
+            {
+                "lc": 1,
+                "type": "constructor",
+                "id": ["langchain", "schema", "messages", "AIMessage"],
+                "kwargs": {
+                    "type": "ai",
+                    "content": [
+                        {"type": "text", "text": "I'll read the file."},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_01",
+                            "name": "read_file",
+                            "input": {"path": "auth.py"},
+                        },
+                    ],
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"path": "auth.py"}},
+                    ],
+                },
+            },
+        ],
+    }
+    summary = summarize_langsmith_trace(trace_data)
+    assert len(summary.steps) == 1
+    assert summary.steps[0].content == "I'll read the file."
+    assert summary.steps[0].tool_calls is not None
+
+
+def test_summarize_langsmith_trace_truncates_long_content():
+    long_content = "x" * 5000
+    trace_data = {
+        "status": "success",
+        "error": None,
+        "messages": [
+            {
+                "lc": 1,
+                "type": "constructor",
+                "id": ["langchain", "schema", "messages", "ToolMessage"],
+                "kwargs": {
+                    "type": "tool",
+                    "content": long_content,
+                    "name": "read_file",
+                    "status": "success",
+                },
+            },
+        ],
+    }
+    summary = summarize_langsmith_trace(trace_data)
+    assert len(summary.steps[0].content) < 5000
+    assert summary.steps[0].content.endswith("... [truncated]")
+
+
+def test_summarize_langsmith_trace_handles_empty():
+    assert summarize_langsmith_trace({}).steps == ()
+    assert summarize_langsmith_trace({"messages": None}).steps == ()
+    assert summarize_langsmith_trace({"messages": []}).steps == ()
+
+
+def test_summarize_langsmith_trace_openai_format():
+    trace_data = {
+        "status": "success",
+        "error": None,
+        "messages": [
+            {"role": "user", "content": "Find error logs"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "tc1",
+                        "function": {
+                            "name": "search_docs",
+                            "arguments": '{"query": "errors"}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "Error: permission denied",
+                "tool_call_id": "tc1",
+            },
+            {"role": "assistant", "content": "The search failed due to permissions."},
+        ],
+    }
+    summary = summarize_langsmith_trace(trace_data)
+    assert summary.status == "success"
+    assert len(summary.steps) == 4
+    assert summary.steps[0].type == "human"
+    assert summary.steps[0].content == "Find error logs"
+    assert summary.steps[1].type == "ai"
+    assert summary.steps[1].tool_calls == ({"name": "search_docs", "args": {"query": "errors"}},)
+    assert summary.steps[2].type == "tool"
+    assert summary.steps[2].content == "Error: permission denied"
+    assert summary.steps[3].type == "ai"
+    assert summary.steps[3].content == "The search failed due to permissions."
+
+
+def test_write_train_traces_writes_json(tmp_path: Path):
+    artifacts_dir = tmp_path / "case_artifacts"
+    traces_dir = artifacts_dir / "traces" / "langsmith"
+    traces_dir.mkdir(parents=True)
+    # Real LangSmith API format (OpenAI chat messages with function tool calls).
+    trace_payload = {
+        "status": "success",
+        "error": None,
+        "messages": [
+            {"role": "user", "content": "Send a Slack DM to user U12345"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "toolu_01",
+                        "function": {
+                            "name": "slack_send_dm",
+                            "arguments": '{"user_id": "U12345", "message": "Hello"}',
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "Sent DM to U12345: Hello",
+                "tool_call_id": "toolu_01",
+            },
+            {"role": "assistant", "content": "Done! I sent the DM."},
+        ],
+    }
+    (traces_dir / "019c2754-dcf0-7971-ad86-ee82ed690b8a.json").write_text(
+        json.dumps(trace_payload) + "\n"
+    )
+
+    outcomes = [
+        CaseOutcome(
+            case_id="tests/test_foo.py::test_bar[model]",
+            split="train",
+            stratum="tool_use",
+            status="failed",
+            score=0.0,
+            duration_s=1.0,
+            failure_message="assertion failed",
+            artifacts_dir=str(artifacts_dir),
+            trace_ref="https://smith.langchain.com/r/abc123",
+        ),
+    ]
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    count = _write_train_traces(outcomes=outcomes, root=workspace)
+
+    assert count == 1
+    result_path = workspace / "train_traces.json"
+    assert result_path.exists()
+    traces = json.loads(result_path.read_text())
+    assert len(traces) == 1
+    assert traces[0]["case_id"] == "tests/test_foo.py::test_bar[model]"
+    assert traces[0]["trace_ref"] == "https://smith.langchain.com/r/abc123"
+    assert len(traces[0]["steps"]) == 4
+    assert traces[0]["steps"][0]["type"] == "human"
+    assert traces[0]["steps"][1]["tool_calls"][0]["name"] == "slack_send_dm"
+    assert traces[0]["steps"][2]["type"] == "tool"
+    assert traces[0]["steps"][3]["content"] == "Done! I sent the DM."
+
+
+def test_write_train_traces_skips_missing_artifacts(tmp_path: Path):
+    outcomes = [
+        CaseOutcome(
+            case_id="tests/test_foo.py::test_bar[model]",
+            split="train",
+            stratum="tool_use",
+            status="failed",
+            score=0.0,
+            duration_s=1.0,
+        ),
+    ]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    count = _write_train_traces(outcomes=outcomes, root=workspace)
+
+    assert count == 0
+    assert not (workspace / "train_traces.json").exists()

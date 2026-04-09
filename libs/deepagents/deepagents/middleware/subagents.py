@@ -85,7 +85,7 @@ class SubAgent(TypedDict):
 
     Rules are evaluated in declaration order; the first match wins.
     `FilesystemPermission` rules are passed to `FilesystemMiddleware`.
-    `ToolPermission` rules are enforced by `ToolPermissionMiddleware` (appended
+    `ToolPermission` rules are enforced by `PermissionMiddleware` (appended
     last in the middleware stack).
     """
 

@@ -50,6 +50,7 @@ Use a **plain tool** when:
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.permissions import PermissionMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import (
@@ -57,7 +58,6 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
-from deepagents.middleware.tool_permissions import ToolPermissionMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -65,11 +65,11 @@ __all__ = [
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "MemoryMiddleware",
+    "PermissionMiddleware",
     "SkillsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
-    "ToolPermissionMiddleware",
     "create_summarization_tool_middleware",
 ]

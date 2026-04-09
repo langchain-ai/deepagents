@@ -171,7 +171,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
-        assert result == str(["/test.txt", "/test2.txt"])
+        assert result.content == str(["/test.txt", "/test2.txt"])
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -205,7 +205,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
@@ -246,7 +246,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
@@ -287,7 +287,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
 
@@ -318,7 +318,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
@@ -351,7 +351,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
@@ -383,7 +383,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
@@ -405,7 +405,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result == str([])
+        assert result.content == str([])
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
@@ -457,7 +457,7 @@ class TestFilesystemMiddleware:
         )
 
         # Result should be truncated
-        result = result_raw
+        result = result_raw.content
         assert isinstance(result, str)
         assert len(result.split(", ")) < 2000  # Should be truncated to fewer files
         # Last element should be the truncation message
@@ -491,9 +491,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/helper.txt" in result
-        assert "/main.py" not in result
+        assert "/test.py" in result.content
+        assert "/helper.txt" in result.content
+        assert "/main.py" not in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -513,9 +513,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "1: import os" in result
-        assert "2: import sys" in result
-        assert "print" not in result
+        assert "1: import os" in result.content
+        assert "2: import sys" in result.content
+        assert "print" not in result.content
 
     def test_grep_search_shortterm_count_mode(self):
         files = {
@@ -540,8 +540,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py:2" in result or "/test.py: 2" in result
-        assert "/main.py:1" in result or "/main.py: 1" in result
+        assert "/test.py:2" in result.content or "/test.py: 2" in result.content
+        assert "/main.py:1" in result.content or "/main.py: 1" in result.content
 
     def test_grep_search_shortterm_with_include(self):
         files = {
@@ -566,8 +566,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.txt" not in result.content
 
     def test_grep_search_shortterm_with_path(self):
         files = {
@@ -592,8 +592,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/tests/test.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/tests/test.py" not in result.content
 
     def test_grep_search_shortterm_regex_pattern(self):
         """Test grep with literal pattern (not regex)."""
@@ -615,9 +615,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "1: def hello():" in result
-        assert "2: def world():" in result
-        assert "x = 5" not in result
+        assert "1: def hello():" in result.content
+        assert "2: def world():" in result.content
+        assert "x = 5" not in result.content
 
     def test_grep_search_shortterm_no_matches(self):
         files = {
@@ -636,7 +636,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result == "No matches found"
+        assert result.content == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
         """Test grep with special characters (literal search, not regex)."""
@@ -657,7 +657,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "No matches found" in result
+        assert "No matches found" in result.content
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""

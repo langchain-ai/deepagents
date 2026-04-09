@@ -11,8 +11,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
-import wcmatch.glob as wcglob
-
 if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
 
@@ -55,7 +53,6 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.permissions import FilesystemOperation, FilesystemPermission
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -299,55 +296,6 @@ Examples:
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
-
-_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
-
-
-def _check_fs_permission(
-    rules: list[FilesystemPermission],
-    operation: FilesystemOperation,
-    path: str,
-) -> Literal["allow", "deny"]:
-    """Evaluate filesystem permission rules for an operation on a path.
-
-    Iterates rules in declaration order. The first matching rule's mode
-    is returned. If no rule matches, returns `"allow"` (permissive default).
-
-    Args:
-        rules: Ordered list of `FilesystemPermission` rules to evaluate.
-        operation: The operation being performed (`"read"` or `"write"`).
-        path: The canonicalized absolute path being accessed.
-
-    Returns:
-        `"allow"` if the call should proceed, `"deny"` if it should be blocked.
-    """
-    for rule in rules:
-        if operation not in rule.operations:
-            continue
-        if any(wcglob.globmatch(path, pattern, flags=_WCMATCH_FLAGS) for pattern in rule.paths):
-            return rule.mode
-    return "allow"
-
-
-def _filter_paths_by_permission(
-    rules: list[FilesystemPermission],
-    operation: FilesystemOperation,
-    paths: list[str],
-) -> list[str]:
-    """Filter a list of paths to only those allowed by the permission rules.
-
-    Args:
-        rules: Ordered list of `FilesystemPermission` rules to evaluate.
-        operation: The operation being performed (typically `"read"`).
-        paths: The raw list of paths to filter.
-
-    Returns:
-        The filtered list of allowed paths.
-    """
-    if not rules:
-        return paths
-    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
-
 
 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 
@@ -628,7 +576,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         *,
         backend: BACKEND_TYPES | None = None,
-        rules: list[FilesystemPermission] | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -640,9 +587,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Args:
             backend: Backend for file storage and optional execution, or a factory callable.
                 Defaults to StateBackend if not provided.
-            rules: Optional list of `FilesystemPermission` rules to enforce.
-                Rules are evaluated in declaration order; the first match wins.
-                If omitted or empty, all filesystem operations are allowed.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
@@ -662,7 +606,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
-        self._rules: list[FilesystemPermission] = rules or []
 
         artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
@@ -706,10 +649,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
 
-    def _is_denied(self, operation: FilesystemOperation, path: str) -> bool:
-        """Return True if the operation on path is denied by permission rules."""
-        return bool(self._rules) and _check_fs_permission(self._rules, operation, path) == "deny"
-
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -717,44 +656,46 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_ls(
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             ls_result = resolved_backend.ls(validated_path)
             if ls_result.error:
                 return f"Error: {ls_result.error}"
             infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
-            filtered = _filter_paths_by_permission(self._rules, "read", paths)
-            result = truncate_if_too_long(filtered)
-            return str(result)
+            return ToolMessage(
+                content=str(truncate_if_too_long(paths)),
+                artifact=ls_result,
+                tool_call_id=runtime.tool_call_id,
+                name="ls",
+            )
 
         async def async_ls(
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             ls_result = await resolved_backend.als(validated_path)
             if ls_result.error:
                 return f"Error: {ls_result.error}"
             infos = ls_result.entries or []
             paths = [fi.get("path", "") for fi in infos]
-            filtered = _filter_paths_by_permission(self._rules, "read", paths)
-            result = truncate_if_too_long(filtered)
-            return str(result)
+            return ToolMessage(
+                content=str(truncate_if_too_long(paths)),
+                artifact=ls_result,
+                tool_call_id=runtime.tool_call_id,
+                name="ls",
+            )
 
         return StructuredTool.from_function(
             name="ls",
@@ -840,8 +781,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -857,8 +796,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -886,8 +823,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("write", validated_path):
-                return f"Error: permission denied for write on {validated_path}"
+
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
@@ -904,8 +840,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("write", validated_path):
-                return f"Error: permission denied for write on {validated_path}"
+
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
@@ -938,8 +873,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("write", validated_path):
-                return f"Error: permission denied for write on {validated_path}"
+
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -959,8 +893,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("write", validated_path):
-                return f"Error: permission denied for write on {validated_path}"
+
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -975,7 +908,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_glob_tool(self) -> BaseTool:  # noqa: C901
+    def _create_glob_tool(self) -> BaseTool:
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -983,15 +916,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
@@ -1003,23 +934,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {glob_result.error}"
             infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
-            filtered = _filter_paths_by_permission(self._rules, "read", paths)
-            result = truncate_if_too_long(filtered)
-            return str(result)
+            return ToolMessage(
+                content=str(truncate_if_too_long(paths)),
+                artifact=glob_result,
+                tool_call_id=runtime.tool_call_id,
+                name="glob",
+            )
 
         async def async_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            if self._is_denied("read", validated_path):
-                return f"Error: permission denied for read on {validated_path}"
             try:
                 glob_result = await asyncio.wait_for(
                     resolved_backend.aglob(pattern, path=validated_path),
@@ -1031,9 +963,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {glob_result.error}"
             infos = glob_result.matches or []
             paths = [fi.get("path", "") for fi in infos]
-            filtered = _filter_paths_by_permission(self._rules, "read", paths)
-            result = truncate_if_too_long(filtered)
-            return str(result)
+            return ToolMessage(
+                content=str(truncate_if_too_long(paths)),
+                artifact=glob_result,
+                tool_call_id=runtime.tool_call_id,
+                name="glob",
+            )
 
         return StructuredTool.from_function(
             name="glob",
@@ -1044,7 +979,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GlobSchema,
         )
 
-    def _create_grep_tool(self) -> BaseTool:  # noqa: C901
+    def _create_grep_tool(self) -> BaseTool:
         """Create the grep tool."""
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
@@ -1057,23 +992,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for grep tool."""
             if path is not None:
                 try:
                     path = validate_path(path)
                 except ValueError as e:
                     return f"Error: {e}"
-            if path is not None and self._is_denied("read", path):
-                return f"Error: permission denied for read on {path}"
             resolved_backend = self._get_backend(runtime)
             grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
             if grep_result.error:
                 return grep_result.error
             matches = grep_result.matches or []
-            filtered_matches = [m for m in matches if not self._is_denied("read", m.get("path", ""))] if self._rules else matches
-            formatted = format_grep_matches(filtered_matches, output_mode)
-            return truncate_if_too_long(formatted)
+            formatted = format_grep_matches(matches, output_mode)
+            return ToolMessage(
+                content=truncate_if_too_long(formatted),
+                artifact={"result": grep_result, "output_mode": output_mode},
+                tool_call_id=runtime.tool_call_id,
+                name="grep",
+            )
 
         async def async_grep(
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
@@ -1084,23 +1021,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
                 try:
                     path = validate_path(path)
                 except ValueError as e:
                     return f"Error: {e}"
-            if path is not None and self._is_denied("read", path):
-                return f"Error: permission denied for read on {path}"
             resolved_backend = self._get_backend(runtime)
             grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if grep_result.error:
                 return grep_result.error
             matches = grep_result.matches or []
-            filtered_matches = [m for m in matches if not self._is_denied("read", m.get("path", ""))] if self._rules else matches
-            formatted = format_grep_matches(filtered_matches, output_mode)
-            return truncate_if_too_long(formatted)
+            formatted = format_grep_matches(matches, output_mode)
+            return ToolMessage(
+                content=truncate_if_too_long(formatted),
+                artifact={"result": grep_result, "output_mode": output_mode},
+                tool_call_id=runtime.tool_call_id,
+                name="grep",
+            )
 
         return StructuredTool.from_function(
             name="grep",

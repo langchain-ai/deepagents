@@ -1,4 +1,4 @@
-"""Unit tests for FilesystemPermission, ToolPermission, and ToolPermissionMiddleware."""
+"""Unit tests for FilesystemPermission, ToolPermission, and PermissionMiddleware."""
 
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -7,8 +7,8 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.middleware.filesystem import FilesystemMiddleware, _check_fs_permission, _filter_paths_by_permission
-from deepagents.middleware.tool_permissions import ToolPermissionMiddleware, _check_tool_permission
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.permissions import PermissionMiddleware, _check_fs_permission, _check_tool_permission, _filter_paths_by_permission
 from deepagents.permissions import FilesystemPermission, ToolPermission
 
 
@@ -26,6 +26,52 @@ def _make_backend(files: dict | None = None) -> StoreBackend:
                 {"content": content, "encoding": "utf-8", "created_at": "", "modified_at": ""},
             )
     return StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+
+
+def _invoke_with_permissions(tool, args, rules, tool_call_id="test"):
+    """Invoke a tool through PermissionMiddleware, return the content string."""
+    perm = PermissionMiddleware(rules=rules)
+    runtime = _runtime(tool_call_id)
+
+    def handler(_req):
+        raw = tool.invoke({**args, "runtime": runtime})
+        if isinstance(raw, ToolMessage):
+            return raw
+        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=tool.name)
+
+    request = ToolCallRequest(
+        runtime=runtime,
+        tool_call={"id": tool_call_id, "name": tool.name, "args": args},
+        state={},
+        tool=tool,
+    )
+    result = perm.wrap_tool_call(request, handler)
+    if isinstance(result, ToolMessage):
+        return result.content
+    return str(result)
+
+
+async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test"):
+    """Async version of _invoke_with_permissions."""
+    perm = PermissionMiddleware(rules=rules)
+    runtime = _runtime(tool_call_id)
+
+    async def handler(_req):
+        raw = await tool.ainvoke({**args, "runtime": runtime})
+        if isinstance(raw, ToolMessage):
+            return raw
+        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=tool.name)
+
+    request = ToolCallRequest(
+        runtime=runtime,
+        tool_call={"id": tool_call_id, "name": tool.name, "args": args},
+        state={},
+        tool=tool,
+    )
+    result = await perm.awrap_tool_call(request, handler)
+    if isinstance(result, ToolMessage):
+        return result.content
+    return str(result)
 
 
 class TestFilesystemPermission:
@@ -118,7 +164,7 @@ class TestCheckToolPermission:
         assert _check_tool_permission(rules, "execute", {}) == "allow"  # falls through to default allow
 
 
-class TestToolPermissionMiddleware:
+class TestPermissionMiddleware:
     def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
         return ToolCallRequest(
             runtime=_runtime(tool_call_id),
@@ -128,7 +174,7 @@ class TestToolPermissionMiddleware:
         )
 
     def test_allow_passes_through(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", args={"command": "pytest *"}),
                 ToolPermission(name="execute", mode="deny"),
@@ -141,7 +187,7 @@ class TestToolPermissionMiddleware:
         assert result is expected
 
     def test_deny_returns_error_message(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", mode="deny"),
             ]
@@ -155,7 +201,7 @@ class TestToolPermissionMiddleware:
         assert result.name == "execute"
 
     def test_unrelated_tool_allowed(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", mode="deny"),
             ]
@@ -167,7 +213,7 @@ class TestToolPermissionMiddleware:
         assert result is expected
 
     async def test_async_deny_returns_error_message(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", mode="deny"),
             ]
@@ -182,7 +228,7 @@ class TestToolPermissionMiddleware:
         assert "denied" in result.content
 
     async def test_async_allow_passes_through(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", args={"command": "pytest *"}),
                 ToolPermission(name="execute", mode="deny"),
@@ -201,50 +247,43 @@ class TestToolPermissionMiddleware:
 class TestFilesystemMiddlewarePermissions:
     def test_read_denied_on_restricted_path(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = read_tool.invoke({"runtime": _runtime(), "file_path": "/secrets/key.txt"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/secrets/key.txt"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
     def test_read_allowed_on_permitted_path(self):
         backend = _make_backend({"/workspace/file.txt": "hello"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = read_tool.invoke({"runtime": _runtime(), "file_path": "/workspace/file.txt"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/workspace/file.txt"}, rules)
         assert "permission denied" not in result
 
     def test_write_denied_on_restricted_path(self):
         backend = _make_backend()
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         write_tool = next(t for t in middleware.tools if t.name == "write_file")
-        result = write_tool.invoke({"runtime": _runtime(), "file_path": "/foo.txt", "content": "data"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
+        result = _invoke_with_permissions(write_tool, {"file_path": "/foo.txt", "content": "data"}, rules)
         assert "permission denied" in result
         assert "write" in result
 
     def test_edit_denied_on_restricted_path(self):
         backend = _make_backend({"/protected/file.txt": "original"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         edit_tool = next(t for t in middleware.tools if t.name == "edit_file")
-        result = edit_tool.invoke(
+        rules = [FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="deny")]
+        result = _invoke_with_permissions(
+            edit_tool,
             {
-                "runtime": _runtime(),
                 "file_path": "/protected/file.txt",
                 "old_string": "original",
                 "new_string": "changed",
-            }
+            },
+            rules,
         )
         assert "permission denied" in result
 
@@ -256,23 +295,19 @@ class TestFilesystemMiddlewarePermissions:
             }
         )
         # Deny the /secrets/ directory entry itself so it's filtered from ls output
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets/", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets/", "/secrets"], mode="deny")]
         # ls /secrets directly should be denied (pre-check on the queried path)
-        result_secrets = ls_tool.invoke({"runtime": _runtime(), "path": "/secrets"})
+        result_secrets = _invoke_with_permissions(ls_tool, {"path": "/secrets"}, rules)
         assert "permission denied" in result_secrets
 
     def test_ls_no_filter_when_all_allowed(self):
         backend = _make_backend({"/public/a.txt": "pub", "/public/b.txt": "pub2"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
-        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
+        result = _invoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/public" in result
 
     def test_no_rules_allows_everything(self):
@@ -284,12 +319,10 @@ class TestFilesystemMiddlewarePermissions:
 
     def test_ls_denied_on_restricted_root(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
-        result = ls_tool.invoke({"runtime": _runtime(), "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = _invoke_with_permissions(ls_tool, {"path": "/secrets"}, rules)
         assert "permission denied" in result
 
     def test_ls_post_filters_denied_children(self):
@@ -299,23 +332,19 @@ class TestFilesystemMiddlewarePermissions:
                 "/secrets/b.txt": "priv",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
-        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/secrets" not in result
         assert "/public" in result
 
     def test_deny_read_allows_write(self):
         backend = _make_backend()
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/vault/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         write_tool = next(t for t in middleware.tools if t.name == "write_file")
-        result = write_tool.invoke({"runtime": _runtime(), "file_path": "/vault/file.txt", "content": "data"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/vault/**"], mode="deny")]
+        result = _invoke_with_permissions(write_tool, {"file_path": "/vault/file.txt", "content": "data"}, rules)
         assert "permission denied" not in result
 
     def test_non_canonical_backend_path_bypasses_deny_rule(self):
@@ -486,9 +515,9 @@ class TestCanonicalizationBypass:
         # so traversal is blocked regardless of permission rules.
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(backend=backend, rules=rules)
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = read_tool.invoke({"runtime": _runtime(), "file_path": "/workspace/../secrets/key.txt"})
+        result = _invoke_with_permissions(read_tool, {"file_path": "/workspace/../secrets/key.txt"}, rules)
         assert "Path traversal not allowed" in result
 
     def test_dotdot_traversal_blocked_even_without_permission_rules(self):
@@ -504,27 +533,27 @@ class TestCanonicalizationBypass:
         # and then caught by the permission rule.
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(backend=backend, rules=rules)
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = read_tool.invoke({"runtime": _runtime(), "file_path": "/secrets//key.txt"})
+        result = _invoke_with_permissions(read_tool, {"file_path": "/secrets//key.txt"}, rules)
         assert "permission denied" in result
 
     def test_dotdot_write_traversal_blocked_by_validate_path(self):
         # validate_path rejects .. on write paths too.
         rules = [FilesystemPermission(operations=["write"], paths=["/restricted/**"], mode="deny")]
         backend = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend, rules=rules)
+        middleware = FilesystemMiddleware(backend=backend)
         write_tool = next(t for t in middleware.tools if t.name == "write_file")
-        result = write_tool.invoke({"runtime": _runtime(), "file_path": "/workspace/../restricted/file.txt", "content": "data"})
+        result = _invoke_with_permissions(write_tool, {"file_path": "/workspace/../restricted/file.txt", "content": "data"}, rules)
         assert "Path traversal not allowed" in result
 
     def test_non_traversal_path_still_allowed(self):
         # Verify that normal paths are not affected by the canonicalization logic.
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         backend = _make_backend({"/workspace/safe.txt": "safe content"})
-        middleware = FilesystemMiddleware(backend=backend, rules=rules)
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = read_tool.invoke({"runtime": _runtime(), "file_path": "/workspace/safe.txt"})
+        result = _invoke_with_permissions(read_tool, {"file_path": "/workspace/safe.txt"}, rules)
         assert "permission denied" not in result
         assert "Path traversal" not in result
 
@@ -534,23 +563,19 @@ class TestGlobToolPermissions:
 
     def test_glob_denied_on_restricted_base_path(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = glob_tool.invoke({"runtime": _runtime(), "pattern": "*.txt", "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = _invoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/secrets"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
     def test_glob_allowed_on_unrestricted_base_path(self):
         backend = _make_backend({"/workspace/file.txt": "hello"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = glob_tool.invoke({"runtime": _runtime(), "pattern": "*.txt", "path": "/workspace"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/workspace"}, rules)
         assert "permission denied" not in result
 
     def test_glob_filters_denied_results(self):
@@ -560,34 +585,28 @@ class TestGlobToolPermissions:
                 "/secrets/b.txt": "priv",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = glob_tool.invoke({"runtime": _runtime(), "pattern": "**/*.txt", "path": "/"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(glob_tool, {"pattern": "**/*.txt", "path": "/"}, rules)
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
 
     def test_glob_no_filter_annotation_when_all_allowed(self):
         backend = _make_backend({"/public/a.txt": "pub", "/public/b.txt": "pub2"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = glob_tool.invoke({"runtime": _runtime(), "pattern": "**/*.txt", "path": "/"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
+        result = _invoke_with_permissions(glob_tool, {"pattern": "**/*.txt", "path": "/"}, rules)
         assert "permission denied" not in result
 
     async def test_glob_denied_on_restricted_base_path_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = await glob_tool.ainvoke({"runtime": _runtime(), "pattern": "*.txt", "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = await _ainvoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/secrets"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
@@ -598,12 +617,10 @@ class TestGlobToolPermissions:
                 "/secrets/b.txt": "priv",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         glob_tool = next(t for t in middleware.tools if t.name == "glob")
-        result = await glob_tool.ainvoke({"runtime": _runtime(), "pattern": "**/*.txt", "path": "/"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(glob_tool, {"pattern": "**/*.txt", "path": "/"}, rules)
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
@@ -614,34 +631,28 @@ class TestGrepToolPermissions:
 
     def test_grep_denied_on_restricted_path(self):
         backend = _make_backend({"/secrets/key.txt": "top secret data"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "secret", "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "secret", "path": "/secrets"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
     def test_grep_dotdot_traversal_blocked_by_validate_path(self):
         """Grep rejects ../ traversal via validate_path before the permission check runs."""
         backend = _make_backend({"/secrets/key.txt": "top secret data"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "secret", "path": "/workspace/../secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "secret", "path": "/workspace/../secrets"}, rules)
         assert "Path traversal not allowed" in result
 
     def test_grep_allowed_on_unrestricted_path(self):
         backend = _make_backend({"/workspace/file.txt": "hello world"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "hello", "path": "/workspace"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "hello", "path": "/workspace"}, rules)
         assert "permission denied" not in result
 
     def test_grep_filters_denied_results_from_matches(self):
@@ -651,24 +662,20 @@ class TestGrepToolPermissions:
                 "/secrets/b.txt": "keyword there",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "keyword"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "keyword"}, rules)
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
 
     def test_grep_no_filter_annotation_when_all_allowed(self):
         backend = _make_backend({"/public/a.txt": "keyword", "/public/b.txt": "keyword"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "keyword"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "keyword"}, rules)
         assert "permission denied" not in result
 
     def test_grep_path_none_bypasses_pre_check_but_filters_results(self):
@@ -678,12 +685,10 @@ class TestGrepToolPermissions:
                 "/secrets/b.txt": "keyword there",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = grep_tool.invoke({"runtime": _runtime(), "pattern": "keyword", "path": None})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "keyword", "path": None}, rules)
         assert "permission denied" not in result
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
@@ -691,12 +696,10 @@ class TestGrepToolPermissions:
 
     async def test_grep_denied_on_restricted_path_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret data"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = await grep_tool.ainvoke({"runtime": _runtime(), "pattern": "secret", "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = await _ainvoke_with_permissions(grep_tool, {"pattern": "secret", "path": "/secrets"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
@@ -707,12 +710,10 @@ class TestGrepToolPermissions:
                 "/secrets/b.txt": "keyword there",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = await grep_tool.ainvoke({"runtime": _runtime(), "pattern": "keyword"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(grep_tool, {"pattern": "keyword"}, rules)
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
@@ -724,12 +725,10 @@ class TestGrepToolPermissions:
                 "/secrets/b.txt": "keyword there",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        result = await grep_tool.ainvoke({"runtime": _runtime(), "pattern": "keyword", "path": None})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(grep_tool, {"pattern": "keyword", "path": None}, rules)
         assert "permission denied" not in result
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
@@ -737,7 +736,7 @@ class TestGrepToolPermissions:
 
 
 class TestExecuteToolPermissions:
-    """Tests for ToolPermission rules targeting the execute tool via ToolPermissionMiddleware."""
+    """Tests for ToolPermission rules targeting the execute tool via PermissionMiddleware."""
 
     def _make_sandbox_backend(self) -> SandboxBackendProtocol:
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
@@ -767,7 +766,7 @@ class TestExecuteToolPermissions:
         assert _check_tool_permission(rules, "execute", {"command": "rm -rf /"}) == "deny"
 
     def test_execute_middleware_denies(self):
-        middleware = ToolPermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
+        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
         request = ToolCallRequest(
             runtime=_runtime("tc1"),
             tool_call={"id": "tc1", "name": "execute", "args": {"command": "rm -rf /"}},
@@ -779,7 +778,7 @@ class TestExecuteToolPermissions:
         assert "denied" in result.content
 
     def test_execute_middleware_allows_matching_pattern(self):
-        middleware = ToolPermissionMiddleware(
+        middleware = PermissionMiddleware(
             rules=[
                 ToolPermission(name="execute", args={"command": "pytest *"}),
                 ToolPermission(name="execute", mode="deny"),
@@ -796,9 +795,9 @@ class TestExecuteToolPermissions:
         assert result is expected
 
     def test_execute_tool_invocation_denied_via_middleware(self):
-        """Full integration: execute tool on a sandbox backend, denied by ToolPermissionMiddleware."""
+        """Full integration: execute tool on a sandbox backend, denied by PermissionMiddleware."""
         backend = self._make_sandbox_backend()
-        middleware = ToolPermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
+        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
         fs_middleware = FilesystemMiddleware(backend=backend)
         execute_tool = next(t for t in fs_middleware.tools if t.name == "execute")
 
@@ -816,7 +815,7 @@ class TestExecuteToolPermissions:
         assert "denied" in result.content
 
     async def test_execute_middleware_denies_async(self):
-        middleware = ToolPermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
+        middleware = PermissionMiddleware(rules=[ToolPermission(name="execute", mode="deny")])
         request = ToolCallRequest(
             runtime=_runtime("tc1"),
             tool_call={"id": "tc1", "name": "execute", "args": {"command": "rm -rf /"}},
@@ -837,71 +836,60 @@ class TestAsyncFilesystemMiddlewarePermissions:
 
     async def test_read_denied_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = await read_tool.ainvoke({"runtime": _runtime(), "file_path": "/secrets/key.txt"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(read_tool, {"file_path": "/secrets/key.txt"}, rules)
         assert "permission denied" in result
         assert "read" in result
 
     async def test_read_allowed_async(self):
         backend = _make_backend({"/workspace/file.txt": "hello"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
-        result = await read_tool.ainvoke({"runtime": _runtime(), "file_path": "/workspace/file.txt"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(read_tool, {"file_path": "/workspace/file.txt"}, rules)
         assert "permission denied" not in result
 
     async def test_write_denied_async(self):
         backend = _make_backend()
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         write_tool = next(t for t in middleware.tools if t.name == "write_file")
-        result = await write_tool.ainvoke({"runtime": _runtime(), "file_path": "/foo.txt", "content": "data"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(write_tool, {"file_path": "/foo.txt", "content": "data"}, rules)
         assert "permission denied" in result
         assert "write" in result
 
     async def test_write_allowed_async(self):
         backend = _make_backend()
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         write_tool = next(t for t in middleware.tools if t.name == "write_file")
-        result = await write_tool.ainvoke({"runtime": _runtime(), "file_path": "/workspace/file.txt", "content": "data"})
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(write_tool, {"file_path": "/workspace/file.txt", "content": "data"}, rules)
         assert "permission denied" not in result
 
     async def test_edit_denied_async(self):
         backend = _make_backend({"/protected/file.txt": "original"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         edit_tool = next(t for t in middleware.tools if t.name == "edit_file")
-        result = await edit_tool.ainvoke(
+        rules = [FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(
+            edit_tool,
             {
-                "runtime": _runtime(),
                 "file_path": "/protected/file.txt",
                 "old_string": "original",
                 "new_string": "changed",
-            }
+            },
+            rules,
         )
         assert "permission denied" in result
 
     async def test_ls_denied_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
-        result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/secrets"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = await _ainvoke_with_permissions(ls_tool, {"path": "/secrets"}, rules)
         assert "permission denied" in result
 
     async def test_ls_filters_denied_results_async(self):
@@ -911,12 +899,10 @@ class TestAsyncFilesystemMiddlewarePermissions:
                 "/secrets/b.txt": "priv",
             }
         )
-        middleware = FilesystemMiddleware(
-            backend=backend,
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
-        )
+        middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(t for t in middleware.tools if t.name == "ls")
-        result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/secrets/b.txt" not in result
 
 
@@ -949,7 +935,7 @@ class TestToolPermissionOnFilesystemTools:
         assert _check_tool_permission(rules, "glob", {"pattern": "**"}) == "allow"
 
     def test_tool_permission_middleware_denies_read_file(self):
-        middleware = ToolPermissionMiddleware(rules=[ToolPermission(name="read_file", mode="deny")])
+        middleware = PermissionMiddleware(rules=[ToolPermission(name="read_file", mode="deny")])
         request = ToolCallRequest(
             runtime=_runtime("tc1"),
             tool_call={"id": "tc1", "name": "read_file", "args": {"file_path": "/foo.txt"}},

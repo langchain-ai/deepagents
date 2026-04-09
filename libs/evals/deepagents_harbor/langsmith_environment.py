@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import shlex
 from pathlib import Path
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
 _MB_PER_GB = 1024
 _MAX_NAME_LEN = 63
+_SESSION_HASH_LEN = 8
 
 
 class LangSmithEnvironment(BaseEnvironment):
@@ -177,6 +179,38 @@ class LangSmithEnvironment(BaseEnvironment):
             name = f"h-{name}"
         return name[:_MAX_NAME_LEN].rstrip("-")
 
+    # -- Template naming -------------------------------------------------------
+
+    @staticmethod
+    def _build_template_name(image: str, session_id: str) -> str:
+        """Build a unique LangSmith template name within the 63-char limit.
+
+        Previous implementation concatenated ``harbor-{image}-{session}`` and
+        truncated to 63 characters.  When the image name was long the unique
+        session suffix was silently chopped off, causing name collisions across
+        concurrent matrix jobs.
+
+        This version reserves 8 hex characters (from a SHA-256 of the full
+        session ID) as a suffix so uniqueness is guaranteed regardless of
+        image-name length.
+
+        Args:
+            image: Container image reference (e.g. ``alexgshaw/foo:tag``).
+            session_id: Unique trial session identifier.
+
+        Returns:
+            A sanitized name of at most 63 characters, guaranteed unique per
+            ``session_id``.
+        """
+        sanitized_image = LangSmithEnvironment._sanitize_name(image)
+        session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[
+            :_SESSION_HASH_LEN
+        ]
+        # "harbor-" (7) + "-" (1) + suffix (8) = 16 reserved chars
+        max_image_len = _MAX_NAME_LEN - len("harbor-") - 1 - _SESSION_HASH_LEN
+        truncated_image = sanitized_image[:max_image_len].rstrip("-")
+        return f"harbor-{truncated_image}-{session_suffix}"
+
     # -- Lifecycle -------------------------------------------------------------
 
     async def start(self, force_build: bool) -> None:
@@ -203,9 +237,7 @@ class LangSmithEnvironment(BaseEnvironment):
         client = AsyncSandboxClient(api_key=api_key)
         self._client = client
 
-        sanitized_image = self._sanitize_name(image)
-        sanitized_session = self._sanitize_name(self._session_id)
-        template_name = f"harbor-{sanitized_image}-{sanitized_session}"[:_MAX_NAME_LEN]
+        template_name = self._build_template_name(image, self._session_id)
 
         cpu = f"{self.task_env_config.cpus * 1000}m"
         memory_mb = self.task_env_config.memory_mb

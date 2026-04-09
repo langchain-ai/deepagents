@@ -481,8 +481,50 @@ class TestEnsureTemplate:
 
             await env.start(force_build=False)
 
-            expected = "harbor-ghcr-io-my-org-my-image-v1-2"
+            expected = LangSmithEnvironment._build_template_name(
+                "ghcr.io/my-org/my-image:v1.2", "test-session-001"
+            )
             mock_client.get_template.assert_called_once_with(expected)
+
+
+class TestBuildTemplateName:
+    """Tests for _build_template_name uniqueness guarantees."""
+
+    def test_short_image_includes_session_context(self) -> None:
+        name = LangSmithEnvironment._build_template_name("ubuntu:24.04", "sess-001")
+        assert name.startswith("harbor-")
+        assert len(name) <= 63
+
+    def test_long_image_stays_within_limit(self) -> None:
+        long_image = "alexgshaw/log-summary-date-ranges:20251031"
+        name = LangSmithEnvironment._build_template_name(long_image, "session-abc")
+        assert len(name) <= 63
+
+    def test_different_sessions_produce_different_names(self) -> None:
+        """Regression: long image names must not cause name collisions."""
+        image = "alexgshaw/log-summary-date-ranges:20251031"
+        names = {
+            LangSmithEnvironment._build_template_name(image, f"task__{suffix}")
+            for suffix in ("yTtDpUN", "aRm97it", "3k4jKqE")
+        }
+        assert len(names) == 3
+
+    def test_collision_regression_multi_source(self) -> None:
+        image = "alexgshaw/multi-source-data-merger:20251031"
+        names = {
+            LangSmithEnvironment._build_template_name(image, f"task__{suffix}")
+            for suffix in ("yZW2Gye", "yurd9SN", "csWfiWu")
+        }
+        assert len(names) == 3
+
+    def test_deterministic(self) -> None:
+        a = LangSmithEnvironment._build_template_name("img:v1", "session-x")
+        b = LangSmithEnvironment._build_template_name("img:v1", "session-x")
+        assert a == b
+
+    def test_name_starts_with_letter(self) -> None:
+        name = LangSmithEnvironment._build_template_name("123image:latest", "s1")
+        assert name[0].isalpha()
 
 
 class TestExec:

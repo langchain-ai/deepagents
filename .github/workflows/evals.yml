@@ -9,8 +9,6 @@
 #   OPENAI_API_KEY     — needed for OpenAI models
 #   GOOGLE_API_KEY     — needed for Google models
 #   XAI_API_KEY        — needed for xAI/Grok models
-#   MISTRAL_API_KEY    — needed for Mistral models
-#   DEEPSEEK_API_KEY   — needed for DeepSeek models
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
@@ -51,7 +49,6 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
@@ -263,6 +260,7 @@ jobs:
     name: "📊 Eval (${{ matrix.model }})"
     needs: prep
     runs-on: ubuntu-latest
+    environment: evals
     timeout-minutes: 360
     # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
     # jobs on different providers run in parallel.
@@ -278,22 +276,20 @@ jobs:
         working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING_V2: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

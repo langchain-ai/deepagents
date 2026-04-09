@@ -3,11 +3,12 @@
 Reads the canonical project layout:
 
 ```txt
-src/
-    AGENTS.md       # required — system prompt + seeded memory
-    skills/         # optional — auto-seeded into skills namespace
-    mcp.json        # optional — HTTP/SSE MCP servers
-    deepagents.toml
+<project>/
+    deepagents.toml  # required — agent + sandbox config
+    AGENTS.md        # required — system prompt + seeded memory
+    .env             # optional — environment variables
+    mcp.json         # optional — HTTP/SSE MCP servers
+    skills/          # optional — auto-seeded into skills namespace
 ```
 
 ...and writes everything `langgraph deploy` needs to a build directory.
@@ -76,8 +77,8 @@ def bundle(
         shutil.copy2(project_root / MCP_FILENAME, build_dir / "_mcp.json")
         logger.info("Copied %s → _mcp.json", MCP_FILENAME)
 
-    # 3b. Copy .env from the project root if present (i.e. alongside
-    # deepagents.toml inside ``src/``). The bundler skips .env when
+    # 3b. Copy .env from the project root if present (alongside
+    # deepagents.toml). The bundler skips .env when
     # building the seed payload so secrets never land in _seed.json.
     env_src = project_root / ".env"
     env_present = env_src.is_file()
@@ -118,17 +119,18 @@ def _build_seed(
 
     ```txt
     {
-        "memories": { "AGENTS.md": "..." },
-        "skills":   { "<skill>/SKILL.md": "...", ... }
+        "memories": { "/AGENTS.md": "..." },
+        "skills":   { "/<skill>/SKILL.md": "...", ... }
     }
     ```
 
-    `memories` always contains `AGENTS.md` — the agent reads it at runtime
+    `memories` always contains `/AGENTS.md` — the agent reads it at runtime
     via `/memories/AGENTS.md`. Writes and edits to that path are blocked
     by `ReadOnlyStoreBackend` in the generated graph.
 
-    `skills` walks `src/skills/` if present. Keys are paths relative to the
-    skills dir; the runtime namespace handles the scoping.
+    `skills` walks `skills/` if present. Keys are paths relative to the
+    skills dir with a leading slash; the runtime namespace handles the
+    scoping.
     """
     # Keys must match what CompositeBackend passes to the mounted
     # StoreBackend after stripping the route prefix: for a read of
@@ -231,8 +233,12 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     if seed_path.exists():
         try:
             seed = json.loads(seed_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "Failed to parse %s; summary may be incomplete: %s",
+                seed_path,
+                exc,
+            )
 
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")

@@ -3,10 +3,11 @@
 These templates are rendered by the bundler with values from
 `~deepagents_cli.deploy.config.DeployConfig`.
 
-The generated `deploy_graph.py` is store-only: one `StoreBackend` with
-two namespaces (memory and skills) composed with the configured sandbox as
-the default backend. There is no hub path, no custom Python tools, and
-no env-file handling.
+The generated `deploy_graph.py` uses a `CompositeBackend` with two
+read-only `StoreBackend` routes (memories and skills) and the configured sandbox
+as the default writable backend.
+
+There is no hub path and no custom Python tools.
 """
 
 from __future__ import annotations
@@ -144,7 +145,7 @@ SANDBOX_BLOCKS = {
 
 
 # ---------------------------------------------------------------------------
-# MCP tools loader (only emitted when src/mcp.json is present)
+# MCP tools loader (only emitted when mcp.json is present)
 # ---------------------------------------------------------------------------
 
 MCP_TOOLS_TEMPLATE = '''\
@@ -200,7 +201,7 @@ async def _load_mcp_tools():
 #   -------------  --------------------------------  --------
 #   /memories/     (assistant_id, "memories")        no
 #   /skills/       (assistant_id, "skills")          no
-#   default        sandbox (per-thread)              yes
+#   default        sandbox (per `[sandbox].scope`)    yes
 #
 # `make_graph` takes the `RunnableConfig` at factory time, pulls
 # `assistant_id` from `config["configurable"]`, and uses it as the

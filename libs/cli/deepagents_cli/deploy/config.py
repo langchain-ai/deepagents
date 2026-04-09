@@ -11,9 +11,9 @@ The new minimal surface has exactly two sections:
 read it at runtime, but writes/edits to that path are blocked by a read-only
 middleware in the generated graph.
 
-Skills (`src/skills/`) and MCP servers (`src/mcp.json`) are auto-detected
-from the project layout. The agent's system prompt is read from
-`src/AGENTS.md` at bundle time — there is no `system_prompt` key.
+Skills (`skills/`) and MCP servers (`mcp.json`) are auto-detected from the
+project layout. The agent's system prompt is read from `AGENTS.md` at bundle
+time — there is no `system_prompt` key.
 """
 
 from __future__ import annotations
@@ -23,12 +23,18 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
-VALID_SANDBOX_PROVIDERS = frozenset(
-    {"none", "daytona", "langsmith", "modal", "runloop"}
-)
-"""Valid sandbox providers (mirrors sandbox_factory._PROVIDER_TO_WORKING_DIR)"""
+SandboxProvider = Literal["none", "daytona", "langsmith", "modal", "runloop"]
+"""Valid sandbox provider identifiers."""
+
+SandboxScope = Literal["thread", "assistant"]
+"""Valid sandbox scope values."""
+
+VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
+"""Valid sandbox providers for deploy (subset of sandbox_factory, plus `"none"`)."""
+
+VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
@@ -40,13 +46,15 @@ MCP_FILENAME = "mcp.json"
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """``[agent]`` section — core agent identity."""
+    """`[agent]` section — core agent identity."""
 
     name: str
     model: str = "anthropic:claude-sonnet-4-6"
 
-
-VALID_SANDBOX_SCOPES = frozenset({"thread", "assistant"})
+    def __post_init__(self) -> None:  # noqa: D105 — simple guard, not a public API
+        if not self.name.strip():
+            msg = "AgentConfig.name must be non-empty"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -65,10 +73,10 @@ class SandboxConfig:
         same assistant share a single sandbox and its filesystem.
     """
 
-    provider: str = "none"
+    provider: SandboxProvider = "none"
     template: str = "deepagents-deploy"
     image: str = "python:3"
-    scope: str = "thread"
+    scope: SandboxScope = "thread"
 
 
 @dataclass(frozen=True)
@@ -82,8 +90,7 @@ class DeployConfig:
         """Validate config against the filesystem.
 
         Args:
-            project_root: Directory containing `deepagents.toml` (i.e.
-                the `src/` dir in the canonical layout).
+            project_root: Directory containing `deepagents.toml`.
 
         Returns:
             List of validation error strings. Empty if valid.
@@ -168,13 +175,19 @@ def load_config(config_path: Path) -> DeployConfig:
         msg = f"Config file not found: {config_path}"
         raise FileNotFoundError(msg)
 
-    with config_path.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        msg = f"Syntax error in {config_path}: {exc}"
+        raise ValueError(msg) from exc
 
     return _parse_config(data)
 
 
 _ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
+_ALLOWED_AGENT_KEYS = frozenset({"name", "model"})
+_ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -195,18 +208,33 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
         msg = "[agent].name is required in deepagents.toml"
         raise ValueError(msg)
 
-    agent = AgentConfig(
-        name=agent_data["name"],
-        model=agent_data.get("model", "anthropic:claude-sonnet-4-6"),
-    )
+    unknown_agent = set(agent_data.keys()) - _ALLOWED_AGENT_KEYS
+    if unknown_agent:
+        msg = (
+            f"Unknown key(s) in [agent]: {sorted(unknown_agent)}. "
+            f"Allowed: {sorted(_ALLOWED_AGENT_KEYS)}"
+        )
+        raise ValueError(msg)
+
+    # Only pass keys present in TOML; dataclass defaults handle the rest.
+    agent_kwargs: dict[str, Any] = {"name": agent_data["name"]}
+    if "model" in agent_data:
+        agent_kwargs["model"] = agent_data["model"]
+    agent = AgentConfig(**agent_kwargs)
 
     sandbox_data = data.get("sandbox", {})
-    sandbox = SandboxConfig(
-        provider=sandbox_data.get("provider", "none"),
-        template=sandbox_data.get("template", "deepagents-deploy"),
-        image=sandbox_data.get("image", "python:3"),
-        scope=sandbox_data.get("scope", "thread"),
-    )
+    unknown_sandbox = set(sandbox_data.keys()) - _ALLOWED_SANDBOX_KEYS
+    if unknown_sandbox:
+        msg = (
+            f"Unknown key(s) in [sandbox]: {sorted(unknown_sandbox)}. "
+            f"Allowed: {sorted(_ALLOWED_SANDBOX_KEYS)}"
+        )
+        raise ValueError(msg)
+
+    sandbox_kwargs: dict[str, Any] = {
+        k: sandbox_data[k] for k in _ALLOWED_SANDBOX_KEYS if k in sandbox_data
+    }
+    sandbox = SandboxConfig(**sandbox_kwargs)
 
     return DeployConfig(agent=agent, sandbox=sandbox)
 
@@ -261,7 +289,7 @@ def _validate_model_credentials(model: str) -> list[str]:
 
 
 def _validate_sandbox_credentials(provider: str) -> list[str]:
-    """Check that the API key env var is set for the sandbox provider."""
+    """Check that at least one required API key env var is set for the provider."""
     required_vars = _SANDBOX_PROVIDER_ENV.get(provider)
     if required_vars is None:
         return []
@@ -276,9 +304,11 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
 
 
 def find_config(start_path: Path | None = None) -> Path | None:
-    """Find `deepagents.toml` in the current directory.
+    """Find `deepagents.toml` in *start_path* (or cwd if not given).
 
-    Returns the path if found, or ``None`` otherwise.
+    Only checks the single directory — does not walk parent directories.
+
+    Returns the path if found, or `None` otherwise.
     """
     current = (start_path or Path.cwd()).resolve()
     candidate = current / DEFAULT_CONFIG_FILENAME

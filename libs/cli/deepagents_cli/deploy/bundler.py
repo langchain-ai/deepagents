@@ -65,9 +65,10 @@ def bundle(
         encoding="utf-8",
     )
     logger.info(
-        "Wrote _seed.json (memories: %d, skills: %d)",
+        "Wrote _seed.json (memories: %d, skills: %d, subagents: %d)",
         len(seed["memories"]),
         len(seed["skills"]),
+        len(seed["subagents"]),
     )
 
     # 3. Copy mcp.json if present.
@@ -76,7 +77,14 @@ def bundle(
         shutil.copy2(project_root / MCP_FILENAME, build_dir / "_mcp.json")
         logger.info("Copied %s → _mcp.json", MCP_FILENAME)
 
-    # 3b. Copy .env from the project root if present (i.e. alongside
+    # 3b. Copy subagent mcp.json files.
+    for sa in config.subagents:
+        if sa.mcp_path and sa.mcp_path.is_file():
+            dest = build_dir / f"_mcp_{sa.agent.name}.json"
+            shutil.copy2(sa.mcp_path, dest)
+            logger.info("Copied subagent %s mcp.json → %s", sa.agent.name, dest.name)
+
+    # 3c. Copy .env from the project root if present (i.e. alongside
     # deepagents.toml inside ``src/``). The bundler skips .env when
     # building the seed payload so secrets never land in _seed.json.
     env_src = project_root / ".env"
@@ -108,10 +116,10 @@ def bundle(
 
 
 def _build_seed(
-    config: DeployConfig,  # noqa: ARG001
+    config: DeployConfig,
     project_root: Path,
     system_prompt: str,
-) -> dict[str, dict[str, str]]:
+) -> dict:
     """Build the `_seed.json` payload.
 
     Layout:
@@ -144,7 +152,27 @@ def _build_seed(
                 rel = f.relative_to(skills_dir).as_posix()
                 skills[f"/{rel}"] = f.read_text(encoding="utf-8")
 
-    return {"memories": memories, "skills": skills}
+    # Build subagent seed data.
+    subagents_seed: dict[str, dict] = {}
+    for sa in config.subagents:
+        sa_memories: dict[str, str] = {
+            f"/{AGENTS_MD_FILENAME}": sa.system_prompt,
+        }
+        sa_skills: dict[str, str] = {}
+        if sa.skills_dir and sa.skills_dir.is_dir():
+            for f in sorted(sa.skills_dir.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    rel = f.relative_to(sa.skills_dir).as_posix()
+                    sa_skills[f"/{rel}"] = f.read_text(encoding="utf-8")
+
+        subagents_seed[sa.agent.name] = {
+            "system_prompt": sa.system_prompt,
+            "description": sa.description,
+            "memories": sa_memories,
+            "skills": sa_skills,
+        }
+
+    return {"memories": memories, "skills": skills, "subagents": subagents_seed}
 
 
 def _render_deploy_graph(

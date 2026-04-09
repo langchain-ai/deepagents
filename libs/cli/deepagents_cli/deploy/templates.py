@@ -364,7 +364,6 @@ class ReadOnlyStoreBackend(StoreBackend):
         self, file_path, old_string, new_string, replace_all=False,
     ):
         return EditResult(error=self._READ_ONLY_MSG)
-        return EditResult(error=self._READ_ONLY_MSG)
 
 
 _SEED_CACHE: dict | None = None

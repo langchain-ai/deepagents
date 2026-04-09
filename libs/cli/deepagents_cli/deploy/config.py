@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 VALID_SANDBOX_PROVIDERS = frozenset(
     {"none", "daytona", "langsmith", "modal", "runloop"}
@@ -36,6 +39,7 @@ DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 AGENTS_MD_FILENAME = "AGENTS.md"
 SKILLS_DIRNAME = "skills"
 MCP_FILENAME = "mcp.json"
+AGENTS_DIRNAME = "agents"
 
 
 @dataclass(frozen=True)
@@ -72,11 +76,24 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class SubagentConfig:
+    """A single subagent parsed from agents/{name}/."""
+
+    agent: AgentConfig
+    sandbox: SandboxConfig | None  # None means inherit from parent
+    system_prompt: str
+    description: str
+    skills_dir: Path | None  # absolute path to subagent's skills/ if present
+    mcp_path: Path | None  # absolute path to subagent's mcp.json if present
+
+
+@dataclass(frozen=True)
 class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
     agent: AgentConfig
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    subagents: list[SubagentConfig] = field(default_factory=list)
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -129,6 +146,28 @@ class DeployConfig:
 
         # Validate credentials for sandbox provider.
         errors.extend(_validate_sandbox_credentials(self.sandbox.provider))
+
+        # Validate subagents.
+        seen_names: set[str] = set()
+        for sa in self.subagents:
+            if sa.agent.name in seen_names:
+                errors.append(f"Duplicate subagent name: '{sa.agent.name}'")
+            seen_names.add(sa.agent.name)
+
+            if sa.agent.name == "general-purpose":
+                errors.append("Subagent name 'general-purpose' is reserved")
+
+            if sa.mcp_path and sa.mcp_path.is_file():
+                errors.extend(_validate_mcp_for_deploy(sa.mcp_path))
+
+            errors.extend(_validate_model_credentials(sa.agent.model))
+
+            if sa.sandbox is not None:
+                if sa.sandbox.provider not in VALID_SANDBOX_PROVIDERS:
+                    errors.append(
+                        f"Subagent '{sa.agent.name}': unknown sandbox provider "
+                        f"{sa.sandbox.provider}. Valid: {', '.join(sorted(VALID_SANDBOX_PROVIDERS))}"
+                    )
 
         return errors
 
@@ -285,6 +324,141 @@ def find_config(start_path: Path | None = None) -> Path | None:
     if candidate.is_file():
         return candidate
     return None
+
+
+def _parse_subagent_frontmatter(agents_md_path: Path) -> tuple[str, str, str]:
+    """Parse AGENTS.md frontmatter for name, description, and system_prompt.
+
+    Returns:
+        Tuple of (name, description, system_prompt).
+
+    Raises:
+        ValueError: If frontmatter is missing or invalid.
+    """
+    content = agents_md_path.read_text(encoding="utf-8")
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", content, re.DOTALL)
+    if not match:
+        msg = f"{agents_md_path}: missing YAML frontmatter (--- delimiters)"
+        raise ValueError(msg)
+
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as exc:
+        msg = f"{agents_md_path}: invalid YAML frontmatter: {exc}"
+        raise ValueError(msg) from exc
+
+    if not isinstance(frontmatter, dict):
+        msg = f"{agents_md_path}: frontmatter must be a YAML mapping"
+        raise ValueError(msg)
+
+    name = frontmatter.get("name")
+    if not isinstance(name, str) or not name:
+        msg = f"{agents_md_path}: missing required frontmatter field 'name'"
+        raise ValueError(msg)
+
+    description = frontmatter.get("description")
+    if not isinstance(description, str) or not description:
+        msg = f"{agents_md_path}: missing required frontmatter field 'description'"
+        raise ValueError(msg)
+
+    system_prompt = match.group(2).strip()
+    return name, description, system_prompt
+
+
+def load_subagents(project_root: Path) -> list[SubagentConfig]:
+    """Discover and load subagent configs from agents/ directory.
+
+    Args:
+        project_root: Directory containing the main deepagents.toml.
+
+    Returns:
+        List of SubagentConfig, sorted by name.
+
+    Raises:
+        ValueError: If a subagent has invalid config.
+    """
+    agents_dir = project_root / AGENTS_DIRNAME
+    if not agents_dir.is_dir():
+        return []
+
+    subagents: list[SubagentConfig] = []
+    seen_names: set[str] = set()
+
+    for entry in sorted(agents_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+
+        # Require AGENTS.md
+        agents_md_path = entry / AGENTS_MD_FILENAME
+        if not agents_md_path.is_file():
+            msg = f"agents/{entry.name}/AGENTS.md not found — every subagent directory must contain an AGENTS.md"
+            raise ValueError(msg)
+
+        # Parse frontmatter
+        fm_name, description, system_prompt = _parse_subagent_frontmatter(agents_md_path)
+
+        # Load optional toml
+        toml_path = entry / DEFAULT_CONFIG_FILENAME
+        toml_data: dict[str, Any] = {}
+        if toml_path.exists():
+            with toml_path.open("rb") as f:
+                toml_data = tomllib.load(f)
+
+        # Build AgentConfig from toml (with frontmatter name as fallback)
+        agent_data = toml_data.get("agent", {})
+        toml_name = agent_data.get("name", fm_name)
+
+        # Validate name consistency
+        if toml_data and "agent" in toml_data and toml_name != fm_name:
+            msg = (
+                f"Subagent '{fm_name}' in agents/{entry.name}/ has mismatched "
+                f"name in deepagents.toml: '{toml_name}'"
+            )
+            raise ValueError(msg)
+
+        # Check reserved name
+        if fm_name == "general-purpose":
+            msg = "Subagent name 'general-purpose' is reserved"
+            raise ValueError(msg)
+
+        # Check for duplicates
+        if fm_name in seen_names:
+            msg = f"Duplicate subagent name: '{fm_name}'"
+            raise ValueError(msg)
+        seen_names.add(fm_name)
+
+        agent_config = AgentConfig(
+            name=fm_name,
+            model=agent_data.get("model", "anthropic:claude-sonnet-4-6"),
+        )
+
+        # Sandbox: None means inherit from parent
+        sandbox_data = toml_data.get("sandbox")
+        sandbox_config: SandboxConfig | None = None
+        if sandbox_data is not None:
+            sandbox_config = SandboxConfig(
+                provider=sandbox_data.get("provider", "none"),
+                template=sandbox_data.get("template", "deepagents-deploy"),
+                image=sandbox_data.get("image", "python:3"),
+                scope=sandbox_data.get("scope", "thread"),
+            )
+
+        # Detect optional dirs/files
+        skills_dir = entry / SKILLS_DIRNAME
+        mcp_path = entry / MCP_FILENAME
+
+        subagents.append(
+            SubagentConfig(
+                agent=agent_config,
+                sandbox=sandbox_config,
+                system_prompt=system_prompt,
+                description=description,
+                skills_dir=skills_dir if skills_dir.is_dir() else None,
+                mcp_path=mcp_path if mcp_path.is_file() else None,
+            )
+        )
+
+    return subagents
 
 
 def generate_starter_config() -> str:

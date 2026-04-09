@@ -76,6 +76,9 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
 
+    memory: NotRequired[list[str]]
+    """Memory source paths for MemoryMiddleware (e.g., ["/memories/agents/researcher/AGENTS.md"])."""
+
 
 class CompiledSubAgent(TypedDict):
     """A pre-compiled agent spec.

@@ -340,6 +340,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(spec.get("middleware", []))
             # "ignore" skips caching for non-Anthropic models (see comment above).
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            subagent_memory = spec.get("memory")
+            if subagent_memory:
+                subagent_middleware.append(MemoryMiddleware(backend=backend, sources=subagent_memory))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 

@@ -5,7 +5,7 @@ Registered with the CLI via :func:`setup_deploy_parser` in ``main.py``.
 Commands:
 - ``deepagents deploy`` — Bundle and deploy to LangGraph Platform
 - ``deepagents deploy --dry-run`` — Show what would be generated
-- ``deepagents deploy init`` — Generate starter ``deepagents.toml``
+- ``deepagents init [NAME]`` — Scaffold a new deploy project folder
 """
 
 from __future__ import annotations
@@ -36,8 +36,14 @@ def setup_deploy_parsers(
     # deepagents init
     init_parser = subparsers.add_parser(
         "init",
-        help="Generate a starter deepagents.toml in the current directory",
+        help="(beta) Scaffold a new deploy project folder",
         add_help=False,
+    )
+    init_parser.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="Project folder name (will be created in cwd). Prompted if omitted.",
     )
     init_parser.add_argument(
         "-h",
@@ -47,13 +53,13 @@ def setup_deploy_parsers(
     init_parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing deepagents.toml",
+        help="Overwrite existing files",
     )
 
     # deepagents dev
     dev_parser = subparsers.add_parser(
         "dev",
-        help="Bundle and run a local langgraph dev server",
+        help="(beta) Bundle and run a local langgraph dev server",
         add_help=False,
     )
     dev_parser.add_argument(
@@ -65,7 +71,7 @@ def setup_deploy_parsers(
         "--config",
         type=str,
         default=None,
-        help="Path to deepagents.toml (default: ./deepagents.toml)",
+        help="Path to deepagents.toml (default: auto-discovered from cwd upward)",
     )
     dev_parser.add_argument(
         "--port",
@@ -83,7 +89,7 @@ def setup_deploy_parsers(
     # deepagents deploy
     deploy_parser = subparsers.add_parser(
         "deploy",
-        help="Bundle and deploy agent to LangGraph Platform",
+        help="(beta) Bundle and deploy agent to LangGraph Platform",
         add_help=False,
     )
     deploy_parser.add_argument(
@@ -95,7 +101,7 @@ def setup_deploy_parsers(
         "--config",
         type=str,
         default=None,
-        help="Path to deepagents.toml (default: ./deepagents.toml)",
+        help="Path to deepagents.toml (default: auto-discovered from cwd upward)",
     )
     deploy_parser.add_argument(
         "--dry-run",
@@ -104,11 +110,29 @@ def setup_deploy_parsers(
     )
 
 
+_BETA_WARNING = (
+    "\033[33mWarning: `deepagents deploy` is in beta. "
+    "APIs, configuration format, and behavior may change between releases.\033[0m\n"
+)
+
+
 def execute_init_command(args: argparse.Namespace) -> None:
-    _init_config(force=args.force)
+    print(_BETA_WARNING)
+    name = args.name
+    if name is None:
+        try:
+            name = input("Project name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise SystemExit(1)
+        if not name:
+            print("Error: project name is required.")
+            raise SystemExit(1)
+    _init_project(name=name, force=args.force)
 
 
 def execute_dev_command(args: argparse.Namespace) -> None:
+    print(_BETA_WARNING)
     _dev(
         config_path=args.config,
         port=args.port,
@@ -117,31 +141,76 @@ def execute_dev_command(args: argparse.Namespace) -> None:
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
+    print(_BETA_WARNING)
     _deploy(
         config_path=args.config,
         dry_run=args.dry_run,
     )
 
 
-def _init_config(*, force: bool = False) -> None:
-    """Generate a starter ``deepagents.toml`` in the current directory.
+def _init_project(*, name: str, force: bool = False) -> None:
+    """Scaffold a deploy project folder.
+
+    Creates ``<name>/`` with the canonical layout::
+
+        <name>/
+          deepagents.toml
+          AGENTS.md
+          .env
+          mcp.json
+          skills/
 
     Args:
-        force: Overwrite existing file if ``True``.
+        name: Project folder name (created under cwd).
+        force: Overwrite existing files if ``True``.
     """
-    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, generate_starter_config
+    from deepagents_cli.deploy.config import (
+        AGENTS_MD_FILENAME,
+        DEFAULT_CONFIG_FILENAME,
+        MCP_FILENAME,
+        SKILLS_DIRNAME,
+        STARTER_SKILL_NAME,
+        generate_starter_agents_md,
+        generate_starter_config,
+        generate_starter_env,
+        generate_starter_mcp_json,
+        generate_starter_skill_md,
+    )
 
-    target = Path.cwd() / DEFAULT_CONFIG_FILENAME
-    if target.exists() and not force:
-        print(
-            f"Error: {DEFAULT_CONFIG_FILENAME} already exists. "
-            "Use --force to overwrite."
-        )
+    project_dir = Path.cwd() / name
+
+    if project_dir.exists() and not force:
+        print(f"Error: {name}/ already exists. Use --force to overwrite.")
         raise SystemExit(1)
 
-    target.write_text(generate_starter_config())
-    print(f"Created {DEFAULT_CONFIG_FILENAME}")
-    print("Edit the config and run `deepagents deploy` to deploy your agent.")
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    files: list[tuple[str, str]] = [
+        (DEFAULT_CONFIG_FILENAME, generate_starter_config()),
+        (AGENTS_MD_FILENAME, generate_starter_agents_md()),
+        (".env", generate_starter_env()),
+        (MCP_FILENAME, generate_starter_mcp_json()),
+    ]
+
+    for filename, content in files:
+        (project_dir / filename).write_text(content)
+
+    # Create skills/ directory with a starter skill.
+    skills_dir = project_dir / SKILLS_DIRNAME
+    skills_dir.mkdir(exist_ok=True)
+    starter_skill_dir = skills_dir / STARTER_SKILL_NAME
+    starter_skill_dir.mkdir(exist_ok=True)
+    (starter_skill_dir / "SKILL.md").write_text(generate_starter_skill_md())
+
+    print(f"Created {name}/ with:")
+    for filename, _ in files:
+        print(f"  {filename}")
+    print(f"  {SKILLS_DIRNAME}/")
+    print(f"    {STARTER_SKILL_NAME}/SKILL.md")
+    print(f"\nNext steps:")
+    print(f"  cd {name}")
+    print(f"  # edit deepagents.toml and AGENTS.md")
+    print(f"  deepagents deploy")
 
 
 def _deploy(
@@ -155,13 +224,17 @@ def _deploy(
         dry_run: If ``True``, generate artifacts but don't deploy.
     """
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
-    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, load_config
+    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, find_config, load_config
 
-    # Resolve config path
+    # Resolve config path: explicit flag > auto-discovery > cwd fallback
     if config_path:
         cfg_path = Path(config_path)
     else:
-        cfg_path = Path.cwd() / DEFAULT_CONFIG_FILENAME
+        discovered = find_config()
+        if discovered:
+            cfg_path = discovered
+        else:
+            cfg_path = Path.cwd() / DEFAULT_CONFIG_FILENAME
 
     project_root = cfg_path.parent
 
@@ -170,7 +243,7 @@ def _deploy(
         config = load_config(cfg_path)
     except FileNotFoundError:
         print(f"Error: Config file not found: {cfg_path}")
-        print(f"Run `deepagents deploy init` to create a starter {DEFAULT_CONFIG_FILENAME}.")
+        print(f"Run `deepagents init` to create a starter {DEFAULT_CONFIG_FILENAME}.")
         raise SystemExit(1)
     except ValueError as e:
         print(f"Error: Invalid config: {e}")
@@ -232,9 +305,13 @@ def _dev(
     import shutil
 
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
-    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, load_config
+    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, find_config, load_config
 
-    cfg_path = Path(config_path) if config_path else Path.cwd() / DEFAULT_CONFIG_FILENAME
+    if config_path:
+        cfg_path = Path(config_path)
+    else:
+        discovered = find_config()
+        cfg_path = discovered if discovered else Path.cwd() / DEFAULT_CONFIG_FILENAME
     project_root = cfg_path.parent
 
     try:

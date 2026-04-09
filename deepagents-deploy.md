@@ -3,7 +3,9 @@ name: deepagents-deploy
 description: Deploy a model-agnostic, open source agent harness to production with a single command.
 ---
 
-# Deep Agents Deploy
+# Deep Agents Deploy (Beta)
+
+> **Note:** `deepagents deploy` is currently in beta. APIs, configuration format, and behavior may change between releases.
 
 Deploy a model-agnostic, open source agent to production with a single command.
 
@@ -27,12 +29,11 @@ You configure your agent with a few parameters:
 
 ```
 my-agent/
-  src/
-    .env             # API keys and secrets
-    AGENTS.md        # required — system prompt
-    skills/          # optional — agent skills
-    mcp.json         # optional — HTTP/SSE MCP servers
-    deepagents.toml  # agent configuration
+  .env             # API keys and secrets
+  AGENTS.md        # required — system prompt
+  skills/          # optional — agent skills
+  mcp.json         # optional — HTTP/SSE MCP servers
+  deepagents.toml  # agent configuration
 ```
 
 ### `deepagents.toml`
@@ -42,7 +43,7 @@ my-agent/
 name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
 
-# [sandbox] is optional — omit to run tools in-process.
+# [sandbox] is optional — omit if not needed for skills or code execution.
 [sandbox]
 provider = "langsmith"   # langsmith | daytona | modal | runloop
 scope    = "thread"      # thread | assistant
@@ -52,10 +53,10 @@ Skills, MCP servers, and model dependencies are auto-detected.
 
 ### `.env`
 
-Place a `.env` file alongside `deepagents.toml` in `src/` with your API keys:
+Place a `.env` file alongside `deepagents.toml` with your API keys:
 
 ```bash
-cp src/.env.example src/.env
+cp .env.example .env
 ```
 
 ```bash
@@ -72,15 +73,33 @@ MODAL_TOKEN_SECRET=...
 RUNLOOP_API_KEY=...
 ```
 
-The CLI will fast-fail with a clear error if required credentials are missing.
-
 ## CLI
 
 ```bash
-deepagents init                         # scaffold deepagents.toml in cwd
-deepagents dev    --config src/deepagents.toml [--port 2024]
-deepagents deploy --config src/deepagents.toml [--dry-run]
+deepagents init my-agent                # scaffold my-agent/ with full project layout
+deepagents dev    [--config deepagents.toml] [--port 2024]
+deepagents deploy [--config deepagents.toml] [--dry-run]
 ```
+
+### `deepagents init`
+
+Scaffolds a new agent project with the full layout:
+
+```bash
+deepagents init my-agent
+```
+
+This creates:
+
+| File | Purpose |
+| --- | --- |
+| `deepagents.toml` | Agent config — name, model, optional sandbox |
+| `AGENTS.md` | System prompt loaded at session start |
+| `.env` | API key template (`ANTHROPIC_API_KEY`, `LANGSMITH_API_KEY`) |
+| `mcp.json` | MCP server configuration (empty by default) |
+| `skills/` | Directory for [Agent Skills](https://agentskills.io/) |
+
+After init, edit `AGENTS.md` with your agent's instructions and run `deepagents deploy`.
 
 ## Supported models
 
@@ -286,7 +305,7 @@ scope = "assistant"   # shared across threads
 
 ### No sandbox
 
-Omit the `[sandbox]` section entirely to run tools in-process.
+Omit the `[sandbox]` section entirely if not needed for skills or code execution.
 
 ## Deployment endpoints
 

@@ -267,6 +267,18 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
     ]
 
 
+def find_config(start_path: Path | None = None) -> Path | None:
+    """Find ``deepagents.toml`` in the current directory.
+
+    Returns the path if found, or ``None`` otherwise.
+    """
+    current = (start_path or Path.cwd()).resolve()
+    candidate = current / DEFAULT_CONFIG_FILENAME
+    if candidate.is_file():
+        return candidate
+    return None
+
+
 def generate_starter_config() -> str:
     """Generate a starter ``deepagents.toml`` template."""
     return '''\
@@ -274,9 +286,82 @@ def generate_starter_config() -> str:
 name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
 
-# [sandbox] is optional. Omit the section to run tools in-process with
-# a StateBackend fallback (no shell, no persistent filesystem).
+# [sandbox] is optional. Omit if not needed for skills or code execution.
 # [sandbox]
 # provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
 '''
+
+
+def generate_starter_agents_md() -> str:
+    """Generate a starter ``AGENTS.md`` template."""
+    return """\
+# Agent Instructions
+
+You are a helpful AI agent.
+
+## Guidelines
+
+- Follow the user's instructions carefully.
+- Ask for clarification when the request is ambiguous.
+"""
+
+
+def generate_starter_env() -> str:
+    """Generate a starter ``.env`` template."""
+    return """\
+# Model provider API key (required)
+ANTHROPIC_API_KEY=
+
+# LangSmith API key (required for deploy and sandbox)
+LANGSMITH_API_KEY=
+"""
+
+
+def generate_starter_mcp_json() -> str:
+    """Generate a starter ``mcp.json`` template."""
+    return """\
+{
+  "mcpServers": {}
+}
+"""
+
+
+# Starter skill name and content.
+STARTER_SKILL_NAME = "review"
+
+
+def generate_starter_skill_md() -> str:
+    """Generate a starter ``skills/review/SKILL.md`` for code review."""
+    return """\
+---
+name: review
+description: "Review code for bugs, security issues, and improvements. Use when the user asks to: (1) review code or a diff, (2) check code quality, (3) find bugs or issues, (4) audit for security problems. Trigger on phrases like 'review this', 'check my code', 'any issues with this', 'code review'."
+---
+
+# Code Review
+
+Review the provided code or diff with focus on:
+
+1. **Correctness** — Logic errors, off-by-one bugs, unhandled edge cases
+2. **Security** — Injection, auth issues, secrets in code, unsafe deserialization
+3. **Performance** — Unnecessary allocations, N+1 queries, missing indexes
+4. **Readability** — Unclear naming, overly complex logic, missing context
+
+## Process
+
+1. Read the code or diff carefully
+2. Identify concrete issues (not style nitpicks)
+3. For each issue: state what's wrong, why it matters, and suggest a fix
+4. If the code looks good, say so — don't invent problems
+
+## Output format
+
+For each issue found:
+
+- **File:line** — Brief description of the problem
+  - Why it matters
+  - Suggested fix
+
+Keep feedback actionable. Skip praise for things that are simply correct.
+"""

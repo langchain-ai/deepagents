@@ -10,6 +10,7 @@ from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
+    HIDDEN_DEBUG,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
@@ -67,6 +68,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
+            | HIDDEN_DEBUG
         )
 
     def test_aliases_in_correct_tier(self) -> None:

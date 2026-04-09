@@ -438,6 +438,12 @@ class TestCreateModelProfileExtraction:
     now uses it internally.
     """
 
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
     @patch("langchain.chat_models.init_chat_model")
     def test_extracts_context_limit_from_profile(
         self, mock_init_chat_model: Mock
@@ -603,6 +609,12 @@ class TestModelResultApplyToSettings:
 class TestCreateModelProfileOverrides:
     """Tests for profile overrides from config.toml in create_model."""
 
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
     @patch("langchain.chat_models.init_chat_model")
     def test_profile_override_sets_context_limit(
         self, mock_init_chat_model: Mock, tmp_path: Path
@@ -758,6 +770,12 @@ max_input_tokens = 4096
 
 class TestCreateModelCLIProfileOverrides:
     """Tests for CLI --profile-override in create_model."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_cli_profile_override_sets_context_limit(
@@ -1719,6 +1737,12 @@ api_key_env = "FIREWORKS_API_KEY"
 class TestCreateModelExtraKwargs:
     """Tests for create_model() with extra_kwargs from --model-params."""
 
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
     @patch("langchain.chat_models.init_chat_model")
     def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs are forwarded to init_chat_model."""
@@ -1785,6 +1809,12 @@ max_tokens = 1024
 
 class TestCreateModelEdgeCaseParsing:
     """Tests for create_model() edge-case spec parsing."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_leading_colon_treated_as_bare_model(
@@ -2136,10 +2166,10 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls
 
-    def test_bootstrap_does_not_overwrite_canonical_langsmith_vars(
+    def test_bootstrap_overrides_canonical_with_prefixed_value(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Canonical LangSmith vars are preserved when already set."""
+        """Prefixed value wins when both canonical and prefixed vars are set."""
         import deepagents_cli.config as config_mod
         from deepagents_cli.config import _ensure_bootstrap
 
@@ -2163,8 +2193,8 @@ class TestLazyModuleAttributes:
 
             import os
 
-            # Canonical value preserved — propagation does not overwrite.
-            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_original"
+            # Prefixed value wins — canonical is overwritten.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls

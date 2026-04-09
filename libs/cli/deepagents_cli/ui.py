@@ -75,6 +75,7 @@ def show_help() -> None:
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
+    console.print("  --skill NAME              Invoke a skill when the session starts")
     console.print(
         "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )
@@ -139,6 +140,10 @@ def show_help() -> None:
     )
     console.print(
         "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  deepagents --skill code-review -m 'review this patch'",
         style=theme.MUTED,
     )
     console.print()

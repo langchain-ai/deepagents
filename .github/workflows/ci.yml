@@ -39,11 +39,12 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
+      repl: ${{ steps.filter.outputs.repl }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -105,6 +106,12 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            repl:
+              - 'libs/repl/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
 
   # Run linting on changed packages
   lint-deepagents:
@@ -159,6 +166,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-repl:
+    name: "🧹 Lint repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/repl"
       python-version: "3.11"
 
   lint-quickjs:
@@ -255,6 +271,20 @@ jobs:
       python-version: ${{ matrix.python-version }}
       coverage: ${{ matrix.python-version == '3.12' }}
 
+  test-repl:
+    name: "🧪 Test repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/repl"
+      python-version: ${{ matrix.python-version }}
+      coverage: ${{ matrix.python-version == '3.12' }}
+
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
@@ -275,6 +305,21 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
+  # Verify release.yml dropdown options stay in sync with package directories
+  check-release-options:
+    name: "Validate Release Options"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+      - name: "📦 Install Dependencies"
+        run: python -m pip install pyyaml pytest
+      - name: "🔍 Check release dropdown matches packages"
+        run: python -m pytest .github/scripts/test_release_options.py -v
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -286,6 +331,7 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-repl
       - lint-quickjs
       - test-deepagents
       - test-cli
@@ -293,8 +339,10 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-repl
       - benchmark-deepagents
       - benchmark-cli
+      - check-release-options
     if: always()
     runs-on: ubuntu-latest
     steps:

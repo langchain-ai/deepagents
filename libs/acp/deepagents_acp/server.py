@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 from deepagents_acp.utils import (
+    contains_dangerous_patterns,
     convert_audio_block_to_content_blocks,
     convert_embedded_resource_block_to_content_blocks,
     convert_image_block_to_content_blocks,
@@ -588,14 +589,12 @@ class AgentServerACP(ACPAgent):
         if self._agent is None:
             self._reset_agent(session_id)
 
-            if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = (
-                    MemorySaver()
-                )  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
-
         if self._agent is None:
             msg = "Agent initialization failed"
             raise RuntimeError(msg)
+
+        if getattr(self._agent, "checkpointer", None) is None:
+            self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
         agent = self._agent
 
         # Reset cancellation flag for new prompt
@@ -809,18 +808,26 @@ class AgentServerACP(ACPAgent):
                     if session_id in self._allowed_command_types:
                         if tool_name == "execute" and isinstance(tool_args, dict):
                             command = tool_args.get("command", "")
-                            command_types = extract_command_types(command)
 
-                            if command_types:
-                                # Check if ALL command types are already allowed for this session
-                                all_allowed = all(
-                                    ("execute", cmd_type) in self._allowed_command_types[session_id]
-                                    for cmd_type in command_types
-                                )
-                                if all_allowed:
-                                    # Auto-approve this command
-                                    user_decisions.append({"type": "approve"})
-                                    continue
+                            # Never auto-approve commands that contain
+                            # dangerous shell metacharacters (e.g. $(),
+                            # backticks, ;, redirects).  These can smuggle
+                            # arbitrary execution inside an otherwise-safe
+                            # command that the user previously approved.
+                            if not contains_dangerous_patterns(command):
+                                command_types = extract_command_types(command)
+
+                                if command_types:
+                                    # Check if ALL command types are already allowed
+                                    all_allowed = all(
+                                        ("execute", cmd_type)
+                                        in self._allowed_command_types[session_id]
+                                        for cmd_type in command_types
+                                    )
+                                    if all_allowed:
+                                        # Auto-approve this command
+                                        user_decisions.append({"type": "approve"})
+                                        continue
                         elif (tool_name, None) in self._allowed_command_types[session_id]:
                             user_decisions.append({"type": "approve"})
                             continue

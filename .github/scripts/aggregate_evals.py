@@ -145,6 +145,11 @@ def main() -> None:
     lines: list[str] = []
     lines.append("## Evals summary")
     lines.append("")
+    lines.append(
+        "> These are the final aggregated results across all models after"
+        " every eval job has completed."
+    )
+    lines.append("")
 
     table_rows = _format_table(by_provider, _HEADERS)
     if table_rows:

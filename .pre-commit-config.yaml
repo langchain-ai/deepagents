@@ -8,7 +8,7 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
-        exclude: libs/evals/tests/evals/tau2_airline/data/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/repl/tests/unit_tests/smoke_tests/snapshots/
       - id: trailing-whitespace # remove trailing whitespace from lines
         exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/
 

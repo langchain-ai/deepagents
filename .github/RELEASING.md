@@ -1,10 +1,23 @@
-# CLI Release Process
+# Release Process
 
-This document describes the release process for the CLI package (`libs/cli`) in the Deep Agents monorepo using [release-please](https://github.com/googleapis/release-please).
+This document describes the release process for packages in the Deep Agents monorepo using [release-please](https://github.com/googleapis/release-please).
+
+## Managed Packages
+
+| Package | Path | Component | PyPI |
+| ------- | ---- | --------- | ---- |
+| `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [deepagents](https://pypi.org/project/deepagents/) |
+| `deepagents-cli` | `libs/cli` | `deepagents-cli` | [deepagents-cli](https://pypi.org/project/deepagents-cli/) |
+| `deepagents-acp` | `libs/acp` | `deepagents-acp` | [deepagents-acp](https://pypi.org/project/deepagents-acp/) |
+| `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [langchain-daytona](https://pypi.org/project/langchain-daytona/) |
+| `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [langchain-modal](https://pypi.org/project/langchain-modal/) |
+| `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [langchain-runloop](https://pypi.org/project/langchain-runloop/) |
+| `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [langchain-quickjs](https://pypi.org/project/langchain-quickjs/) |
+| `langchain-repl` | `libs/repl` | `langchain-repl` | [langchain-repl](https://pypi.org/project/langchain-repl/) |
 
 ## Overview
 
-CLI releases are managed via release-please, which:
+Releases are managed via release-please, which:
 
 1. Analyzes conventional commits on the `main` branch
 2. Creates/updates a release PR with changelog and version bump
@@ -24,12 +37,12 @@ Release PRs are created on branches named `release-please--branches--main--compo
 
 ### Triggering a Release
 
-To release the CLI:
+To release a package:
 
 1. Merge conventional commits to `main` (see [Commit Format](#commit-format))
 2. Wait for release-please to create/update the release PR
 3. Review the generated changelog in the PR
-4. **Verify the SDK pin** — check that `deepagents==` in `libs/cli/pyproject.toml` is up to date. If the latest SDK version has been confirmed compatible, you should bump the pin on `main` and let release-please regenerate the PR before merging. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if this is missed.
+4. **(CLI only)** Verify the SDK pin — check that `deepagents==` in `libs/cli/pyproject.toml` is up to date. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if this is missed.
 5. Merge the release PR — this triggers the build, pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
@@ -87,7 +100,14 @@ Tracks the current version of each package:
 
 ```json
 {
-  "libs/cli": "0.0.17"
+  "libs/cli": "0.0.35",
+  "libs/deepagents": "0.5.0",
+  "libs/acp": "0.0.5",
+  "libs/partners/daytona": "0.0.5",
+  "libs/partners/modal": "0.0.3",
+  "libs/partners/runloop": "0.0.4",
+  "libs/partners/quickjs": "0.0.1",
+  "libs/repl": "0.0.1"
 }
 ```
 
@@ -97,7 +117,7 @@ This file is automatically updated by release-please when releases are created.
 
 ### Detection Mechanism
 
-The release-please workflow (`.github/workflows/release-please.yml`) detects a CLI release by checking if `libs/cli/CHANGELOG.md` was modified in the commit. This file is always updated by release-please when merging a release PR.
+The release-please workflow (`.github/workflows/release-please.yml`) detects releases by checking if a package's `CHANGELOG.md` was modified in the commit (e.g., `libs/cli/CHANGELOG.md` for the CLI, `libs/deepagents/CHANGELOG.md` for the SDK, `libs/acp/CHANGELOG.md` for ACP, `libs/partners/daytona/CHANGELOG.md` for Daytona, `libs/partners/modal/CHANGELOG.md` for Modal, `libs/partners/runloop/CHANGELOG.md` for Runloop, `libs/partners/quickjs/CHANGELOG.md` for QuickJS, `libs/repl/CHANGELOG.md` for REPL). This file is always updated by release-please when merging a release PR.
 
 ### Lockfile Updates
 
@@ -132,13 +152,13 @@ This label transition signals to release-please that the merged PR has been full
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.
 
-1. Go to **Actions** > **Package Release**
+1. Go to **Actions** > `⚠️ Manual Package Release`
 2. Click **Run workflow**
-3. Select the package to release (`deepagents-cli` only for exception/recovery/hotfix scenarios; otherwise use release-please)
+3. Select the package to release
 4. (Optionally enable `dangerous-nonmain-release` for hotfix branches)
 
 > [!WARNING]
-> Manual releases should be rare. Prefer the standard release-please flow for the CLI. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
+> Manual releases should be rare. Prefer the standard release-please flow for managed packages. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
 
 ## Alpha / Pre-release Versions
 
@@ -176,7 +196,7 @@ Alpha releases use a **throwaway branch** + manual dispatch. This keeps `main`, 
 
 4. **Trigger the release workflow:**
 
-   - Go to **Actions** > **Package Release** > **Run workflow**
+   - Go to **Actions** > `⚠️ Manual Package Release` > **Run workflow**
    - Branch: `alpha/cli-<VERSION>`
    - Package: `deepagents-cli`
    - Enable `dangerous-nonmain-release` ✓
@@ -208,18 +228,6 @@ For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
 
 ## Troubleshooting
 
-### "Found release tag with component X, but not configured in manifest" Warnings
-
-You may see warnings in the release-please logs like:
-
-```txt
-⚠ Found release tag with component 'deepagents=', but not configured in manifest
-```
-
-This is **harmless**. Release-please scans existing tags in the repository and warns when it finds tags for packages that aren't in the current configuration. The `deepagents` SDK package has existing release tags (`deepagents==0.x.x`) but is not currently managed by release-please.
-
-These warnings will disappear once the SDK is added to `release-please-config.json`. Until then, they can be safely ignored—they don't affect CLI releases.
-
 ### Unexpected Commit Authors in Release PRs
 
 When viewing a release-please PR on GitHub, you may see commits attributed to contributors who didn't directly push to that PR. For example:
@@ -238,7 +246,7 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 **The actual PR commits** are only:
 
-- The release commit (e.g., `release(deepagents-cli): 0.0.18`)
+- The release commit (e.g., `release(deepagents): 0.5.1` or `release(deepagents-cli): 0.0.35`)
 - The lockfile update commit (e.g., `chore: update lockfiles`)
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
@@ -250,8 +258,8 @@ If a release PR shows `autorelease: pending` after the release workflow complete
 **To fix manually:**
 
 ```bash
-# Find the PR number for the release commit
-gh pr list --state merged --search "release(deepagents-cli)" --limit 5
+# Find the PR number for the release commit (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, or langchain-repl)
+gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 
 # Update the label
 gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
@@ -270,25 +278,17 @@ Using the PyPI web interface or a CLI tool.
 #### 2. Delete GitHub Release/Tag (optional)
 
 ```bash
-# Delete the GitHub release
-gh release delete "deepagents-cli==<VERSION>" --yes
+# Delete the GitHub release (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, or langchain-repl)
+gh release delete "<PACKAGE>==<VERSION>" --yes
 
 # Delete the git tag
-git tag -d "deepagents-cli==<VERSION>"
-git push origin --delete "deepagents-cli==<VERSION>"
+git tag -d "<PACKAGE>==<VERSION>"
+git push origin --delete "<PACKAGE>==<VERSION>"
 ```
 
 #### 3. Fix the Manifest
 
-Edit `.release-please-manifest.json` to the last good version:
-
-```json
-{
-  "libs/cli": "0.0.15"
-}
-```
-
-Also update `libs/cli/pyproject.toml` and `_version.py` to match.
+Edit `.release-please-manifest.json` to the last good version for the affected package, and update the corresponding `pyproject.toml` and `_version.py` to match.
 
 ### Release Failed: CLI SDK Pin Mismatch
 
@@ -316,7 +316,7 @@ This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml`
    ```
 
 2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/cli/CHANGELOG.md`):
-   - Go to **Actions** > **Package Release**
+   - Go to **Actions** > `⚠️ Manual Package Release`
    - Click **Run workflow**
    - Select `main` branch and `deepagents-cli` package
 
@@ -346,8 +346,8 @@ This means a release PR was merged but its merge commit doesn't have the expecte
 **To diagnose**, compare the tag's commit with the release PR's merge commit:
 
 ```bash
-# Find what commit the tag points to
-git ls-remote --tags origin | grep "deepagents-cli==<VERSION>"
+# Find what commit the tag points to (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, or langchain-repl)
+git ls-remote --tags origin | grep "<PACKAGE>==<VERSION>"
 
 # Find the release PR's merge commit
 gh pr view <PR_NUMBER> --json mergeCommit --jq '.mergeCommit.oid'
@@ -358,21 +358,21 @@ If these differ, release-please is confused.
 **To fix**, move the tag and update the GitHub release:
 
 ```bash
-# 1. Delete the remote tag
-git push origin :refs/tags/deepagents-cli==<VERSION>
+# 1. Delete the remote tag (replace <PACKAGE> with deepagents, deepagents-cli, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, or langchain-repl)
+git push origin :refs/tags/<PACKAGE>==<VERSION>
 
 # 2. Delete local tag if it exists
-git tag -d deepagents-cli==<VERSION> 2>/dev/null || true
+git tag -d <PACKAGE>==<VERSION> 2>/dev/null || true
 
 # 3. Create tag on the correct commit (the release PR's merge commit)
-git tag deepagents-cli==<VERSION> <MERGE_COMMIT_SHA>
+git tag <PACKAGE>==<VERSION> <MERGE_COMMIT_SHA>
 
 # 4. Push the new tag
-git push origin deepagents-cli==<VERSION>
+git push origin <PACKAGE>==<VERSION>
 
 # 5. Update the GitHub release's target_commitish to match
 #    (moving a tag doesn't update this field automatically)
-gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli==<VERSION>") | .id') \
+gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "<PACKAGE>==<VERSION>") | .id') \
   -f target_commitish=<MERGE_COMMIT_SHA>
 ```
 

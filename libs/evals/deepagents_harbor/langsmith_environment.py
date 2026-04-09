@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,16 +15,17 @@ from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
 if TYPE_CHECKING:
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.task.config import EnvironmentConfig
-    from langsmith.sandbox import Sandbox, SandboxClient
+    from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
 _MB_PER_GB = 1024
+_MAX_NAME_LEN = 63
 
 
 class LangSmithEnvironment(BaseEnvironment):
-    """Harbor environment backed by LangSmith sandboxes.
+    r"""Harbor environment backed by LangSmith sandboxes.
 
     Uses `--environment-import-path` because harbor's `EnvironmentType` enum
     does not include `langsmith` yet. Example:
@@ -34,6 +36,10 @@ class LangSmithEnvironment(BaseEnvironment):
     The environment reads the task's Dockerfile to extract the base image,
     creates a LangSmith template + sandbox with the appropriate resources, and
     delegates all exec/file operations to the LangSmith sandbox SDK.
+
+    Template names are derived from the container image so that multiple trials
+    using the same image can share a template. The template is only recreated
+    when the resource limits change.
     """
 
     def __init__(
@@ -56,8 +62,8 @@ class LangSmithEnvironment(BaseEnvironment):
             **kwargs: Forwarded to `BaseEnvironment` (e.g. `logger`,
                 `override_cpus`, `override_memory_mb`).
         """
-        self._sandbox: Sandbox | None = None
-        self._client: SandboxClient | None = None
+        self._sandbox: AsyncSandbox | None = None
+        self._client: AsyncSandboxClient | None = None
         self._template_name: str | None = None
         super().__init__(
             environment_dir,
@@ -143,30 +149,66 @@ class LangSmithEnvironment(BaseEnvironment):
             raise ValueError(msg)
         return base
 
+    # -- Name helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_name(raw: str) -> str:
+        """Sanitize a string for use as a LangSmith resource name.
+
+        LangSmith requires names that start with a lowercase letter, contain
+        only lowercase letters, numbers, and hyphens, and do not end with a
+        hyphen.  Max 63 characters.
+        """
+        name = raw.lower()
+        name = re.sub(r"[^a-z0-9-]", "-", name)
+        name = re.sub(r"-{2,}", "-", name)
+        name = name.strip("-")
+        if not name or not name[0].isalpha():
+            name = f"h-{name}"
+        return name[:_MAX_NAME_LEN]
+
     # -- Lifecycle -------------------------------------------------------------
 
-    async def start(self, force_build: bool) -> None:  # noqa: ARG002
-        """Provision a LangSmith sandbox from the task's Dockerfile image.
+    async def _ensure_template(
+        self,
+        client: AsyncSandboxClient,
+        template_name: str,
+        image: str,
+        cpu: str,
+        memory: str,
+        storage: str,
+    ) -> None:
+        """Ensure a template exists with the correct resource limits.
+
+        If a template already exists with matching resources, it is reused.
+        Otherwise it is deleted and recreated.
 
         Args:
-            force_build: Ignored — LangSmith templates are image-only.
+            client: The async sandbox client.
+            template_name: Desired template name.
+            image: Container image.
+            cpu: CPU limit string.
+            memory: Memory limit string.
+            storage: Storage limit string.
         """
-        from langsmith.sandbox import SandboxClient
+        from langsmith.sandbox import ResourceNotFoundError
 
-        image = self._resolve_image()
+        try:
+            existing = await client.get_template(template_name)
+            needs_recreate = existing.resources.memory != memory or existing.resources.cpu != cpu
+            if not needs_recreate:
+                logger.info("Reusing existing LangSmith template '%s'", template_name)
+                return
+            logger.info(
+                "Template '%s' exists but resource limits differ, recreating",
+                template_name,
+            )
+            await client.delete_template(template_name)
+        except ResourceNotFoundError:
+            pass
 
-        self._client = SandboxClient()
-        self._template_name = f"harbor-{self.session_id}"
-
-        # Convert task resource specs to LangSmith format
-        cpu = f"{self.task_env_config.cpus * 1000}m"
-        memory_mb = self.task_env_config.memory_mb
-        memory = f"{memory_mb}Mi" if memory_mb < _MB_PER_GB else f"{memory_mb // _MB_PER_GB}Gi"
-        storage_mb = self.task_env_config.storage_mb
-        storage = f"{storage_mb}Mi" if storage_mb < _MB_PER_GB else f"{storage_mb // _MB_PER_GB}Gi"
-
-        self._client.create_template(
-            name=self._template_name,
+        await client.create_template(
+            name=template_name,
             image=image,
             cpu=cpu,
             memory=memory,
@@ -174,21 +216,67 @@ class LangSmithEnvironment(BaseEnvironment):
         )
         logger.info(
             "Created LangSmith template '%s' (image=%s, cpu=%s, mem=%s, disk=%s)",
-            self._template_name,
+            template_name,
             image,
             cpu,
             memory,
             storage,
         )
 
-        self._sandbox = self._client.sandbox(
-            template_name=self._template_name,
-            name=self.session_id,
-        )
-        logger.info("Created LangSmith sandbox '%s'", self._sandbox.name)
+    async def start(self, force_build: bool) -> None:
+        """Provision a LangSmith sandbox from the task's Dockerfile image.
 
-        # Create required harbor directory structure
-        self._sandbox.run(
+        Args:
+            force_build: When True, delete and recreate the template even if
+                one already exists with matching resources.
+        """
+        from langsmith.sandbox import AsyncSandboxClient
+
+        image = self._resolve_image()
+
+        client = AsyncSandboxClient()
+        self._client = client
+
+        template_name = f"harbor-{self._sanitize_name(image)}"[:_MAX_NAME_LEN]
+
+        cpu = f"{self.task_env_config.cpus * 1000}m"
+        memory_mb = self.task_env_config.memory_mb
+        memory = f"{memory_mb}Mi" if memory_mb < _MB_PER_GB else f"{memory_mb // _MB_PER_GB}Gi"
+        storage_gi = max(1, (self.task_env_config.storage_mb + _MB_PER_GB - 1) // _MB_PER_GB)
+        storage = f"{storage_gi}Gi"
+
+        if force_build:
+            import contextlib
+
+            from langsmith.sandbox import ResourceNotFoundError
+
+            with contextlib.suppress(ResourceNotFoundError):
+                await client.delete_template(template_name)
+            await client.create_template(
+                name=template_name,
+                image=image,
+                cpu=cpu,
+                memory=memory,
+                storage=storage,
+            )
+            logger.info(
+                "Force-created LangSmith template '%s' (image=%s)",
+                template_name,
+                image,
+            )
+        else:
+            await self._ensure_template(client, template_name, image, cpu, memory, storage)
+
+        self._template_name = template_name
+
+        sandbox = await client.create_sandbox(
+            template_name=template_name,
+            timeout=120,
+        )
+        self._sandbox = sandbox
+        logger.info("Created LangSmith sandbox '%s'", sandbox.name)
+
+        await sandbox.run(
             f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}",
             timeout=30,
         )
@@ -202,33 +290,33 @@ class LangSmithEnvironment(BaseEnvironment):
         """
         if self._sandbox and self._client and delete:
             try:
-                self._client.delete_sandbox(self._sandbox.name)
+                await self._client.delete_sandbox(self._sandbox.name)
                 logger.info("Deleted LangSmith sandbox '%s'", self._sandbox.name)
             except Exception:  # noqa: BLE001
-                logger.warning(
+                logger.debug(
                     "Failed to delete sandbox '%s'",
                     self._sandbox.name,
                     exc_info=True,
                 )
         if self._template_name and self._client and delete:
             try:
-                self._client.delete_template(self._template_name)
+                await self._client.delete_template(self._template_name)
                 logger.info("Deleted LangSmith template '%s'", self._template_name)
             except Exception:  # noqa: BLE001
-                logger.warning(
+                logger.debug(
                     "Failed to delete template '%s'",
                     self._template_name,
                     exc_info=True,
                 )
         if self._client:
-            self._client.close()
+            await self._client.aclose()
         self._sandbox = None
         self._client = None
         self._template_name = None
 
     # -- Command execution -----------------------------------------------------
 
-    def _require_sandbox(self) -> Sandbox:
+    def _require_sandbox(self) -> AsyncSandbox:
         if self._sandbox is None:
             msg = "Sandbox not started. Call start() first."
             raise RuntimeError(msg)
@@ -252,7 +340,7 @@ class LangSmithEnvironment(BaseEnvironment):
         sandbox = self._require_sandbox()
         effective_timeout = timeout_sec or _DEFAULT_EXEC_TIMEOUT_SEC
 
-        result = sandbox.run(
+        result = await sandbox.run(
             command,
             timeout=effective_timeout,
             cwd=cwd,
@@ -276,12 +364,11 @@ class LangSmithEnvironment(BaseEnvironment):
         sandbox = self._require_sandbox()
         content = Path(source_path).read_bytes()
 
-        # Ensure parent directory exists
         parent = str(Path(target_path).parent)
         if parent != "/":
-            sandbox.run(f"mkdir -p {shlex.quote(parent)}", timeout=30)
+            await sandbox.run(f"mkdir -p {shlex.quote(parent)}", timeout=30)
 
-        sandbox.write(target_path, content)
+        await sandbox.write(target_path, content)
 
     async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
         """Upload a local directory to the sandbox recursively.
@@ -305,7 +392,7 @@ class LangSmithEnvironment(BaseEnvironment):
             target_path: Local destination path.
         """
         sandbox = self._require_sandbox()
-        data = sandbox.read(source_path)
+        data = await sandbox.read(source_path)
         local = Path(target_path)
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_bytes(data)
@@ -320,7 +407,6 @@ class LangSmithEnvironment(BaseEnvironment):
         local_dir = Path(target_dir)
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        # List files via shell find
         result = await self.exec(
             f"find {shlex.quote(source_dir)} -type f",
             timeout_sec=60,

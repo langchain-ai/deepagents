@@ -5,15 +5,14 @@ from __future__ import annotations
 import logging
 import textwrap
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
 from deepagents_harbor.langsmith_environment import (
-    _MB_PER_GB,
     LangSmithEnvironment,
 )
 
@@ -31,31 +30,45 @@ class _FakeExecResult:
 
 
 @dataclass
+class _FakeTemplate:
+    """Minimal stand-in for langsmith SandboxTemplate."""
+
+    name: str = "harbor-ubuntu-24-04"
+
+    @dataclass
+    class _Resources:
+        cpu: str = "1000m"
+        memory: str = "2Gi"
+
+    resources: _Resources = field(default_factory=_Resources)
+
+
+@dataclass
 class _FakeSandbox:
-    """Minimal stand-in for langsmith Sandbox."""
+    """Minimal stand-in for langsmith AsyncSandbox."""
 
     name: str = "test-sandbox"
     _run_calls: list[tuple] = field(default_factory=list)
     _written_files: dict[str, bytes] = field(default_factory=dict)
     _read_files: dict[str, bytes] = field(default_factory=dict)
 
-    def run(
+    async def run(
         self,
         command: str,
         *,
-        timeout: int = 60,
+        timeout: int = 60,  # noqa: ASYNC109 -- mirrors AsyncSandbox.run() signature
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> _FakeExecResult:
         self._run_calls.append((command, timeout, cwd, env))
         return _FakeExecResult()
 
-    def write(self, path: str, content: str | bytes) -> None:
+    async def write(self, path: str, content: str | bytes) -> None:
         if isinstance(content, str):
             content = content.encode()
         self._written_files[path] = content
 
-    def read(self, path: str) -> bytes:
+    async def read(self, path: str) -> bytes:
         return self._read_files.get(path, b"")
 
 
@@ -106,6 +119,22 @@ def _make_env(
     )
 
 
+def _mock_async_client(
+    *,
+    template: _FakeTemplate | None = None,
+    get_template_side_effect: Exception | None = None,
+) -> MagicMock:
+    """Build a mock AsyncSandboxClient wired for start() tests."""
+    mock = AsyncMock()
+    fake_sb = _FakeSandbox()
+    mock.create_sandbox.return_value = fake_sb
+    if get_template_side_effect:
+        mock.get_template.side_effect = get_template_side_effect
+    else:
+        mock.get_template.return_value = template or _FakeTemplate()
+    return mock
+
+
 class TestValidation:
     """Tests for __init__-time validation."""
 
@@ -120,7 +149,6 @@ class TestValidation:
     def test_missing_dockerfile_and_image_raises(self, tmp_path: Path) -> None:
         env_dir = tmp_path / "environment"
         env_dir.mkdir()
-        # No Dockerfile, no docker_image
 
         trial_dir = tmp_path / "trial"
         trial_dir.mkdir()
@@ -252,47 +280,177 @@ class TestProperties:
             LangSmithEnvironment.type()
 
 
+class TestSanitizeName:
+    """Tests for LangSmith resource name sanitization."""
+
+    def test_lowercase_and_replace_underscores(self) -> None:
+        assert (
+            LangSmithEnvironment._sanitize_name("gpt2-codegolf__UxLAidb") == "gpt2-codegolf-uxlaidb"
+        )
+
+    def test_replaces_special_chars(self) -> None:
+        assert LangSmithEnvironment._sanitize_name("my/image:3.12-slim") == "my-image-3-12-slim"
+
+    def test_collapses_consecutive_hyphens(self) -> None:
+        assert LangSmithEnvironment._sanitize_name("a___b---c") == "a-b-c"
+
+    def test_strips_leading_trailing_hyphens(self) -> None:
+        assert LangSmithEnvironment._sanitize_name("--hello--") == "hello"
+
+    def test_prepends_prefix_if_starts_with_number(self) -> None:
+        result = LangSmithEnvironment._sanitize_name("123abc")
+        assert result[0].isalpha()
+        assert result == "h-123abc"
+
+    def test_truncates_to_63_chars(self) -> None:
+        long_name = "a" * 100
+        assert len(LangSmithEnvironment._sanitize_name(long_name)) == 63
+
+    def test_empty_string(self) -> None:
+        result = LangSmithEnvironment._sanitize_name("")
+        assert result[0].isalpha()
+
+
 class TestResourceConversion:
-    """Tests for task resource config → LangSmith format."""
+    """Tests for task resource config → LangSmith format.
+
+    Uses force_build=True so create_template is always called regardless
+    of _ensure_template reuse logic.
+    """
 
     async def test_memory_under_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=512)
 
-        with patch("langsmith.sandbox.SandboxClient") as mock_cls:
-            mock_client = MagicMock()
-            mock_client.sandbox.return_value = _FakeSandbox()
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
-            await env.start(force_build=False)
+            await env.start(force_build=True)
 
-            call_kwargs = mock_client.create_template.call_args
-            assert call_kwargs.kwargs["memory"] == "512Mi"
+            assert mock_client.create_template.call_args.kwargs["memory"] == "512Mi"
 
     async def test_memory_over_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=2048)
 
-        with patch("langsmith.sandbox.SandboxClient") as mock_cls:
-            mock_client = MagicMock()
-            mock_client.sandbox.return_value = _FakeSandbox()
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
-            await env.start(force_build=False)
+            await env.start(force_build=True)
 
-            call_kwargs = mock_client.create_template.call_args
-            assert call_kwargs.kwargs["memory"] == f"{2048 // _MB_PER_GB}Gi"
+            assert mock_client.create_template.call_args.kwargs["memory"] == "2Gi"
 
     async def test_cpu_conversion(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, cpus=2)
 
-        with patch("langsmith.sandbox.SandboxClient") as mock_cls:
-            mock_client = MagicMock()
-            mock_client.sandbox.return_value = _FakeSandbox()
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=True)
+
+            assert mock_client.create_template.call_args.kwargs["cpu"] == "2000m"
+
+    async def test_storage_always_gi(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, storage_mb=10240)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=True)
+
+            assert mock_client.create_template.call_args.kwargs["storage"] == "10Gi"
+
+    async def test_storage_rounds_up(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, storage_mb=1500)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=True)
+
+            assert mock_client.create_template.call_args.kwargs["storage"] == "2Gi"
+
+
+class TestEnsureTemplate:
+    """Tests for template reuse via _ensure_template."""
+
+    async def test_reuses_template_when_resources_match(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                template=_FakeTemplate(
+                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi")
+                ),
+            )
             mock_cls.return_value = mock_client
 
             await env.start(force_build=False)
 
-            call_kwargs = mock_client.create_template.call_args
-            assert call_kwargs.kwargs["cpu"] == "2000m"
+            mock_client.get_template.assert_called_once()
+            mock_client.create_template.assert_not_called()
+
+    async def test_recreates_template_when_resources_differ(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, cpus=4)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                template=_FakeTemplate(
+                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi")
+                ),
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            mock_client.delete_template.assert_called_once()
+            mock_client.create_template.assert_called_once()
+            assert mock_client.create_template.call_args.kwargs["cpu"] == "4000m"
+
+    async def test_creates_template_when_not_found(self, tmp_path: Path) -> None:
+        from langsmith.sandbox import ResourceNotFoundError
+
+        env = _make_env(tmp_path)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                get_template_side_effect=ResourceNotFoundError(
+                    "not found", resource_type="template"
+                ),
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            mock_client.create_template.assert_called_once()
+
+    async def test_force_build_always_recreates(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=True)
+
+            mock_client.get_template.assert_not_called()
+            mock_client.delete_template.assert_called_once()
+            mock_client.create_template.assert_called_once()
+
+    async def test_template_name_derived_from_image(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, docker_image="ghcr.io/my-org/my-image:v1.2")
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            expected = "harbor-ghcr-io-my-org-my-image-v1-2"
+            mock_client.get_template.assert_called_once_with(expected)
 
 
 class TestExec:
@@ -301,7 +459,7 @@ class TestExec:
     async def test_exec_delegates_to_sandbox(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
         result = await env.exec("echo hello")
 
@@ -311,7 +469,7 @@ class TestExec:
     async def test_exec_passes_cwd_and_env(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
         await env.exec("ls", cwd="/app", env={"FOO": "bar"})
 
@@ -331,7 +489,7 @@ class TestFileOps:
     async def test_upload_file(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
         src = tmp_path / "local.txt"
         src.write_text("hello world")
@@ -344,7 +502,7 @@ class TestFileOps:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
         sandbox._read_files["/app/data.txt"] = b"file content"
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
         dest = tmp_path / "downloaded.txt"
         await env.download_file("/app/data.txt", dest)
@@ -354,7 +512,7 @@ class TestFileOps:
     async def test_upload_dir(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
@@ -373,12 +531,12 @@ class TestFileOps:
         sandbox = _FakeSandbox()
         sandbox._read_files["/remote/a.txt"] = b"aaa"
         sandbox._read_files["/remote/sub/b.txt"] = b"bbb"
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
-        # Fake `find` listing the remote files
-        sandbox.run = lambda _cmd, **_kw: _FakeExecResult(  # type: ignore[assignment]
-            stdout="/remote/a.txt\n/remote/sub/b.txt\n"
-        )
+        async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
+            return _FakeExecResult(stdout="/remote/a.txt\n/remote/sub/b.txt\n")
+
+        sandbox.run = _fake_run  # type: ignore[assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/remote", dest)
@@ -389,12 +547,12 @@ class TestFileOps:
     async def test_download_dir_empty(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = sandbox  # type: ignore[assignment]
 
-        # find returns non-zero for empty/missing dir
-        sandbox.run = lambda _cmd, **_kw: _FakeExecResult(  # type: ignore[assignment]
-            exit_code=1, stderr="No such file or directory"
-        )
+        async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
+            return _FakeExecResult(exit_code=1, stderr="No such file or directory")
+
+        sandbox.run = _fake_run  # type: ignore[assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/nonexistent", dest)
@@ -408,9 +566,9 @@ class TestStop:
 
     async def test_stop_deletes_sandbox_and_template(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        mock_client = MagicMock()
+        mock_client = AsyncMock()
         mock_sandbox = _FakeSandbox(name="my-sandbox")
-        env._sandbox = mock_sandbox  # type: ignore[invalid-assignment]
+        env._sandbox = mock_sandbox  # type: ignore[assignment]
         env._client = mock_client
         env._template_name = "my-template"
 
@@ -418,14 +576,14 @@ class TestStop:
 
         mock_client.delete_sandbox.assert_called_once_with("my-sandbox")
         mock_client.delete_template.assert_called_once_with("my-template")
-        mock_client.close.assert_called_once()
+        mock_client.aclose.assert_called_once()
         assert env._sandbox is None
         assert env._client is None
 
     async def test_stop_no_delete_skips_cleanup(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        mock_client = MagicMock()
-        env._sandbox = _FakeSandbox()  # type: ignore[invalid-assignment]
+        mock_client = AsyncMock()
+        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
         env._client = mock_client
         env._template_name = "tmpl"
 
@@ -433,4 +591,26 @@ class TestStop:
 
         mock_client.delete_sandbox.assert_not_called()
         mock_client.delete_template.assert_not_called()
-        mock_client.close.assert_called_once()
+        mock_client.aclose.assert_called_once()
+
+    async def test_stop_clean_after_failed_start(self, tmp_path: Path) -> None:
+        """If create_template fails, _template_name stays None and stop is safe."""
+        from langsmith.sandbox import ResourceNotFoundError
+
+        env = _make_env(tmp_path)
+
+        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.get_template.side_effect = ResourceNotFoundError(
+                "not found", resource_type="template"
+            )
+            mock_client.create_template.side_effect = RuntimeError("API 422")
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="API 422"):
+                await env.start(force_build=False)
+
+        assert env._template_name is None
+        assert env._sandbox is None
+
+        await env.stop(delete=True)

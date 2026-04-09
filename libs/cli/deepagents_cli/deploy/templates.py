@@ -33,7 +33,11 @@ def _get_or_create_sandbox(cache_key):
 
     from langsmith.sandbox import ResourceNotFoundError, SandboxClient
 
-    api_key = os.environ.get("LANGSMITH_SANDBOX_API_KEY") or os.environ.get("LANGSMITH_API_KEY") or os.environ["LANGCHAIN_API_KEY"]
+    api_key = (
+        os.environ.get("LANGSMITH_SANDBOX_API_KEY")
+        or os.environ.get("LANGSMITH_API_KEY")
+        or os.environ["LANGCHAIN_API_KEY"]
+    )
     client = SandboxClient(api_key=api_key)
 
     try:
@@ -44,7 +48,11 @@ def _get_or_create_sandbox(cache_key):
     sandbox = client.create_sandbox(template_name=SANDBOX_TEMPLATE)
     backend = LangSmithSandbox(sandbox)
     _SANDBOXES[cache_key] = backend
-    logger.info("Created LangSmith sandbox %s for cache_key %s", sandbox.name, cache_key)
+    logger.info(
+        "Created LangSmith sandbox %s for key %s",
+        sandbox.name,
+        cache_key,
+    )
     return backend
 '''
 
@@ -318,7 +326,11 @@ class SandboxSyncMiddleware(AgentMiddleware):
         if files_to_upload:
             results = await sandbox.aupload_files(files_to_upload)
             uploaded = sum(1 for r in results if r.error is None)
-            logger.info("Synced %d/%d skill files into sandbox", uploaded, len(files_to_upload))
+            logger.info(
+                "Synced %d/%d skill files into sandbox",
+                uploaded,
+                len(files_to_upload),
+            )
 
         return None
 
@@ -343,10 +355,15 @@ class ReadOnlyStoreBackend(StoreBackend):
     async def awrite(self, file_path, content):  # noqa: ARG002
         return WriteResult(error=self._READ_ONLY_MSG)
 
-    def edit(self, file_path, old_string, new_string, replace_all=False):  # noqa: ARG002, FBT002
+    def edit(  # noqa: ARG002, FBT002
+        self, file_path, old_string, new_string, replace_all=False,
+    ):
         return EditResult(error=self._READ_ONLY_MSG)
 
-    async def aedit(self, file_path, old_string, new_string, replace_all=False):  # noqa: ARG002, FBT002
+    async def aedit(  # noqa: ARG002, FBT002
+        self, file_path, old_string, new_string, replace_all=False,
+    ):
+        return EditResult(error=self._READ_ONLY_MSG)
         return EditResult(error=self._READ_ONLY_MSG)
 
 
@@ -481,7 +498,7 @@ graph = make_graph
 # pyproject.toml
 # ---------------------------------------------------------------------------
 
-PYPROJECT_TEMPLATE = '''\
+PYPROJECT_TEMPLATE = """\
 [project]
 name = {agent_name!r}
 version = "0.1.0"
@@ -492,4 +509,4 @@ dependencies = [
 
 [tool.setuptools]
 py-modules = []
-'''
+"""

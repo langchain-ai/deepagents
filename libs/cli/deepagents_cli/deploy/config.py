@@ -7,13 +7,13 @@ The new minimal surface has exactly two sections:
 - ``[agent]``: name + model
 - ``[sandbox]``: sandbox provider settings
 
-``agents.md`` is always seeded into a shared memory namespace so the
+``AGENTS.md`` is always seeded into a shared memory namespace so the
 agent can read it at runtime, but writes/edits to that path are blocked
 by a read-only middleware in the generated graph.
 
 Skills (``src/skills/``) and MCP servers (``src/mcp.json``) are auto-detected
 from the project layout. The agent's system prompt is read from
-``src/agents.md`` at bundle time — there is no ``system_prompt`` key.
+``src/AGENTS.md`` at bundle time — there is no ``system_prompt`` key.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ class DeployConfig:
         """
         errors: list[str] = []
 
-        # agents.md is required — it's the system prompt.
+        # AGENTS.md is required — it's the system prompt.
         agents_md = project_root / AGENTS_MD_FILENAME
         if not agents_md.is_file():
             errors.append(
@@ -231,7 +231,11 @@ _MODEL_PROVIDER_ENV: dict[str, str] = {
 }
 
 _SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
-    "langsmith": ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY", "LANGSMITH_SANDBOX_API_KEY"],
+    "langsmith": [
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "LANGSMITH_SANDBOX_API_KEY",
+    ],
     "daytona": ["DAYTONA_API_KEY"],
     "runloop": ["RUNLOOP_API_KEY"],
     # Modal falls back to default auth if env vars are not set.
@@ -249,8 +253,10 @@ def _validate_model_credentials(model: str) -> list[str]:
     if os.environ.get(env_var):
         return []
     return [
-        f"Missing API key for model provider '{provider}': "
-        f"set {env_var} in your .env file or environment."
+        (
+            f"Missing API key for model provider '{provider}': "
+            f"set {env_var} in your .env file or environment."
+        ),
     ]
 
 
@@ -262,8 +268,10 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
     if any(os.environ.get(v) for v in required_vars):
         return []
     return [
-        f"Missing API key for sandbox provider '{provider}': "
-        f"set one of {', '.join(required_vars)} in your .env file or environment."
+        (
+            f"Missing API key for sandbox provider '{provider}': "
+            f"set one of {', '.join(required_vars)} in your .env file or environment."
+        ),
     ]
 
 
@@ -281,7 +289,7 @@ def find_config(start_path: Path | None = None) -> Path | None:
 
 def generate_starter_config() -> str:
     """Generate a starter ``deepagents.toml`` template."""
-    return '''\
+    return """\
 [agent]
 name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
@@ -290,7 +298,7 @@ model = "anthropic:claude-sonnet-4-6"
 # [sandbox]
 # provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
-'''
+"""
 
 
 def generate_starter_agents_md() -> str:
@@ -336,7 +344,13 @@ def generate_starter_skill_md() -> str:
     return """\
 ---
 name: review
-description: "Review code for bugs, security issues, and improvements. Use when the user asks to: (1) review code or a diff, (2) check code quality, (3) find bugs or issues, (4) audit for security problems. Trigger on phrases like 'review this', 'check my code', 'any issues with this', 'code review'."
+description: >-
+  Review code for bugs, security issues, and improvements.
+  Use when the user asks to: (1) review code or a diff,
+  (2) check code quality, (3) find bugs or issues,
+  (4) audit for security problems.
+  Trigger on phrases like 'review this', 'check my code',
+  'any issues with this', 'code review'.
 ---
 
 # Code Review

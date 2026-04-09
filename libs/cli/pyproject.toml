@@ -257,6 +257,15 @@ ignore-var-parameters = true
     "PLR2004",  # Magic value used in comparison — fine in scripts
     "T201",     # `print` found — scripts use print for output
 ]
+"deepagents_cli/deploy/**" = [
+    "BLE001",   # Blind exception catch — resilience in CLI commands
+    "DOC",      # Docstring conventions — internal CLI module
+    "PLW0108",  # Lambda may be unnecessary — closures over local vars require lambdas
+    "S",        # Security warnings — subprocess calls are controlled CLI invocations
+    "SIM105",   # contextlib.suppress — try/except/pass is clearer in these contexts
+    "T201",     # `print` found — CLI commands use print for user output
+    "TC003",    # Move import into TYPE_CHECKING — imports are used at runtime
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]

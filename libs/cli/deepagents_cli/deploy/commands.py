@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -117,6 +116,7 @@ _BETA_WARNING = (
 
 
 def execute_init_command(args: argparse.Namespace) -> None:
+    """Execute the ``deepagents init`` command."""
     print(_BETA_WARNING)
     name = args.name
     if name is None:
@@ -124,7 +124,7 @@ def execute_init_command(args: argparse.Namespace) -> None:
             name = input("Project name: ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
-            raise SystemExit(1)
+            raise SystemExit(1) from None
         if not name:
             print("Error: project name is required.")
             raise SystemExit(1)
@@ -132,6 +132,7 @@ def execute_init_command(args: argparse.Namespace) -> None:
 
 
 def execute_dev_command(args: argparse.Namespace) -> None:
+    """Execute the ``deepagents dev`` command."""
     print(_BETA_WARNING)
     _dev(
         config_path=args.config,
@@ -141,6 +142,7 @@ def execute_dev_command(args: argparse.Namespace) -> None:
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
+    """Execute the ``deepagents deploy`` command."""
     print(_BETA_WARNING)
     _deploy(
         config_path=args.config,
@@ -207,10 +209,10 @@ def _init_project(*, name: str, force: bool = False) -> None:
         print(f"  {filename}")
     print(f"  {SKILLS_DIRNAME}/")
     print(f"    {STARTER_SKILL_NAME}/SKILL.md")
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print(f"  cd {name}")
-    print(f"  # edit deepagents.toml and AGENTS.md")
-    print(f"  deepagents deploy")
+    print("  # edit deepagents.toml and AGENTS.md")
+    print("  deepagents deploy")
 
 
 def _deploy(
@@ -224,17 +226,18 @@ def _deploy(
         dry_run: If ``True``, generate artifacts but don't deploy.
     """
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
-    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, find_config, load_config
+    from deepagents_cli.deploy.config import (
+        DEFAULT_CONFIG_FILENAME,
+        find_config,
+        load_config,
+    )
 
     # Resolve config path: explicit flag > auto-discovery > cwd fallback
     if config_path:
         cfg_path = Path(config_path)
     else:
         discovered = find_config()
-        if discovered:
-            cfg_path = discovered
-        else:
-            cfg_path = Path.cwd() / DEFAULT_CONFIG_FILENAME
+        cfg_path = discovered or Path.cwd() / DEFAULT_CONFIG_FILENAME
 
     project_root = cfg_path.parent
 
@@ -244,10 +247,10 @@ def _deploy(
     except FileNotFoundError:
         print(f"Error: Config file not found: {cfg_path}")
         print(f"Run `deepagents init` to create a starter {DEFAULT_CONFIG_FILENAME}.")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     except ValueError as e:
         print(f"Error: Invalid config: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
     errors = config.validate(project_root)
     if errors:
@@ -305,13 +308,17 @@ def _dev(
     import shutil
 
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
-    from deepagents_cli.deploy.config import DEFAULT_CONFIG_FILENAME, find_config, load_config
+    from deepagents_cli.deploy.config import (
+        DEFAULT_CONFIG_FILENAME,
+        find_config,
+        load_config,
+    )
 
     if config_path:
         cfg_path = Path(config_path)
     else:
         discovered = find_config()
-        cfg_path = discovered if discovered else Path.cwd() / DEFAULT_CONFIG_FILENAME
+        cfg_path = discovered or Path.cwd() / DEFAULT_CONFIG_FILENAME
     project_root = cfg_path.parent
 
     try:
@@ -385,7 +392,9 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
     print(f"Running: {' '.join(cmd)}")
     print()
 
-    result = subprocess.run(cmd, cwd=str(build_dir), capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, cwd=str(build_dir), capture_output=True, text=True, check=False
+    )
 
     # Print output
     if result.stdout:

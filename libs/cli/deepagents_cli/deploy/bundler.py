@@ -3,8 +3,8 @@
 Reads the canonical project layout::
 
     src/
-      agents.md       # required — becomes the system prompt and (optionally) seeded memory
-      skills/         # optional — auto-seeded into the skills namespace
+      AGENTS.md       # required — system prompt + seeded memory
+      skills/         # optional — auto-seeded into skills namespace
       mcp.json        # optional — HTTP/SSE MCP servers
       deepagents.toml
 
@@ -24,8 +24,6 @@ from deepagents_cli.deploy.config import (
     SKILLS_DIRNAME,
     DeployConfig,
 )
-import json as _json
-
 from deepagents_cli.deploy.templates import (
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
@@ -54,11 +52,11 @@ def bundle(
     """Create the full deployment bundle in *build_dir*."""
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Read agents.md — the system prompt AND (optionally) seeded memory.
+    # 1. Read AGENTS.md — the system prompt AND (optionally) seeded memory.
     agents_md_path = project_root / AGENTS_MD_FILENAME
     system_prompt = agents_md_path.read_text(encoding="utf-8")
 
-    # 2. Build and write the seed payload: memory (agents.md) + skills/.
+    # 2. Build and write the seed payload: memory (AGENTS.md) + skills/.
     seed = _build_seed(config, project_root, system_prompt)
     (build_dir / "_seed.json").write_text(
         json.dumps(seed, indent=2, ensure_ascii=False),
@@ -154,10 +152,7 @@ def _render_deploy_graph(
     """Render the generated ``deploy_graph.py``."""
     provider = config.sandbox.provider
     if provider not in SANDBOX_BLOCKS:
-        msg = (
-            f"Unknown sandbox provider {provider!r}. "
-            f"Valid: {sorted(SANDBOX_BLOCKS)}"
-        )
+        msg = f"Unknown sandbox provider {provider!r}. Valid: {sorted(SANDBOX_BLOCKS)}"
         raise ValueError(msg)
     sandbox_block, _ = SANDBOX_BLOCKS[provider]
 
@@ -190,7 +185,7 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     }
     if env_present:
         data["env"] = ".env"
-    return _json.dumps(data, indent=2) + "\n"
+    return json.dumps(data, indent=2) + "\n"
 
 
 def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
@@ -204,7 +199,9 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
     """
     deps: list[str] = []
 
-    provider_prefix = config.agent.model.split(":", 1)[0] if ":" in config.agent.model else ""
+    provider_prefix = (
+        config.agent.model.split(":", 1)[0] if ":" in config.agent.model else ""
+    )
     if provider_prefix and provider_prefix in _MODEL_PROVIDER_DEPS:
         deps.append(_MODEL_PROVIDER_DEPS[provider_prefix])
 
@@ -230,7 +227,7 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     if seed_path.exists():
         try:
             seed = json.loads(seed_path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     print(f"\n  Agent: {config.agent.name}")

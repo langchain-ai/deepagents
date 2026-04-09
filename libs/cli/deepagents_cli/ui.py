@@ -65,14 +65,12 @@ def show_help() -> None:
     console.print()
     console.print("[bold]Deploy (beta):[/bold]", style=theme.PRIMARY)
     console.print(
-        "  deepagents init [NAME]                         Scaffold a new deploy project folder"
+        "  deepagents init [NAME]                  Scaffold a new deploy project"
     )
     console.print(
-        "  deepagents dev    --config src/deepagents.toml Run a local dev server"
+        "  deepagents dev    --config deepagents.toml  Run a local dev server"
     )
-    console.print(
-        "  deepagents deploy --config src/deepagents.toml Bundle and deploy to LangSmith"
-    )
+    console.print("  deepagents deploy --config deepagents.toml  Bundle and deploy")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)

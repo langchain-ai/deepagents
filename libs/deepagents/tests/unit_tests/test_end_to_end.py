@@ -1686,7 +1686,7 @@ class TestDeepAgentPermissionsEndToEnd:
         assert "/public/a.txt" in tool_messages[0].content
 
     def test_tool_permission_denies_filesystem_tool_by_name(self) -> None:
-        """ToolPermission can deny a filesystem tool (read_file) by name via ToolPermissionMiddleware."""
+        """ToolPermission can deny a filesystem tool (read_file) by name via PermissionMiddleware."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [

@@ -54,7 +54,7 @@ jobs:
       issues: write
     steps:
       - name: Sync priority label to PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -182,7 +182,7 @@ jobs:
       issues: write
     steps:
       - name: Propagate priority label to linked PRs
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -358,7 +358,7 @@ jobs:
       issues: write
     steps:
       - name: Backfill priority labels on open PRs
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const { owner, repo } = context.repo;

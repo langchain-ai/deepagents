@@ -72,7 +72,7 @@ def _runtime(tool_call_id=""):
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -86,10 +86,10 @@ class TestAddMiddleware:
         middleware = [
             SubAgentMiddleware(
                 backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             )
         ]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
@@ -97,10 +97,10 @@ class TestAddMiddleware:
             FilesystemMiddleware(),
             SubAgentMiddleware(
                 backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             ),
         ]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools

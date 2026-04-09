@@ -1,3 +1,3 @@
 """Version information for `deepagents` (SDK)."""
 
-__version__ = "0.5.0a4"
+__version__ = "0.5.1"  # x-release-please-version

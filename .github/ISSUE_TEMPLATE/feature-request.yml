@@ -44,6 +44,16 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+        - label: acp
+        - label: evals
+        - label: harbor
+        - label: repl
+        - label: daytona
+        - label: modal
+        - label: quickjs
+        - label: runloop
+        - label: langsmith-sandbox
+        - label: Other / not sure / general
   - type: textarea
     id: feature-description
     validations:

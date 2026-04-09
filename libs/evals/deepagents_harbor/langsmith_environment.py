@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from dockerfile_parse import DockerfileParser
 from harbor.environments.base import BaseEnvironment, ExecResult
@@ -43,6 +43,7 @@ class LangSmithEnvironment(BaseEnvironment):
         session_id: str,
         trial_paths: TrialPaths,
         task_env_config: EnvironmentConfig,
+        **kwargs: Any,
     ) -> None:
         """Initialize a LangSmith harbor environment.
 
@@ -52,6 +53,8 @@ class LangSmithEnvironment(BaseEnvironment):
             session_id: Unique trial session identifier.
             trial_paths: Local paths for trial artifacts.
             task_env_config: Resource and network configuration.
+            **kwargs: Forwarded to `BaseEnvironment` (e.g. `logger`,
+                `override_cpus`, `override_memory_mb`).
         """
         self._sandbox: Sandbox | None = None
         self._client: SandboxClient | None = None
@@ -62,6 +65,7 @@ class LangSmithEnvironment(BaseEnvironment):
             session_id,
             trial_paths,
             task_env_config,
+            **kwargs,
         )
 
     # -- Required abstract properties / methods --------------------------------

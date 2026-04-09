@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import textwrap
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -176,6 +177,36 @@ class TestValidation:
                 task_env_config=config,
             )
 
+    def test_accepts_factory_kwargs(self, tmp_path: Path) -> None:
+        """Harbor's EnvironmentFactory passes logger, override_* kwargs."""
+        env_dir = tmp_path / "environment"
+        env_dir.mkdir()
+        (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+
+        trial_dir = tmp_path / "trial"
+        trial_dir.mkdir()
+        config = EnvironmentConfig()
+        trial_paths = TrialPaths(trial_dir=trial_dir)
+        trial_paths.mkdir()
+
+        test_logger = logging.getLogger("test.harbor")
+        env = LangSmithEnvironment(
+            environment_dir=env_dir,
+            environment_name="test",
+            session_id="s1",
+            trial_paths=trial_paths,
+            task_env_config=config,
+            logger=test_logger,
+            override_cpus=4,
+            override_memory_mb=8192,
+            override_storage_mb=20480,
+            override_gpus=0,
+            suppress_override_warnings=True,
+        )
+        assert env is not None
+        assert env.task_env_config.cpus == 4
+        assert env.task_env_config.memory_mb == 8192
+
 
 class TestResolveImage:
     """Tests for image resolution from Dockerfile or config."""
@@ -336,6 +367,40 @@ class TestFileOps:
 
         assert sandbox._written_files["/app/dest/a.txt"] == b"aaa"
         assert sandbox._written_files["/app/dest/sub/b.txt"] == b"bbb"
+
+    async def test_download_dir(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        sandbox._read_files["/remote/a.txt"] = b"aaa"
+        sandbox._read_files["/remote/sub/b.txt"] = b"bbb"
+        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+
+        # Fake `find` listing the remote files
+        sandbox.run = lambda _cmd, **_kw: _FakeExecResult(  # type: ignore[assignment]
+            stdout="/remote/a.txt\n/remote/sub/b.txt\n"
+        )
+
+        dest = tmp_path / "downloaded"
+        await env.download_dir("/remote", dest)
+
+        assert (dest / "a.txt").read_bytes() == b"aaa"
+        assert (dest / "sub" / "b.txt").read_bytes() == b"bbb"
+
+    async def test_download_dir_empty(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        env._sandbox = sandbox  # type: ignore[invalid-assignment]
+
+        # find returns non-zero for empty/missing dir
+        sandbox.run = lambda _cmd, **_kw: _FakeExecResult(  # type: ignore[assignment]
+            exit_code=1, stderr="No such file or directory"
+        )
+
+        dest = tmp_path / "downloaded"
+        await env.download_dir("/nonexistent", dest)
+
+        assert dest.exists()
+        assert list(dest.iterdir()) == []
 
 
 class TestStop:

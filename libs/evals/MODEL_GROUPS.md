@@ -7,10 +7,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (33 models)
+### `set0` (32 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -90,18 +89,18 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3-flash-preview`
 - `openai:gpt-5.4-mini`
 
-### `open` (3 models)
+### `open` (4 models)
 
 - `baseten:zai-org/GLM-5`
+- `nvidia:nvidia/nemotron-3-super-120b-a12b`
 - `ollama:minimax-m2.7:cloud`
 - `openrouter:z-ai/glm-5.1`
 
 ## Provider groups
 
-### `anthropic` (7 models)
+### `anthropic` (6 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -182,10 +181,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (54 models)
+## `all` (53 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`

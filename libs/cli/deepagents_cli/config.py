@@ -32,8 +32,8 @@ _bootstrap_done = False
 """Whether `_ensure_bootstrap()` has executed."""
 
 _bootstrap_lock = threading.Lock()
-"""Guards `_ensure_bootstrap()` against concurrent access from the main
-thread and the prewarm worker thread."""
+"""Guards `_ensure_bootstrap()` against concurrent access from the main thread
+and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
@@ -2195,7 +2195,14 @@ def create_model(
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
+    from deepagents_cli.model_config import (
+        IMPLICIT_AUTH_PROVIDERS,
+        ModelConfig,
+        ModelConfigError,
+        ModelSpec,
+        get_credential_env_var,
+        has_provider_credentials,
+    )
 
     if not model_spec:
         model_spec = _get_default_model_spec()
@@ -2224,6 +2231,20 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
+
+    # Early credential check — fail fast with an actionable message instead of
+    # letting the provider SDK raise an opaque auth error on first invocation.
+    # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
+    # because their env-var mapping is not a reliable indicator.
+    if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
+        cred_status = has_provider_credentials(provider)
+        if cred_status is False:
+            env_var = get_credential_env_var(provider) or f"<{provider} API key>"
+            msg = (
+                f"No credentials found for provider '{provider}'. "
+                f"Please set the {env_var} environment variable."
+            )
+            raise ModelConfigError(msg)
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)

@@ -63,6 +63,15 @@ def show_help() -> None:
         "  deepagents update                              Check for and install updates"
     )
     console.print()
+    console.print("[bold]Deploy (beta):[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  deepagents init [NAME]                  Scaffold a new deploy project"
+    )
+    console.print(
+        "  deepagents dev    --config deepagents.toml  Run a local dev server"
+    )
+    console.print("  deepagents deploy --config deepagents.toml  Bundle and deploy")
+    console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print(

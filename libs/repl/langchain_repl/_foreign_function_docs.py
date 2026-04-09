@@ -258,21 +258,42 @@ def _get_return_annotation(target: Callable[..., Any]) -> Any:
     return inspect.Signature.empty
 
 
-def _render_summary(doc: str | None) -> str | None:
-    """Extract the first non-empty summary line from a docstring."""
-    if not doc:
-        return None
-    for line in inspect.cleandoc(doc).splitlines():
+def _render_jsdoc(doc: str) -> str:
+    """Convert a Python docstring into a compact JSDoc block."""
+    lines = inspect.cleandoc(doc).splitlines()
+    summary: list[str] = []
+    params: list[tuple[str, str]] = []
+    in_args = False
+    for line in lines:
         stripped = line.strip()
-        if stripped and stripped != "Args:":
-            return stripped
-    return None
+        if stripped == "Args:":
+            in_args = True
+            continue
+        if in_args:
+            if not stripped:
+                continue
+            if line.startswith("    ") and ":" in stripped:
+                name, description = stripped.split(":", maxsplit=1)
+                params.append((name.strip(), description.strip()))
+                continue
+            in_args = False
+        if stripped:
+            summary.append(stripped)
+
+    rendered = ["/**"]
+    rendered.extend(f" * {line}" for line in summary)
+    if summary and params:
+        rendered.append(" *")
+    for name, description in params:
+        rendered.append(f" * @param {name} {description}")
+    rendered.append(" */")
+    return "\n".join(rendered)
 
 
 def _render_function_stub(
     name: str, implementation: Callable[..., Any] | BaseTool
 ) -> str:
-    """Render one prompt-facing documentation block for a foreign function."""
+    """Render one prompt-facing function declaration for a foreign function."""
     function_mode = _get_foreign_function_mode(implementation)
     target = (
         _get_tool_doc_target(implementation)
@@ -280,43 +301,42 @@ def _render_function_stub(
         else implementation
     )
     if target is None:
-        lines = [name, "  args: none", "  returns: any"]
-        if function_mode == "async":
-            lines.append("  note: async function")
-        return "\n".join(lines)
+        prefix = "async function" if function_mode == "async" else "function"
+        return f"{prefix} {name}(...args: any[]): any"
 
-    rendered_args = "none"
-    rendered_return = "any"
+    signature = "(...args: any[])"
+    return_annotation = inspect.Signature.empty
     with contextlib.suppress(TypeError, ValueError, NameError):
         inspected_signature = inspect.signature(target)
         resolved_hints = get_type_hints(target)
-        parameter_parts: list[str] = []
-        for param in inspected_signature.parameters.values():
-            if (
-                param.annotation is not inspect.Signature.empty
-                or param.name in resolved_hints
-            ):
-                annotation = _format_annotation(
-                    resolved_hints.get(param.name, param.annotation)
-                )
-                parameter_parts.append(f"({param.name} {annotation})")
-            else:
-                parameter_parts.append(f"({param.name} any)")
-        if parameter_parts:
-            rendered_args = " ".join(parameter_parts)
+        parameter_parts = [
+            (
+                f"{param.name}: "
+                + _format_annotation(resolved_hints.get(param.name, param.annotation))
+            )
+            if param.annotation is not inspect.Signature.empty
+            or param.name in resolved_hints
+            else f"{param.name}: any"
+            for param in inspected_signature.parameters.values()
+        ]
+        signature = f"({', '.join(parameter_parts)})"
         return_annotation = resolved_hints.get(
             "return", inspected_signature.return_annotation
         )
-        if return_annotation is not inspect.Signature.empty:
-            rendered_return = _format_annotation(return_annotation)
 
-    summary = _render_summary(inspect.getdoc(target) or inspect.getdoc(implementation))
-    lines = [name, f"  args: {rendered_args}", f"  returns: {rendered_return}"]
-    if summary:
-        lines.append(f"  summary: {summary}")
+    rendered_return = (
+        _format_annotation(return_annotation)
+        if return_annotation is not inspect.Signature.empty
+        else "any"
+    )
     if function_mode == "async":
-        lines.append("  note: async function")
-    return "\n".join(lines)
+        rendered_return = f"Promise<{rendered_return}>"
+    prefix = "async function" if function_mode == "async" else "function"
+    declaration = f"{prefix} {name}{signature}: {rendered_return}"
+    doc = inspect.getdoc(target) or inspect.getdoc(implementation)
+    if not doc:
+        return declaration
+    return f"{_render_jsdoc(doc)}\n{declaration}"
 
 
 def _collect_referenced_types(
@@ -361,21 +381,23 @@ def _collect_referenced_types(
 
 
 def _render_typed_dict_definition(annotation: type[Any]) -> str:
-    """Render a simple Python-like field listing for a TypedDict."""
+    """Render a TypeScript-like type definition for a TypedDict."""
     _, optional_keys = _typed_dict_key_sets(annotation)
     with contextlib.suppress(TypeError, NameError):
         field_types = get_type_hints(annotation)
-        lines = [annotation.__name__, "  fields:"]
+        lines = [f"type {annotation.__name__} = {{"]
         for key, value in field_types.items():
             field_name = f"{key}?" if key in optional_keys else key
-            lines.append(f"    ({field_name} {_format_annotation(value)})")
+            lines.append(f"  {field_name}: {_format_annotation(value)}")
+        lines.append("}")
         return "\n".join(lines)
 
     field_types = getattr(annotation, "__annotations__", {})
-    lines = [annotation.__name__, "  fields:"]
+    lines = [f"type {annotation.__name__} = {{"]
     for key, value in field_types.items():
         field_name = f"{key}?" if key in optional_keys else key
-        lines.append(f"    ({field_name} {_format_annotation(value)})")
+        lines.append(f"  {field_name}: {_format_annotation(value)}")
+    lines.append("}")
     return "\n".join(lines)
 
 
@@ -390,12 +412,11 @@ def render_foreign_function_section(
     sections = [
         "Available foreign functions:\n",
         (
-            "These functions are callable from the REPL. Argument and return types "
-            "use the same simple value shapes as the language: strings, numbers, "
-            "booleans, None, lists, and dict-like records."
+            "These functions are callable from the REPL. The TypeScript-style "
+            "signatures below document argument and return shapes."
         ),
         "",
-        "```text",
+        "```ts",
         "\n\n".join(function_blocks),
         "```",
     ]
@@ -409,7 +430,7 @@ def render_foreign_function_section(
             [
                 "",
                 "Referenced types:",
-                "```text",
+                "```ts",
                 "\n\n".join(type_blocks),
                 "```",
             ]

@@ -67,12 +67,19 @@ def check_cli_dependencies() -> None:
 
 
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+"""Fallback installation URL when no platform package manager is detected."""
 
-_RIPGREP_SUPPRESS_HINT = (
-    "To suppress, add to ~/.deepagents/config.toml:\n"
-    "\\[warnings]\n"
-    'suppress = \\["ripgrep"]'
+_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
+"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
+
+_SUPPRESS_HINT_CLI = (
+    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
 )
+"""Suppression hint for non-interactive CLI output.
+
+Contains a `<key>` placeholder that callers replace with the warning key
+(e.g. `"ripgrep"`, `"tavily"`).
+"""
 
 
 def _ripgrep_install_hint() -> str:
@@ -133,6 +140,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
+
+    from deepagents_cli.config import settings
+
+    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+        missing.append("tavily")
+
     return missing
 
 
@@ -150,7 +163,13 @@ def format_tool_warning_tui(tool: str) -> str:
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"\nInstall: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}"
+            f"{_SUPPRESS_HINT_TUI}"
+        )
+    if tool == "tavily":
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "\nGet a key at https://tavily.com\n\n"
+            f"{_SUPPRESS_HINT_TUI}"
         )
     return f"{tool} is not installed."
 
@@ -168,10 +187,19 @@ def format_tool_warning_cli(tool: str) -> str:
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
             hint = f"[link={hint}]{hint}[/link]"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}\n"
+            f"{suppress}\n"
+        )
+    if tool == "tavily":
+        url = "https://tavily.com"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            f"Get a key at [link={url}]{url}[/link]\n\n"
+            f"{suppress}\n"
         )
     return f"{tool} is not installed."
 
@@ -234,6 +262,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
 
@@ -356,6 +385,11 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
         add_output_args=add_json_output_arg,
+    )
+
+    setup_deploy_parsers(
+        subparsers,
+        make_help_action=_make_help_action,
     )
 
     threads_parser = subparsers.add_parser(
@@ -1467,6 +1501,18 @@ def cli_main() -> None:
             from deepagents_cli.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command == "init":
+            from deepagents_cli.deploy import execute_init_command
+
+            execute_init_command(args)
+        elif args.command == "dev":
+            from deepagents_cli.deploy import execute_dev_command
+
+            execute_dev_command(args)
+        elif args.command == "deploy":
+            from deepagents_cli.deploy import execute_deploy_command
+
+            execute_deploy_command(args)
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

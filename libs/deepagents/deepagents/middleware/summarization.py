@@ -1147,7 +1147,7 @@ def create_summarization_tool_middleware(
     `SummarizationToolMiddleware`.
 
     Args:
-        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
+        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:

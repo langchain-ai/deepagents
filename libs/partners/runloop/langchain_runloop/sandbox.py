@@ -63,16 +63,49 @@ class RunloopSandbox(BaseSandbox):
         """Download files from the devbox."""
         responses: list[FileDownloadResponse] = []
         for path in paths:
-            content = self._devbox.file.download(path=path)
-            responses.append(
-                FileDownloadResponse(path=path, content=content, error=None)
-            )
+            try:
+                content = self._devbox.file.download(path=path)
+                responses.append(
+                    FileDownloadResponse(path=path, content=content, error=None)
+                )
+            except FileNotFoundError:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                )
+            except PermissionError:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error="permission_denied"
+                    )
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "is a directory" in msg:
+                    error = "is_directory"
+                elif "not found" in msg or "no such file" in msg:
+                    error = "file_not_found"
+                else:
+                    error = str(e)
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error=error)
+                )
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files into the devbox."""
         responses: list[FileUploadResponse] = []
         for path, content in files:
-            self._devbox.file.upload(path=path, file=content)
-            responses.append(FileUploadResponse(path=path, error=None))
+            try:
+                self._devbox.file.upload(path=path, file=content)
+                responses.append(FileUploadResponse(path=path, error=None))
+            except FileNotFoundError:
+                responses.append(
+                    FileUploadResponse(path=path, error="file_not_found")
+                )
+            except PermissionError:
+                responses.append(
+                    FileUploadResponse(path=path, error="permission_denied")
+                )
+            except Exception as e:
+                responses.append(FileUploadResponse(path=path, error=str(e)))
         return responses

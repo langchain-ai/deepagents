@@ -24,9 +24,10 @@ from deepagents_cli.deploy.config import (
     SKILLS_DIRNAME,
     DeployConfig,
 )
+import json as _json
+
 from deepagents_cli.deploy.templates import (
     DEPLOY_GRAPH_TEMPLATE,
-    LANGGRAPH_JSON_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
     SANDBOX_BLOCKS,
@@ -75,6 +76,16 @@ def bundle(
         shutil.copy2(project_root / MCP_FILENAME, build_dir / "_mcp.json")
         logger.info("Copied %s → _mcp.json", MCP_FILENAME)
 
+    # 3b. Copy .env from the project root's *parent* if present. This is
+    # where users keep their deployment secrets (e.g.
+    # ``examples/deploy-coding-agent/.env``) — outside ``src/`` so they
+    # never land in a seed file.
+    env_src = project_root.parent / ".env"
+    env_present = env_src.is_file()
+    if env_present:
+        shutil.copy2(env_src, build_dir / ".env")
+        logger.info("Copied %s → .env", env_src)
+
     # 4. Render deploy_graph.py.
     (build_dir / "deploy_graph.py").write_text(
         _render_deploy_graph(config, system_prompt, mcp_present=mcp_present),
@@ -83,7 +94,10 @@ def bundle(
     logger.info("Generated deploy_graph.py")
 
     # 5. Render langgraph.json.
-    (build_dir / "langgraph.json").write_text(LANGGRAPH_JSON_TEMPLATE, encoding="utf-8")
+    (build_dir / "langgraph.json").write_text(
+        _render_langgraph_json(env_present=env_present),
+        encoding="utf-8",
+    )
 
     # 6. Render pyproject.toml.
     (build_dir / "pyproject.toml").write_text(
@@ -166,6 +180,18 @@ def _render_deploy_graph(
         mcp_tools_load_call=mcp_tools_load_call,
         default_assistant_id=config.agent.name,
     )
+
+
+def _render_langgraph_json(*, env_present: bool) -> str:
+    """Render ``langgraph.json`` — adds ``"env": ".env"`` when a .env was copied."""
+    data: dict = {
+        "dependencies": ["."],
+        "graphs": {"agent": "./deploy_graph.py:make_graph"},
+        "python_version": "3.12",
+    }
+    if env_present:
+        data["env"] = ".env"
+    return _json.dumps(data, indent=2) + "\n"
 
 
 def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:

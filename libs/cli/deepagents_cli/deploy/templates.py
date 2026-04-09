@@ -191,6 +191,50 @@ async def _load_mcp_tools():
 '''
 
 
+SUBAGENT_MCP_LOADER_TEMPLATE = '''\
+async def _load_mcp_tools_{name}():
+    """Load MCP tools for subagent '{name}'."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    mcp_path = _Path(__file__).parent / "_mcp_{name}.json"
+    if not mcp_path.exists():
+        return []
+
+    try:
+        raw = _json.loads(mcp_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to parse _mcp_{name}.json: %s", exc)
+        return []
+
+    servers = raw.get("mcpServers", {{}})
+    connections = {{}}
+    for sname, cfg in servers.items():
+        transport = cfg.get("type", cfg.get("transport", "stdio"))
+        if transport in ("http", "sse"):
+            conn = {{"transport": transport, "url": cfg["url"]}}
+            if "headers" in cfg:
+                conn["headers"] = cfg["headers"]
+            connections[sname] = conn
+
+    if not connections:
+        return []
+
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        client = MultiServerMCPClient(connections)
+        return await client.get_tools()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to load MCP tools for subagent '{name}' from %d server(s): %s",
+            len(connections),
+            exc,
+        )
+        return []
+'''
+
+
 # ---------------------------------------------------------------------------
 # deploy_graph.py — the generated server entry point
 #
@@ -415,10 +459,26 @@ async def _seed_store_if_needed(store, assistant_id: str) -> None:
                 {{"content": content, "encoding": "utf-8"}},
             )
 
+    # Seed subagent namespaces.
+    for sa_name, sa_data in seed.get("subagents", {{}}).items():
+        sa_mem_ns = (assistant_id, "memories", "agents", sa_name)
+        for path, content in sa_data.get("memories", {{}}).items():
+            if await store.aget(sa_mem_ns, path) is None:
+                await store.aput(sa_mem_ns, path, {{"content": content, "encoding": "utf-8"}})
+
+        sa_skills_ns = (assistant_id, "skills", "agents", sa_name)
+        for path, content in sa_data.get("skills", {{}}).items():
+            if await store.aget(sa_skills_ns, path) is None:
+                await store.aput(sa_skills_ns, path, {{"content": content, "encoding": "utf-8"}})
+
 
 {sandbox_block}
 
 {mcp_tools_block}
+
+{subagent_mcp_loaders}
+
+SUBAGENT_CONFIGS = {subagent_configs_literal}
 
 
 def _make_namespace_factory(assistant_id: str, section: str):
@@ -476,6 +536,29 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
 
     backend_factory = _build_backend_factory(assistant_id)
 
+    # Build subagent specs from bundled config.
+    subagents = []
+    for sa_cfg in SUBAGENT_CONFIGS:
+        sa_tools = list(tools)  # inherit main agent tools
+        mcp_loader_name = f"_load_mcp_tools_{{sa_cfg['name']}}"
+        mcp_loader = globals().get(mcp_loader_name)
+        if mcp_loader:
+            sa_tools.extend(await mcp_loader())
+
+        sa_name = sa_cfg["name"]
+        sa_memory_prefix = f"{{MEMORIES_PREFIX}}agents/{{sa_name}}/"
+        sa_skills_prefix = f"{{SKILLS_PREFIX}}agents/{{sa_name}}/"
+
+        subagents.append({{
+            "name": sa_name,
+            "description": sa_cfg["description"],
+            "system_prompt": sa_cfg["system_prompt"],
+            "model": sa_cfg.get("model", {model!r}),
+            "tools": sa_tools,
+            "memory": [f"{{sa_memory_prefix}}AGENTS.md"],
+            "skills": [sa_skills_prefix],
+        }})
+
     return create_deep_agent(
         model={model!r},
         system_prompt=SYSTEM_PROMPT,
@@ -483,6 +566,7 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
         skills=[SKILLS_PREFIX],
         tools=tools,
         backend=backend_factory,
+        subagents=subagents,
         middleware=[
             SandboxSyncMiddleware(backend=backend_factory, sources=[SKILLS_PREFIX]),
         ],

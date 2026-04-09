@@ -31,6 +31,7 @@ from deepagents_cli.deploy.templates import (
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
     SANDBOX_BLOCKS,
+    SUBAGENT_MCP_LOADER_TEMPLATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,23 @@ def _render_deploy_graph(
         mcp_tools_block = ""
         mcp_tools_load_call = "pass  # no MCP servers configured"
 
+    # Render per-subagent MCP loaders.
+    subagent_mcp_loaders = ""
+    for sa in config.subagents:
+        if sa.mcp_path and sa.mcp_path.is_file():
+            subagent_mcp_loaders += SUBAGENT_MCP_LOADER_TEMPLATE.format(name=sa.agent.name)
+
+    # Build subagent configs literal for embedding in generated code.
+    subagent_configs = []
+    for sa in config.subagents:
+        subagent_configs.append({
+            "name": sa.agent.name,
+            "description": sa.description,
+            "system_prompt": sa.system_prompt,
+            "model": sa.agent.model,
+        })
+    subagent_configs_literal = repr(subagent_configs)
+
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
         system_prompt=system_prompt,
@@ -205,6 +223,8 @@ def _render_deploy_graph(
         mcp_tools_block=mcp_tools_block,
         mcp_tools_load_call=mcp_tools_load_call,
         default_assistant_id=config.agent.name,
+        subagent_mcp_loaders=subagent_mcp_loaders,
+        subagent_configs_literal=subagent_configs_literal,
     )
 
 
@@ -226,18 +246,26 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
     Deps are inferred — the user never writes them. We add:
 
     - the LangChain partner package matching the model provider prefix
-    - `langchain-mcp-adapters` if `mcp.json` is present
+      (main agent + all subagents)
+    - `langchain-mcp-adapters` if `mcp.json` is present (main or subagent)
     - the sandbox partner package (daytona/modal/runloop)
     """
     deps: list[str] = []
 
-    provider_prefix = (
-        config.agent.model.split(":", 1)[0] if ":" in config.agent.model else ""
-    )
-    if provider_prefix and provider_prefix in _MODEL_PROVIDER_DEPS:
-        deps.append(_MODEL_PROVIDER_DEPS[provider_prefix])
+    # Collect all model strings (main + subagents).
+    all_models = [config.agent.model] + [sa.agent.model for sa in config.subagents]
+    for model_str in all_models:
+        provider_prefix = model_str.split(":", 1)[0] if ":" in model_str else ""
+        if provider_prefix and provider_prefix in _MODEL_PROVIDER_DEPS:
+            dep = _MODEL_PROVIDER_DEPS[provider_prefix]
+            if dep not in deps:
+                deps.append(dep)
 
-    if mcp_present:
+    # MCP: main agent or any subagent with mcp.
+    any_mcp = mcp_present or any(
+        sa.mcp_path and sa.mcp_path.is_file() for sa in config.subagents
+    )
+    if any_mcp:
         deps.append("langchain-mcp-adapters")
 
     _, partner_pkg = SANDBOX_BLOCKS.get(config.sandbox.provider, (None, None))

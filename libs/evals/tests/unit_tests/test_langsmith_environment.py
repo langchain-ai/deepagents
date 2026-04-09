@@ -336,7 +336,7 @@ class TestResourceConversion:
     async def test_memory_under_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=512)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -347,7 +347,7 @@ class TestResourceConversion:
     async def test_memory_over_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=2048)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -358,7 +358,7 @@ class TestResourceConversion:
     async def test_cpu_conversion(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, cpus=2)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -369,7 +369,7 @@ class TestResourceConversion:
     async def test_storage_always_gi(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, storage_mb=10240)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -380,7 +380,7 @@ class TestResourceConversion:
     async def test_storage_rounds_up(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, storage_mb=1500)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -395,7 +395,7 @@ class TestEnsureTemplate:
     async def test_reuses_template_when_resources_match(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 template=_FakeTemplate(
                     resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
@@ -411,7 +411,7 @@ class TestEnsureTemplate:
     async def test_recreates_template_when_resources_differ(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, cpus=4)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 template=_FakeTemplate(
                     resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
@@ -430,7 +430,7 @@ class TestEnsureTemplate:
 
         env = _make_env(tmp_path)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 get_template_side_effect=ResourceNotFoundError(
                     "not found", resource_type="template"
@@ -445,7 +445,7 @@ class TestEnsureTemplate:
     async def test_force_build_always_recreates(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -458,7 +458,7 @@ class TestEnsureTemplate:
     async def test_recreates_template_when_storage_differs(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, storage_mb=20480)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client(
                 template=_FakeTemplate(
                     resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
@@ -475,7 +475,7 @@ class TestEnsureTemplate:
     async def test_template_name_derived_from_image(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, docker_image="ghcr.io/my-org/my-image:v1.2")
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
@@ -704,7 +704,7 @@ class TestStop:
 
         env = _make_env(tmp_path)
 
-        with patch("langsmith.sandbox.AsyncSandboxClient") as mock_cls:
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = AsyncMock()
             mock_client.get_template.side_effect = ResourceNotFoundError(
                 "not found", resource_type="template"

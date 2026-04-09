@@ -13,12 +13,14 @@ from typing import TYPE_CHECKING, Any
 from dockerfile_parse import DockerfileParser
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
-from langsmith.sandbox import ResourceNotFoundError
+from langsmith.sandbox import AsyncSandboxClient, ResourceNotFoundError
+
+from deepagents_harbor.langsmith import resolve_langsmith_api_key
 
 if TYPE_CHECKING:
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.task.config import EnvironmentConfig
-    from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient
+    from langsmith.sandbox import AsyncSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -243,19 +245,18 @@ class LangSmithEnvironment(BaseEnvironment):
             force_build: When True, delete and recreate the template even if
                 one already exists with matching resources.
         """
-        from langsmith.sandbox import AsyncSandboxClient
-
-        from deepagents_harbor.langsmith import resolve_langsmith_api_key
-
         image = self._resolve_image()
 
-        api_key = resolve_langsmith_api_key()
-        if not api_key:
+        resolved = resolve_langsmith_api_key()
+        if not resolved:
             msg = (
                 "No LangSmith API key found. Set one of: "
                 "LANGSMITH_SANDBOX_API_KEY, LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
             )
             raise ValueError(msg)
+
+        api_key, key_source = resolved
+        logger.info("Using LangSmith API key from %s", key_source)
 
         client = AsyncSandboxClient(api_key=api_key)
         self._client = client

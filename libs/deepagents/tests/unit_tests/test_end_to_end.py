@@ -27,7 +27,9 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.permissions import FilesystemPermission, ToolPermission
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -1312,6 +1314,914 @@ class TestDeepAgentEndToEnd:
         assert tm.content[0]["type"] == "image"
         assert tm.content[0]["mime_type"] == "image/png"
         assert "base64" in tm.content[0]
+
+
+class TestDeepAgentPermissionsEndToEnd:
+    """End-to-end tests for create_deep_agent with FilesystemPermission and ToolPermission."""
+
+    def test_filesystem_permission_deny_write_blocks_write_file(self) -> None:
+        """FilesystemPermission deny write blocks write_file and returns error message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/secrets/key.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write to secrets")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+        assert "write" in tool_messages[0].content
+
+    def test_filesystem_permission_deny_read_blocks_read_file(self) -> None:
+        """FilesystemPermission deny read blocks read_file and returns error message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/secrets/key.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Read secrets")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+        assert "read" in tool_messages[0].content
+
+    def test_filesystem_permission_allow_unrelated_path(self) -> None:
+        """FilesystemPermission deny on one path does not block unrelated paths."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/workspace/file.txt", "content": "hello"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write to workspace")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" not in tool_messages[0].content
+
+    def test_tool_permission_deny_blocks_tool(self) -> None:
+        """ToolPermission deny blocks the matching tool and returns an error ToolMessage."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "hello"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run sample_tool")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" in tool_messages[0].content
+
+    def test_tool_permission_allow_with_arg_pattern(self) -> None:
+        """ToolPermission allow with argument pattern permits matching calls."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "allowed value"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", args={"sample_input": "allowed *"}),
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run sample_tool")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" not in tool_messages[0].content
+        assert "allowed value" in tool_messages[0].content
+
+    def test_tool_permission_deny_non_matching_arg(self) -> None:
+        """ToolPermission deny falls through when argument pattern doesn't match, blocking the call."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "forbidden value"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", args={"sample_input": "allowed *"}),
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run sample_tool")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" in tool_messages[0].content
+
+    def test_combined_filesystem_and_tool_permissions(self) -> None:
+        """FilesystemPermission and ToolPermission can coexist; both are enforced."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/restricted/data.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "test"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/restricted/**"], mode="deny"),
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run both tools")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        assert "permission denied" in tool_messages[0].content
+        assert "denied" in tool_messages[1].content
+
+    def test_no_permissions_allows_all(self) -> None:
+        """With no permissions specified, all tool calls proceed normally."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "unrestricted"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, tools=[sample_tool])
+        result = agent.invoke({"messages": [HumanMessage(content="Run sample_tool")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" not in tool_messages[0].content
+        assert "unrestricted" in tool_messages[0].content
+
+    def test_glob_post_filters_denied_paths(self) -> None:
+        """FilesystemPermission post-filters glob results, removing denied paths."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "**/*.txt", "path": "/"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Glob all txt files")],
+                "files": {
+                    "/public/a.txt": {**create_file_data("pub")},
+                    "/secrets/b.txt": {**create_file_data("priv")},
+                },
+            }
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "/secrets/b.txt" not in tool_messages[0].content
+        assert "/public/a.txt" in tool_messages[0].content
+
+    def test_grep_post_filters_denied_paths(self) -> None:
+        """FilesystemPermission post-filters grep results, removing denied paths."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "grep",
+                                "args": {"pattern": "keyword"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Search for keyword")],
+                "files": {
+                    "/public/a.txt": {**create_file_data("keyword here")},
+                    "/secrets/b.txt": {**create_file_data("keyword there")},
+                },
+            }
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "/secrets/b.txt" not in tool_messages[0].content
+        assert "/public/a.txt" in tool_messages[0].content
+
+    def test_tool_permission_denies_filesystem_tool_by_name(self) -> None:
+        """ToolPermission can deny a filesystem tool (read_file) by name via ToolPermissionMiddleware."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/workspace/file.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                ToolPermission(name="read_file", mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Read a file")],
+                "files": {
+                    "/workspace/file.txt": {**create_file_data("hello")},
+                },
+            }
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" in tool_messages[0].content
+
+    def test_tool_permission_arg_glob_on_execute_pattern(self) -> None:
+        """ToolPermission argument glob matching works end-to-end with allowlist + catch-all deny."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "pytest tests/unit"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "make build"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "rm -rf /"},
+                                "id": "call_3",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", args={"sample_input": "pytest *"}),
+                ToolPermission(name="sample_tool", args={"sample_input": "make *"}),
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run commands")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 3
+        assert "denied" not in tool_messages[0].content
+        assert "pytest tests/unit" in tool_messages[0].content
+        assert "denied" not in tool_messages[1].content
+        assert "make build" in tool_messages[1].content
+        assert "denied" in tool_messages[2].content
+
+    async def test_filesystem_permission_deny_write_async(self) -> None:
+        """(async) FilesystemPermission deny write blocks write_file."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/secrets/key.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Write to secrets")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+
+    async def test_tool_permission_deny_async(self) -> None:
+        """(async) ToolPermission deny blocks the matching tool."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "hello"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Run sample_tool")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "denied" in tool_messages[0].content
+
+
+class TestSubAgentPermissionsEndToEnd:
+    """End-to-end tests for subagent permission inheritance and override.
+
+    The `task` ToolMessage seen by the parent contains the subagent's *final AIMessage*
+    content. To verify a permission blocked a tool inside the subagent, the subagent
+    model's final response must reflect the denial (as a real model would), which is then
+    what the parent receives. For override/success cases we additionally verify the file
+    state to confirm the tool actually executed.
+    """
+
+    def _parent_model_calling_subagent(self, subagent_type: str = "worker") -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do the work",
+                                    "subagent_type": subagent_type,
+                                },
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+    def test_subagent_inherits_parent_filesystem_permission(self) -> None:
+        """Subagent without its own permissions inherits the parent's FilesystemPermission."""
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/secrets/key.txt", "content": "data"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Subagent's final response echoes what the tool returned (the denial)
+                    AIMessage(content="Error: permission denied for write on /secrets/key.txt"),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+        }
+
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        # The parent sees the subagent's last AIMessage which reflects the denial
+        assert "permission denied" in task_result.content
+        # And the file must not have been written
+        assert "/secrets/key.txt" not in result.get("files", {})
+
+    def test_subagent_inherits_parent_tool_permission(self) -> None:
+        """Subagent without its own permissions inherits the parent's ToolPermission."""
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "hello"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Error: tool use denied by permission"),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+            "tools": [sample_tool],
+        }
+
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "denied" in task_result.content
+
+    def test_subagent_own_permissions_override_parent(self) -> None:
+        """Subagent with its own permissions replaces parent rules entirely.
+
+        Parent denies `sample_tool`. The subagent specifies empty permissions
+        (no rules → permissive default), so the tool is allowed inside the subagent.
+        """
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "hello"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Tool returned: hello"),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+            "tools": [sample_tool],
+            "permissions": [],  # empty → no rules → permissive, overrides parent deny
+        }
+
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "denied" not in task_result.content
+        assert "hello" in task_result.content
+
+    def test_subagent_own_permissions_stricter_than_parent(self) -> None:
+        """Subagent can have its own, more restrictive permissions than the parent."""
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/workspace/out.txt", "content": "data"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Error: permission denied for write on /workspace/out.txt"),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A read-only worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+            "permissions": [
+                FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+            ],
+        }
+
+        # Parent has no write restrictions — the subagent's own rules are more restrictive
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "permission denied" in task_result.content
+        assert "/workspace/out.txt" not in result.get("files", {})
+
+    def test_general_purpose_subagent_inherits_parent_permissions(self) -> None:
+        """The auto-added general-purpose subagent inherits the parent's permissions."""
+        parent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Write a file",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        gp_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/secrets/key.txt", "content": "data"},
+                                "id": "gp_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Error: permission denied for write on /secrets/key.txt"),
+                ]
+            )
+        )
+
+        gp_subagent: SubAgent = {
+            "name": "general-purpose",
+            "description": "General purpose subagent.",
+            "system_prompt": "Help with tasks.",
+            "model": gp_model,
+            # No permissions key → inherits from parent
+        }
+
+        agent = create_deep_agent(
+            model=parent_model,
+            subagents=[gp_subagent],
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Ask GP to write")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "permission denied" in task_result.content
+        assert "/secrets/key.txt" not in result.get("files", {})
+
+    def test_subagent_own_permissions_allow_what_parent_restricts(self) -> None:
+        """Subagent with its own (permissive) rules can write where parent restricts.
+
+        The parent denies writes to /secrets. The subagent has its own empty
+        permissions so the deny doesn't apply to it, and the write succeeds.
+        """
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/workspace/out.txt", "content": "result"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="File written successfully."),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+            "permissions": [],  # no rules → all allowed, overrides parent
+        }
+
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "permission denied" not in task_result.content
+        assert "written successfully" in task_result.content
+        assert "/workspace/out.txt" in result.get("files", {})
+
+    async def test_subagent_inherits_parent_permissions_async(self) -> None:
+        """(async) Subagent without its own permissions inherits the parent's ToolPermission."""
+        subagent_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "sample_tool",
+                                "args": {"sample_input": "hello"},
+                                "id": "sub_call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Error: tool use denied by permission"),
+                ]
+            )
+        )
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "A worker subagent.",
+            "system_prompt": "Do work.",
+            "model": subagent_model,
+            "tools": [sample_tool],
+        }
+
+        agent = create_deep_agent(
+            model=self._parent_model_calling_subagent(),
+            subagents=[worker],
+            tools=[sample_tool],
+            permissions=[
+                ToolPermission(name="sample_tool", mode="deny"),
+            ],
+        )
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Delegate the work")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        task_result = next(m for m in tool_messages if m.name == "task")
+        assert "denied" in task_result.content
 
 
 class TestDeepAgentStructure:

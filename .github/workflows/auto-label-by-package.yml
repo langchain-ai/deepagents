@@ -36,6 +36,15 @@ jobs:
             const mapping = {
               "deepagents (SDK)": "deepagents",
               "cli": "cli",
+              "acp": "acp",
+              "evals": "evals",
+              "harbor": "harbor",
+              "repl": "repl",
+              "daytona": "daytona",
+              "modal": "modal",
+              "quickjs": "quickjs",
+              "runloop": "runloop",
+              "langsmith-sandbox": "langsmith-sandbox",
             };
 
             // All possible package labels we manage

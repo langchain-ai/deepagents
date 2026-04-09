@@ -878,8 +878,7 @@ def summarize_langsmith_trace(
 ) -> TraceSummary:
     """Summarize a LangSmith trace into a compact structure.
 
-    Supports both LangChain constructor format (`kwargs.type`) and
-    OpenAI chat format (`role`/`content`) as returned by the LangSmith
+    Handles the `role`/`content` format returned by the LangSmith
     `include_messages=true` API.
 
     Args:
@@ -894,22 +893,14 @@ def summarize_langsmith_trace(
     messages = trace_data.get("messages") or []
     steps: list[TraceStep] = []
     for msg in messages:
-        if "kwargs" in msg:
-            kwargs = msg["kwargs"]
-            msg_type = kwargs.get("type", "unknown")
-            content = kwargs.get("content")
-            raw_tool_calls = kwargs.get("tool_calls")
-            name = kwargs.get("name")
-            status = kwargs.get("status")
-        else:
-            role = msg.get("role", "unknown")
-            # user/assistant/tool/system all pass through; normalize
-            # the two that differ from LC naming.
-            msg_type = {"user": "human", "assistant": "ai"}.get(role, role)
-            content = msg.get("content")
-            raw_tool_calls = msg.get("tool_calls")
-            name = msg.get("name")
-            status = msg.get("status")
+        role = msg.get("role", "unknown")
+        # user/assistant/tool/system all pass through; normalize
+        # the two that differ from LC naming.
+        msg_type = {"user": "human", "assistant": "ai"}.get(role, role)
+        content = msg.get("content")
+        raw_tool_calls = msg.get("tool_calls")
+        name = msg.get("name")
+        status = msg.get("status")
 
         if content is None:
             content = ""

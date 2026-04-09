@@ -534,7 +534,7 @@ def test_write_trace_payloads_fetches_langsmith_json(tmp_path: Path, monkeypatch
             return False
 
         def read(self):
-            return b'{"id":"019c2754-dcf0-7971-ad86-ee82ed690b8a","messages":[{"type":"human","content":"hi"}]}'
+            return b'{"id":"019c2754-dcf0-7971-ad86-ee82ed690b8a","messages":[{"role":"user","content":"hi"}]}'
 
     def fake_urlopen(request, timeout):
         del timeout
@@ -768,34 +768,19 @@ def test_summarize_langsmith_trace_extracts_steps():
         "status": "success",
         "error": None,
         "messages": [
+            {"role": "user", "content": "Fix the auth bug"},
             {
-                "lc": 1,
-                "type": "constructor",
-                "id": ["langchain", "schema", "messages", "HumanMessage"],
-                "kwargs": {"type": "human", "content": "Fix the auth bug"},
+                "role": "assistant",
+                "content": "I'll investigate the auth module.",
+                "tool_calls": [
+                    {"name": "read_file", "args": {"path": "auth.py"}},
+                ],
             },
             {
-                "lc": 1,
-                "type": "constructor",
-                "id": ["langchain", "schema", "messages", "AIMessage"],
-                "kwargs": {
-                    "type": "ai",
-                    "content": "I'll investigate the auth module.",
-                    "tool_calls": [
-                        {"name": "read_file", "args": {"path": "auth.py"}},
-                    ],
-                },
-            },
-            {
-                "lc": 1,
-                "type": "constructor",
-                "id": ["langchain", "schema", "messages", "ToolMessage"],
-                "kwargs": {
-                    "type": "tool",
-                    "content": "def login(): pass",
-                    "name": "read_file",
-                    "status": "success",
-                },
+                "role": "tool",
+                "content": "def login(): pass",
+                "name": "read_file",
+                "status": "success",
             },
         ],
     }
@@ -818,24 +803,19 @@ def test_summarize_langsmith_trace_handles_list_content():
         "error": None,
         "messages": [
             {
-                "lc": 1,
-                "type": "constructor",
-                "id": ["langchain", "schema", "messages", "AIMessage"],
-                "kwargs": {
-                    "type": "ai",
-                    "content": [
-                        {"type": "text", "text": "I'll read the file."},
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_01",
-                            "name": "read_file",
-                            "input": {"path": "auth.py"},
-                        },
-                    ],
-                    "tool_calls": [
-                        {"name": "read_file", "args": {"path": "auth.py"}},
-                    ],
-                },
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll read the file."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "read_file",
+                        "input": {"path": "auth.py"},
+                    },
+                ],
+                "tool_calls": [
+                    {"name": "read_file", "args": {"path": "auth.py"}},
+                ],
             },
         ],
     }
@@ -852,15 +832,10 @@ def test_summarize_langsmith_trace_truncates_long_content():
         "error": None,
         "messages": [
             {
-                "lc": 1,
-                "type": "constructor",
-                "id": ["langchain", "schema", "messages", "ToolMessage"],
-                "kwargs": {
-                    "type": "tool",
-                    "content": long_content,
-                    "name": "read_file",
-                    "status": "success",
-                },
+                "role": "tool",
+                "content": long_content,
+                "name": "read_file",
+                "status": "success",
             },
         ],
     }

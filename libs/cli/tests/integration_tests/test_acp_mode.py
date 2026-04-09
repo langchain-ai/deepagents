@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import pytest
 from acp import PROTOCOL_VERSION, Client, RequestError, connect_to_agent
 from acp.schema import ClientCapabilities, Implementation
 
@@ -60,12 +59,6 @@ class _AcpSmokeClient(Client):
         raise RequestError.method_not_found(method)
 
 
-# https://github.com/langchain-ai/deepagents/issues/2623
-@pytest.mark.xfail(
-    condition=os.environ.get("CI") == "true",
-    strict=True,
-    reason="ACP subprocess rejects credentials in CI (#2623)",
-)
 async def test_cli_acp_mode_starts_session_and_exits() -> None:
     """Test that the CLI can start in ACP mode, initialize a session, and exit."""
     env = os.environ.copy()

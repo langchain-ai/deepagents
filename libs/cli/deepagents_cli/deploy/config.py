@@ -512,6 +512,9 @@ def generate_starter_mcp_json() -> str:
 # Starter skill name and content.
 STARTER_SKILL_NAME = "review"
 
+# Starter subagent name and content.
+STARTER_SUBAGENT_NAME = "researcher"
+
 
 def generate_starter_skill_md() -> str:
     """Generate a starter `skills/review/SKILL.md` for code review."""
@@ -552,4 +555,26 @@ For each issue found:
   - Suggested fix
 
 Keep feedback actionable. Skip praise for things that are simply correct.
+"""
+
+
+def generate_starter_subagent_agents_md() -> str:
+    """Generate a starter subagent `AGENTS.md`."""
+    return """\
+---
+name: researcher
+description: Research topics on the web before writing content
+---
+
+You are a research assistant. Search for relevant information
+and summarize your findings clearly and concisely.
+"""
+
+
+def generate_starter_subagent_config() -> str:
+    """Generate a starter subagent `deepagents.toml`."""
+    return """\
+[agent]
+name = "researcher"
+model = "anthropic:claude-haiku-4-5-20251001"
 """

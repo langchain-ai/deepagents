@@ -283,7 +283,7 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
 def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     """Print a human-readable summary of what was bundled."""
     seed_path = build_dir / "_seed.json"
-    seed: dict[str, dict[str, str]] = {"memories": {}, "skills": {}}
+    seed: dict = {"memories": {}, "skills": {}, "subagents": {}}
     if seed_path.exists():
         try:
             seed = json.loads(seed_path.read_text(encoding="utf-8"))
@@ -292,6 +292,16 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")
+
+    # Subagents summary.
+    if config.subagents:
+        print(f"\n  Subagents ({len(config.subagents)}):")
+        for sa in config.subagents:
+            sa_seed = seed.get("subagents", {}).get(sa.agent.name, {})
+            skills_count = len(sa_seed.get("skills", {}))
+            has_mcp = (build_dir / f"_mcp_{sa.agent.name}.json").exists()
+            print(f"    {sa.agent.name} ({sa.agent.model})")
+            print(f"      skills: {skills_count}, mcp: {'yes' if has_mcp else 'no'}")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

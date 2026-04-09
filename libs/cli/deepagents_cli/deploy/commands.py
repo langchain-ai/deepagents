@@ -169,16 +169,20 @@ def _init_project(*, name: str, force: bool = False) -> None:
         force: Overwrite existing files if `True`.
     """
     from deepagents_cli.deploy.config import (
+        AGENTS_DIRNAME,
         AGENTS_MD_FILENAME,
         DEFAULT_CONFIG_FILENAME,
         MCP_FILENAME,
         SKILLS_DIRNAME,
         STARTER_SKILL_NAME,
+        STARTER_SUBAGENT_NAME,
         generate_starter_agents_md,
         generate_starter_config,
         generate_starter_env,
         generate_starter_mcp_json,
         generate_starter_skill_md,
+        generate_starter_subagent_agents_md,
+        generate_starter_subagent_config,
     )
 
     project_dir = Path.cwd() / name
@@ -206,11 +210,25 @@ def _init_project(*, name: str, force: bool = False) -> None:
     starter_skill_dir.mkdir(exist_ok=True)
     (starter_skill_dir / "SKILL.md").write_text(generate_starter_skill_md())
 
+    # Create agents/ directory with a starter subagent.
+    agents_dir = project_dir / AGENTS_DIRNAME
+    starter_subagent_dir = agents_dir / STARTER_SUBAGENT_NAME
+    starter_subagent_dir.mkdir(parents=True, exist_ok=True)
+    (starter_subagent_dir / AGENTS_MD_FILENAME).write_text(
+        generate_starter_subagent_agents_md()
+    )
+    (starter_subagent_dir / DEFAULT_CONFIG_FILENAME).write_text(
+        generate_starter_subagent_config()
+    )
+
     print(f"Created {name}/ with:")
     for filename, _ in files:
         print(f"  {filename}")
     print(f"  {SKILLS_DIRNAME}/")
     print(f"    {STARTER_SKILL_NAME}/SKILL.md")
+    print(f"  {AGENTS_DIRNAME}/")
+    print(f"    {STARTER_SUBAGENT_NAME}/AGENTS.md")
+    print(f"    {STARTER_SUBAGENT_NAME}/deepagents.toml")
     print("\nNext steps:")
     print(f"  cd {name}")
     print("  # edit deepagents.toml and AGENTS.md")
@@ -230,8 +248,10 @@ def _deploy(
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
     from deepagents_cli.deploy.config import (
         DEFAULT_CONFIG_FILENAME,
+        DeployConfig,
         find_config,
         load_config,
+        load_subagents,
     )
 
     # Resolve config path: explicit flag > auto-discovery > cwd fallback
@@ -253,6 +273,20 @@ def _deploy(
     except ValueError as e:
         print(f"Error: Invalid config: {e}")
         raise SystemExit(1) from None
+
+    # Load subagents from agents/ directory.
+    try:
+        subagents = load_subagents(project_root)
+    except ValueError as e:
+        print(f"Error: Invalid subagent config: {e}")
+        raise SystemExit(1) from None
+
+    if subagents:
+        config = DeployConfig(
+            agent=config.agent,
+            sandbox=config.sandbox,
+            subagents=subagents,
+        )
 
     errors = config.validate(project_root)
     if errors:
@@ -312,8 +346,10 @@ def _dev(
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
     from deepagents_cli.deploy.config import (
         DEFAULT_CONFIG_FILENAME,
+        DeployConfig,
         find_config,
         load_config,
+        load_subagents,
     )
 
     if config_path:
@@ -328,6 +364,20 @@ def _dev(
     except FileNotFoundError:
         print(f"Error: Config file not found: {cfg_path}")
         raise SystemExit(1) from None
+
+    # Load subagents from agents/ directory.
+    try:
+        subagents = load_subagents(project_root)
+    except ValueError as e:
+        print(f"Error: Invalid subagent config: {e}")
+        raise SystemExit(1) from None
+
+    if subagents:
+        config = DeployConfig(
+            agent=config.agent,
+            sandbox=config.sandbox,
+            subagents=subagents,
+        )
 
     errors = config.validate(project_root)
     if errors:

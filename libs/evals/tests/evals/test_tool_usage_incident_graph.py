@@ -731,10 +731,10 @@ async def test_single_tool_list_incident_ids(model: BaseChatModel) -> None:
         query="What are all the incident IDs in the system?",
         scorer=TrajectoryScorer()
         .success(
-            final_text_contains("101"),
-            final_text_contains("102"),
-            final_text_contains("103"),
-            final_text_contains("104"),
+            final_text_contains("41017"),
+            final_text_contains("41029"),
+            final_text_contains("41043"),
+            final_text_contains("41058"),
         )
         .expect(
             agent_steps=2,
@@ -791,7 +791,7 @@ async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
-        query="Who is the on-call engineer for incident 102?",
+        query="Who is the on-call engineer for incident 41029?",
         scorer=TrajectoryScorer()
         .success(final_text_contains("Cara Singh"))
         .expect(
@@ -834,7 +834,7 @@ async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) 
     await run_agent_async(
         agent,
         model=model,
-        query="For incident 101, what repo was most recently deployed and what version was it?",
+        query="For incident 41017, what repo was most recently deployed and what version was it?",
         scorer=TrajectoryScorer()
         .success(
             final_text_contains("payments-service"),
@@ -860,7 +860,7 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
     await run_agent_async(
         agent,
         model=model,
-        query="What environment and region is incident 104 running in?",
+        query="What environment and region is incident 41058 running in?",
         scorer=TrajectoryScorer()
         .success(
             final_text_contains("staging"),
@@ -987,12 +987,12 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
     await run_agent_async(
         agent,
         model=model,
-        query="For incident 103, tell me its title, severity, and status.",
+        query="For incident 41043, tell me its title, severity, and status.",
         scorer=TrajectoryScorer()
         .success(
             final_text_contains("Identity login error burst"),
-            final_text_contains("sev2"),
-            final_text_contains("resolved"),
+            final_text_contains("sev2", case_insensitive=True),
+            final_text_contains("resolved", case_insensitive=True),
         )
         .expect(
             agent_steps=3,

@@ -1478,7 +1478,7 @@ class DeepAgentsApp(App):
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}\n"
+                    f"Run: {cmd}\n\n"
                     f"Enable auto-updates: /auto-update",
                     severity="information",
                     timeout=15,

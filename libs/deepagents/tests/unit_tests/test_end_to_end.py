@@ -1111,12 +1111,12 @@ class TestDeepAgentEndToEnd:
 
         The current behavior:
         - offset works on logical lines (before formatting)
-        - limit applies to formatted output lines (after continuation markers)
-        - This allows pagination through long lines by increasing limit
+        - limit applies to logical lines (before continuation markers)
+        - This prevents wrapped long lines from hiding later source lines
         - Limitation: cannot use offset to skip within a long line
 
         This test verifies:
-        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
+        1. A single long line with limit=1 returns the selected logical line, including continuation rows
         2. Size-based truncation applies if the formatted output exceeds threshold
         """
         # Create a file with a SINGLE very long line (no newlines)

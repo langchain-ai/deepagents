@@ -388,7 +388,7 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
     config_path = str(build_dir / "langgraph.json")
     cmd = ["langgraph", "deploy", "-c", config_path, "--name", name, "--verbose"]
 
-    print("Deploying to LangGraph Platform...")
+    print("Deploying to LangSmith Deployments...")
     print(f"Running: {' '.join(cmd)}")
     print()
 

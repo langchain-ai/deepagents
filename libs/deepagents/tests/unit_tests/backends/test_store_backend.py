@@ -46,6 +46,26 @@ def test_store_backend_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
+def test_store_backend_write_rejects_existing_file():
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+
+    # Create the file
+    result = be.write("/charmander.txt", "Hello world")
+    assert result.error is None
+
+    # Attempt to overwrite — should fail
+    result = be.write("/charmander.txt", "New content")
+    assert result.error is not None
+    assert "Cannot write" in result.error
+    assert "already exists" in result.error
+
+    # Original content preserved
+    read_result = be.read("/charmander.txt")
+    assert read_result.file_data is not None
+    assert "Hello world" in read_result.file_data["content"]
+
+
 def test_store_backend_ls_nested_directories():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))

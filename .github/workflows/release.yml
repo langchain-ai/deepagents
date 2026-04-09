@@ -117,7 +117,7 @@ jobs:
       version: ${{ steps.check-version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
@@ -141,7 +141,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Upload build
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -177,7 +177,7 @@ jobs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -458,9 +458,9 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -490,7 +490,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # We explicitly *don't* set up caching here. This ensures our tests are
       # maximally sensitive to catching breakage.
@@ -511,7 +511,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -607,14 +607,14 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -653,20 +653,20 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Create Release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
           artifacts: "${{ env.WORKING_DIR }}/dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}

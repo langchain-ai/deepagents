@@ -251,7 +251,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
@@ -296,7 +296,7 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -362,7 +362,7 @@ jobs:
 
       - name: "📤 Upload failure analysis"
         if: "!cancelled()"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: failure-analysis-${{ strategy.job-index }}
           path: libs/evals/failure_analysis.json
@@ -370,7 +370,7 @@ jobs:
 
       - name: "📤 Upload eval report"
         if: "!cancelled()"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-report-${{ strategy.job-index }}
           path: libs/evals/evals_report.json
@@ -475,10 +475,10 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "📥 Download eval artifacts"
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: evals_artifacts
 
@@ -506,7 +506,7 @@ jobs:
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-summary
           path: evals_summary.json
@@ -514,7 +514,7 @@ jobs:
 
       - name: "📤 Upload radar charts"
         if: hashFiles('charts/radar.png') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: radar-charts
           path: charts/

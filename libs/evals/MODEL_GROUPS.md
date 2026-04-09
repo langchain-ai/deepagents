@@ -7,10 +7,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (33 models)
+### `set0` (32 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -99,10 +98,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Provider groups
 
-### `anthropic` (7 models)
+### `anthropic` (6 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -183,10 +181,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (54 models)
+## `all` (53 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`

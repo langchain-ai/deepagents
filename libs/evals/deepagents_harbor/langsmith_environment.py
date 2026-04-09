@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import re
 import shlex
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from dockerfile_parse import DockerfileParser
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
+from harbor.utils.logger import logger
 from langsmith.sandbox import AsyncSandboxClient, ResourceNotFoundError
 
 from deepagents_harbor.langsmith import resolve_langsmith_api_key
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from harbor.models.task.config import EnvironmentConfig
     from langsmith.sandbox import AsyncSandbox
 
-logger = logging.getLogger(__name__)
 
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
 _MB_PER_GB = 1024

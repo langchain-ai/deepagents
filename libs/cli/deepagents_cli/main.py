@@ -67,12 +67,19 @@ def check_cli_dependencies() -> None:
 
 
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
+"""Fallback installation URL when no platform package manager is detected."""
 
-_RIPGREP_SUPPRESS_HINT = (
-    "To suppress, add to ~/.deepagents/config.toml:\n"
-    "\\[warnings]\n"
-    'suppress = \\["ripgrep"]'
+_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
+"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
+
+_SUPPRESS_HINT_CLI = (
+    'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
 )
+"""Suppression hint for non-interactive CLI output.
+
+Contains a `<key>` placeholder that callers replace with the warning key
+(e.g. `"ripgrep"`, `"tavily"`).
+"""
 
 
 def _ripgrep_install_hint() -> str:
@@ -133,6 +140,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     missing: list[str] = []
     if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
+
+    from deepagents_cli.config import settings
+
+    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+        missing.append("tavily")
+
     return missing
 
 
@@ -150,7 +163,13 @@ def format_tool_warning_tui(tool: str) -> str:
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"\nInstall: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}"
+            f"{_SUPPRESS_HINT_TUI}"
+        )
+    if tool == "tavily":
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            "\nGet a key at https://tavily.com\n\n"
+            f"{_SUPPRESS_HINT_TUI}"
         )
     return f"{tool} is not installed."
 
@@ -168,10 +187,19 @@ def format_tool_warning_cli(tool: str) -> str:
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
             hint = f"[link={hint}]{hint}[/link]"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "ripgrep")
         return (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
             f"Install: {hint}\n\n"
-            f"{_RIPGREP_SUPPRESS_HINT}\n"
+            f"{suppress}\n"
+        )
+    if tool == "tavily":
+        url = "https://tavily.com"
+        suppress = _SUPPRESS_HINT_CLI.replace("<key>", "tavily")
+        return (
+            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
+            f"Get a key at [link={url}]{url}[/link]\n\n"
+            f"{suppress}\n"
         )
     return f"{tool} is not installed."
 

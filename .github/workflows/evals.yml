@@ -9,8 +9,6 @@
 #   OPENAI_API_KEY     — needed for OpenAI models
 #   GOOGLE_API_KEY     — needed for Google models
 #   XAI_API_KEY        — needed for xAI/Grok models
-#   MISTRAL_API_KEY    — needed for Mistral models
-#   DEEPSEEK_API_KEY   — needed for DeepSeek models
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
@@ -21,7 +19,7 @@
 
 name: "📊 Evals"
 run-name: >-
-  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
 
 on:
   workflow_dispatch:
@@ -51,7 +49,6 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
@@ -128,6 +125,40 @@ on:
         required: false
         default: ""
         type: string
+      eval_tiers:
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - baseline
+          - hillclimb
+      eval_tiers_override:
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'."
+        required: false
+        default: ""
+        type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after evals."
+        required: false
+        default: false
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
+          - "openai:o4-mini"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
         description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
         required: false
@@ -154,7 +185,10 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -189,8 +223,24 @@ jobs:
               echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+          # Show eval tiers
+          if [ "${EVAL_TIERS}" = "(all)" ]; then
+            echo "| \`eval_tiers\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+            comma_list=""
+            for tier in "${tiers[@]}"; do
+              tier=$(echo "$tier" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${tier}\`"
+            done
+            echo "| \`eval_tiers\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${ANALYZE_FAILURES}" = "true" ]; then
+            echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -198,7 +248,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
@@ -210,6 +260,7 @@ jobs:
     name: "📊 Eval (${{ matrix.model }})"
     needs: prep
     runs-on: ubuntu-latest
+    environment: evals
     timeout-minutes: 360
     # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
     # jobs on different providers run in parallel.
@@ -225,25 +276,23 @@ jobs:
         working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING_V2: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -264,7 +313,22 @@ jobs:
           IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
           for cat in "${cats[@]}"; do
             cat=$(echo "$cat" | xargs)
+            [ -z "$cat" ] && continue
             flags="$flags --eval-category $cat"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+
+      - name: "🏷️ Apply tier filter"
+        if: inputs.eval_tiers_override != '' || inputs.eval_tiers != ''
+        env:
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+        run: |
+          flags=""
+          IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+          for tier in "${tiers[@]}"; do
+            tier=$(echo "$tier" | xargs)
+            [ -z "$tier" ] && continue
+            flags="$flags --eval-tier $tier"
           done
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
@@ -285,9 +349,24 @@ jobs:
             exit 1
           fi
 
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled() && inputs.analyze_failures"
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
+
       - name: "📤 Upload eval report"
         if: "!cancelled()"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-report-${{ strategy.job-index }}
           path: libs/evals/evals_report.json
@@ -311,6 +390,8 @@ jobs:
               print(f"::error::evals_report.json is malformed: {exc}")
               sys.exit(1)
           model = report.get("model", "unknown")
+          if model == "unknown":
+              print("::warning::evals_report.json has no 'model' key; using 'unknown'")
 
           # Load category labels for friendly display names.
           labels = {}
@@ -320,41 +401,60 @@ jobs:
           except (FileNotFoundError, json.JSONDecodeError) as exc:
               print(f"::warning::Could not load category labels from {cats_json}: {exc}")
 
-          lines = [f"## 📊 {model}", ""]
-
-          # -- Metrics table --
-          metrics = [
-              ("passed", None), ("failed", None), ("skipped", None),
-              ("total", None), ("correctness", None), ("solve_rate", "n/a"),
-              ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
-              ("median_duration_s", None),
+          lines = [
+              "<details>",
+              f"<summary><strong>📊 {model}</strong> (click to expand)</summary>",
+              "",
           ]
-          lines += ["| Metric | Value |", "|---|---:|"]
-          for key, default in metrics:
-              val = report.get(key, default)
-              if val is None:
-                  val = 0
-              lines.append(f"| `{key}` | {val} |")
 
-          # -- Per-category scores --
-          cat_scores = report.get("category_scores")
-          if isinstance(cat_scores, dict) and cat_scores:
-              lines += ["", "### Per-category correctness", "", "| Category | Score |", "|---|---:|"]
-              for cat, score in sorted(cat_scores.items()):
-                  lines.append(f"| {labels.get(cat, cat)} | {score} |")
+          try:
+              # -- Metrics table --
+              metrics = [
+                  ("passed", None), ("failed", None), ("skipped", None),
+                  ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+                  ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+                  ("median_duration_s", None),
+              ]
+              header = "| " + " | ".join(f"`{k}`" for k, _ in metrics) + " |"
+              sep = "|" + "|".join("---:" for _ in metrics) + "|"
+              vals = []
+              for key, default in metrics:
+                  val = report.get(key, default)
+                  if val is None:
+                      val = 0
+                  vals.append(str(val))
+              row = "| " + " | ".join(vals) + " |"
+              lines += [header, sep, row]
 
-          # -- Experiment links --
-          exp_links = report.get("experiment_links")
-          if isinstance(exp_links, list) and exp_links:
-              lines += ["", "### LangSmith experiments", ""]
-              for link in exp_links:
-                  name = link.get("name", "")
-                  url = link.get("url", "")
-                  public_url = link.get("public_url", "")
-                  if public_url:
-                      lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
-                  elif url:
-                      lines.append(f"- [{name or url}]({url})")
+              # -- Per-category scores (horizontal) --
+              cat_scores = report.get("category_scores")
+              if isinstance(cat_scores, dict) and cat_scores:
+                  sorted_cats = sorted(cat_scores.items())
+                  esc = lambda s: str(s).replace("|", "\\|")
+                  cat_header = "| " + " | ".join(esc(labels.get(c, c)) for c, _ in sorted_cats) + " |"
+                  cat_sep = "|" + "|".join("---:" for _ in sorted_cats) + "|"
+                  cat_row = "| " + " | ".join(esc(s) for _, s in sorted_cats) + " |"
+                  lines += ["", "### Per-category correctness", "", cat_header, cat_sep, cat_row]
+
+              # -- Experiment links --
+              exp_links = report.get("experiment_links")
+              if isinstance(exp_links, list) and exp_links:
+                  lines += ["", "### LangSmith experiments", ""]
+                  for link in exp_links:
+                      if not isinstance(link, dict):
+                          continue
+                      name = link.get("name", "")
+                      url = link.get("url", "")
+                      public_url = link.get("public_url", "")
+                      if public_url:
+                          lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                      elif url:
+                          lines.append(f"- [{name or url}]({url})")
+          except Exception as exc:
+              lines.append(f"\n\n**Error building summary:** {exc}\n")
+              print(f"::warning::Error building summary for {model}: {exc}")
+          finally:
+              lines += ["", "</details>"]
 
           text = "\n".join(lines) + "\n"
           summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -371,10 +471,10 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "📥 Download eval artifacts"
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: evals_artifacts
 
@@ -402,7 +502,7 @@ jobs:
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-summary
           path: evals_summary.json
@@ -410,7 +510,7 @@ jobs:
 
       - name: "📤 Upload radar charts"
         if: hashFiles('charts/radar.png') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: radar-charts
           path: charts/
@@ -486,12 +586,12 @@ jobs:
             if $has_dark; then
               echo '<picture>'
               echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
-              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
               echo '</picture>'
               echo ""
               echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
             else
-              echo "![Combined radar chart](${BASE_URL}/radar.png)"
+              echo "<img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
               echo ""
               echo "Download: [light](${BASE_URL}/radar.png)"
             fi
@@ -505,12 +605,12 @@ jobs:
                 if [ -d charts/individual-dark ] && [ -f "charts/individual-dark/${name}.png" ]; then
                   echo '<picture>'
                   echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
-                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
                   echo '</picture>'
                   echo ""
                   echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
                 else
-                  echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                  echo "<img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
                   echo ""
                   echo "Download: [light](${BASE_URL}/individual/${name}.png)"
                 fi

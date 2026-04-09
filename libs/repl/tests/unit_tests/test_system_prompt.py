@@ -80,16 +80,15 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
 
     prompt = middleware._format_repl_system_prompt()
     assert "Available foreign functions:" in prompt
-    assert "```text" in prompt
+    assert "/**" in prompt
+    assert "```ts" in prompt
     assert "prefer writing one complete REPL program" in prompt
     assert "trust it and chain the calls" in prompt
     assert "print it inside the same REPL program" in prompt
     assert "Example syntax only - this shows the language shape" in prompt
     assert 'items = lookup_fn("value")' in prompt
-    assert "find_users_by_name" in prompt
-    assert "find_users_by_name" in prompt
-    assert "returns: UserLookup[]" in prompt
-    assert "fetch_weather" in prompt
+    assert "function find_users_by_name(name: string): UserLookup[]" in prompt
+    assert "async function fetch_weather(city: string): Promise<string>" in prompt
     assert "Referenced types:" in prompt
-    assert "UserLookup" in prompt
-    assert "(id number)" in prompt
+    assert "type UserLookup = {" in prompt
+    assert "  id: number" in prompt

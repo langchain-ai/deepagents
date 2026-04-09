@@ -93,7 +93,7 @@ Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
-MAX_BINARY_BYTES: Final = 500 * 1024
+MAX_BINARY_BYTES: Final = 10 * 1024 * 1024
 """Maximum size of a binary file returned by `read()` as base64.
 
 Files exceeding this size return a `Binary file exceeds maximum preview size`
@@ -202,6 +202,13 @@ Payloads above this use _edit_via_upload (temp file upload + server-side replace
 to avoid size limits on the execute() request body imposed by some sandbox providers.
 """
 
+_MAX_TEXT_READ_BYTES: Final = 500 * 1024
+_MAX_BLOB_INLINE_BYTES: Final = 10 * 1024 * 1024
+_MAX_BLOB_DOWNLOAD_BYTES: Final = 10 * 1024 * 1024
+_BLOB_PREVIEW_TOO_LARGE_ERROR: Final = (
+    f"Binary file exceeds maximum preview size of {_MAX_BLOB_INLINE_BYTES} bytes"
+)
+
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
 import os, stat as _stat, sys, json, base64
 
@@ -283,7 +290,7 @@ _READ_COMMAND_TEMPLATE = """python3 -c "
 import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
-MAX_BINARY_BYTES = 500 * 1024
+MAX_BINARY_BYTES = 10 * 1024 * 1024
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -494,8 +501,10 @@ except PermissionError:
         with guidance to continue pagination using a different `offset` or
         smaller `limit`.
 
-        Binary files (non-UTF-8) are returned base64-encoded without
-        pagination.
+        Blob files up to 10 MiB are returned inline as base64. Blob files over
+        10 MiB are fetched via `download_files()` and then returned as base64.
+        Larger blobs return an error explaining that the current size threshold
+        is exceeded.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -510,6 +519,9 @@ except PermissionError:
             `ReadResult` with `file_data` on success or `error` on failure.
         """
         file_type = _get_file_type(file_path)
+        if file_type != "text":
+            return self._read_blob(file_path)
+
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
 
         # Defensive int coercion in case callers bypass type checking.
@@ -539,6 +551,64 @@ except PermissionError:
             file_data=FileData(
                 content=data["content"],
                 encoding=data.get("encoding", "utf-8"),
+            )
+        )
+
+    def _read_blob(self, file_path: str) -> ReadResult:
+        """Read non-text file content using inline or download thresholds."""
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = _READ_COMMAND_TEMPLATE.format(
+            path_b64=path_b64,
+            file_type="blob",
+            offset=0,
+            limit=0,
+        )
+        result = self.execute(cmd)
+        output = result.output.rstrip()
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            if data["error"] != _BLOB_PREVIEW_TOO_LARGE_ERROR:
+                return ReadResult(error=f"File '{file_path}': {data['error']}")
+        else:
+            return ReadResult(
+                file_data=FileData(
+                    content=data["content"],
+                    encoding=data.get("encoding", "utf-8"),
+                )
+            )
+
+        responses = self.download_files([file_path])
+        if not responses:
+            return ReadResult(error=f"File '{file_path}': download_files returned no response")
+        response = responses[0]
+        if response.error is not None:
+            return ReadResult(error=f"File '{file_path}': {response.error}")
+        if response.content is None:
+            return ReadResult(error=f"File '{file_path}': download_files returned no content")
+
+        size = len(response.content)
+        if size > _MAX_BLOB_DOWNLOAD_BYTES:
+            return ReadResult(
+                error=(
+                    f"File '{file_path}': blob size {size} bytes exceeds the current "
+                    f"threshold of {_MAX_BLOB_DOWNLOAD_BYTES} bytes"
+                )
+            )
+
+        return ReadResult(
+            file_data=FileData(
+                content=base64.b64encode(response.content).decode("ascii"),
+                encoding="base64",
             )
         )
 

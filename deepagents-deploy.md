@@ -123,7 +123,7 @@ This creates:
 | --- | --- |
 | `deepagents.toml` | Agent config — name, model, optional sandbox |
 | `AGENTS.md` | System prompt loaded at session start |
-| `.env` | API key template (`ANTHROPIC_API_KEY`, `LANGSMITH_API_KEY`) |
+| `.env` | API key template (`ANTHROPIC_API_KEY`, `LANGSMITH_API_KEY`), etc. |
 | `mcp.json` | MCP server configuration (empty by default) |
 | `skills/` | Directory for [Agent Skills](https://agentskills.io/), with an example `review` skill |
 
@@ -136,12 +136,8 @@ Any provider supported by LangChain's [`init_chat_model()`](https://docs.langcha
 ```toml
 model = "anthropic:claude-sonnet-4-6"
 model = "openai:gpt-5.4"
-model = "google_genai:gemini-2.5-pro"
-model = "azure_openai:my-gpt4-deployment"
-model = "xai:grok-4"
-model = "fireworks:fireworks/deepseek-v3p2"
-model = "groq:qwen/qwen3-32b"
-model = "ollama:deepseek-v3.2:cloud"
+model = "google_genai:gemini-3.1-pro-preview"
+# ...and so on
 ```
 
 ## Sandboxes

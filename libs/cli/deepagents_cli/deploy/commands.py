@@ -1,11 +1,6 @@
-"""CLI commands for `deepagents deploy`.
+"""CLI commands for `deepagents init`, `dev`, and `deploy`.
 
-Registered with the CLI via `setup_deploy_parser` in `main.py`.
-
-Commands:
-- `deepagents deploy` — Bundle and deploy to LangGraph Platform
-- `deepagents deploy --dry-run` — Show what would be generated
-- `deepagents init [NAME]` — Scaffold a new deploy project folder
+Registered with the CLI via `setup_deploy_parsers` in `main.py`.
 """
 
 from __future__ import annotations
@@ -70,7 +65,7 @@ def setup_deploy_parsers(
         "--config",
         type=str,
         default=None,
-        help="Path to deepagents.toml (default: auto-discovered from cwd upward)",
+        help="Path to deepagents.toml (default: auto-discovered from cwd)",
     )
     dev_parser.add_argument(
         "--port",
@@ -100,7 +95,7 @@ def setup_deploy_parsers(
         "--config",
         type=str,
         default=None,
-        help="Path to deepagents.toml (default: auto-discovered from cwd upward)",
+        help="Path to deepagents.toml (default: auto-discovered from cwd)",
     )
     deploy_parser.add_argument(
         "--dry-run",
@@ -197,14 +192,16 @@ def _init_project(*, name: str, force: bool = False) -> None:
     ]
 
     for filename, content in files:
-        (project_dir / filename).write_text(content)
+        (project_dir / filename).write_text(content, encoding="utf-8")
 
     # Create skills/ directory with a starter skill.
     skills_dir = project_dir / SKILLS_DIRNAME
     skills_dir.mkdir(exist_ok=True)
     starter_skill_dir = skills_dir / STARTER_SKILL_NAME
     starter_skill_dir.mkdir(exist_ok=True)
-    (starter_skill_dir / "SKILL.md").write_text(generate_starter_skill_md())
+    (starter_skill_dir / "SKILL.md").write_text(
+        generate_starter_skill_md(), encoding="utf-8"
+    )
 
     print(f"Created {name}/ with:")
     for filename, _ in files:
@@ -262,10 +259,7 @@ def _deploy(
         raise SystemExit(1)
 
     # Bundle
-    if dry_run:
-        build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))
-    else:
-        build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))
+    build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))
 
     try:
         bundle(config, project_root, build_dir)
@@ -276,14 +270,13 @@ def _deploy(
             print(f"Inspect the build directory: {build_dir}")
             return
 
-        # Deploy via langgraph CLI
+        # Deploy via langgraph CLI.
         _run_langgraph_deploy(build_dir, name=config.agent.name)
+    finally:
+        if not dry_run:
+            import shutil
 
-    except Exception:
-        if dry_run:
-            # Keep build dir for inspection on dry run
-            raise
-        raise
+            shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def _dev(
@@ -298,7 +291,7 @@ def _dev(
     served locally instead of pushed to LangGraph Platform. Hot-reloading
     is provided by `langgraph dev` itself watching the build directory;
     edits to the source project (`deepagents.toml`, skills, `AGENTS.md`)
-    require re-running `deepagents deploy dev` to re-bundle.
+    require re-running `deepagents dev` to re-bundle.
 
     Args:
         config_path: Path to `deepagents.toml`, or `None` for default.
@@ -328,6 +321,9 @@ def _dev(
     except FileNotFoundError:
         print(f"Error: Config file not found: {cfg_path}")
         raise SystemExit(1) from None
+    except ValueError as e:
+        print(f"Error: Invalid config: {e}")
+        raise SystemExit(1) from None
 
     errors = config.validate(project_root)
     if errors:
@@ -337,35 +333,43 @@ def _dev(
         raise SystemExit(1)
 
     build_dir = Path(tempfile.mkdtemp(prefix="deepagents-dev-"))
-    bundle(config, project_root, build_dir)
-    print_bundle_summary(config, build_dir)
-
-    if shutil.which("langgraph") is None:
-        print(
-            "Error: `langgraph` CLI not found. Install it with:\n"
-            "  pip install 'langgraph-cli[inmem]'"
-        )
-        raise SystemExit(1)
-
-    cmd = [
-        "langgraph",
-        "dev",
-        "--no-browser",
-        "--port",
-        str(port),
-    ]
-    if allow_blocking:
-        cmd.append("--allow-blocking")
-
-    print(f"\nStarting langgraph dev on http://localhost:{port}")
-    print(f"Build directory: {build_dir}")
-    print(f"Running: {' '.join(cmd)}\n")
-
-    # Pass through stdout/stderr so the user sees the dev server logs live.
     try:
-        subprocess.run(cmd, cwd=str(build_dir), check=False)
-    except KeyboardInterrupt:
-        print("\nShutting down.")
+        bundle(config, project_root, build_dir)
+        print_bundle_summary(config, build_dir)
+
+        if shutil.which("langgraph") is None:
+            print(
+                "Error: `langgraph` CLI not found. Install it with:\n"
+                "  pip install 'langgraph-cli[inmem]'"
+            )
+            raise SystemExit(1)
+
+        cmd = [
+            "langgraph",
+            "dev",
+            "--no-browser",
+            "--port",
+            str(port),
+        ]
+        if allow_blocking:
+            cmd.append("--allow-blocking")
+
+        print(f"\nStarting langgraph dev on http://localhost:{port}")
+        print(f"Build directory: {build_dir}")
+        print(f"Running: {' '.join(cmd)}\n")
+
+        # Pass through stdout/stderr so the user sees dev server logs live.
+        try:
+            result = subprocess.run(cmd, cwd=str(build_dir), check=False)
+        except KeyboardInterrupt:
+            print("\nShutting down.")
+            return
+
+        if result.returncode != 0:
+            print(f"\nDev server exited with error (exit code {result.returncode}).")
+            raise SystemExit(result.returncode)
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:

@@ -40,7 +40,7 @@ from deepagents.middleware.filesystem import (
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
-    _supports_execution,
+    supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
@@ -1463,8 +1463,8 @@ class TestFilesystemMiddleware:
         assert "Very long output..." in result
         assert "truncated" in result
 
-    def test_supports_execution_helper_with_composite_backend(self):
-        """Test _supports_execution correctly identifies CompositeBackend capabilities."""
+    def testsupports_execution_helper_with_composite_backend(self):
+        """Test supports_execution correctly identifies CompositeBackend capabilities."""
 
         # Mock sandbox backend
         class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
@@ -1487,19 +1487,19 @@ class TestFilesystemMiddleware:
 
         # StateBackend doesn't support execution
         state_backend = StateBackend()
-        assert not _supports_execution(state_backend)
+        assert not supports_execution(state_backend)
 
         # TestSandboxBackend supports execution
         sandbox_backend = TestSandboxBackend()
-        assert _supports_execution(sandbox_backend)
+        assert supports_execution(sandbox_backend)
 
         # CompositeBackend with sandbox default supports execution
         comp_with_sandbox = CompositeBackend(default=sandbox_backend, routes={})
-        assert _supports_execution(comp_with_sandbox)
+        assert supports_execution(comp_with_sandbox)
 
         # CompositeBackend with non-sandbox default doesn't support execution
         comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
-        assert not _supports_execution(comp_without_sandbox)
+        assert not supports_execution(comp_without_sandbox)
 
     def test_intercept_truncates_content_sample_lines(self):
         """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""

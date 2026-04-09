@@ -1,11 +1,14 @@
 """Unit tests for FilesystemPermission and PermissionMiddleware."""
 
+import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StoreBackend
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.permissions import PermissionMiddleware, _check_fs_permission, _filter_paths_by_permission
 from deepagents.permissions import FilesystemPermission
@@ -109,7 +112,9 @@ class TestPermissionMiddleware:
         assert result is expected
 
     def test_deny_returns_error_message(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend())
+        middleware = PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend()
+        )
         request = self._make_request("read_file", {"file_path": "/secrets/key.txt"})
 
         result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
@@ -119,7 +124,9 @@ class TestPermissionMiddleware:
         assert result.name == "read_file"
 
     def test_unrelated_tool_allowed(self):
-        middleware = PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend())
+        middleware = PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend()
+        )
         request = self._make_request("some_other_tool", {"input": "hello"})
         expected = ToolMessage(content="content", tool_call_id="tc1")
 
@@ -150,7 +157,6 @@ class TestPermissionMiddleware:
 
     def test_raises_not_implemented_for_sandbox_backend(self):
         """PermissionMiddleware rejects backends that support execution."""
-        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -165,7 +171,6 @@ class TestPermissionMiddleware:
 
         mem_store = InMemoryStore()
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-        import pytest
 
         with pytest.raises(NotImplementedError, match="execute"):
             PermissionMiddleware(
@@ -175,8 +180,6 @@ class TestPermissionMiddleware:
 
     def test_raises_not_implemented_for_composite_with_sandbox_default(self):
         """PermissionMiddleware rejects CompositeBackend whose default supports execution."""
-        from deepagents.backends.composite import CompositeBackend
-        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -192,7 +195,6 @@ class TestPermissionMiddleware:
         mem_store = InMemoryStore()
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
         composite = CompositeBackend(default=sandbox, routes={})
-        import pytest
 
         with pytest.raises(NotImplementedError, match="execute"):
             PermissionMiddleware(
@@ -202,8 +204,6 @@ class TestPermissionMiddleware:
 
     def test_allows_composite_without_sandbox_default(self):
         """PermissionMiddleware accepts CompositeBackend whose default does not support execution."""
-        from deepagents.backends.composite import CompositeBackend
-
         composite = CompositeBackend(default=self._backend(), routes={})
         middleware = PermissionMiddleware(
             rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
@@ -217,8 +217,6 @@ class TestPermissionMiddleware:
         Execution is only delegated to the default backend in CompositeBackend,
         so a sandbox in a route doesn't expose execution capability.
         """
-        from deepagents.backends.composite import CompositeBackend
-        from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:

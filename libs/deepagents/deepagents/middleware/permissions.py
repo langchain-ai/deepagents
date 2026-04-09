@@ -17,12 +17,13 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from deepagents.backends.protocol import BackendProtocol, GlobResult, GrepResult, LsResult
+from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, GlobResult, GrepResult, LsResult
 from deepagents.backends.utils import (
     format_grep_matches,
     truncate_if_too_long,
     validate_path,
 )
+from deepagents.middleware.filesystem import supports_execution
 from deepagents.permissions import (
     FilesystemOperation,
     FilesystemPermission,
@@ -135,7 +136,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(self, *, rules: list[FilesystemPermission], backend: BackendProtocol) -> None:
+    def __init__(self, *, rules: list[FilesystemPermission], backend: BACKEND_TYPES) -> None:
         """Initialize the permission middleware.
 
         Args:
@@ -149,9 +150,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         Raises:
             NotImplementedError: If the backend supports command execution.
         """
-        from deepagents.middleware.filesystem import _supports_execution
-
-        if _supports_execution(backend):
+        if isinstance(backend, BackendProtocol) and supports_execution(backend):
             msg = (
                 "PermissionMiddleware does not yet support backends with command "
                 "execution (SandboxBackendProtocol). Tool-level permissions for "

@@ -330,7 +330,7 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
-def _supports_execution(backend: BackendProtocol) -> bool:
+def supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
 
     For CompositeBackend, checks if the default backend supports execution.
@@ -1072,14 +1072,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
-            if not _supports_execution(resolved_backend):
+            if not supports_execution(resolved_backend):
                 return (
                     "Error: Execution not available. This agent's backend "
                     "does not support command execution (SandboxBackendProtocol). "
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
-            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            # Safe cast: supports_execution validates that execute()/aexecute() exist
             # (either SandboxBackendProtocol or CompositeBackend with sandbox default)
             executable = cast("SandboxBackendProtocol", resolved_backend)
             if timeout is not None and not execute_accepts_timeout(type(executable)):
@@ -1128,14 +1128,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
-            if not _supports_execution(resolved_backend):
+            if not supports_execution(resolved_backend):
                 return (
                     "Error: Execution not available. This agent's backend "
                     "does not support command execution (SandboxBackendProtocol). "
                     "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
                 )
 
-            # Safe cast: _supports_execution validates that execute()/aexecute() exist
+            # Safe cast: supports_execution validates that execute()/aexecute() exist
             executable = cast("SandboxBackendProtocol", resolved_backend)
             if timeout is not None and not execute_accepts_timeout(type(executable)):
                 return (
@@ -1200,14 +1200,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
-        backend_supports_execution = False
+        backendsupports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = _supports_execution(backend)
+            backendsupports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
+            if not backendsupports_execution:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
@@ -1224,7 +1224,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ]
 
             # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
+            if has_execute_tool and backendsupports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
@@ -1265,14 +1265,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
 
-        backend_supports_execution = False
+        backendsupports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = _supports_execution(backend)
+            backendsupports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
+            if not backendsupports_execution:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
@@ -1289,7 +1289,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ]
 
             # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
+            if has_execute_tool and backendsupports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()

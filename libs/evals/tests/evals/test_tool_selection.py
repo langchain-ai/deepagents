@@ -268,9 +268,9 @@ def test_indirect_email_report(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_chain_search_then_email(model: BaseChatModel) -> None:
+def test_chain_search_then_email(model: BaseChatModel, include_todos: bool) -> None:
     """Agent searches the web then emails results — two tools in sequence."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = create_deep_agent(model=model, tools=ALL_TOOLS, include_todos=include_todos)
     run_agent(
         agent,
         model=model,

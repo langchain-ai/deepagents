@@ -90,6 +90,23 @@ this is used as the sole system prompt.
 """
 
 
+_PLANNING_GUIDANCE = """
+## Planning
+
+For complex tasks that require multiple steps, plan your approach before diving in:
+
+- Break the task into discrete, actionable steps and consider dependencies between them.
+- Work through steps methodically, completing each one before moving to the next.
+- Keep track of what you have finished and what remains so nothing is missed.
+- If you discover new information that changes the plan, revise your approach rather than \
+pressing ahead with an outdated strategy.
+- For simple tasks that only require a few straightforward actions, skip the planning and \
+just proceed directly.
+"""
+"""Injected into the system prompt when `include_todos=False` so the model
+still receives explicit multi-step planning guidance without `write_todos`."""
+
+
 def get_default_model() -> ChatAnthropic:
     """Get the default model for Deep Agents.
 
@@ -298,11 +315,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = []
     if include_todos:
         gp_middleware.append(TodoListMiddleware())
-    gp_middleware.extend([
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
-        PatchToolCallsMiddleware(),
-    ])
+    gp_middleware.extend(
+        [
+            FilesystemMiddleware(backend=backend),
+            create_summarization_middleware(model, backend),
+            PatchToolCallsMiddleware(),
+        ]
+    )
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     # "ignore" silently skips cache-control header injection for non-Anthropic
@@ -337,11 +356,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
             if include_todos:
                 subagent_middleware.append(TodoListMiddleware())
-            subagent_middleware.extend([
-                FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
-            ])
+            subagent_middleware.extend(
+                [
+                    FilesystemMiddleware(backend=backend),
+                    create_summarization_middleware(subagent_model, backend),
+                    PatchToolCallsMiddleware(),
+                ]
+            )
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
@@ -410,6 +431,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
+
+    if not include_todos:
+        if isinstance(final_system_prompt, SystemMessage):
+            final_system_prompt = SystemMessage(content_blocks=[*final_system_prompt.content_blocks, {"type": "text", "text": _PLANNING_GUIDANCE}])
+        else:
+            final_system_prompt += _PLANNING_GUIDANCE
 
     return create_agent(
         model,

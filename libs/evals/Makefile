@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment-with-todos run-todo-experiment-without-todos
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment-with-todos run-todo-experiment-without-todos run-todo-experiment-evals-with-todos run-todo-experiment-evals-without-todos
 
 .DEFAULT_GOAL := help
 
@@ -88,6 +88,50 @@ run-todo-experiment-without-todos: ## Run todo experiment WITHOUT TodoListMiddle
 		--env $(EXPERIMENT_ENV) \
 		--agent-kwarg use_cli_agent=false \
 		--agent-kwarg include_todos=false
+
+# Todo middleware ablation on the eval suite (non-Harbor)
+# 10 curated tests stratified by planning complexity:
+#   tau2 airline (multi-turn, high planning): task_14, task_32, task_44
+#   Relational tool chains (5/4/3 steps):
+#     test_five_steps_current_user_food_names_and_calories
+#     test_four_steps_find_user_city_weather_time_and_food_details
+#     test_four_steps_find_user_food_allergies
+#     test_three_tools_current_user_weather
+#   Controls (1-2 steps):
+#     test_single_tool_get_user_email
+#     test_two_tools_city_for_user
+#   Sequential tool selection:
+#     test_chain_search_then_email
+TODO_EVAL_K_EXPR = task_14 or task_32 or task_44 \
+	or test_five_steps_current_user_food_names_and_calories \
+	or test_four_steps_find_user_city_weather_time_and_food_details \
+	or test_four_steps_find_user_food_allergies \
+	or test_three_tools_current_user_weather \
+	or test_single_tool_get_user_email \
+	or test_two_tools_city_for_user \
+	or test_chain_search_then_email
+
+EVAL_MODEL ?=
+
+run-todo-experiment-evals-with-todos: ## Run eval todo experiment WITH TodoListMiddleware
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-with uv run --group test pytest \
+		tests/evals/tau2_airline/ \
+		tests/evals/test_tool_usage_relational.py \
+		tests/evals/test_tool_selection.py \
+		-k "$(TODO_EVAL_K_EXPR)" \
+		--include-todos true \
+		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
+		-v --tb=short $(PYTEST_EXTRA)
+
+run-todo-experiment-evals-without-todos: ## Run eval todo experiment WITHOUT TodoListMiddleware
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-without uv run --group test pytest \
+		tests/evals/tau2_airline/ \
+		tests/evals/test_tool_usage_relational.py \
+		tests/evals/test_tool_selection.py \
+		-k "$(TODO_EVAL_K_EXPR)" \
+		--include-todos false \
+		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
+		-v --tb=short $(PYTEST_EXTRA)
 
 ######################
 # CHARTS

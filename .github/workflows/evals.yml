@@ -19,7 +19,7 @@
 
 name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.include_todos != 'default' && format(' todos:{0}', inputs.include_todos) || '' }}
 
 on:
   workflow_dispatch:
@@ -164,6 +164,15 @@ on:
         required: false
         default: ""
         type: string
+      include_todos:
+        description: "TodoListMiddleware ablation. 'default' = normal run (todos on, all evals). 'true'/'false' = run only the 10 curated experiment tests with todos on/off."
+        required: false
+        default: "default"
+        type: choice
+        options:
+          - "default"
+          - "true"
+          - "false"
 
 permissions:
   contents: write
@@ -189,6 +198,7 @@ jobs:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+          INCLUDE_TODOS: ${{ inputs.include_todos || 'default' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -242,6 +252,9 @@ jobs:
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ "${INCLUDE_TODOS}" != "default" ]; then
+            echo "| \`include_todos\` | \`${INCLUDE_TODOS}\` (10-test experiment subset) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
@@ -283,7 +296,8 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      LANGSMITH_TRACING_V2: "true"
+      LANGSMITH_EXPERIMENT: ${{ inputs.include_todos != 'default' && format('{0}-todos-{1}', matrix.model, inputs.include_todos) || matrix.model }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
@@ -337,6 +351,22 @@ jobs:
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
+
+      - name: "🧪 Apply todo experiment filter"
+        if: inputs.include_todos != 'default'
+        env:
+          INCLUDE_TODOS: ${{ inputs.include_todos }}
+        run: |
+          # 10 curated tests for the todo middleware ablation experiment
+          k_expr="task_14 or task_32 or task_44"
+          k_expr="${k_expr} or test_five_steps_current_user_food_names_and_calories"
+          k_expr="${k_expr} or test_four_steps_find_user_city_weather_time_and_food_details"
+          k_expr="${k_expr} or test_four_steps_find_user_food_allergies"
+          k_expr="${k_expr} or test_three_tools_current_user_weather"
+          k_expr="${k_expr} or test_single_tool_get_user_email"
+          k_expr="${k_expr} or test_two_tools_city_for_user"
+          k_expr="${k_expr} or test_chain_search_then_email"
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --include-todos ${INCLUDE_TODOS} -k \"${k_expr}\"" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals

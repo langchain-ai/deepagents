@@ -77,6 +77,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
     )
+    parser.addoption(
+        "--include-todos",
+        action="store",
+        default="true",
+        choices=["true", "false"],
+        help="Include TodoListMiddleware (default: true). Set to 'false' for ablation.",
+    )
 
 
 def _filter_by_marker(
@@ -152,6 +159,7 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
         "model": model_name,
         "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
         "deepagents_version": deepagents_version,
+        "include_todos": request.config.getoption("--include-todos") == "true",
     }
 
 
@@ -173,3 +181,9 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
     return init_chat_model(model_name, **kwargs)
+
+
+@pytest.fixture
+def include_todos(request: pytest.FixtureRequest) -> bool:
+    """Whether to include `TodoListMiddleware` in `create_deep_agent` calls."""
+    return request.config.getoption("--include-todos") == "true"

@@ -245,9 +245,19 @@ class LangSmithEnvironment(BaseEnvironment):
         """
         from langsmith.sandbox import AsyncSandboxClient
 
+        from deepagents_harbor.langsmith import resolve_langsmith_api_key
+
         image = self._resolve_image()
 
-        client = AsyncSandboxClient()
+        api_key = resolve_langsmith_api_key()
+        if not api_key:
+            msg = (
+                "No LangSmith API key found. Set one of: "
+                "LANGSMITH_SANDBOX_API_KEY, LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
+            )
+            raise ValueError(msg)
+
+        client = AsyncSandboxClient(api_key=api_key)
         self._client = client
 
         template_name = f"harbor-{self._sanitize_name(image)}"[:_MAX_NAME_LEN]

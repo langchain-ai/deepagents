@@ -50,6 +50,27 @@ class TestInitialPromptArg:
         assert args.initial_prompt == ""
 
 
+class TestInitialSkillArg:
+    """Tests for `--skill` startup skill argument."""
+
+    def test_flag_sets_initial_skill(self) -> None:
+        """Verify `--skill` stores the requested skill name."""
+        with patch.object(sys, "argv", ["deepagents", "--skill", "code-review"]):
+            args = parse_args()
+        assert args.initial_skill == "code-review"
+
+    def test_with_message(self) -> None:
+        """Verify `--skill` works alongside `-m`."""
+        with patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--skill", "code-review", "-m", "review this patch"],
+        ):
+            args = parse_args()
+        assert args.initial_skill == "code-review"
+        assert args.initial_prompt == "review this patch"
+
+
 class TestResumeArg:
     """Tests for -r/--resume thread resume argument."""
 

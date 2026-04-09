@@ -27,7 +27,8 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (optional):
-#   deepagents, sdk, deepagents-cli, cli, cli-gha, harbor, evals, acp, examples, infra, ci, deps
+#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deps, evals,
+#   examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl, runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -66,7 +67,7 @@ jobs:
             exit 1
           fi
       - name: "✅ Validate Conventional Commits Format"
-        uses: amannn/action-semantic-pull-request@v6
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -97,7 +98,11 @@ jobs:
             examples
             harbor
             infra
+            langsmith-sandbox
+            modal
             quickjs
+            repl
+            runloop
             sdk
           requireScope: false
           disallowScopes: |

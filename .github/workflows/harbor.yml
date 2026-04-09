@@ -55,6 +55,7 @@ on:
           - "groq:moonshotai/kimi-k2-instruct"
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
+          - "ollama:glm-5.1"
           - "ollama:minimax-m2.5"
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
@@ -76,6 +77,7 @@ on:
           - "openai:gpt-5.4"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -161,7 +163,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
@@ -275,7 +277,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -307,6 +309,7 @@ jobs:
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
           echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -315,6 +318,12 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
@@ -396,7 +405,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: harbor-${{ strategy.job-index }}
           path: |

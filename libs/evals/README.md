@@ -164,6 +164,10 @@ eval_categories: "memory,tool_use,retrieval"
 
 Omit to run all categories.
 
+### CI concurrency
+
+Eval jobs use per-provider concurrency groups. Two jobs hitting the same provider (e.g. both `openai`) queue — the second waits for the first to finish. Jobs on different providers run in parallel, so dispatching `frontier` (anthropic + google_genai + openai) alongside a solo `openrouter` run won't block either side.
+
 ### Per-category reporting
 
 CI runs produce a per-category correctness table in the GitHub Actions step summary, plus a JSON summary artifact (`evals-summary`) for offline analysis.

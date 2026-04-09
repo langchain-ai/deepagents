@@ -14,7 +14,7 @@ test: ## Run unit tests
 	uv run --group test pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
 evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short $(PYTEST_EXTRA)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)
@@ -91,6 +91,7 @@ lint lint_diff:
 		fi; \
 	fi
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+	uv run python scripts/generate_eval_catalog.py --check
 
 type: ## Run type checker (eval + harbor source + unit tests)
 type typecheck:

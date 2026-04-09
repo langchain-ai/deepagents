@@ -24,6 +24,7 @@ You configure your agent with a few parameters:
 | **`skills`** | [Agent Skills](https://agentskills.io/) for specialized knowledge and actions. Skills are synced into the sandbox so the agent can execute them at runtime. See [Skills docs](https://docs.langchain.com/oss/python/deepagents/skills). |
 | **`mcp.json`** | MCP tools (HTTPS/SSE). |
 | **`sandbox`** | Optional execution environment. See [Sandboxes](#sandboxes). |
+| **`agents/`** | Optional [subagents](#subagents) — specialized agents the main agent can delegate to. |
 
 ## Project layout
 
@@ -34,6 +35,12 @@ my-agent/
   skills/          # optional — agent skills
   mcp.json         # optional — HTTP/SSE MCP servers
   deepagents.toml  # agent configuration
+  agents/          # optional — subagent definitions
+    researcher/
+      AGENTS.md
+      deepagents.toml
+      skills/
+      mcp.json
 ```
 
 ### `deepagents.toml`
@@ -98,6 +105,7 @@ This creates:
 | `.env` | API key template (`ANTHROPIC_API_KEY`, `LANGSMITH_API_KEY`) |
 | `mcp.json` | MCP server configuration (empty by default) |
 | `skills/` | Directory for [Agent Skills](https://agentskills.io/) |
+| `agents/` | Directory with a starter [subagent](#subagents) |
 
 After init, edit `AGENTS.md` with your agent's instructions and run `deepagents deploy`.
 
@@ -338,6 +346,97 @@ The deployed server exposes:
 | AGENTS.md Support | Yes | No |
 | Agent Endpoints | MCP, A2A, Agent Protocol | Proprietary |
 | Self Hosting | Yes | No |
+
+## Subagents
+
+Subagents are specialized agents that your main agent can delegate to via the `task()` tool. Each subagent is a self-contained unit under `agents/` with its own system prompt, model, skills, and MCP servers.
+
+### Defining subagents
+
+Create a directory under `agents/` for each subagent. Each directory mirrors the top-level project structure:
+
+```
+agents/
+  researcher/
+    AGENTS.md           # required — system prompt with frontmatter
+    deepagents.toml     # optional — model and sandbox config
+    skills/             # optional — subagent-scoped skills
+    mcp.json            # optional — subagent-scoped MCP servers
+```
+
+### Subagent `AGENTS.md`
+
+Subagent `AGENTS.md` files require YAML frontmatter with `name` and `description`:
+
+```markdown
+---
+name: researcher
+description: Research topics on the web before writing content
+---
+
+You are a research assistant with access to web search.
+
+## Your Process
+1. Search for relevant information
+2. Summarize findings clearly
+```
+
+The main agent sees the `name` and `description` and uses them to decide when to delegate.
+
+### Subagent `deepagents.toml`
+
+Same schema as the main agent's config. If omitted, the subagent inherits the main agent's model. If the `[sandbox]` section is omitted, the subagent inherits the main agent's sandbox.
+
+```toml
+[agent]
+name = "researcher"
+model = "anthropic:claude-haiku-4-5-20251001"   # use a cheaper model for research
+
+[sandbox]
+provider = "langsmith"
+scope = "thread"
+```
+
+### Example: deep research agent
+
+A research orchestrator with two subagents — a fast researcher and a thorough synthesizer:
+
+```
+my-research-agent/
+  AGENTS.md                         # orchestrator — decomposes questions, coordinates
+  deepagents.toml                   # model = "anthropic:claude-sonnet-4-6"
+  agents/
+    researcher/
+      AGENTS.md                     # web search, source evaluation, writes notes
+      deepagents.toml               # model = "anthropic:claude-haiku-4-5-20251001"
+      mcp.json                      # Tavily web search
+      skills/
+        search-strategy/SKILL.md
+    synthesizer/
+      AGENTS.md                     # reads research, writes structured report
+      deepagents.toml               # model = "anthropic:claude-sonnet-4-6"
+      skills/
+        report-format/SKILL.md
+```
+
+The orchestrator delegates research tasks to the `researcher` (Haiku — fast and cheap for high-volume searches), then hands all findings to the `synthesizer` (Sonnet — stronger model for quality writing). Both subagents share the same sandbox so files flow naturally between them.
+
+See [`examples/deploy-deep-research/`](examples/deploy-deep-research/) for the full working example.
+
+### How it works
+
+- The bundler auto-discovers `agents/` and includes subagent data in the deployment
+- Each subagent's `AGENTS.md` is seeded as memory so the subagent loads its own instructions
+- Subagent skills are scoped — each subagent only sees its own `skills/` directory
+- Subagent MCP servers are scoped — each subagent loads only its own `mcp.json`
+- Model provider dependencies are inferred from all subagent models (e.g., if a subagent uses OpenAI, `langchain-openai` is added automatically)
+
+### Constraints
+
+- Subagent names must be unique and cannot be `general-purpose` (reserved)
+- The `name` in `AGENTS.md` frontmatter must match the `name` in `deepagents.toml`
+- Subagents cannot define their own subagents (no nesting)
+- MCP servers must use HTTP/SSE transport (no stdio)
 
 ## Gotchas
 

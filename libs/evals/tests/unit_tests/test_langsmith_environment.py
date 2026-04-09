@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def _fake_langsmith_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide a fake API key so unit tests never require real credentials."""
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-test-fake-key")
+
+
 @dataclass
 class _FakeExecResult:
     """Minimal stand-in for langsmith ExecutionResult."""

@@ -581,7 +581,7 @@ jobs:
           VIRTUAL_ENV=.venv uv pip install dist/*.whl
 
       - name: Run unit tests
-        run: make test
+        run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests

@@ -256,6 +256,29 @@ gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autore
 
 The label update is non-fatal in the workflow (`|| true`), so the release itself succeeded—only the label needs fixing.
 
+### Release Failed: Pre-release Checks
+
+If the `pre-release-checks` job fails (unit tests, integration tests, or import verification), nothing has been published yet — neither Test PyPI nor PyPI have the package. The release PR is already merged, so the normal release-please flow won't re-trigger.
+
+**To fix:**
+
+1. **Inspect the failure** in the workflow run logs. Pre-release checks install the built wheel into a fresh venv (no cache) and run:
+   - Package import verification (`python -c "import <pkg>"`)
+   - Unit tests (`make test`)
+   - Integration tests (`make integration_test`, if the target exists)
+
+2. **Fix the issue on `main`** — open a PR titled `hotfix(<scope>): <description>`. This won't re-trigger the release because the commit doesn't modify the package's `CHANGELOG.md`.
+
+3. **Manually trigger the release:**
+   - Go to **Actions** > `⚠️ Manual Package Release`
+   - Click **Run workflow**
+   - Select `main` branch and the affected package
+
+4. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job swaps this automatically (even on manual dispatch), but check the workflow logs to confirm. If it emitted a warning that the label swap failed, fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If this label isn't swapped, release-please will not create new release PRs.**
+
+> [!TIP]
+> Because pre-release checks run against the built wheel (not the editable install), failures here sometimes indicate missing files in the package manifest or undeclared dependencies that happen to be present locally. Check `pyproject.toml` `[tool.setuptools.packages]` and dependency lists if the failure is an import error rather than a test assertion.
+
 ### Re-releasing a Version
 
 PyPI does not allow re-uploading the same version. If a release failed partway:

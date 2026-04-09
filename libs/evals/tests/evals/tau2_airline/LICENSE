@@ -1,7 +1,11 @@
 The tau2 airline evaluation data and evaluation methodology in this directory are
-derived from τ-bench / τ²-bench by Sierra Research:
+derived from τ-bench / τ²-bench / τ³-bench by Sierra Research:
 
   https://github.com/sierra-research/tau-bench
+  https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
+
+Task data (tasks.json) updated to τ³-bench v1.0.0 which includes 75+ task
+quality fixes across all domains (27 airline task corrections).
 
 The original work is licensed under the MIT License, reproduced below.
 

@@ -1,4 +1,4 @@
-name: "⚓ Harbor"
+name: "📊 Evals - Harbor"
 
 on:
   workflow_dispatch:
@@ -28,7 +28,6 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
@@ -128,6 +127,7 @@ jobs:
   prep:
     name: "🔧 Prepare matrix"
     runs-on: ubuntu-latest
+    environment: evals
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     env:
@@ -143,7 +143,7 @@ jobs:
           CONCURRENCY: ${{ inputs.concurrency }}
           AGENT_MODE: ${{ inputs.agent_mode }}
         run: |
-          echo "### ⚓ Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
@@ -163,7 +163,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
@@ -187,9 +187,10 @@ jobs:
         run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
-    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
+    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
     needs: prep
     runs-on: ubuntu-latest
+    environment: evals
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -199,28 +200,29 @@ jobs:
       run:
         working-directory: libs/evals
     env:
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING_V2: "true"
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # tracing + experiments + dataset mgmt
+      LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }} # sandbox creation (LangSmithEnvironment)
+      LANGSMITH_TRACING: "true"
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
         working-directory: .
@@ -277,7 +279,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -396,7 +398,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: harbor-${{ strategy.job-index }}
           path: |

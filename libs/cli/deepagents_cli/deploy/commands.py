@@ -392,15 +392,7 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
     print(f"Running: {' '.join(cmd)}")
     print()
 
-    result = subprocess.run(
-        cmd, cwd=str(build_dir), capture_output=True, text=True, check=False
-    )
-
-    # Print output
-    if result.stdout:
-        print(result.stdout)
-    if result.stderr:
-        print(result.stderr)
+    result = subprocess.run(cmd, cwd=str(build_dir), check=False)
 
     if result.returncode != 0:
         print(f"\nDeployment failed (exit code {result.returncode}).")

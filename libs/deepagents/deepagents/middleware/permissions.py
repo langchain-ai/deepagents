@@ -99,7 +99,7 @@ def _filter_paths_by_permission(
     return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
 
 
-class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware enforcing filesystem permission rules.
 
     Intercepts each tool call via ``wrap_tool_call`` / ``awrap_tool_call``.
@@ -126,9 +126,9 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     Example:
         ```python
         from deepagents.permissions import FilesystemPermission
-        from deepagents.middleware.permissions import PermissionMiddleware
+        from deepagents.middleware.permissions import _PermissionMiddleware
 
-        middleware = PermissionMiddleware(
+        middleware = _PermissionMiddleware(
             rules=[
                 FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
             ]
@@ -152,7 +152,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """
         if isinstance(backend, BackendProtocol) and supports_execution(backend):
             msg = (
-                "PermissionMiddleware does not yet support backends with command "
+                "_PermissionMiddleware does not yet support backends with command "
                 "execution (SandboxBackendProtocol). Tool-level permissions for "
                 "the execute tool are not implemented. Either remove permissions "
                 "or use a backend without execution support."
@@ -181,6 +181,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         content=f"Error: permission denied for {operation} on {canonical}",
                         name=tool_name,
                         tool_call_id=tool_call_id,
+                        status="error",
                     )
         return None
 

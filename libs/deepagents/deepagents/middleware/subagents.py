@@ -84,7 +84,7 @@ class SubAgent(TypedDict):
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    ``PermissionMiddleware`` is appended last in the middleware stack.
+    ``_PermissionMiddleware`` is appended last in the middleware stack.
     """
 
 

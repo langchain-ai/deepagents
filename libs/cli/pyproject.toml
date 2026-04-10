@@ -248,6 +248,11 @@ ignore-var-parameters = true
     "T201",     # `print` found — examples use print for output
     "TRY300",   # Consider moving to `else` block — examples prioritize readability
 ]
+"deepagents_cli/deploy/**" = [
+    "DOC",      # Docstring conventions — deploy is internal CLI plumbing
+    "T201",     # `print` found — CLI commands use print for user-facing output
+    "S",        # Security warnings — CLI shelling out to trusted `langgraph` commands
+]
 "deepagents_cli/built_in_skills/**/scripts/**" = [
     "ANN001",   # Missing type annotation for function argument — standalone scripts
     "ANN201",   # Missing return type annotation — standalone scripts

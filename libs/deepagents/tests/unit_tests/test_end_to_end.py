@@ -2583,6 +2583,32 @@ class TestStateBackendConfigKeys:
         factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
         assert len(factory_warnings) >= 1
 
+    def test_state_backend_upload_files_works_in_graph_context(self) -> None:
+        """upload_files called in an after-model middleware hook stores readable files."""
+        backend = StateBackend()
+
+        class _UploadAfterModel(AgentMiddleware):
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                response = handler(request)
+                backend.upload_files([("/injected.txt", b"from middleware")])
+                return response
+
+        model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="foo")]),
+        )
+        agent = create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[_UploadAfterModel()],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        assert result["files"]["/injected.txt"]["content"] == "from middleware"
+
 
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""

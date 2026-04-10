@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
-from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
@@ -1561,6 +1561,215 @@ class TestDeepAgentPermissionsEndToEnd:
             ],
         )
         result = await agent.ainvoke({"messages": [HumanMessage(content="Write to secrets")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+
+
+class TestCompositeBackendPermissionsEndToEnd:
+    """End-to-end tests for permissions with CompositeBackend + sandbox default.
+
+    When a CompositeBackend has a sandbox default (supports execution), permissions
+    should still be allowed if they only scope to route paths. Permissions that
+    include paths outside any route should still raise NotImplementedError.
+    """
+
+    @staticmethod
+    def _make_sandbox_store() -> "SandboxBackendProtocol":
+        """Create a mock sandbox backend based on StoreBackend."""
+
+        class MockSandbox(SandboxBackendProtocol, StoreBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+            @property
+            def id(self) -> str:
+                return "mock-sandbox"
+
+        return MockSandbox(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+
+    def test_permissions_scoped_to_route_with_sandbox_default(self) -> None:
+        """Permissions scoped entirely to a route should work even when default is sandbox.
+
+        When a CompositeBackend's default supports execution but the permission
+        rules only target paths under a known route, the agent should be created
+        successfully and the permissions should be enforced on the route.
+        """
+        sandbox = self._make_sandbox_store()
+        route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
+        composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/memories/secret.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        # This should NOT raise NotImplementedError — permissions are route-scoped
+        agent = create_deep_agent(
+            model=model,
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write to memories")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+
+    def test_permissions_allow_route_write_with_sandbox_default(self) -> None:
+        """Permissions that allow a route path should let writes through."""
+        sandbox = self._make_sandbox_store()
+        route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
+        composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/memories/note.txt", "content": "hello"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        # Allow writes under /memories/ — should succeed
+        agent = create_deep_agent(
+            model=model,
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="allow"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write a note")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" not in tool_messages[0].content
+
+    def test_permissions_outside_routes_still_raises_with_sandbox_default(self) -> None:
+        """Permissions that target paths outside routes should still raise NotImplementedError.
+
+        If any permission rule covers paths that could hit the sandbox default backend,
+        we must still reject — execute tool permissions are not implemented.
+        """
+        sandbox = self._make_sandbox_store()
+        route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
+        composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
+
+        with pytest.raises(NotImplementedError, match="execute"):
+            create_deep_agent(
+                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+                backend=composite,
+                permissions=[
+                    # This path is NOT under any route — it hits the sandbox default
+                    FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="deny"),
+                ],
+            )
+
+    def test_wildcard_permissions_raises_with_sandbox_default(self) -> None:
+        """Wildcard permissions (/**) that cover default backend paths should raise.
+
+        A blanket rule like /** covers both route and non-route paths, so it
+        cannot be safely scoped to just routes.
+        """
+        sandbox = self._make_sandbox_store()
+        route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
+        composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
+
+        with pytest.raises(NotImplementedError, match="execute"):
+            create_deep_agent(
+                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+                backend=composite,
+                permissions=[
+                    FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+                ],
+            )
+
+    def test_mixed_permissions_some_outside_routes_raises(self) -> None:
+        """If any permission rule has paths outside routes, raise NotImplementedError."""
+        sandbox = self._make_sandbox_store()
+        route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
+        composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
+
+        with pytest.raises(NotImplementedError, match="execute"):
+            create_deep_agent(
+                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+                backend=composite,
+                permissions=[
+                    # This one is route-scoped (fine)
+                    FilesystemPermission(operations=["read"], paths=["/memories/**"], mode="deny"),
+                    # This one is NOT route-scoped (should trigger error)
+                    FilesystemPermission(operations=["write"], paths=["/etc/**"], mode="deny"),
+                ],
+            )
+
+    def test_multiple_routes_all_scoped(self) -> None:
+        """Permissions scoped to multiple routes should all work with sandbox default."""
+        sandbox = self._make_sandbox_store()
+        memories_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("memories",))
+        archive_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("archive",))
+        composite = CompositeBackend(
+            default=sandbox,
+            routes={"/memories/": memories_store, "/archive/": archive_store},
+        )
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/archive/doc.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="deny"),
+                FilesystemPermission(operations=["write"], paths=["/archive/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write to archive")]})
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1

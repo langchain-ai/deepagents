@@ -18,6 +18,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, GlobResult, GrepResult, LsResult
 from deepagents.backends.utils import (
     format_grep_matches,
@@ -143,6 +144,31 @@ def _filter_paths_by_permission(
     return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
 
 
+def _all_paths_scoped_to_routes(
+    rules: list[FilesystemPermission],
+    backend: BackendProtocol,
+) -> bool:
+    """Check if every permission path is scoped under a CompositeBackend route.
+
+    Returns ``True`` only when *backend* is a ``CompositeBackend`` and every
+    path pattern in *rules* starts with one of its route prefixes. This means
+    the permissions only govern file operations on route-specific backends and
+    never touch the (sandbox-capable) default backend.
+    """
+    if not isinstance(backend, CompositeBackend):
+        return False
+
+    route_prefixes = list(backend.routes.keys())
+    if not route_prefixes:
+        return False
+
+    for rule in rules:
+        for path in rule.paths:
+            if not any(path.startswith(prefix) for prefix in route_prefixes):
+                return False
+    return True
+
+
 class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware enforcing filesystem permission rules.
 
@@ -190,10 +216,18 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 raised because tool-level permissions for the ``execute``
                 tool are not yet implemented.
 
+                **Exception for CompositeBackend**: If the backend is a
+                ``CompositeBackend`` whose default supports execution but
+                *every* permission path is scoped under a known route prefix,
+                the middleware is allowed. Filesystem permissions only govern
+                file operations on route backends, so the sandbox default's
+                execution capability is irrelevant.
+
         Raises:
-            NotImplementedError: If the backend supports command execution.
+            NotImplementedError: If the backend supports command execution
+                and any permission path is not scoped to a route.
         """
-        if isinstance(backend, BackendProtocol) and supports_execution(backend):
+        if isinstance(backend, BackendProtocol) and supports_execution(backend) and not _all_paths_scoped_to_routes(rules, backend):
             msg = (
                 "_PermissionMiddleware does not yet support backends with command "
                 "execution (SandboxBackendProtocol). Tool-level permissions for "

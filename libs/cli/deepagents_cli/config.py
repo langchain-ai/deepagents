@@ -1937,7 +1937,7 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents._openrouter import (
+        from deepagents.profiles._openrouter import (
             check_openrouter_version,  # noqa: PLC2701
         )
 

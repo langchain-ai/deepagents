@@ -17,6 +17,8 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
+from deepagents.profiles._harness_profiles import _HarnessProfile, _register_harness_profile
+
 OPENROUTER_MIN_VERSION = "0.2.0"  # app attribution support added
 """Minimum required version of `langchain-openrouter`.
 
@@ -78,3 +80,12 @@ def check_openrouter_version() -> None:
             f"Run: pip install 'langchain-openrouter>={OPENROUTER_MIN_VERSION}'"
         )
         raise ImportError(msg)
+
+
+_register_harness_profile(
+    "openrouter",
+    _HarnessProfile(
+        pre_init=lambda _spec: check_openrouter_version(),
+        init_kwargs_factory=_openrouter_attribution_kwargs,
+    ),
+)

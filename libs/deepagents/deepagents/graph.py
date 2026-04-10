@@ -24,7 +24,6 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
-from deepagents._harness_profiles import HarnessProfile, get_harness_profile
 from deepagents._models import get_model_identifier, get_model_provider, resolve_model
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -43,6 +42,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
 is prepended and this base prompt is appended. When `system_prompt` is `None`,
 this is used as the sole system prompt.
 """
-# Replaceable via `HarnessProfile.base_system_prompt` (internal)
+# Replaceable via `_HarnessProfile.base_system_prompt` (internal)
 
 
 def get_default_model() -> ChatAnthropic:
@@ -113,7 +113,7 @@ def get_default_model() -> ChatAnthropic:
 
 
 def _resolve_extra_middleware(
-    profile: HarnessProfile,
+    profile: _HarnessProfile,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Materialize the `extra_middleware` from a provider profile.
 
@@ -129,8 +129,8 @@ def _resolve_extra_middleware(
     return list(extra)
 
 
-def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
-    """Look up the `HarnessProfile` for an already-resolved model.
+def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _HarnessProfile:
+    """Look up the `_HarnessProfile` for an already-resolved model.
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
@@ -141,22 +141,22 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         spec: Original model spec string, or `None` for pre-built instances.
 
     Returns:
-        The matching `HarnessProfile`, or an empty default (null object).
+        The matching `_HarnessProfile`, or an empty default (null object).
     """
     if spec is not None:
-        return get_harness_profile(spec)
+        return _get_harness_profile(spec)
     identifier = get_model_identifier(model)
     if identifier is not None:
-        profile = get_harness_profile(identifier)
-        if profile != HarnessProfile():
+        profile = _get_harness_profile(identifier)
+        if profile != _HarnessProfile():
             return profile
         logger.debug("No profile for identifier %r, trying provider fallback", identifier)
     # Bare model name (no colon) — fall back to provider from the model class.
     provider = get_model_provider(model)
     if provider is not None:
-        return get_harness_profile(provider)
+        return _get_harness_profile(provider)
     logger.debug("No harness profile found for pre-built model %s, using defaults", type(model).__name__)
-    return HarnessProfile()
+    return _HarnessProfile()
 
 
 def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:

@@ -9,13 +9,8 @@ from langchain_core.language_models import BaseChatModel
 
 from deepagents._harness_profiles import (
     _HARNESS_PROFILES,
-    _OPENROUTER_APP_TITLE,
-    _OPENROUTER_APP_URL,
-    OPENROUTER_MIN_VERSION,
     HarnessProfile,
     _merge_profiles,
-    _openrouter_attribution_kwargs,
-    check_openrouter_version,
     get_harness_profile,
     register_harness_profile,
 )
@@ -25,6 +20,13 @@ from deepagents._models import (
     get_model_provider,
     model_matches_spec,
     resolve_model,
+)
+from deepagents._openrouter import (
+    _OPENROUTER_APP_TITLE,
+    _OPENROUTER_APP_URL,
+    OPENROUTER_MIN_VERSION,
+    _openrouter_attribution_kwargs,
+    check_openrouter_version,
 )
 
 
@@ -188,25 +190,25 @@ class TestCheckOpenRouterVersion:
 
     def test_passes_when_not_installed(self) -> None:
         with patch(
-            "deepagents._harness_profiles.pkg_version",
+            "deepagents._openrouter.pkg_version",
             side_effect=PackageNotFoundError("langchain-openrouter"),
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_sufficient(self) -> None:
         with patch(
-            "deepagents._harness_profiles.pkg_version",
+            "deepagents._openrouter.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_above_minimum(self) -> None:
-        with patch("deepagents._harness_profiles.pkg_version", return_value="99.0.0"):
+        with patch("deepagents._openrouter.pkg_version", return_value="99.0.0"):
             check_openrouter_version()  # should not raise
 
     def test_raises_when_version_too_old(self) -> None:
         with (
-            patch("deepagents._harness_profiles.pkg_version", return_value="0.0.1"),
+            patch("deepagents._openrouter.pkg_version", return_value="0.0.1"),
             pytest.raises(ImportError, match="langchain-openrouter>="),
         ):
             check_openrouter_version()

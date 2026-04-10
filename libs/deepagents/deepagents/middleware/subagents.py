@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.permissions import FilesystemPermission
+from deepagents.middleware.permissions import FilesystemPermission
 
 
 class SubAgent(TypedDict):

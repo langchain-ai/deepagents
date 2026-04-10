@@ -10,8 +10,7 @@ from deepagents.backends import StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import _check_fs_permission, _filter_paths_by_permission, _PermissionMiddleware
-from deepagents.permissions import FilesystemPermission
+from deepagents.middleware.permissions import FilesystemPermission, _check_fs_permission, _filter_paths_by_permission, _PermissionMiddleware
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:

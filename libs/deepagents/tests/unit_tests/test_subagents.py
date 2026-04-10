@@ -1045,14 +1045,14 @@ class TestSubAgents:
         # When a subagent produces a structured_response, the ToolMessage content is
         # the JSON-serialized structured data (not the last message text).
         weather_tool_message = tool_messages_by_id["call_weather"]
-        weather_parsed = json.loads(weather_tool_message.content)
-        assert weather_parsed == {"city": "Tokyo", "temperature_celsius": 22.5, "humidity_percent": 65}, (
+        weather_parsed = CityWeather.model_validate_json(weather_tool_message.content)
+        assert weather_parsed == CityWeather(city="Tokyo", temperature_celsius=22.5, humidity_percent=65), (
             f"Expected JSON-serialized weather data, got: {weather_tool_message.content}"
         )
 
         population_tool_message = tool_messages_by_id["call_population"]
-        population_parsed = json.loads(population_tool_message.content)
-        assert population_parsed == {"city": "Tokyo", "population": 14000000, "metro_area_population": 37400000}, (
+        population_parsed = CityPopulation.model_validate_json(population_tool_message.content)
+        assert population_parsed == CityPopulation(city="Tokyo", population=14000000, metro_area_population=37400000), (
             f"Expected JSON-serialized population data, got: {population_tool_message.content}"
         )
 
@@ -1262,8 +1262,8 @@ class TestSubAgents:
         assert len(tool_messages) == 1
         task_tool_message = tool_messages[0]
 
-        parsed = json.loads(task_tool_message.content)
-        assert parsed == {"findings": "Solar is growing fast", "confidence": 0.95}
+        parsed = AnalysisResult.model_validate_json(task_tool_message.content)
+        assert parsed == AnalysisResult(findings="Solar is growing fast", confidence=0.95)
 
     def test_fallback_to_last_message_without_structured_response(self) -> None:
         """Test fallback to last message when no structured_response is present.

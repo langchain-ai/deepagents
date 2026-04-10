@@ -416,10 +416,6 @@ def _get_subagents_legacy(
         if interrupt_on:
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-        create_agent_kwargs: dict[str, Any] = {}
-        if "response_format" in agent_:
-            create_agent_kwargs["response_format"] = agent_["response_format"]
-
         specs.append(
             {
                 "name": agent_["name"],
@@ -430,7 +426,6 @@ def _get_subagents_legacy(
                     tools=_tools,
                     middleware=_middleware,
                     name=agent_["name"],
-                    **create_agent_kwargs,
                 ),
             }
         )

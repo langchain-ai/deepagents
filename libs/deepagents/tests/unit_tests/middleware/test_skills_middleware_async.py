@@ -296,8 +296,12 @@ async def test_abefore_agent_empty_sources(tmp_path: Path) -> None:
     assert result["skills_metadata"] == []
 
 
-async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
-    """Test that abefore_agent skips loading if skills_metadata is already in state."""
+async def test_abefore_agent_always_reloads_skills(tmp_path: Path) -> None:
+    """Test that abefore_agent always reloads skills regardless of existing state.
+
+    Skills are reloaded on every turn so that skills created during a session
+    are picked up immediately without restarting.
+    """
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a skill in the backend
@@ -313,12 +317,15 @@ async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -
         sources=sources,
     )
 
-    # State has skills_metadata already
+    # State has skills_metadata already (simulating a subsequent turn)
     state_with_metadata = {"skills_metadata": []}
     result = await middleware.abefore_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
-    # Should return None, not load new skills
-    assert result is None
+    # Should reload from backend, not return None
+    assert result is not None
+    assert "skills_metadata" in result
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"
 
 
 async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Path) -> None:

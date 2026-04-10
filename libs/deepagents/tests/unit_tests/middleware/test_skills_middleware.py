@@ -1263,8 +1263,12 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     assert "Base registry description" not in content, "Should not contain base source description"
 
 
-def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
-    """Test that before_agent skips loading if skills_metadata is already in state."""
+def test_before_agent_always_reloads_skills(tmp_path: Path) -> None:
+    """Test that before_agent always reloads skills regardless of existing state.
+
+    Skills are reloaded on every turn so that skills created during a session
+    are picked up immediately without restarting.
+    """
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a skill in the backend
@@ -1280,7 +1284,7 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    # Case 1: State has skills_metadata with some skills
+    # Case 1: State has skills_metadata with stale skills from a prior turn
     existing_metadata: list[SkillMetadata] = [
         {
             "name": "existing-skill",
@@ -1295,15 +1299,21 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     state_with_metadata = {"skills_metadata": existing_metadata}
     result = middleware.before_agent(state_with_metadata, None, {})  # type: ignore[arg-type]
 
-    # Should return None, not load new skills
-    assert result is None
+    # Should reload from backend, replacing stale metadata
+    assert result is not None
+    assert "skills_metadata" in result
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"
 
     # Case 2: State has empty list for skills_metadata
     state_with_empty_list = {"skills_metadata": []}
     result = middleware.before_agent(state_with_empty_list, None, {})  # type: ignore[arg-type]
 
-    # Should still return None and not reload
-    assert result is None
+    # Should reload and return the current skills
+    assert result is not None
+    assert "skills_metadata" in result
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"
 
     # Case 3: State does NOT have skills_metadata key
     state_without_metadata = {}

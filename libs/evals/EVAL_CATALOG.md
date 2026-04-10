@@ -45,24 +45,24 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_indirect_email_report`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L238) — `tests/evals/test_tool_selection.py:238`
 - [`test_chain_search_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L271) — `tests/evals/test_tool_selection.py:271`
 - [`test_chain_create_issue_then_notify`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L295) — `tests/evals/test_tool_selection.py:295`
-- [`test_single_tool_list_user_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L444) — `tests/evals/test_tool_usage_relational.py:444`
-- [`test_single_tool_get_user_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L473) — `tests/evals/test_tool_usage_relational.py:473`
-- [`test_single_tool_get_food_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L497) — `tests/evals/test_tool_usage_relational.py:497`
-- [`test_two_tools_user_name_from_current_id`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L521) — `tests/evals/test_tool_usage_relational.py:521`
-- [`test_two_tools_city_for_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L549) — `tests/evals/test_tool_usage_relational.py:549`
-- [`test_two_tools_find_user_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L581) — `tests/evals/test_tool_usage_relational.py:581`
-- [`test_three_tools_current_user_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L609) — `tests/evals/test_tool_usage_relational.py:609`
-- [`test_three_tools_find_user_then_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L643) — `tests/evals/test_tool_usage_relational.py:643`
-- [`test_three_tools_current_user_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L677) — `tests/evals/test_tool_usage_relational.py:677`
-- [`test_four_tools_current_user_favorite_food_names`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L711) — `tests/evals/test_tool_usage_relational.py:711`
-- [`test_four_tools_find_user_food_name_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L750) — `tests/evals/test_tool_usage_relational.py:750`
-- [`test_four_tools_current_user_location_time_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L789) — `tests/evals/test_tool_usage_relational.py:789`
-- [`test_five_steps_current_user_food_names_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L833) — `tests/evals/test_tool_usage_relational.py:833`
-- [`test_four_steps_find_user_city_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L879) — `tests/evals/test_tool_usage_relational.py:879`
-- [`test_four_steps_find_user_food_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L929) — `tests/evals/test_tool_usage_relational.py:929`
-- [`test_four_steps_current_user_food_names_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L982) — `tests/evals/test_tool_usage_relational.py:982`
-- [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1046) — `tests/evals/test_tool_usage_relational.py:1046`
-- [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1116) — `tests/evals/test_tool_usage_relational.py:1116`
+- [`test_single_tool_list_user_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L445) — `tests/evals/test_tool_usage_relational.py:445`
+- [`test_single_tool_get_user_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L474) — `tests/evals/test_tool_usage_relational.py:474`
+- [`test_single_tool_get_food_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L498) — `tests/evals/test_tool_usage_relational.py:498`
+- [`test_two_tools_user_name_from_current_id`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L522) — `tests/evals/test_tool_usage_relational.py:522`
+- [`test_two_tools_city_for_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L550) — `tests/evals/test_tool_usage_relational.py:550`
+- [`test_two_tools_find_user_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L582) — `tests/evals/test_tool_usage_relational.py:582`
+- [`test_three_tools_current_user_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L610) — `tests/evals/test_tool_usage_relational.py:610`
+- [`test_three_tools_find_user_then_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L644) — `tests/evals/test_tool_usage_relational.py:644`
+- [`test_three_tools_current_user_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L678) — `tests/evals/test_tool_usage_relational.py:678`
+- [`test_four_tools_current_user_favorite_food_names`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L712) — `tests/evals/test_tool_usage_relational.py:712`
+- [`test_four_tools_find_user_food_name_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L751) — `tests/evals/test_tool_usage_relational.py:751`
+- [`test_four_tools_current_user_location_time_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L790) — `tests/evals/test_tool_usage_relational.py:790`
+- [`test_five_steps_current_user_food_names_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L834) — `tests/evals/test_tool_usage_relational.py:834`
+- [`test_four_steps_find_user_city_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L882) — `tests/evals/test_tool_usage_relational.py:882`
+- [`test_four_steps_find_user_food_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L932) — `tests/evals/test_tool_usage_relational.py:932`
+- [`test_four_steps_current_user_food_names_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L985) — `tests/evals/test_tool_usage_relational.py:985`
+- [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1049) — `tests/evals/test_tool_usage_relational.py:1049`
+- [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1120) — `tests/evals/test_tool_usage_relational.py:1120`
 
 ## Memory (`memory`) (17 evals)
 

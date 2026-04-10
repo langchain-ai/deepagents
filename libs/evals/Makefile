@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment-with-todos run-todo-experiment-without-todos run-todo-experiment-evals-with-todos run-todo-experiment-evals-without-todos
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment run-todo-experiment-evals run-todo-experiment-evals-all
 
 .DEFAULT_GOAL := help
 
@@ -66,8 +66,9 @@ TODO_EXPERIMENT_TASKS = \
 
 EXPERIMENT_ENV ?= docker
 EXPERIMENT_CONCURRENCY ?= 1
+TODO_MODE ?= tool
 
-run-todo-experiment-with-todos: ## Run todo experiment WITH TodoListMiddleware
+run-todo-experiment: ## Run todo experiment (TODO_MODE=tool|prompt|filesystem)
 	@mkdir -p jobs/todo-experiment
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
 		--dataset terminal-bench@2.0 \
@@ -76,18 +77,7 @@ run-todo-experiment-with-todos: ## Run todo experiment WITH TodoListMiddleware
 		--jobs-dir jobs/todo-experiment \
 		--env $(EXPERIMENT_ENV) \
 		--agent-kwarg use_cli_agent=false \
-		--agent-kwarg include_todos=true
-
-run-todo-experiment-without-todos: ## Run todo experiment WITHOUT TodoListMiddleware
-	@mkdir -p jobs/todo-experiment
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-		--dataset terminal-bench@2.0 \
-		$(TODO_EXPERIMENT_TASKS) \
-		-n $(EXPERIMENT_CONCURRENCY) \
-		--jobs-dir jobs/todo-experiment \
-		--env $(EXPERIMENT_ENV) \
-		--agent-kwarg use_cli_agent=false \
-		--agent-kwarg include_todos=false
+		--agent-kwarg todo_mode=$(TODO_MODE)
 
 # Todo middleware ablation on the eval suite (non-Harbor)
 # 10 curated tests stratified by planning complexity:
@@ -112,25 +102,29 @@ TODO_EVAL_K_EXPR = task_14 or task_32 or task_44 \
 	or test_chain_search_then_email
 
 EVAL_MODEL ?=
+TRIALS ?= 1
 
-run-todo-experiment-evals-with-todos: ## Run eval todo experiment WITH TodoListMiddleware
-	LANGSMITH_TEST_SUITE=deepagents-evals-todo-with uv run --group test pytest \
+run-todo-experiment-evals: ## Run eval todo experiment (TODO_MODE=tool|prompt|filesystem)
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-$(TODO_MODE) uv run --group test pytest \
 		tests/evals/tau2_airline/ \
 		tests/evals/test_tool_usage_relational.py \
 		tests/evals/test_tool_selection.py \
 		-k "$(TODO_EVAL_K_EXPR)" \
-		--include-todos true \
+		--todo-mode $(TODO_MODE) \
+		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \
 		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
 		-v --tb=short $(PYTEST_EXTRA)
 
-run-todo-experiment-evals-without-todos: ## Run eval todo experiment WITHOUT TodoListMiddleware
-	LANGSMITH_TEST_SUITE=deepagents-evals-todo-without uv run --group test pytest \
+run-todo-experiment-evals-all: ## Run all todo variants in one session (TRIALS=N for repeats)
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-experiment uv run --group test pytest \
 		tests/evals/tau2_airline/ \
 		tests/evals/test_tool_usage_relational.py \
 		tests/evals/test_tool_selection.py \
 		-k "$(TODO_EVAL_K_EXPR)" \
-		--include-todos false \
+		--todo-variants all \
+		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \
 		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
+		--evals-report-file evals_report.json \
 		-v --tb=short $(PYTEST_EXTRA)
 
 ######################

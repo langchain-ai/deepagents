@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from deepagents import create_deep_agent
+from deepagents import TodoMode, create_deep_agent
 from deepagents.graph import get_default_model
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
@@ -80,7 +80,8 @@ class DeepAgentsWrapper(BaseAgent):
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
-        include_todos: bool = True,
+        todo_mode: TodoMode = "tool",
+        include_todos: bool = True,  # noqa: ARG002  # kept for Harbor CLI compat; todo_mode takes precedence
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -97,8 +98,11 @@ class DeepAgentsWrapper(BaseAgent):
                 (e.g. `"MiniMax"`).
 
                 Requires an `openrouter:` model prefix.
-            include_todos: Whether to include `TodoListMiddleware`.
-                Set to `False` to disable the `write_todos` tool.
+            todo_mode: How the agent tracks planning state.
+                ``"tool"`` uses `TodoListMiddleware`, ``"prompt"`` injects
+                planning guidance, ``"filesystem"`` uses a ``PLAN.md`` file.
+            include_todos: Deprecated. Ignored when `todo_mode` is passed
+                via ``--agent-kwarg``.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
@@ -127,7 +131,7 @@ class DeepAgentsWrapper(BaseAgent):
         self._temperature = temperature
         self._verbose = verbose
         self._use_cli_agent = use_cli_agent
-        self._include_todos = include_todos
+        self._todo_mode: TodoMode = todo_mode
 
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None
@@ -168,10 +172,6 @@ class DeepAgentsWrapper(BaseAgent):
 
     async def _get_formatted_system_prompt(self, backend: HarborSandbox) -> str:
         """Format the system prompt with current directory and file listing context.
-
-        When `include_todos` is disabled, appends lightweight planning guidance so
-        the agent still reasons about task decomposition without the `write_todos`
-        tool.
 
         Args:
             backend: Harbor sandbox backend to query for directory information
@@ -264,7 +264,7 @@ class DeepAgentsWrapper(BaseAgent):
                 model=self._model,
                 backend=backend,
                 system_prompt=system_prompt,
-                include_todos=self._include_todos,
+                todo_mode=self._todo_mode,
             )
 
         # Build metadata with experiment tracking info
@@ -285,7 +285,7 @@ class DeepAgentsWrapper(BaseAgent):
             "harbor_session_id": environment.session_id,
             # Tag to indicate which agent implementation is being used
             "agent_mode": "cli" if self._use_cli_agent else "sdk",
-            "include_todos": self._include_todos,
+            "todo_mode": self._todo_mode,
         }
         metadata.update(configuration)
 

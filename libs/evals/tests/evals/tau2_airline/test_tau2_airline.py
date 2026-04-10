@@ -20,7 +20,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
+from deepagents import TodoMode, create_deep_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
@@ -83,13 +83,13 @@ def _task_id_label(task_id: str) -> str:
 @pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
-def test_tau2_airline(model: BaseChatModel, task_id: str, include_todos: bool) -> None:
+def test_tau2_airline(model: BaseChatModel, task_id: str, todo_mode: TodoMode) -> None:
     """Run a multi-turn tau2 airline task and evaluate the result.
 
     Args:
         model: The agent's chat model (from --model CLI option).
         task_id: The tau2 task ID to run.
-        include_todos: Whether to include `TodoListMiddleware`.
+        todo_mode: Planning mode for `create_deep_agent`.
     """
     # Immediately override @pytest.mark.langsmith auto-capture so the dataset
     # example records clean metadata even if run_multi_turn() raises.
@@ -131,7 +131,7 @@ def test_tau2_airline(model: BaseChatModel, task_id: str, include_todos: bool) -
         tools=tools,
         system_prompt=AGENT_SYSTEM_PROMPT.format(domain_policy=policy),
         checkpointer=MemorySaver(),
-        include_todos=include_todos,
+        todo_mode=todo_mode,
     )
 
     user_model = init_chat_model(USER_SIM_MODEL)

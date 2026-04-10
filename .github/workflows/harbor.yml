@@ -114,14 +114,21 @@ on:
         options:
           - sdk
           # - cli # need to support properly first
-      include_todos:
-        description: "Include TodoListMiddleware (write_todos tool). Set to false for ablation experiments."
+      todo_mode:
+        description: "Planning mode(s) to evaluate. 'all' runs tool+prompt+filesystem as separate matrix jobs."
         required: true
-        default: "true"
+        default: "all"
         type: choice
         options:
-          - "true"
-          - "false"
+          - "all"
+          - "tool"
+          - "prompt"
+          - "filesystem"
+      trials:
+        description: "Number of independent trials per (model, todo_mode) combination."
+        required: true
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -152,7 +159,8 @@ jobs:
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
           AGENT_MODE: ${{ inputs.agent_mode }}
-          INCLUDE_TODOS: ${{ inputs.include_todos }}
+          TODO_MODE: ${{ inputs.todo_mode }}
+          TRIALS: ${{ inputs.trials }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -171,7 +179,8 @@ jobs:
           fi
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`include_todos\` | \`${INCLUDE_TODOS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`todo_mode\` | \`${TODO_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`trials\` | \`${TRIALS}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
@@ -179,9 +188,51 @@ jobs:
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
-        run: python .github/scripts/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+          TODO_MODE: ${{ inputs.todo_mode }}
+          TRIALS: ${{ inputs.trials }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, tempfile
+
+          # Run models.py to get the base model list. It writes "matrix=..."
+          # to the file pointed to by GITHUB_OUTPUT, so give it a temp file.
+          with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as tmp:
+              tmp_path = tmp.name
+          env = {**os.environ, "GITHUB_OUTPUT": tmp_path}
+          subprocess.run(
+              [sys.executable, ".github/scripts/models.py", "harbor"],
+              env=env, check=True,
+          )
+          with open(tmp_path) as f:
+              line = f.read().strip()
+          os.unlink(tmp_path)
+
+          prefix = "matrix="
+          if not line.startswith(prefix):
+              raise SystemExit(f"Unexpected models.py output: {line!r}")
+          models = json.loads(line[len(prefix):])["include"]
+
+          # Resolve todo_mode variants
+          todo_input = os.environ.get("TODO_MODE", "all")
+          todo_modes = ["tool", "prompt", "filesystem"] if todo_input == "all" else [todo_input]
+
+          # Resolve trial count
+          trials = int(os.environ.get("TRIALS", "1"))
+
+          # Build cross product: model x todo_mode x trial
+          include = [
+              {**entry, "todo_mode": mode, "trial": trial}
+              for entry in models
+              for mode in todo_modes
+              for trial in range(1, trials + 1)
+          ]
+
+          matrix = json.dumps({"include": include}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix}\n")
+          PY
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -199,7 +250,7 @@ jobs:
         run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
-    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
+    name: "📊 Harbor (${{ matrix.model }} / ${{ matrix.todo_mode }} / t${{ matrix.trial }})"
     needs: prep
     runs-on: ubuntu-latest
     environment: evals
@@ -305,9 +356,13 @@ jobs:
 
       - name: "🧪 Create LangSmith experiment"
         id: langsmith
+        env:
+          HARBOR_TODO_MODE: ${{ matrix.todo_mode }}
+          HARBOR_TRIAL: ${{ matrix.trial }}
         run: |
           set -euo pipefail
-          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          metadata=$(python -c "import json; print(json.dumps({'todo_mode':'$HARBOR_TODO_MODE','trial':$HARBOR_TRIAL}))")
+          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL-${HARBOR_TODO_MODE}-t${HARBOR_TRIAL}" --metadata "$metadata")
           line_count=$(echo "$output" | wc -l | tr -d ' ')
           if [ "$line_count" -ne 2 ]; then
             echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
@@ -367,7 +422,7 @@ jobs:
             $env_flag \
             --model "$HARBOR_MODEL" \
             --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }} \
-            --agent-kwarg include_todos=${{ inputs.include_todos }}
+            --agent-kwarg todo_mode=${{ matrix.todo_mode }}
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -394,35 +449,66 @@ jobs:
             "$HARBOR_JOB_DIR" \
             --project-name "$LANGSMITH_EXPERIMENT_NAME"
 
-      - name: "📝 Write workflow summary"
+      - name: "📊 Write per-job summary JSON"
         if: always()
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          HARBOR_TODO_MODE: ${{ matrix.todo_mode }}
+          HARBOR_TRIAL: ${{ matrix.trial }}
           LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
           LANGSMITH_EXPERIMENT_URL: ${{ steps.langsmith.outputs.experiment_url }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
         run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          job_dir = os.environ.get("HARBOR_JOB_DIR", "")
+          model = os.environ["HARBOR_MODEL"]
+          todo_mode = os.environ["HARBOR_TODO_MODE"]
+          trial = int(os.environ["HARBOR_TRIAL"])
+          experiment_name = os.environ.get("LANGSMITH_EXPERIMENT_NAME", "")
+          experiment_url = os.environ.get("LANGSMITH_EXPERIMENT_URL", "")
+
+          rewards = {}
+          if job_dir and Path(job_dir).exists():
+              for trial_dir in sorted(Path(job_dir).iterdir()):
+                  result_path = trial_dir / "result.json"
+                  if not result_path.exists():
+                      continue
+                  result = json.loads(result_path.read_text())
+                  vr = result.get("verifier_result")
+                  if isinstance(vr, dict):
+                      r = vr.get("rewards", {})
+                      if isinstance(r, dict) and "reward" in r:
+                          rewards[trial_dir.name] = r["reward"]
+                      else:
+                          rewards[trial_dir.name] = 0.0
+                  else:
+                      rewards[trial_dir.name] = 0.0
+
+          summary = {
+              "model": model,
+              "todo_mode": todo_mode,
+              "trial": trial,
+              "experiment_name": experiment_name,
+              "experiment_url": experiment_url,
+              "rewards": rewards,
+          }
+          Path("job_summary.json").write_text(json.dumps(summary, indent=2))
+          PY
+
+          # Also write a human-readable step summary
           {
             echo "## Harbor run"
             echo
             echo "- Model: $HARBOR_MODEL"
+            echo "- Todo mode: $HARBOR_TODO_MODE"
+            echo "- Trial: $HARBOR_TRIAL"
             echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
             echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
-            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
-            if [ "$HARBOR_N_TASKS" = "0" ]; then
-              echo "- Max tasks: all"
-            else
-              echo "- Max tasks: ${HARBOR_N_TASKS}"
-            fi
-            echo "- Agent mode: ${HARBOR_AGENT_MODE}"
-            echo "- Include todos: ${{ inputs.include_todos }}"
             if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
               echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
-            else
-              echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
-            fi
-            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
-              echo "- Harbor job dir: $HARBOR_JOB_DIR"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -433,4 +519,37 @@ jobs:
           name: harbor-${{ strategy.job-index }}
           path: |
             libs/evals/jobs/terminal-bench
+            libs/evals/job_summary.json
           if-no-files-found: warn
+
+  summary:
+    name: "📊 Experiment summary"
+    needs: [harbor]
+    if: always()
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: libs/evals
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "📥 Download all artifacts"
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4
+        with:
+          pattern: harbor-*
+          path: libs/evals/all-results/
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor-summary
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "📊 Generate experiment summary"
+        run: |
+          uv run python scripts/experiment_summary.py all-results/ >> "$GITHUB_STEP_SUMMARY"

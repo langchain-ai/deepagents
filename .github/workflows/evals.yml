@@ -19,7 +19,7 @@
 
 name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.include_todos != 'default' && format(' todos:{0}', inputs.include_todos) || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.todo_mode != 'default' && format(' todo:{0}', inputs.todo_mode) || '' }}${{ inputs.trials > 1 && format(' x{0}', inputs.trials) || '' }}
 
 on:
   workflow_dispatch:
@@ -164,15 +164,22 @@ on:
         required: false
         default: ""
         type: string
-      include_todos:
-        description: "TodoListMiddleware ablation. 'default' = normal run (todos on, all evals). 'true'/'false' = run only the 10 curated experiment tests with todos on/off."
+      todo_mode:
+        description: "Todo experiment mode. 'default' = normal run (todos on, all evals). 'tool'/'prompt'/'filesystem' = single variant on 10 curated tests. 'all' = all variants in one run."
         required: false
         default: "default"
         type: choice
         options:
           - "default"
-          - "true"
-          - "false"
+          - "tool"
+          - "prompt"
+          - "filesystem"
+          - "all"
+      trials:
+        description: "Number of trial repetitions per test (default: 1). Higher values give variance estimates but cost more."
+        required: false
+        default: 1
+        type: number
 
 permissions:
   contents: write
@@ -198,7 +205,8 @@ jobs:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
-          INCLUDE_TODOS: ${{ inputs.include_todos || 'default' }}
+          TODO_MODE: ${{ inputs.todo_mode || 'default' }}
+          TRIALS: ${{ inputs.trials || '1' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -252,8 +260,11 @@ jobs:
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ "${INCLUDE_TODOS}" != "default" ]; then
-            echo "| \`include_todos\` | \`${INCLUDE_TODOS}\` (10-test experiment subset) |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${TODO_MODE}" != "default" ]; then
+            echo "| \`todo_mode\` | \`${TODO_MODE}\` (10-test experiment subset) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${TRIALS}" -gt 1 ] 2>/dev/null; then
+            echo "| \`trials\` | ${TRIALS} |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -297,7 +308,7 @@ jobs:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING: "true"
       LANGSMITH_TRACING_V2: "true"
-      LANGSMITH_EXPERIMENT: ${{ inputs.include_todos != 'default' && format('{0}-todos-{1}', matrix.model, inputs.include_todos) || matrix.model }}
+      LANGSMITH_EXPERIMENT: ${{ inputs.todo_mode != 'default' && format('{0}-todo-{1}', matrix.model, inputs.todo_mode) || matrix.model }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
@@ -353,9 +364,10 @@ jobs:
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
 
       - name: "🧪 Apply todo experiment filter"
-        if: inputs.include_todos != 'default'
+        if: inputs.todo_mode != 'default'
         env:
-          INCLUDE_TODOS: ${{ inputs.include_todos }}
+          TODO_MODE: ${{ inputs.todo_mode }}
+          TRIALS: ${{ inputs.trials }}
         run: |
           # 10 curated tests for the todo middleware ablation experiment
           k_expr="task_14 or task_32 or task_44"
@@ -366,7 +378,16 @@ jobs:
           k_expr="${k_expr} or test_single_tool_get_user_email"
           k_expr="${k_expr} or test_two_tools_city_for_user"
           k_expr="${k_expr} or test_chain_search_then_email"
-          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --include-todos ${INCLUDE_TODOS} -k \"${k_expr}\"" >> "$GITHUB_ENV"
+          flags=""
+          if [ "$TODO_MODE" = "all" ]; then
+            flags="--todo-variants all"
+          else
+            flags="--todo-mode ${TODO_MODE}"
+          fi
+          if [ "$TRIALS" -gt 1 ] 2>/dev/null; then
+            flags="${flags} --trials ${TRIALS}"
+          fi
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} ${flags} -k \"${k_expr}\"" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         run: make evals
@@ -399,7 +420,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-report-${{ strategy.job-index }}
-          path: libs/evals/evals_report.json
+          path: |
+            libs/evals/evals_report.json
+            libs/evals/variant_summary.md
           if-no-files-found: error
 
       - name: "📊 Post results to summary"
@@ -438,7 +461,13 @@ jobs:
           ]
 
           try:
-              # -- Metrics table --
+              # -- Variant comparison table (when multi-variant run) --
+              variant_md = Path("variant_summary.md")
+              if variant_md.exists():
+                  lines.append(variant_md.read_text().rstrip())
+                  lines.append("")
+
+              # -- Aggregate metrics table --
               metrics = [
                   ("passed", None), ("failed", None), ("skipped", None),
                   ("total", None), ("correctness", None), ("solve_rate", "n/a"),
@@ -454,7 +483,7 @@ jobs:
                       val = 0
                   vals.append(str(val))
               row = "| " + " | ".join(vals) + " |"
-              lines += [header, sep, row]
+              lines += ["### Aggregate metrics", "", header, sep, row]
 
               # -- Per-category scores (horizontal) --
               cat_scores = report.get("category_scores")

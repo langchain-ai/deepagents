@@ -10,7 +10,7 @@ from langchain.chat_models import init_chat_model
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from deepagents import __version__ as deepagents_version
+from deepagents import TodoMode, __version__ as deepagents_version
 from deepagents.graph import get_default_model
 
 pytest_plugins = ["tests.evals.pytest_reporter"]
@@ -78,11 +78,35 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
     )
     parser.addoption(
+        "--todo-mode",
+        action="store",
+        default="tool",
+        choices=["tool", "prompt", "filesystem"],
+        help="Planning mode: 'tool' (TodoListMiddleware), 'prompt' (planning guidance), 'filesystem' (PLAN.md).",
+    )
+    parser.addoption(
+        "--todo-variants",
+        action="store",
+        default=None,
+        help=(
+            "Run each test across multiple todo-mode variants in a single session. "
+            "Comma-separated list (e.g. 'tool,prompt,filesystem') or 'all' for every variant. "
+            "Overrides --todo-mode when set."
+        ),
+    )
+    parser.addoption(
+        "--trials",
+        action="store",
+        default=1,
+        type=int,
+        help="Number of times to repeat each test (default: 1). Useful for measuring eval variance.",
+    )
+    parser.addoption(
         "--include-todos",
         action="store",
-        default="true",
+        default=None,
         choices=["true", "false"],
-        help="Include TodoListMiddleware (default: true). Set to 'false' for ablation.",
+        help="Deprecated. Use --todo-mode instead.",
     )
 
 
@@ -134,13 +158,50 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     _filter_by_marker(config, items, option="--eval-tier", marker_name="eval_tier")
 
 
+_ALL_TODO_VARIANTS: list[TodoMode] = ["tool", "prompt", "filesystem"]
+
+
+def _get_todo_variants(config: pytest.Config) -> list[TodoMode]:
+    """Resolve the list of todo-mode variants to parametrize over.
+
+    Returns a single-element list when ``--todo-variants`` is not set (the
+    resolved ``--todo-mode`` / ``--include-todos`` value), or the expanded
+    variant list otherwise.
+    """
+    raw = config.getoption("--todo-variants")
+    if raw is None:
+        return [_resolve_todo_mode_option(config)]
+    if raw.strip().lower() == "all":
+        return list(_ALL_TODO_VARIANTS)
+    variants: list[TodoMode] = []
+    for part in raw.split(","):
+        cleaned = part.strip()
+        if cleaned not in ("tool", "prompt", "filesystem"):
+            msg = f"Invalid --todo-variants value: {cleaned!r}. Must be 'tool', 'prompt', 'filesystem', or 'all'."
+            raise pytest.UsageError(msg)
+        variants.append(cleaned)
+    return variants
+
+
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "model_name" not in metafunc.fixturenames:
         return
 
     model_opt = metafunc.config.getoption("--model")
     model_name = model_opt or str(get_default_model().model)
-    metafunc.parametrize("model_name", [model_name])
+    trials: int = metafunc.config.getoption("--trials")
+
+    if trials > 1:
+        values = [model_name] * trials
+        ids = [f"{model_name}-t{i}" for i in range(1, trials + 1)]
+        metafunc.parametrize("model_name", values, ids=ids)
+    else:
+        metafunc.parametrize("model_name", [model_name])
+
+    if "todo_mode" in metafunc.fixturenames:
+        variants = _get_todo_variants(metafunc.config)
+        if len(variants) > 1 or metafunc.config.getoption("--todo-variants") is not None:
+            metafunc.parametrize("todo_mode", variants)
 
 
 @pytest.fixture
@@ -155,11 +216,14 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
     model_name = model_opt or str(
         getattr(default_model, "model", None) or getattr(default_model, "model_name", "")
     )
+    variants = _get_todo_variants(request.config)
+    trials: int = request.config.getoption("--trials")
     return {
         "model": model_name,
         "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
         "deepagents_version": deepagents_version,
-        "include_todos": request.config.getoption("--include-todos") == "true",
+        "todo_variants": variants,
+        "trials": trials,
     }
 
 
@@ -183,7 +247,28 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
     return init_chat_model(model_name, **kwargs)
 
 
+def _resolve_todo_mode_option(config: pytest.Config) -> TodoMode:
+    """Resolve ``--todo-mode`` / ``--include-todos`` into a `TodoMode` value."""
+    include_todos = config.getoption("--include-todos")
+    todo_mode = config.getoption("--todo-mode")
+    if include_todos is not None:
+        return "tool" if include_todos == "true" else "prompt"
+    return todo_mode
+
+
+@pytest.fixture
+def todo_mode(request: pytest.FixtureRequest) -> TodoMode:
+    """The planning mode to use in `create_deep_agent` calls.
+
+    When ``--todo-variants`` is active, the value comes from parametrization.
+    Otherwise falls back to ``--todo-mode`` / ``--include-todos``.
+    """
+    if hasattr(request, "param"):
+        return request.param
+    return _resolve_todo_mode_option(request.config)
+
+
 @pytest.fixture
 def include_todos(request: pytest.FixtureRequest) -> bool:
-    """Whether to include `TodoListMiddleware` in `create_deep_agent` calls."""
-    return request.config.getoption("--include-todos") == "true"
+    """Deprecated. Use ``todo_mode`` fixture instead."""
+    return _resolve_todo_mode_option(request.config) == "tool"

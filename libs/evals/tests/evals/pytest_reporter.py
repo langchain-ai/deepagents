@@ -6,7 +6,7 @@ import statistics
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import pytest
@@ -32,6 +32,18 @@ _EFFICIENCY_RESULTS: list[_evals_utils.EfficiencyResult] = []
 
 _NODEID_TO_CATEGORY: dict[str, str] = {}
 """Mapping of pytest node ID to its `eval_category` mark value, built during collection."""
+
+_NODEID_TO_VARIANT: dict[str, str] = {}
+"""Mapping of pytest node ID to its ``todo_mode`` parametrize value, built during collection."""
+
+_VARIANT_RESULTS: dict[str, dict[str, int]] = {}
+"""Per-variant pass/fail/total counters, keyed by todo_mode value (tool/prompt/filesystem)."""
+
+_VARIANT_DURATIONS: dict[str, list[float]] = {}
+"""Per-variant wall-clock durations."""
+
+_PER_TEST_VARIANT_RESULTS: dict[str, dict[str, list[str]]] = {}
+"""Per-test, per-variant outcomes. {base_test_name: {variant: [outcome, ...]}}."""
 
 _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 """Per-category pass/fail/total counters, keyed by category name."""
@@ -204,6 +216,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         print(msg, file=sys.stderr)  # noqa: T201
 
 
+def _base_test_name(nodeid: str) -> str:
+    """Strip parametrize brackets to get a stable base test name for grouping."""
+    idx = nodeid.find("[")
+    return nodeid[:idx] if idx != -1 else nodeid
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config,  # noqa: ARG001
     items: list[pytest.Item],
@@ -212,6 +230,9 @@ def pytest_collection_modifyitems(
         marker = item.get_closest_marker("eval_category")
         if marker and marker.args:
             _NODEID_TO_CATEGORY[item.nodeid] = str(marker.args[0])
+        callspec = getattr(item, "callspec", None)
+        if callspec and "todo_mode" in callspec.params:
+            _NODEID_TO_VARIANT[item.nodeid] = str(callspec.params["todo_mode"])
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -255,6 +276,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
         bucket[outcome] += 1
         bucket["total"] += 1
+
+    variant = _NODEID_TO_VARIANT.get(report.nodeid)
+    if variant and outcome in {"passed", "failed"}:
+        vbucket = _VARIANT_RESULTS.setdefault(variant, {"passed": 0, "failed": 0, "total": 0})
+        vbucket[outcome] += 1
+        vbucket["total"] += 1
+        _VARIANT_DURATIONS.setdefault(variant, []).append(duration)
+        base = _base_test_name(report.nodeid)
+        _PER_TEST_VARIANT_RESULTS.setdefault(base, {}).setdefault(variant, []).append(outcome)
 
     if _EFFICIENCY_RESULTS and _EFFICIENCY_RESULTS[-1].duration_s is None:
         _EFFICIENCY_RESULTS[-1].duration_s = duration
@@ -343,6 +373,88 @@ def _collect_experiment_links() -> list[dict[str, str]]:
         return links
 
 
+def _build_variant_summary() -> dict[str, Any]:
+    """Build structured variant-comparison data for the JSON report.
+
+    Returns an empty dict when no variant-level data was collected (single-mode
+    runs or tests that don't use the ``todo_mode`` fixture).
+    """
+    if not _VARIANT_RESULTS:
+        return {}
+    variant_scores: dict[str, Any] = {}
+    for variant, counts in sorted(_VARIANT_RESULTS.items()):
+        durations = _VARIANT_DURATIONS.get(variant, [])
+        variant_scores[variant] = {
+            **counts,
+            "correctness": round(counts["passed"] / counts["total"], 2) if counts["total"] else 0.0,
+            "median_duration_s": round(statistics.median(durations), 4) if durations else 0.0,
+        }
+    per_test: dict[str, dict[str, Any]] = {}
+    for base, variants in sorted(_PER_TEST_VARIANT_RESULTS.items()):
+        per_test[base] = {
+            v: {"passed": outcomes.count("passed"), "total": len(outcomes)}
+            for v, outcomes in sorted(variants.items())
+        }
+    return {
+        "variant_scores": variant_scores,
+        "per_test_variants": per_test,
+    }
+
+
+def _render_variant_markdown(model: str, variant_data: dict[str, Any]) -> str:
+    """Render a markdown comparison table from variant summary data."""
+    variant_scores: dict[str, Any] = variant_data.get("variant_scores", {})
+    per_test: dict[str, Any] = variant_data.get("per_test_variants", {})
+    if not variant_scores:
+        return ""
+
+    lines: list[str] = []
+    sorted_variants = sorted(variant_scores.keys())
+
+    # High-level comparison table
+    lines.append(f"### Todo Experiment: `{model}`")
+    lines.append("")
+    header = "| Variant | Pass Rate | Passed | Failed | Total | Median Duration |"
+    sep = "|---|---:|---:|---:|---:|---:|"
+    lines.extend([header, sep])
+    for v in sorted_variants:
+        scores: dict[str, Any] = variant_scores[v]
+        correctness = scores.get("correctness", 0)
+        passed = scores.get("passed", 0)
+        failed = scores.get("failed", 0)
+        total = scores.get("total", 0)
+        median_dur = scores.get("median_duration_s", 0)
+        lines.append(
+            f"| `{v}` | {correctness:.2f} | {passed} | {failed} | {total} | {median_dur:.1f}s |"
+        )
+
+    # Per-test breakdown
+    if per_test:
+        lines.append("")
+        lines.append("### Per-test breakdown")
+        lines.append("")
+        v_headers = " | ".join(f"`{v}`" for v in sorted_variants)
+        header = f"| Test | {v_headers} |"
+        sep = "|---|" + "|".join("---:" for _ in sorted_variants) + "|"
+        lines.extend([header, sep])
+        for base, variants in sorted(per_test.items()):
+            short_name = base.rsplit("::", 1)[-1] if "::" in base else base
+            cells = []
+            for v in sorted_variants:
+                vdata: dict[str, Any] = variants.get(v, {})
+                p = vdata.get("passed", 0)
+                t = vdata.get("total", 0)
+                if t == 0:
+                    cells.append("-")
+                elif t == 1:
+                    cells.append("pass" if p == t else "FAIL")
+                else:
+                    cells.append(f"{p}/{t}")
+            lines.append(f"| `{short_name}` | {' | '.join(cells)} |")
+
+    return "\n".join(lines) + "\n"
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     _ = exitstatus
     if session.exitstatus == 1:
@@ -362,12 +474,18 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if counts["total"] > 0:
             category_scores[cat] = round(counts["passed"] / counts["total"], 2)
 
+    variant_data = _build_variant_summary()
+
+    model = (
+        session.config.getoption("--model")
+        or str(session.config._inicache.get("model", ""))
+        or str(get_default_model().model)
+    )
+
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
-        "model": session.config.getoption("--model")
-        or str(session.config._inicache.get("model", ""))
-        or str(get_default_model().model),
+        "model": model,
         **_RESULTS,
         "correctness": correctness,
         "category_scores": category_scores,
@@ -379,6 +497,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "experiment_links": _EXPERIMENT_LINKS,
         "failures": _FAILURES,
     }
+    if variant_data:
+        payload["variant_results"] = variant_data
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")
     if terminal_reporter is not None:
@@ -396,6 +516,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                 counts = _CATEGORY_RESULTS[cat]
                 terminal_reporter.write_line(
                     f"  {cat}: {score:.2f} ({counts['passed']}/{counts['total']})"
+                )
+        if _VARIANT_RESULTS:
+            terminal_reporter.write_sep("-", "per-variant correctness")
+            for v, counts in sorted(_VARIANT_RESULTS.items()):
+                c = round(counts["passed"] / counts["total"], 2) if counts["total"] else 0.0
+                terminal_reporter.write_line(
+                    f"  {v}: {c:.2f} ({counts['passed']}/{counts['total']})"
                 )
         if step_ratio is not None:
             terminal_reporter.write_line(f"step_ratio: {step_ratio:.2f}")
@@ -421,5 +548,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     report_path = Path(str(report_path_opt))
     report_path.parent.mkdir(parents=True, exist_ok=True)
-
     report_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    if variant_data:
+        md = _render_variant_markdown(str(model), variant_data)
+        summary_md_path = report_path.with_name("variant_summary.md")
+        summary_md_path.write_text(md, encoding="utf-8")

@@ -5,8 +5,9 @@ configured Deep Agent with planning, filesystem, subagent, and summarization
 middleware.
 """
 
+import warnings
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -90,6 +91,15 @@ this is used as the sole system prompt.
 """
 
 
+TodoMode = Literal["tool", "prompt", "filesystem"]
+"""Controls how the agent tracks planning state.
+
+- ``"tool"``: Uses `TodoListMiddleware` (`write_todos` tool).
+- ``"prompt"``: No tool; injects planning guidance into the system prompt.
+- ``"filesystem"``: No tool; instructs the agent to track plans via a
+  ``PLAN.md`` file using its existing filesystem tools.
+"""
+
 _PLANNING_GUIDANCE = """
 ## Planning
 
@@ -103,8 +113,48 @@ pressing ahead with an outdated strategy.
 - For simple tasks that only require a few straightforward actions, skip the planning and \
 just proceed directly.
 """
-"""Injected into the system prompt when `include_todos=False` so the model
+"""Injected into the system prompt when `todo_mode="prompt"` so the model
 still receives explicit multi-step planning guidance without `write_todos`."""
+
+_FILESYSTEM_PLANNING_GUIDANCE = """
+## Planning
+
+For complex tasks that require multiple steps, create a `PLAN.md` file in the current \
+working directory to track your plan and progress:
+
+- At the start of a complex task, write a `PLAN.md` outlining your approach as a checklist.
+- Mark items as complete (`[x]`) as you finish them.
+- Update the plan if you discover new information that changes your approach.
+- Review the plan periodically to ensure nothing is missed.
+- For simple tasks that only require a few straightforward actions, skip the planning and \
+just proceed directly — no `PLAN.md` needed.
+"""
+"""Injected into the system prompt when `todo_mode="filesystem"` so the
+agent tracks plans via a file instead of the `write_todos` tool."""
+
+
+def _resolve_todo_mode(
+    todo_mode: TodoMode | None,
+    include_todos: bool | None,  # noqa: FBT001  # backward-compat shim for deprecated param
+) -> TodoMode:
+    """Resolve the effective todo mode from the two parameters.
+
+    Raises:
+        ValueError: If both `todo_mode` and `include_todos` are specified.
+    """
+    if todo_mode is not None and include_todos is not None:
+        msg = "Cannot specify both 'todo_mode' and 'include_todos'. Use 'todo_mode' instead."
+        raise ValueError(msg)
+    if todo_mode is not None:
+        return todo_mode
+    if include_todos is not None:
+        warnings.warn(
+            "'include_todos' is deprecated. Use todo_mode='tool' (True) or todo_mode='prompt' (False) instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return "tool" if include_todos else "prompt"
+    return "tool"
 
 
 def get_default_model() -> ChatAnthropic:
@@ -137,7 +187,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
-    include_todos: bool = True,
+    todo_mode: TodoMode | None = None,
+    include_todos: bool | None = None,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -288,9 +339,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
-        include_todos: Whether to include `TodoListMiddleware` in the
-            middleware stack. Set to `False` to disable the `write_todos`
-            tool for ablation experiments.
+        todo_mode: How the agent tracks planning state.
+
+            - ``"tool"`` (default): Uses `TodoListMiddleware`
+              (`write_todos` tool).
+            - ``"prompt"``: No tool; injects planning guidance into the
+              system prompt.
+            - ``"filesystem"``: No tool; instructs the agent to track
+              plans via a ``PLAN.md`` file using its existing filesystem
+              tools.
+        include_todos: Deprecated. Use `todo_mode` instead.
+            ``True`` maps to ``todo_mode="tool"``; ``False`` maps to
+            ``todo_mode="prompt"``.
         debug: Whether to enable debug mode.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -310,10 +370,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     """
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else StateBackend()
+    resolved_todo_mode = _resolve_todo_mode(todo_mode, include_todos)
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = []
-    if include_todos:
+    if resolved_todo_mode == "tool":
         gp_middleware.append(TodoListMiddleware())
     gp_middleware.extend(
         [
@@ -354,7 +415,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
-            if include_todos:
+            if resolved_todo_mode == "tool":
                 subagent_middleware.append(TodoListMiddleware())
             subagent_middleware.extend(
                 [
@@ -390,7 +451,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
-    if include_todos:
+    if resolved_todo_mode == "tool":
         deepagent_middleware.append(TodoListMiddleware())
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
@@ -432,11 +493,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
-    if not include_todos:
+    if resolved_todo_mode in ("prompt", "filesystem"):
+        guidance = _PLANNING_GUIDANCE if resolved_todo_mode == "prompt" else _FILESYSTEM_PLANNING_GUIDANCE
         if isinstance(final_system_prompt, SystemMessage):
-            final_system_prompt = SystemMessage(content_blocks=[*final_system_prompt.content_blocks, {"type": "text", "text": _PLANNING_GUIDANCE}])
+            final_system_prompt = SystemMessage(content_blocks=[*final_system_prompt.content_blocks, {"type": "text", "text": guidance}])
         else:
-            final_system_prompt += _PLANNING_GUIDANCE
+            final_system_prompt += guidance
 
     return create_agent(
         model,

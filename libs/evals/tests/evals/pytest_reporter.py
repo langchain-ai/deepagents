@@ -518,12 +518,36 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                     f"  {cat}: {score:.2f} ({counts['passed']}/{counts['total']})"
                 )
         if _VARIANT_RESULTS:
+            sorted_variants = sorted(_VARIANT_RESULTS.keys())
             terminal_reporter.write_sep("-", "per-variant correctness")
-            for v, counts in sorted(_VARIANT_RESULTS.items()):
+            for v in sorted_variants:
+                counts = _VARIANT_RESULTS[v]
                 c = round(counts["passed"] / counts["total"], 2) if counts["total"] else 0.0
                 terminal_reporter.write_line(
                     f"  {v}: {c:.2f} ({counts['passed']}/{counts['total']})"
                 )
+            if _PER_TEST_VARIANT_RESULTS:
+                terminal_reporter.write_sep("-", "per-test variant matrix")
+                # Header
+                v_cols = "  ".join(f"{v:>12}" for v in sorted_variants)
+                terminal_reporter.write_line(f"  {'test':<55} {v_cols}")
+                terminal_reporter.write_line(
+                    f"  {'-' * 55} {'  '.join('-' * 12 for _ in sorted_variants)}"
+                )
+                for base in sorted(_PER_TEST_VARIANT_RESULTS):
+                    short = base.rsplit("::", 1)[-1] if "::" in base else base
+                    cells = []
+                    for v in sorted_variants:
+                        outcomes = _PER_TEST_VARIANT_RESULTS[base].get(v, [])
+                        if not outcomes:
+                            cells.append("-")
+                        elif len(outcomes) == 1:
+                            cells.append("PASS" if outcomes[0] == "passed" else "FAIL")
+                        else:
+                            p = outcomes.count("passed")
+                            cells.append(f"{p}/{len(outcomes)}")
+                    row = "  ".join(f"{c:>12}" for c in cells)
+                    terminal_reporter.write_line(f"  {short:<55} {row}")
         if step_ratio is not None:
             terminal_reporter.write_line(f"step_ratio: {step_ratio:.2f}")
         if tool_call_ratio is not None:

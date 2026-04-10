@@ -1,27 +1,31 @@
 """Eval tests for prompt caching with middleware ordering.
 
-Tests whether the middleware ordering affects prompt cache efficiency.
-Two test types:
-1. Single-turn tests with varying memory content (like test_memory.py but
-   every test has memory, no missing files, no multi-step tool calls).
-2. Multi-turn conversation test: one agent, 10 sequential user messages,
-   same memory throughout.
+Runs the same tests as test_memory.py to enable 1:1 comparison across
+middleware configurations (PRE-FIX, POST-FIX, dual-breakpoint).
 
-Written for the deepagents eval suite to measure prompt cache behavior.
+Also includes a multi-turn conversation test to measure cache behavior
+across turns within a single conversation.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from langgraph.store.memory import InMemoryStore
 
 from tests.evals.utils import (
     TrajectoryScorer,
+    file_contains,
+    file_excludes,
     final_text_contains,
+    final_text_excludes,
     run_agent,
+    tool_call,
 )
 
 if TYPE_CHECKING:
@@ -31,17 +35,13 @@ pytestmark = [pytest.mark.eval_category("prompt_cache")]
 
 
 # ---------------------------------------------------------------------------
-# Part 1: Single-turn tests with varying memory content
-#
-# Each test creates a fresh agent with DIFFERENT memory content and asks
-# a single question. No missing files, no tool calls. Every call exercises
-# the middleware ordering difference equally.
+# Single-turn tests: identical to test_memory.py for 1:1 comparison
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_project_info(model: BaseChatModel) -> None:
-    """Single-turn: recall project name from memory."""
+def test_cache_basic_recall(model: BaseChatModel) -> None:
+    """Agent recalls project context from memory."""
     agent = create_deep_agent(
         model=model,
         memory=["/project/AGENTS.md"],
@@ -70,11 +70,78 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_user_prefs(model: BaseChatModel) -> None:
-    """Single-turn: recall user preferences from memory."""
+def test_cache_guided_behavior_naming_convention(model: BaseChatModel) -> None:
+    """Agent follows naming convention guidelines from memory."""
     agent = create_deep_agent(
         model=model,
-        memory=["/user/AGENTS.md"],
+        memory=["/project/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": """# Project Guidelines
+
+## Naming Conventions
+All configuration files must use the prefix "config_" followed by the purpose.
+Example: config_database.txt, config_settings.txt
+
+This rule is mandatory. If a user requests a configuration file path that does not
+follow this convention (e.g., "/api.txt"), create the correctly named config file
+instead (e.g., "/config_api.txt") without asking for confirmation.
+""",
+        },
+        query="Create a configuration file for API settings at /api.txt with content 'API_KEY=secret'.",
+        scorer=(
+            TrajectoryScorer()
+            .expect(
+                agent_steps=2,
+                tool_call_requests=1,
+                tool_calls=[
+                    tool_call(
+                        name="write_file",
+                        step=1,
+                        args_contains={"file_path": "/config_api.txt"},
+                    )
+                ],
+            )
+            .success(file_contains("/config_api.txt", "API_KEY=secret"))
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_cache_influences_file_content(model: BaseChatModel) -> None:
+    """Agent applies code style guidelines from memory when creating files."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/style/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/style/AGENTS.md": """# Code Style Guide
+
+## Comment Requirements
+Every function must start with a comment line that says "# Purpose: " followed by a brief description.
+""",
+        },
+        query="Write a simple Python function that adds two numbers to /add.py. Keep it minimal.",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=2, tool_call_requests=1)
+            .success(file_contains("/add.py", "# Purpose:"), file_contains("/add.py", "def "))
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_cache_multiple_sources_combined(model: BaseChatModel) -> None:
+    """Agent accesses information from multiple memory sources."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/user/AGENTS.md", "/project/AGENTS.md"],
     )
     run_agent(
         agent,
@@ -82,23 +149,43 @@ def test_cache_single_turn_user_prefs(model: BaseChatModel) -> None:
         initial_files={
             "/user/AGENTS.md": """# User Preferences
 
-- Preferred language: Python
-- Editor: VS Code
-- Formatting: bullet points over paragraphs
+My preferred programming language is Python.
+""",
+            "/project/AGENTS.md": """# Project Info
+
+The project uses the FastAPI framework.
 """,
         },
-        query="What is my preferred programming language? Answer briefly.",
+        query="What programming language do I prefer and what framework does the project use? Be concise.",
         scorer=(
             TrajectoryScorer()
             .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("Python", case_insensitive=True))
+            .success(
+                final_text_contains("Python", case_insensitive=True),
+                final_text_contains("FastAPI", case_insensitive=True),
+            )
         ),
     )
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_api_docs(model: BaseChatModel) -> None:
-    """Single-turn: recall API endpoints from memory."""
+def test_cache_with_missing_file_graceful(model: BaseChatModel) -> None:
+    """Agent handles missing memory files gracefully and still functions."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/missing/AGENTS.md"],
+    )
+    run_agent(
+        agent,
+        model=model,
+        query="What is 5 + 3? Answer with just the number.",
+        scorer=TrajectoryScorer().expect(agent_steps=1, tool_call_requests=0),
+    )
+
+
+@pytest.mark.langsmith
+def test_cache_prevents_unnecessary_file_reads(model: BaseChatModel) -> None:
+    """Agent uses memory context instead of reading documentation files."""
     agent = create_deep_agent(
         model=model,
         memory=["/docs/AGENTS.md"],
@@ -113,10 +200,10 @@ def test_cache_single_turn_api_docs(model: BaseChatModel) -> None:
 - GET /users - Returns list of all users
 - POST /users - Creates a new user
 - GET /users/{id} - Returns a specific user
-- DELETE /users/{id} - Deletes a user
 """,
+            "/docs/api.md": "This file contains the same API documentation.",
         },
-        query="List the API endpoints briefly.",
+        query="What are the API endpoints? List them briefly.",
         scorer=(
             TrajectoryScorer()
             .expect(agent_steps=1, tool_call_requests=0)
@@ -129,217 +216,130 @@ def test_cache_single_turn_api_docs(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_deploy_info(model: BaseChatModel) -> None:
-    """Single-turn: recall deployment details from memory."""
+def test_cache_does_not_persist_transient_info(model: BaseChatModel) -> None:
+    """Agent should not write temporary status updates into durable memory."""
     agent = create_deep_agent(
         model=model,
-        memory=["/ops/AGENTS.md"],
+        memory=["/project/AGENTS.md"],
     )
     run_agent(
         agent,
         model=model,
         initial_files={
-            "/ops/AGENTS.md": """# Deployment Guide
-
-## Infrastructure
-- Cloud provider: AWS
-- Compute: ECS Fargate
-- Database: RDS PostgreSQL
-- Cache: ElastiCache Redis
-""",
+            "/project/AGENTS.md": "# Project Memory\n\nStable preferences and project facts live here.\n",
         },
-        query="What cloud provider and database does this project use? Be concise.",
+        query="I'm at a coffee shop right now. What's 2 + 2?",
         scorer=(
             TrajectoryScorer()
             .expect(agent_steps=1, tool_call_requests=0)
             .success(
-                final_text_contains("AWS", case_insensitive=True),
-                final_text_contains("PostgreSQL", case_insensitive=True),
+                final_text_contains("4"),
+                file_excludes("/project/AGENTS.md", "coffee shop"),
             )
         ),
     )
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_team_info(model: BaseChatModel) -> None:
-    """Single-turn: recall team structure from memory."""
+def test_cache_updates_user_formatting_preference(model: BaseChatModel) -> None:
+    """Agent writes durable formatting preferences into memory."""
     agent = create_deep_agent(
         model=model,
-        memory=["/team/AGENTS.md"],
+        memory=["/project/AGENTS.md"],
     )
     run_agent(
         agent,
         model=model,
         initial_files={
-            "/team/AGENTS.md": """# Team Structure
-
-- Tech lead: Alice
-- Backend: Bob, Charlie
-- Frontend: Dana
-- DevOps: Eve
-""",
+            "/project/AGENTS.md": "# Project Memory\n\nCurrent preferences:\n- Use clear technical writing.\n",
         },
-        query="Who is the tech lead? Answer with just the name.",
+        query="For future responses, I prefer bullet points over paragraphs.",
         scorer=(
             TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("Alice"))
-        ),
-    )
-
-
-@pytest.mark.langsmith
-def test_cache_single_turn_conventions(model: BaseChatModel) -> None:
-    """Single-turn: recall coding conventions from memory."""
-    agent = create_deep_agent(
-        model=model,
-        memory=["/style/AGENTS.md"],
-    )
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/style/AGENTS.md": """# Code Conventions
-
-- Use snake_case for all Python identifiers
-- Maximum line length: 88 characters
-- Use type hints on all public functions
-- Docstrings: Google style
-""",
-        },
-        query="What naming convention should I use for Python? Answer briefly.",
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("snake_case", case_insensitive=True))
-        ),
-    )
-
-
-@pytest.mark.langsmith
-def test_cache_single_turn_testing_info(model: BaseChatModel) -> None:
-    """Single-turn: recall testing strategy from memory."""
-    agent = create_deep_agent(
-        model=model,
-        memory=["/testing/AGENTS.md"],
-    )
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/testing/AGENTS.md": """# Testing Strategy
-
-- Framework: pytest
-- Coverage target: 80%
-- Integration tests use a real PostgreSQL database
-- E2E tests run in CI via GitHub Actions
-""",
-        },
-        query="What test framework and coverage target do we use? Be concise.",
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
             .success(
-                final_text_contains("pytest", case_insensitive=True),
-                final_text_contains("80", case_insensitive=True),
+                file_contains("/project/AGENTS.md", "bullet points"),
+                final_text_contains("bullet", case_insensitive=True),
+            )
+            .expect(
+                tool_call_requests=1,
+                tool_calls=[
+                    tool_call(
+                        name="edit_file",
+                        args_contains={"file_path": "/project/AGENTS.md"},
+                    )
+                ],
             )
         ),
     )
 
 
 @pytest.mark.langsmith
-def test_cache_single_turn_security(model: BaseChatModel) -> None:
-    """Single-turn: recall security policy from memory."""
+def test_cache_missing_file_graceful_without_claiming_context(
+    model: BaseChatModel,
+) -> None:
+    """Agent handles a missing memory file without inventing its contents."""
     agent = create_deep_agent(
         model=model,
-        memory=["/security/AGENTS.md"],
+        memory=["/missing/AGENTS.md"],
     )
     run_agent(
         agent,
         model=model,
-        initial_files={
-            "/security/AGENTS.md": """# Security Policy
-
-- Authentication: OAuth 2.0 with JWT tokens
-- Authorization: RBAC with three roles (admin, editor, viewer)
-- All API calls require HTTPS
-- Secrets stored in AWS Secrets Manager
-""",
-        },
-        query="What authentication method does this project use? Answer briefly.",
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("OAuth", case_insensitive=True))
-        ),
-    )
-
-
-@pytest.mark.langsmith
-def test_cache_single_turn_roadmap(model: BaseChatModel) -> None:
-    """Single-turn: recall project roadmap from memory."""
-    agent = create_deep_agent(
-        model=model,
-        memory=["/roadmap/AGENTS.md"],
-    )
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/roadmap/AGENTS.md": """# Project Roadmap
-
-## Q2 2026
-- Migrate to PostgreSQL 17
-- Add real-time notifications via WebSockets
-- Launch mobile API v2
-""",
-        },
-        query="What database migration is planned? Answer briefly.",
-        scorer=(
-            TrajectoryScorer()
-            .expect(agent_steps=1, tool_call_requests=0)
-            .success(final_text_contains("PostgreSQL 17", case_insensitive=True))
-        ),
-    )
-
-
-@pytest.mark.langsmith
-def test_cache_single_turn_dependencies(model: BaseChatModel) -> None:
-    """Single-turn: recall project dependencies from memory."""
-    agent = create_deep_agent(
-        model=model,
-        memory=["/deps/AGENTS.md"],
-    )
-    run_agent(
-        agent,
-        model=model,
-        initial_files={
-            "/deps/AGENTS.md": """# Key Dependencies
-
-- Web framework: FastAPI 0.115
-- ORM: SQLAlchemy 2.0
-- Task queue: Celery with Redis broker
-- HTTP client: httpx
-""",
-        },
-        query="What web framework and ORM does this project use? Be concise.",
+        query="What coding preferences are saved in memory? If none are available, say so briefly.",
         scorer=(
             TrajectoryScorer()
             .expect(agent_steps=1, tool_call_requests=0)
             .success(
-                final_text_contains("FastAPI", case_insensitive=True),
-                final_text_contains("SQLAlchemy", case_insensitive=True),
+                final_text_excludes("snake_case", case_insensitive=True),
+                final_text_excludes("pytest", case_insensitive=True),
             )
+        ),
+    )
+
+
+@pytest.mark.langsmith
+def test_cache_middleware_composite_backend(model: BaseChatModel) -> None:
+    """Test that agent can access memory from store backend via composite backend routing."""
+    store = InMemoryStore()
+    now = datetime.now(UTC).isoformat()
+    store.put(
+        ("filesystem",),
+        "/AGENTS.md",
+        {
+            "content": ["Your name is Jackson"],
+            "created_at": now,
+            "modified_at": now,
+        },
+    )
+
+    sample_backend = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/memories/": StoreBackend(store=store),
+        },
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        backend=sample_backend,
+        memory=["/memories/AGENTS.md"],
+        store=store,
+    )
+
+    run_agent(
+        agent,
+        model=model,
+        query="What is your name?",
+        scorer=(
+            TrajectoryScorer()
+            .expect(agent_steps=1, tool_call_requests=0)
+            .success(final_text_contains("Jackson"))
         ),
     )
 
 
 # ---------------------------------------------------------------------------
-# Part 2: Multi-turn conversation test
-#
-# One agent, one conversation thread, 10 sequential messages.
-# Same memory file throughout. Tests whether the cached prefix
-# persists across turns within a single conversation.
+# Multi-turn conversation test
 # ---------------------------------------------------------------------------
 
 
@@ -384,7 +384,6 @@ This is the TurboWidget project. The main goal is to process widgets efficiently
         ("Give a one-line summary of this project.", "TurboWidget"),
     ]
 
-    # Run all turns in the same thread
     thread_id = str(uuid.uuid4())
     for i, (query, expected) in enumerate(turns):
         run_agent(

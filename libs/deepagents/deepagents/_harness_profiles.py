@@ -100,9 +100,13 @@ class HarnessProfile:
 
     Applied only where Deep Agents has a stable description hook: built-in
     filesystem tools, the `task` tool, and user-supplied `BaseTool` / dict
-    tools.
+    tools. Plain callable tools are left unchanged.
 
-    Plain callable tools are left unchanged.
+    !!! warning
+
+        Keys are matched by tool name string. If a built-in tool is renamed
+        or removed, stale keys silently become no-ops with no error. Keep
+        overrides minimal and verify against the current tool names.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()

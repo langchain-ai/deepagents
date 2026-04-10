@@ -407,8 +407,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model = get_default_model() if model is None else resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)
 
-    # Apply tool description overrides, if any
-    default_tools = _apply_tool_description_overrides(
+    # Copy of `tools` with any provider-specific description rewrites.
+    _tools = _apply_tool_description_overrides(
         tools,
         _profile.tool_description_overrides,
     )
@@ -442,7 +442,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
-        "tools": default_tools or [],
+        "tools": _tools or [],
         "middleware": gp_middleware,
     }
     if interrupt_on is not None:
@@ -495,6 +495,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
+            # Inherit parent tools unless the subagent declares its own.
+            # Only descriptions are rewritten — the tool set is unchanged.
             raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
             subagent_tools = _apply_tool_description_overrides(
                 raw_subagent_tools,
@@ -532,6 +534,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
+                # Overrides the task tool description. Value should include
+                # {available_agents} — a format placeholder replaced with the
+                # subagent name/description list. Without it the model can't
+                # see which subagents exist. None (default) uses the built-in
+                # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
             ),
             create_summarization_middleware(model, backend),
@@ -577,7 +584,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     return create_agent(
         model,
         system_prompt=final_system_prompt,
-        tools=default_tools,
+        tools=_tools,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,

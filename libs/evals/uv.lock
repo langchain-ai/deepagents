@@ -1066,7 +1066,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },

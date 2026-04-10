@@ -10,6 +10,7 @@ from deepagents_harbor.langsmith import (
     create_experiment,
     ensure_dataset,
 )
+from deepagents_harbor.langsmith_environment import LangSmithEnvironment
 from deepagents_harbor.metadata import InfraMetadata
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "FailureCategory",
     "HarborSandbox",
     "InfraMetadata",
+    "LangSmithEnvironment",
     "add_feedback",
     "create_dataset",
     "create_example_id_from_instruction",

@@ -36,7 +36,12 @@ def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
             for tool_call in tool_calls:
                 if tool_call["name"] == expected_tool_calls[current_idx]["name"]:
                     if "model" in expected_tool_calls[current_idx]:
-                        assert ai_message.response_metadata["model_name"] == expected_tool_calls[current_idx]["model"]
+                        # Providers may return date-suffixed names
+                        expected_model = expected_tool_calls[current_idx]["model"]
+                        actual_model = ai_message.response_metadata["model_name"]
+                        assert actual_model == expected_model or actual_model.startswith(expected_model + "-"), (
+                            f"Expected model {expected_model!r}, got {actual_model!r}"
+                        )
                     for arg in expected_tool_calls[current_idx]["args"]:
                         assert arg in tool_call["args"]
                         assert tool_call["args"][arg] == expected_tool_calls[current_idx]["args"][arg]
@@ -50,7 +55,7 @@ class TestSubagentMiddleware:
 
     def test_general_purpose_subagent(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the general-purpose subagent to get the weather in a city.",
             middleware=[
                 SubAgentMiddleware(
@@ -58,7 +63,7 @@ class TestSubagentMiddleware:
                     subagents=[
                         {
                             **GENERAL_PURPOSE_SUBAGENT,
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                         }
                     ],
@@ -72,7 +77,7 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_tool_calls(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
@@ -82,7 +87,7 @@ class TestSubagentMiddleware:
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                         }
                     ],
@@ -101,7 +106,7 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_model(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
@@ -122,7 +127,7 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
             {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
@@ -134,7 +139,7 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_middleware(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
@@ -156,7 +161,7 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
             {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
@@ -173,7 +178,7 @@ class TestSubagentMiddleware:
             tools=[get_weather],
         )
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
@@ -192,7 +197,7 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
             {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]

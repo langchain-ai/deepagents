@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.35"
+version = "0.0.36"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.0",
+    "deepagents==0.5.1",
     "langchain>=1.2.15,<2.0.0",
     "langgraph>=1.1.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -98,6 +98,9 @@ openrouter = ["langchain-openrouter>=0.2.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
+all-providers = [
+    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
+]
 
 # Sandbox providers
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
@@ -108,9 +111,6 @@ all-sandboxes = [
     "deepagents-cli[agentcore,daytona,modal,runloop]",
 ]
 
-all-providers = [
-    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
-]
 
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
@@ -256,6 +256,15 @@ ignore-var-parameters = true
     "N806",     # Variable in function should be lowercase — script naming conventions
     "PLR2004",  # Magic value used in comparison — fine in scripts
     "T201",     # `print` found — scripts use print for output
+]
+"deepagents_cli/deploy/**" = [
+    "BLE001",   # Blind exception catch — resilience in CLI commands
+    "DOC",      # Docstring conventions — internal CLI module
+    "PLW0108",  # Lambda may be unnecessary — closures over local vars require lambdas
+    "S",        # Security warnings — subprocess calls are controlled CLI invocations
+    "SIM105",   # contextlib.suppress — try/except/pass is clearer in these contexts
+    "T201",     # `print` found — CLI commands use print for user output
+    "TC003",    # Move import into TYPE_CHECKING — imports are used at runtime
 ]
 
 [tool.coverage.run]

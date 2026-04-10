@@ -236,11 +236,12 @@ class _LangSmithProvider(SandboxProvider):
             api_key
             or resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
             or resolve_env_var("LANGSMITH_API_KEY")
+            or resolve_env_var("LANGCHAIN_API_KEY")
         )
         if not self._api_key:
             msg = (
                 "No LangSmith sandbox API key found. Set "
-                "LANGSMITH_SANDBOX_API_KEY or LANGSMITH_API_KEY "
+                "LANGSMITH_API_KEY, LANGCHAIN_API_KEY, or LANGSMITH_SANDBOX_API_KEY "
                 "(or the DEEPAGENTS_CLI_-prefixed equivalents)."
             )
             raise ValueError(msg)

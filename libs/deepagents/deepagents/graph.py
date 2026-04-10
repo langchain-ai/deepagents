@@ -28,6 +28,7 @@ from deepagents._models import get_model_identifier, get_model_provider, resolve
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._tool_exclusion import ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
@@ -408,6 +409,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     _profile = _harness_profile_for_model(model, _model_spec)
 
     # Copy of `tools` with any provider-specific description rewrites.
+    # (Tool exclusion is handled by _ToolExclusionMiddleware which filters
+    # all tools (user-supplied and middleware-injected) in one place.)
     _tools = _apply_tool_description_overrides(
         tools,
         _profile.tool_description_overrides,
@@ -431,11 +434,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Add provider-specific middleware, if any
     gp_middleware.extend(_resolve_extra_middleware(_profile))
 
+    # Strip excluded tools after all tool-injecting middleware has run
+    if _profile.excluded_tools:
+        gp_middleware.append(ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
-    # Permissions are also unconditional since they need to be last to see
-    # all tools, but they may be empty if no rules are provided.
+    # Permissions must be last so they see all tools from prior middleware
     if permissions:
         gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
@@ -485,8 +490,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
-            # Provider-specific middleware for this subagent's model.
+            # Provider-specific middleware for this subagent's model
             subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
+            if _subagent_profile.excluded_tools:
+                subagent_middleware.append(ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
@@ -496,7 +503,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
             # Inherit parent tools unless the subagent declares its own.
-            # Only descriptions are rewritten — the tool set is unchanged.
+            # Descriptions are rewritten; exclusion is handled by middleware.
             raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
             subagent_tools = _apply_tool_description_overrides(
                 raw_subagent_tools,
@@ -557,6 +564,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_resolve_extra_middleware(_profile))
+    if _profile.excluded_tools:
+        deepagent_middleware.append(ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Unconditional prompt caching (see general-purpose subagent comment).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:

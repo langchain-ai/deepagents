@@ -109,6 +109,18 @@ class HarnessProfile:
         overrides minimal and verify against the current tool names.
     """
 
+    excluded_tools: frozenset[str] = frozenset()
+    """Tool names to remove from the tool set for this provider/model.
+
+    Applies to both user-supplied tools (filtered before passing to
+    `create_agent`) and middleware-injected tools (filtered via a
+    `_ToolExclusionMiddleware` that strips them from `request.tools` before
+    the model sees them).
+
+    Merged via union when profiles are combined, so provider-level exclusions
+    and model-level exclusions accumulate.
+    """
+
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
     """Provider-specific middleware appended to every middleware stack (main
     agent, general-purpose subagent, and per-subagent).
@@ -287,6 +299,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
             **base.tool_description_overrides,
             **override.tool_description_overrides,
         },
+        excluded_tools=base.excluded_tools | override.excluded_tools,
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
     )
 

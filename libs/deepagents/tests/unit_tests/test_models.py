@@ -299,6 +299,7 @@ class TestHarnessProfile:
         assert profile.base_system_prompt is None
         assert profile.system_prompt_suffix is None
         assert profile.tool_description_overrides == {}
+        assert profile.excluded_tools == frozenset()
         assert profile.extra_middleware == ()
 
     def test_frozen(self) -> None:
@@ -445,6 +446,28 @@ class TestMergeProfiles:
             "t1": "base",
             "t2": "override",
         }
+
+    def test_excluded_tools_union(self) -> None:
+        base = HarnessProfile(excluded_tools=frozenset({"execute", "write_file"}))
+        override = HarnessProfile(excluded_tools=frozenset({"execute", "task"}))
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"execute", "write_file", "task"})
+
+    def test_excluded_tools_base_only(self) -> None:
+        base = HarnessProfile(excluded_tools=frozenset({"execute"}))
+        override = HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"execute"})
+
+    def test_excluded_tools_override_only(self) -> None:
+        base = HarnessProfile()
+        override = HarnessProfile(excluded_tools=frozenset({"task"}))
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"task"})
+
+    def test_excluded_tools_both_empty(self) -> None:
+        merged = _merge_profiles(HarnessProfile(), HarnessProfile())
+        assert merged.excluded_tools == frozenset()
 
     def test_extra_middleware_concatenated(self) -> None:
         mw_a, mw_b = MagicMock(), MagicMock()

@@ -19,10 +19,13 @@ from deepagents.graph import (
     _tool_name,
     create_deep_agent,
 )
+from deepagents.middleware._tool_exclusion import ToolExclusionMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from langchain.agents.middleware.types import ModelRequest
 
 
 def _make_model(dump: dict[str, Any]) -> MagicMock:
@@ -376,3 +379,173 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+
+class TestToolExclusionMiddleware:
+    """Tests for ToolExclusionMiddleware."""
+
+    def test_filters_tools_from_request(self) -> None:
+        tool_a = MagicMock()
+        tool_a.name = "keep"
+        tool_b = MagicMock()
+        tool_b.name = "drop"
+        request = MagicMock()
+        request.tools = [tool_a, tool_b]
+
+        # override should be called with filtered tools
+        overridden_request = MagicMock()
+        request.override.return_value = overridden_request
+
+        handler = MagicMock(return_value="response")
+
+        mw = ToolExclusionMiddleware(excluded=frozenset({"drop"}))
+        result = mw.wrap_model_call(request, handler)
+
+        request.override.assert_called_once()
+        filtered = request.override.call_args.kwargs["tools"]
+        assert len(filtered) == 1
+        assert filtered[0].name == "keep"
+        handler.assert_called_once_with(overridden_request)
+        assert result == "response"
+
+    def test_empty_excluded_passes_through(self) -> None:
+        request = MagicMock()
+        handler = MagicMock(return_value="response")
+
+        mw = ToolExclusionMiddleware(excluded=frozenset())
+        result = mw.wrap_model_call(request, handler)
+
+        request.override.assert_not_called()
+        handler.assert_called_once_with(request)
+        assert result == "response"
+
+    async def test_async_filters_tools(self) -> None:
+        tool_a = MagicMock()
+        tool_a.name = "keep"
+        tool_b = MagicMock()
+        tool_b.name = "drop"
+        request = MagicMock()
+        request.tools = [tool_a, tool_b]
+
+        overridden_request = MagicMock()
+        request.override.return_value = overridden_request
+
+        async def async_handler(_req: ModelRequest) -> str:  # type: ignore[type-arg]
+            return "async_response"
+
+        mw = ToolExclusionMiddleware(excluded=frozenset({"drop"}))
+        result = await mw.awrap_model_call(request, async_handler)  # type: ignore[arg-type]
+
+        filtered = request.override.call_args.kwargs["tools"]
+        assert len(filtered) == 1
+        assert filtered[0].name == "keep"
+        assert result == "async_response"
+
+
+class TestToolExclusionWiring:
+    """Tests that excluded_tools on a profile wires ToolExclusionMiddleware into create_deep_agent."""
+
+    def test_exclusion_middleware_added_when_profile_has_excluded_tools(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(excluded_tools=frozenset({"execute", "write_file"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                result = create_deep_agent(model="exclprov:some-model")
+
+            assert result == "compiled-agent"
+            # The middleware stack should contain a ToolExclusionMiddleware
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            assert len(exclusion_mws) == 1
+            assert exclusion_mws[0]._excluded == frozenset({"execute", "write_file"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_no_exclusion_middleware_when_no_excluded_tools(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "noxprov",
+                HarnessProfile(init_kwargs={"x": 1}),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="noxprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            assert len(exclusion_mws) == 0
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_user_tools_pass_through_to_middleware_for_exclusion(self) -> None:
+        """User tools are not pre-filtered; the middleware handles exclusion."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(excluded_tools=frozenset({"my_tool"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            user_tool_keep = {"name": "keeper", "description": "keep me"}
+            user_tool_drop = {"name": "my_tool", "description": "drop me"}
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="exclprov:some-model",
+                    tools=[user_tool_keep, user_tool_drop],
+                )
+
+            # User tools are passed through unfiltered; middleware strips them
+            passed_tools = mock_create.call_args.kwargs["tools"]
+            names = [t["name"] for t in passed_tools]
+            assert "keeper" in names
+            assert "my_tool" in names
+
+            # But the middleware is in the stack to handle filtering at call time
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            assert len(exclusion_mws) == 1
+            assert "my_tool" in exclusion_mws[0]._excluded
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)

@@ -97,6 +97,14 @@ class TestFilesystemPermission:
         with pytest.raises(ValueError, match="Permission path must start with '/'"):
             FilesystemPermission(operations=["read"], paths=["/valid/**", "invalid/**"])
 
+    def test_path_with_dotdot_raises(self):
+        with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+            FilesystemPermission(operations=["read"], paths=["/workspace/../secrets/**"])
+
+    def test_path_with_tilde_raises_not_implemented(self):
+        with pytest.raises(NotImplementedError, match="must not contain '~'"):
+            FilesystemPermission(operations=["read"], paths=["/~/data/**"])
+
 
 class TestPermissionMiddleware:
     def _backend(self):

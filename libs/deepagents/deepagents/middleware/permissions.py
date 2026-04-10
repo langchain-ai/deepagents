@@ -6,6 +6,7 @@ Defines ``FilesystemPermission`` rules and enforces them via
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import wcmatch.glob as wcglob
@@ -74,11 +75,18 @@ class FilesystemPermission:
     mode: Literal["allow", "deny"] = "allow"
 
     def __post_init__(self) -> None:
-        """Validate that all paths start with '/'."""
+        """Validate that all paths start with '/', contain no '..' traversal, and no '~'."""
         for path in self.paths:
             if not path.startswith("/"):
                 msg = f"Permission path must start with '/': {path!r}"
                 raise ValueError(msg)
+            parts = PurePosixPath(path.replace("\\", "/")).parts
+            if ".." in parts:
+                msg = f"Permission path must not contain '..': {path!r}"
+                raise ValueError(msg)
+            if "~" in parts:
+                msg = f"Permission path must not contain '~': {path!r}"
+                raise NotImplementedError(msg)
 
 
 # ---------------------------------------------------------------------------

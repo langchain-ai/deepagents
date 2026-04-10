@@ -119,15 +119,15 @@ still receives explicit multi-step planning guidance without `write_todos`."""
 _FILESYSTEM_PLANNING_GUIDANCE = """
 ## Planning
 
-For complex tasks that require multiple steps, create a `PLAN.md` file in the current \
-working directory to track your plan and progress:
+For complex tasks that require multiple steps, use a file in the current working directory \
+to plan and track your work. Use whatever structure makes sense for the task — checklists, \
+outlines, notes, or any format you find useful.
 
-- At the start of a complex task, write a `PLAN.md` outlining your approach as a checklist.
-- Mark items as complete (`[x]`) as you finish them.
-- Update the plan if you discover new information that changes your approach.
-- Review the plan periodically to ensure nothing is missed.
-- For simple tasks that only require a few straightforward actions, skip the planning and \
-just proceed directly — no `PLAN.md` needed.
+- Write your plan to a file before starting (e.g., `PLAN.md`). If that name is taken, \
+pick another.
+- Refer back to the file as you work and update it to reflect progress or new information.
+- For simple tasks that only require a few straightforward actions, skip the planning file \
+and just proceed directly.
 """
 """Injected into the system prompt when `todo_mode="filesystem"` so the
 agent tracks plans via a file instead of the `write_todos` tool."""

@@ -92,14 +92,14 @@ run-todo-experiment: ## Run todo experiment (TODO_MODE=tool|prompt|filesystem)
 #     test_two_tools_city_for_user
 #   Sequential tool selection:
 #     test_chain_search_then_email
-TODO_EVAL_K_EXPR = task_14 or task_32 or task_44 \
-	or test_five_steps_current_user_food_names_and_calories \
-	or test_four_steps_find_user_city_weather_time_and_food_details \
-	or test_four_steps_find_user_food_allergies \
-	or test_three_tools_current_user_weather \
-	or test_single_tool_get_user_email \
-	or test_two_tools_city_for_user \
-	or test_chain_search_then_email
+TODO_EVAL_K_EXPR = task_14 or task_32 or task_44
+	# or test_five_steps_current_user_food_names_and_calories \
+	# or test_four_steps_find_user_city_weather_time_and_food_details \
+	# or test_four_steps_find_user_food_allergies \
+	# or test_three_tools_current_user_weather \
+	# or test_single_tool_get_user_email \
+	# or test_two_tools_city_for_user \
+	# or test_chain_search_then_email
 
 EVAL_MODEL ?=
 TRIALS ?= 1
@@ -107,8 +107,6 @@ TRIALS ?= 1
 run-todo-experiment-evals: ## Run eval todo experiment (TODO_MODE=tool|prompt|filesystem)
 	LANGSMITH_TEST_SUITE=deepagents-evals-todo-$(TODO_MODE) uv run --group test pytest \
 		tests/evals/tau2_airline/ \
-		tests/evals/test_tool_usage_relational.py \
-		tests/evals/test_tool_selection.py \
 		-k "$(TODO_EVAL_K_EXPR)" \
 		--todo-mode $(TODO_MODE) \
 		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \
@@ -118,8 +116,6 @@ run-todo-experiment-evals: ## Run eval todo experiment (TODO_MODE=tool|prompt|fi
 run-todo-experiment-evals-all: ## Run all todo variants in one session (TRIALS=N for repeats)
 	LANGSMITH_TEST_SUITE=deepagents-evals-todo-experiment uv run --group test pytest \
 		tests/evals/tau2_airline/ \
-		tests/evals/test_tool_usage_relational.py \
-		tests/evals/test_tool_selection.py \
 		-k "$(TODO_EVAL_K_EXPR)" \
 		--todo-variants all \
 		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \

@@ -369,15 +369,15 @@ jobs:
           TODO_MODE: ${{ inputs.todo_mode }}
           TRIALS: ${{ inputs.trials }}
         run: |
-          # 10 curated tests for the todo middleware ablation experiment
+          # tau2 airline tasks for the todo middleware ablation experiment
           k_expr="task_14 or task_32 or task_44"
-          k_expr="${k_expr} or test_five_steps_current_user_food_names_and_calories"
-          k_expr="${k_expr} or test_four_steps_find_user_city_weather_time_and_food_details"
-          k_expr="${k_expr} or test_four_steps_find_user_food_allergies"
-          k_expr="${k_expr} or test_three_tools_current_user_weather"
-          k_expr="${k_expr} or test_single_tool_get_user_email"
-          k_expr="${k_expr} or test_two_tools_city_for_user"
-          k_expr="${k_expr} or test_chain_search_then_email"
+          # k_expr="${k_expr} or test_five_steps_current_user_food_names_and_calories"
+          # k_expr="${k_expr} or test_four_steps_find_user_city_weather_time_and_food_details"
+          # k_expr="${k_expr} or test_four_steps_find_user_food_allergies"
+          # k_expr="${k_expr} or test_three_tools_current_user_weather"
+          # k_expr="${k_expr} or test_single_tool_get_user_email"
+          # k_expr="${k_expr} or test_two_tools_city_for_user"
+          # k_expr="${k_expr} or test_chain_search_then_email"
           flags=""
           if [ "$TODO_MODE" = "all" ]; then
             flags="--todo-variants all"

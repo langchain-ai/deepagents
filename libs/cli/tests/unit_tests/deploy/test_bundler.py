@@ -122,30 +122,28 @@ class TestRenderPyproject:
 class TestRenderDeployGraph:
     def test_output_is_valid_python(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(
-            config, "You are a helpful agent.", mcp_present=False
-        )
+        result = _render_deploy_graph(config, mcp_present=False)
         compile(result, "<deploy_graph>", "exec")
 
     def test_mcp_block_included_when_present(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(config, "prompt", mcp_present=True)
+        result = _render_deploy_graph(config, mcp_present=True)
         assert "_load_mcp_tools" in result
         assert "tools.extend(await _load_mcp_tools())" in result
 
     def test_mcp_block_absent_when_not_present(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(config, "prompt", mcp_present=False)
+        result = _render_deploy_graph(config, mcp_present=False)
         assert "_load_mcp_tools" not in result
         assert "pass  # no MCP servers configured" in result
 
-    def test_system_prompt_with_braces(self) -> None:
-        """Braces in AGENTS.md (e.g. code blocks) must not break .format()."""
-        prompt = 'Use JSON: {"key": "value"}'
+    def test_no_system_prompt_in_output(self) -> None:
+        """AGENTS.md should not be baked into the deploy graph as a system prompt."""
         config = _minimal_config()
-        result = _render_deploy_graph(config, prompt, mcp_present=False)
+        result = _render_deploy_graph(config, mcp_present=False)
         compile(result, "<deploy_graph>", "exec")
-        assert prompt in result  # embedded via !r, eval'd back at runtime
+        assert "SYSTEM_PROMPT" not in result
+        assert "system_prompt=" not in result
 
     def test_each_provider_renders(self) -> None:
         """Every valid provider should produce compilable output."""
@@ -153,7 +151,7 @@ class TestRenderDeployGraph:
 
         for provider in VALID_SANDBOX_PROVIDERS:
             config = _minimal_config(provider=provider)
-            result = _render_deploy_graph(config, "prompt", mcp_present=False)
+            result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
 

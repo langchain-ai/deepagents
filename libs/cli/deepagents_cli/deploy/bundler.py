@@ -88,7 +88,7 @@ def bundle(
 
     # 4. Render deploy_graph.py.
     (build_dir / "deploy_graph.py").write_text(
-        _render_deploy_graph(config, system_prompt, mcp_present=mcp_present),
+        _render_deploy_graph(config, mcp_present=mcp_present),
         encoding="utf-8",
     )
     logger.info("Generated deploy_graph.py")
@@ -151,7 +151,6 @@ def _build_seed(
 
 def _render_deploy_graph(
     config: DeployConfig,
-    system_prompt: str,
     *,
     mcp_present: bool,
 ) -> str:
@@ -171,7 +170,6 @@ def _render_deploy_graph(
 
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
-        system_prompt=system_prompt,
         sandbox_template=config.sandbox.template,
         sandbox_image=config.sandbox.image,
         sandbox_scope=config.sandbox.scope,

@@ -255,13 +255,6 @@ SKILLS_PREFIX = "/skills/"
 # What to seed into the store on first run.
 SEED_PATH = Path(__file__).parent / "_seed.json"
 
-# AGENTS.md is loaded at build time and baked into this module as the
-# system prompt. The same content is seeded into the store under the
-# ``memories`` namespace so the agent can read /memories/AGENTS.md at
-# runtime — writes to /memories/ and /skills/ are blocked by
-# ReadOnlyStoreBackend.
-SYSTEM_PROMPT = {system_prompt!r}
-
 
 class SandboxSyncMiddleware(AgentMiddleware):
     """Sync skill files from the store into the sandbox filesystem.
@@ -479,7 +472,6 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
 
     return create_deep_agent(
         model={model!r},
-        system_prompt=SYSTEM_PROMPT,
         memory=[f"{{MEMORIES_PREFIX}}AGENTS.md"],
         skills=[SKILLS_PREFIX],
         tools=tools,

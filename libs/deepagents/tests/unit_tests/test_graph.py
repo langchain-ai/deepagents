@@ -9,7 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
-from deepagents._harness_profiles import _HARNESS_PROFILES, HarnessProfile, register_harness_profile
+from deepagents._harness_profiles import _HARNESS_PROFILES, HarnessProfile, get_harness_profile, register_harness_profile
 from deepagents._version import __version__
 from deepagents.graph import (
     BASE_AGENT_PROMPT,
@@ -207,13 +207,12 @@ class TestToolDescriptionOverrides:
 
 
 class TestDefaultModelProfile:
-    """Tests for default model=None getting the correct Anthropic profile."""
+    """Tests for default model=None getting the default profile."""
 
-    def test_default_model_gets_anthropic_profile(self) -> None:
-        """model=None should resolve to the Anthropic profile."""
-        # Verify the built-in anthropic profile is registered
-        anthropic_profile = _HARNESS_PROFILES.get("anthropic")
-        assert anthropic_profile is not None
+    def test_default_model_gets_default_profile(self) -> None:
+        """model=None resolves to default profile (no Anthropic-specific registration)."""
+        profile = get_harness_profile("anthropic:claude-sonnet-4-6")
+        assert profile == HarnessProfile()
 
 
 class TestToolDescriptionOverrideWiring:

@@ -30,6 +30,7 @@ from deepagents_cli.model_config import (
     save_recent_model,
     save_thread_columns,
     suppress_warning,
+    unsuppress_warning,
 )
 
 
@@ -2664,6 +2665,92 @@ class TestSuppressWarning:
             data = tomllib.load(f)
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
+
+
+class TestUnsuppressWarning:
+    """Tests for unsuppress_warning() function."""
+
+    def test_removes_key_from_suppress_list(self, tmp_path: Path) -> None:
+        """Removes the specified key from the suppression list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep", "tavily"]\n')
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is True
+        assert not is_warning_suppressed("tavily", config_path)
+        assert is_warning_suppressed("ripgrep", config_path)
+
+    def test_noop_when_key_not_present(self, tmp_path: Path) -> None:
+        """Returns True without error when key is not in the list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is True
+        assert is_warning_suppressed("ripgrep", config_path)
+
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        """Returns True when config file does not exist."""
+        config_path = tmp_path / "config.toml"
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_noop_when_no_warnings_section(self, tmp_path: Path) -> None:
+        """Returns True when config has no [warnings] section."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_preserves_other_config(self, tmp_path: Path) -> None:
+        """Other config sections are preserved after unsuppressing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "some:model"\n\n[warnings]\nsuppress = ["tavily"]\n'
+        )
+
+        unsuppress_warning("tavily", config_path)
+
+        assert not is_warning_suppressed("tavily", config_path)
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "some:model"
+
+    def test_returns_false_on_corrupt_toml(self, tmp_path: Path) -> None:
+        """Returns False when config file contains malformed TOML."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("this is not valid toml [[[")
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is False
+
+    def test_noop_when_suppress_is_not_a_list(self, tmp_path: Path) -> None:
+        """Returns True when suppress value is not a list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = "ripgrep"\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_roundtrip_suppress_unsuppress(self, tmp_path: Path) -> None:
+        """Suppress then unsuppress returns to original state."""
+        config_path = tmp_path / "config.toml"
+
+        suppress_warning("tavily", config_path)
+        assert is_warning_suppressed("tavily", config_path)
+
+        unsuppress_warning("tavily", config_path)
+        assert not is_warning_suppressed("tavily", config_path)
 
 
 class TestGetModelProfiles:

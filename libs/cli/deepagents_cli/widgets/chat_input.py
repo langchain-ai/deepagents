@@ -13,6 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.geometry import Offset
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
@@ -23,7 +24,6 @@ from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
-    get_glyphs,
     is_ascii_mode,
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
@@ -136,19 +136,15 @@ class CompletionOption(Static):
 
     def _update_display(self) -> None:
         """Update the display text and styling."""
-        glyphs = get_glyphs()
-        cursor = f"{glyphs.cursor} " if self._is_selected else "  "
-
+        display_label = self._label.removeprefix("/")
         if self._description:
             content = Content.from_markup(
-                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
-                label=self._label,
+                "[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=display_label,
                 desc=self._description,
             )
         else:
-            content = Content.from_markup(
-                f"{cursor}[bold]$label[/bold]", label=self._label
-            )
+            content = Content.from_markup("[bold]$label[/bold]", label=display_label)
 
         self.update(content)
 
@@ -416,6 +412,38 @@ class ChatTextArea(TextArea):
         self._paste_burst_timer: Timer | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+
+    def scroll_cursor_visible(
+        self, center: bool = False, animate: bool = False
+    ) -> Offset:
+        """Scroll to make the cursor visible, guarding against cursor/document desync.
+
+        Textual's `WrappedDocument.location_to_offset` has an off-by-one in its
+        line-index clamp (`len(...)` instead of `len(...) - 1`). When a reactive
+        watcher (e.g. `_watch_show_vertical_scrollbar`) fires between a document
+        replacement and cursor update, the stale cursor location triggers a
+        `ValueError`. Guard here since `scroll_cursor_visible` is the sole
+        caller of `_recompute_cursor_offset`.
+
+        Args:
+            center: Whether the cursor should be scrolled to the center.
+            animate: Whether to animate while scrolling.
+
+        Returns:
+            The scroll offset applied, or `Offset(0, 0)` on desync.
+        """
+        try:
+            return super().scroll_cursor_visible(center=center, animate=animate)
+        except (
+            ValueError
+        ):  # WrappedDocument.get_offsets off-by-one clamp in location_to_offset
+            logger.warning(
+                "Cursor/document desync in scroll_cursor_visible "
+                "(cursor=%s, doc_lines=%d); skipping scroll",
+                self.cursor_location,
+                self.document.line_count,
+            )
+            return Offset(0, 0)
 
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
@@ -1055,7 +1083,12 @@ class ChatInput(Vertical):
                 if self.mode != detected:
                     self.mode = detected
                 self._strip_mode_prefix()
-                return
+                # Fall through to update completion suggestions in the same
+                # refresh cycle as the mode/glyph change rather than waiting
+                # for the next text-change event caused by the prefix strip.
+                # Note: the strip's text-change event will also call
+                # on_text_changed (idempotently) since _stripping_prefix only
+                # skips mode detection, not the completion block below.
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
             if is_path_payload:
@@ -1573,7 +1606,13 @@ class ChatInput(Vertical):
             and self.mode != "normal"
             and self._get_cursor_offset() == 0
         ):
-            self._completion_manager.reset()
+            # Defer the popup reset so it coalesces with the glyph update
+            # that watch_mode schedules via call_after_refresh.
+            def _deferred_reset() -> None:
+                if self._completion_manager is not None:
+                    self._completion_manager.reset()
+
+            self.call_after_refresh(_deferred_reset)
             self.mode = "normal"
             event.prevent_default()
             event.stop()
@@ -1621,25 +1660,31 @@ class ChatInput(Vertical):
         return offset + min(col, len(lines[row]))
 
     def watch_mode(self, mode: str) -> None:
-        """Post mode changed message and update prompt indicator."""
-        try:
-            prompt = self.query_one("#prompt", Static)
-        except NoMatches:
-            logger.warning("watch_mode: #prompt widget not found")
-            self.post_message(self.ModeChanged(mode))
-            return
-        self.remove_class("mode-shell", "mode-command")
+        """Post mode changed message and update prompt indicator.
+
+        The prompt glyph update is deferred via `call_after_refresh` so that
+        callers which also schedule deferred work (e.g. the completion popup)
+        can coalesce both visual changes into a single refresh.
+        """
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
-        if glyph:
-            prompt.update(glyph)
-            self.add_class(f"mode-{mode}")
-        else:
-            if mode != "normal":
-                logger.warning(
-                    "No display glyph for mode %r; falling back to '>'",
-                    mode,
-                )
-            prompt.update(">")
+        if not glyph and mode != "normal":
+            logger.warning(
+                "No display glyph for mode %r; falling back to '>'",
+                mode,
+            )
+
+        def _apply() -> None:
+            self.remove_class("mode-shell", "mode-command")
+            if glyph:
+                self.add_class(f"mode-{mode}")
+            try:
+                prompt = self.query_one("#prompt", Static)
+            except NoMatches:
+                logger.warning("watch_mode._apply: #prompt widget not found")
+                return
+            prompt.update(glyph or ">")
+
+        self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:

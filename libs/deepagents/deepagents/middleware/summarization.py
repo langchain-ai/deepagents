@@ -74,6 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -221,7 +222,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
@@ -253,7 +253,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
-            history_path_prefix: Path prefix for storing conversation history.
 
         Example:
             ```python
@@ -262,12 +261,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
             middleware = SummarizationMiddleware(
                 model="gpt-4o-mini",
-                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
             ```
         """
+        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
+        if _deprecated_history_prefix is not None:
+            warnings.warn(
+                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
+                " and will be removed in 0.7."
+                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -281,7 +290,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Deep Agents specific attributes
         self._backend = backend
-        self._history_path_prefix = history_path_prefix
+
+        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
+        self._history_path_prefix = f"{_root}/conversation_history"
+
+        if _deprecated_history_prefix is not None:
+            self._history_path_prefix = _deprecated_history_prefix
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -721,7 +736,7 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-    ) -> tuple[str | None, dict[str, Any] | None]:
+    ) -> str | None:
         """Persist messages to backend before summarization.
 
         Appends evicted messages to a single markdown file per thread. Each
@@ -730,7 +745,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `(None, None)` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -738,8 +753,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            Tuple of (file_path, files_update). `files_update` is non-`None`
-            when the backend requires a state-channel update (e.g. `StateBackend`).
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -778,7 +792,7 @@ A condensed summary follows:
                     len(filtered_messages),
                     error_msg,
                 )
-                return None, None
+                return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
@@ -787,16 +801,16 @@ A condensed summary follows:
                 type(e).__name__,
                 e,
             )
-            return None, None
+            return None
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
-            return path, result.files_update
+            return path
 
     async def _aoffload_to_backend(
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-    ) -> tuple[str | None, dict[str, Any] | None]:
+    ) -> str | None:
         """Persist messages to backend before summarization (async).
 
         Appends evicted messages to a single markdown file per thread. Each
@@ -805,7 +819,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `(None, None)` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -813,8 +827,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            Tuple of (file_path, files_update). `files_update` is non-`None`
-            when the backend requires a state-channel update (e.g. `StateBackend`).
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -855,7 +868,7 @@ A condensed summary follows:
                     len(filtered_messages),
                     error_msg,
                 )
-                return None, None
+                return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
@@ -864,10 +877,10 @@ A condensed summary follows:
                 type(e).__name__,
                 e,
             )
-            return None, None
+            return None
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
-            return path, result.files_update
+            return path
 
     def wrap_model_call(
         self,
@@ -941,7 +954,7 @@ A condensed summary follows:
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
         backend = self._get_backend(request.state, request.runtime)
-        file_path, files_update = self._offload_to_backend(backend, messages_to_summarize)
+        file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
@@ -968,12 +981,9 @@ A condensed summary follows:
         response = handler(request.override(messages=modified_messages))
 
         # Return ExtendedModelResponse with state update
-        update: dict[str, Any] = {"_summarization_event": new_event}
-        if files_update is not None:
-            update["files"] = files_update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update=update),
+            command=Command(update={"_summarization_event": new_event}),
         )
 
     async def awrap_model_call(
@@ -1048,11 +1058,10 @@ A condensed summary follows:
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
         backend = self._get_backend(request.state, request.runtime)
-        offload_result, summary = await asyncio.gather(
+        file_path, summary = await asyncio.gather(
             self._aoffload_to_backend(backend, messages_to_summarize),
             self._acreate_summary(messages_to_summarize),
         )
-        file_path, files_update = offload_result
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
@@ -1076,17 +1085,17 @@ A condensed summary follows:
         response = await handler(request.override(messages=modified_messages))
 
         # Return ExtendedModelResponse with state update
-        update: dict[str, Any] = {"_summarization_event": new_event}
-        if files_update is not None:
-            update["files"] = files_update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update=update),
+            command=Command(update={"_summarization_event": new_event}),
         )
 
 
-# Public alias
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
+"""Public alias for `_DeepAgentsSummarizationMiddleware`.
+
+This is the name external callers should import and reference.
+"""
 
 
 def create_summarization_middleware(
@@ -1099,11 +1108,16 @@ def create_summarization_middleware(
     (or uses fixed-token fallbacks) and returns a configured middleware.
 
     Args:
-        model: Resolved chat model instance.
+        model: Resolved `BaseChatModel` instance.
+
+            Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
+
+    Raises:
+        TypeError: If `model` is not a `BaseChatModel` instance.
     """
     from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
 
@@ -1133,7 +1147,7 @@ def create_summarization_tool_middleware(
     `SummarizationToolMiddleware`.
 
     Args:
-        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
+        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:
@@ -1285,7 +1299,6 @@ class SummarizationToolMiddleware(AgentMiddleware):
         to_summarize: list[AnyMessage],
         summary: str,
         file_path: str | None,
-        files_update: dict[str, Any] | None,
         event: SummarizationEvent | None,
         cutoff: int,
     ) -> Command:
@@ -1298,9 +1311,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or `None`.
-            files_update: State-channel update from the backend write, or `None`.
-            event: The prior `_summarization_event`, or `None`.
+            file_path: Backend path where history was offloaded, or ``None``.
+            event: The prior `_summarization_event`, or ``None``.
             cutoff: The cutoff index within the effective message list.
 
         Returns:
@@ -1317,18 +1329,17 @@ class SummarizationToolMiddleware(AgentMiddleware):
             "file_path": file_path,
         }
 
-        update: dict[str, Any] = {
-            "_summarization_event": new_event,
-            "messages": [
-                ToolMessage(
-                    content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
-                    tool_call_id=runtime.tool_call_id,
-                )
-            ],
-        }
-        if files_update is not None:
-            update["files"] = files_update
-        return Command(update=update)
+        return Command(
+            update={
+                "_summarization_event": new_event,
+                "messages": [
+                    ToolMessage(
+                        content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
 
     @staticmethod
     def _nothing_to_compact(tool_call_id: str) -> Command:
@@ -1441,12 +1452,12 @@ class SummarizationToolMiddleware(AgentMiddleware):
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
             backend = self._resolve_backend(runtime)
-            file_path, files_update = s._offload_to_backend(backend, to_summarize)
+            file_path = s._offload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, files_update, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -1475,12 +1486,12 @@ class SummarizationToolMiddleware(AgentMiddleware):
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
             backend = self._resolve_backend(runtime)
-            file_path, files_update = await s._aoffload_to_backend(backend, to_summarize)
+            file_path = await s._aoffload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, files_update, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
     def wrap_model_call(
         self,

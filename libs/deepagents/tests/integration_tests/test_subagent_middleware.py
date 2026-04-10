@@ -36,7 +36,12 @@ def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
             for tool_call in tool_calls:
                 if tool_call["name"] == expected_tool_calls[current_idx]["name"]:
                     if "model" in expected_tool_calls[current_idx]:
-                        assert ai_message.response_metadata["model_name"] == expected_tool_calls[current_idx]["model"]
+                        # Providers may return date-suffixed names
+                        expected_model = expected_tool_calls[current_idx]["model"]
+                        actual_model = ai_message.response_metadata["model_name"]
+                        assert actual_model == expected_model or actual_model.startswith(expected_model + "-"), (
+                            f"Expected model {expected_model!r}, got {actual_model!r}"
+                        )
                     for arg in expected_tool_calls[current_idx]["args"]:
                         assert arg in tool_call["args"]
                         assert tool_call["args"][arg] == expected_tool_calls[current_idx]["args"][arg]
@@ -50,15 +55,15 @@ class TestSubagentMiddleware:
 
     def test_general_purpose_subagent(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the general-purpose subagent to get the weather in a city.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             **GENERAL_PURPOSE_SUBAGENT,
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                         }
                     ],
@@ -72,17 +77,17 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_tool_calls(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                         }
                     ],
@@ -101,18 +106,18 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_model(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
                             "tools": [get_weather],
-                            "model": "gpt-4.1",
+                            "model": "gpt-5.4",
                         }
                     ],
                 )
@@ -122,9 +127,9 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,
@@ -134,18 +139,18 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_middleware(self):
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
                             "tools": [],  # No tools, only in middleware
-                            "model": "gpt-4.1",
+                            "model": "gpt-5.4",
                             "middleware": [WeatherMiddleware()],
                         }
                     ],
@@ -156,9 +161,9 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,
@@ -168,16 +173,16 @@ class TestSubagentMiddleware:
 
     def test_defined_subagent_custom_runnable(self):
         custom_subagent = create_agent(
-            model="gpt-4.1-2025-04-14",
+            model="gpt-5.4",
             system_prompt="Use the get_weather tool to get the weather in a city.",
             tools=[get_weather],
         )
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "weather",
@@ -192,73 +197,9 @@ class TestSubagentMiddleware:
             {
                 "name": "task",
                 "args": {"subagent_type": "weather"},
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
             },
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},
-        ]
-        assert_expected_subgraph_actions(
-            expected_tool_calls,
-            agent,
-            {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
-        )
-
-    def test_deprecated_api_subagents_inherit_model(self):
-        """Test that subagents inherit default_model when not specified."""
-        with pytest.warns(DeprecationWarning, match="default_model"):
-            agent = create_agent(
-                model="claude-sonnet-4-20250514",
-                system_prompt="Use the task tool to call a subagent.",
-                middleware=[
-                    SubAgentMiddleware(
-                        default_model="gpt-4.1",  # Custom subagent should inherit this
-                        default_tools=[get_weather],
-                        subagents=[
-                            {
-                                "name": "custom",
-                                "description": "Custom subagent that gets weather.",
-                                "system_prompt": "Use the get_weather tool.",
-                                # No model specified - should inherit from default_model
-                            }
-                        ],
-                    )
-                ],
-            )
-        # Verify the custom subagent uses the inherited model
-        expected_tool_calls = [
-            {"name": "task", "args": {"subagent_type": "custom"}, "model": "claude-sonnet-4-20250514"},
-            {"name": "get_weather", "args": {}, "model": "gpt-4.1-2025-04-14"},  # Inherited model
-        ]
-        assert_expected_subgraph_actions(
-            expected_tool_calls,
-            agent,
-            {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
-        )
-
-    def test_deprecated_api_subagents_inherit_tools(self):
-        """Test that subagents inherit default_tools when not specified."""
-        with pytest.warns(DeprecationWarning, match="default_model"):
-            agent = create_agent(
-                model="claude-sonnet-4-20250514",
-                system_prompt="Use the task tool to call a subagent.",
-                middleware=[
-                    SubAgentMiddleware(
-                        default_model="claude-sonnet-4-20250514",
-                        default_tools=[get_weather],  # Custom subagent should inherit this
-                        subagents=[
-                            {
-                                "name": "custom",
-                                "description": "Custom subagent that gets weather.",
-                                "system_prompt": "Use the get_weather tool to get weather.",
-                                # No tools specified - should inherit from default_tools
-                            }
-                        ],
-                    )
-                ],
-            )
-        # Verify the custom subagent can use the inherited tools
-        expected_tool_calls = [
-            {"name": "task", "args": {"subagent_type": "custom"}},
-            {"name": "get_weather", "args": {}},  # Inherited tool
+            {"name": "get_weather", "args": {}, "model": "gpt-5.4"},
         ]
         assert_expected_subgraph_actions(
             expected_tool_calls,

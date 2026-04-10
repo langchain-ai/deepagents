@@ -582,6 +582,29 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive CLI" in prompt
 
+    def test_interactive_todo_section_asks_user_before_starting(self) -> None:
+        """Interactive mode should require plan approval before first in_progress."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "Wait for the user's response before marking the first todo" in prompt
+
+    def test_non_interactive_todo_section_does_not_wait_for_user(self) -> None:
+        """Headless mode must not contradict 'no human' guidance in todo rules."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        wait_for_user = "Wait for the user's response before marking the first todo"
+        assert wait_for_user not in prompt
+        assert "do NOT ask the user to approve your plan" in prompt
+        assert "mark the first item `in_progress` immediately" in prompt
+
 
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""
@@ -1678,33 +1701,6 @@ class TestLoadAsyncSubagents:
         config.write_text("this is not valid toml [[[")
         result = load_async_subagents(config)
         assert result == []
-
-
-class TestLsEntriesShim:
-    """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
-
-    The PyPI SDK <0.5 returns a raw `list` from `ls`; >=0.5 returns
-    `LsResult` with `.entries`. Once the pin is bumped to >=0.5.0 the shim
-    should be deleted and callers inlined to `backend.ls(path).entries`.
-    """
-
-    def test_remove_ls_entries_shim_when_sdk_pin_is_bumped(self) -> None:
-        import tomllib
-
-        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
-
-        deps = data["project"]["dependencies"]
-        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
-        pinned_version = sdk_pin.split("==")[1]
-        major, minor = (int(x) for x in pinned_version.split(".")[:2])
-
-        assert (major, minor) < (0, 5), (
-            f"SDK pin is now {pinned_version} (>=0.5.0). "
-            "Delete `_ls_entries()` from test_end_to_end.py and inline "
-            "`backend.ls(path).entries` at call sites."
-        )
 
 
 class TestShellAllowListMiddleware:

@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -14,7 +14,7 @@ test: ## Run unit tests
 	uv run --group test pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
 evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short $(PYTEST_EXTRA)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)
@@ -68,6 +68,13 @@ model-groups: ## Regenerate MODEL_GROUPS.md from the canonical registry
 	uv run python scripts/generate_model_groups.py
 
 ######################
+# EVAL CATALOG
+######################
+
+eval-catalog: ## Regenerate EVAL_CATALOG.md from eval test files
+	uv run python scripts/generate_eval_catalog.py
+
+######################
 # LINTING AND FORMATTING
 ######################
 
@@ -84,6 +91,7 @@ lint lint_diff:
 		fi; \
 	fi
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+	uv run python scripts/generate_eval_catalog.py --check
 
 type: ## Run type checker (eval + harbor source + unit tests)
 type typecheck:

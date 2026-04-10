@@ -27,6 +27,7 @@ dependencies = [
     # LangSmith for observability
     "langsmith>=0.4.0",
     # Sandbox runtimes
+    "dockerfile-parse>=2.0.1",
     "modal>=0.64.0",
     # LangChain model providers (evals run against many providers)
     "langchain-anthropic>=1.0.0",

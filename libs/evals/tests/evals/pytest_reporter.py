@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,6 +35,15 @@ _NODEID_TO_CATEGORY: dict[str, str] = {}
 
 _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 """Per-category pass/fail/total counters, keyed by category name."""
+
+_EXPERIMENT_LINKS: list[dict[str, str]] = []
+"""LangSmith experiment link dicts with "name", "url", and optional "public_url" keys, collected at session teardown."""
+
+_FAILURES: list[dict[str, str]] = []
+"""Per-test failure details (`test_name`, `category`, `failure_message`) for post-run analysis."""
+
+_MAX_FAILURE_MSG_LEN = 30_000
+"""Truncate failure messages beyond this length (~7500 tokens) to stay within LLM context limits."""
 
 
 def _micro_step_ratio() -> float | None:
@@ -96,6 +106,104 @@ def pytest_configure(config: pytest.Config) -> None:
     _evals_utils._on_efficiency_result = _EFFICIENCY_RESULTS.append
 
 
+def _langsmith_version() -> str:
+    """Return the installed langsmith version, or "unknown" on failure."""
+    try:
+        from importlib.metadata import version as pkg_version
+
+        return pkg_version("langsmith")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Pre-create the LangSmith experiment so the comparison URL is known upfront.
+
+    Hydrates `_LangSmithTestSuite._instances` before any test runs. When the
+    langsmith `@test` decorator calls `from_test` during the first test, it
+    finds the pre-created instance and reuses it instead of creating a new
+    experiment.
+
+    This is the same private API that `_collect_experiment_links` already
+    depends on.
+    """
+    test_suite_name = os.environ.get("LANGSMITH_TEST_SUITE")
+    if not test_suite_name:
+        return
+
+    try:
+        from langsmith import client as ls_client  # noqa: I001
+        from langsmith.testing._internal import (
+            _LangSmithTestSuite,
+            _get_test_suite,
+            _start_experiment,
+        )
+    except ImportError:
+        return
+
+    # Phase 1: create the experiment on the LangSmith server (irreversible).
+    try:
+        client = ls_client.Client()
+        dataset = _get_test_suite(client, test_suite_name)
+
+        model_opt = session.config.getoption("--model", default=None)
+        model_name = model_opt or str(get_default_model().model)
+        experiment_metadata = {
+            "model": model_name,
+            "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
+            "deepagents_version": __version__,
+        }
+
+        experiment = _start_experiment(client, dataset, experiment_metadata)
+    except Exception as exc:  # noqa: BLE001
+        msg = f"warning: could not create LangSmith experiment (langsmith=={_langsmith_version()}): {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+        return
+
+    # Phase 2: register the experiment locally so the @test decorator reuses it.
+    suite_instance = None
+    try:
+        with _LangSmithTestSuite._lock:
+            if not _LangSmithTestSuite._instances:
+                _LangSmithTestSuite._instances = {}
+            suite_instance = _LangSmithTestSuite(client, experiment, dataset, experiment_metadata)
+            _LangSmithTestSuite._instances[test_suite_name] = suite_instance
+    except Exception as exc:  # noqa: BLE001
+        msg = f"warning: experiment created but could not register in _LangSmithTestSuite (langsmith=={_langsmith_version()}): {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+
+    # Phase 3: build URLs and surface them in terminal output.
+    try:
+        dataset_url = getattr(dataset, "url", None)
+        experiment_id = experiment.id
+        if dataset_url and experiment_id:
+            url = f"{dataset_url}/compare?selectedSessions={experiment_id}"
+            public_url = (
+                _get_public_experiment_url(suite_instance, experiment_id)
+                if suite_instance is not None
+                else None
+            )
+            _EXPERIMENT_LINKS.append(
+                {
+                    "name": experiment.name,
+                    "url": url,
+                    **({"public_url": public_url} if public_url else {}),
+                }
+            )
+            terminal = session.config.pluginmanager.getplugin("terminalreporter")
+            if terminal is not None:
+                terminal.write_line(f"LangSmith experiment: {experiment.name}")
+                if public_url:
+                    terminal.write_line(f"  Public:   {public_url}")
+                    terminal.write_line(f"  Internal: {url}")
+                else:
+                    terminal.write_line(f"  View results at: {url}")
+                terminal.write_line("")
+    except Exception as exc:  # noqa: BLE001
+        msg = f"warning: experiment created but could not build URL (langsmith=={_langsmith_version()}): {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config,  # noqa: ARG001
     items: list[pytest.Item],
@@ -130,6 +238,18 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
 
+    if outcome == "failed":
+        msg = report.longreprtext
+        if len(msg) > _MAX_FAILURE_MSG_LEN:
+            msg = msg[:_MAX_FAILURE_MSG_LEN] + "\n\n... [truncated]"
+        _FAILURES.append(
+            {
+                "test_name": report.nodeid,
+                "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
+                "failure_message": msg,
+            }
+        )
+
     category = _NODEID_TO_CATEGORY.get(report.nodeid)
     if category and outcome in {"passed", "failed"}:
         bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
@@ -141,10 +261,95 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _EFFICIENCY_RESULTS[-1].passed = outcome == "passed"
 
 
+def _get_public_experiment_url(suite: object, experiment_id: object) -> str | None:
+    """Build the public comparison URL for an experiment.
+
+    Uses `client.read_dataset_shared_schema` to obtain the public share URL,
+    then appends the experiment ID as a comparison parameter. Returns `None`
+    when the dataset is not shared or on any error.
+    """
+    try:
+        client = getattr(suite, "client", None)
+        dataset = getattr(suite, "_dataset", None)
+        if client is None or dataset is None:
+            return None
+        dataset_id = getattr(dataset, "id", None)
+        if dataset_id is None:
+            return None
+        share_schema = client.read_dataset_shared_schema(dataset_id=dataset_id)
+        share_url = (
+            share_schema.get("url")
+            if isinstance(share_schema, dict)
+            else getattr(share_schema, "url", None)
+        )
+        if share_url:
+            return f"{share_url}/compare?selectedSessions={experiment_id}"
+    except Exception as exc:  # noqa: BLE001
+        msg = f"warning: could not resolve public URL for experiment: {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+    return None
+
+
+def _collect_experiment_links() -> list[dict[str, str]]:
+    """Best-effort extraction of experiment name/URL pairs from langsmith internals.
+
+    Accesses the private `_LangSmithTestSuite` API; returns an empty list on
+    any failure.
+    """
+    try:
+        from langsmith.testing._internal import _LangSmithTestSuite
+    except ImportError:
+        return []
+
+    try:
+        instances = _LangSmithTestSuite._instances
+        if not instances:
+            return []
+
+        links: list[dict[str, str]] = []
+        skipped = 0
+        for suite in instances.values():
+            dataset = getattr(suite, "_dataset", None)
+            if dataset is None:
+                skipped += 1
+                continue
+            dataset_url = getattr(dataset, "url", None)
+            experiment_id = getattr(suite, "experiment_id", None)
+            experiment = getattr(suite, "_experiment", None)
+            name = getattr(experiment, "name", None) if experiment else None
+            if dataset_url and experiment_id:
+                url = f"{dataset_url}/compare?selectedSessions={experiment_id}"
+                link: dict[str, str] = {"name": name or url, "url": url}
+                public_url = _get_public_experiment_url(suite, experiment_id)
+                if public_url:
+                    link["public_url"] = public_url
+                links.append(link)
+            else:
+                skipped += 1
+        if skipped and not links:
+            msg = f"warning: found {len(instances)} LangSmith test suite(s) but could not extract any experiment URLs"
+            print(msg, file=sys.stderr)  # noqa: T201
+    except Exception as exc:  # noqa: BLE001  # private API; best-effort
+        try:
+            from importlib.metadata import version as pkg_version
+
+            ls_ver = pkg_version("langsmith")
+        except Exception:  # noqa: BLE001
+            ls_ver = "unknown"
+        msg = f"warning: failed to collect experiment links (langsmith=={ls_ver}): {exc!r}"
+        print(msg, file=sys.stderr)  # noqa: T201
+        return []
+    else:
+        return links
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     _ = exitstatus
     if session.exitstatus == 1:
         session.exitstatus = 0
+
+    if not _EXPERIMENT_LINKS:
+        _EXPERIMENT_LINKS.extend(_collect_experiment_links())
 
     correctness = round((_RESULTS["passed"] / _RESULTS["total"]) if _RESULTS["total"] else 0.0, 2)
     step_ratio = _micro_step_ratio()
@@ -170,6 +375,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "tool_call_ratio": tool_call_ratio,
         "solve_rate": solve_rate,
         "median_duration_s": median_duration_s,
+        "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
+        "experiment_links": _EXPERIMENT_LINKS,
+        "failures": _FAILURES,
     }
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")
@@ -182,7 +390,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             f"results: {payload['passed']} passed, {payload['failed']} failed, {payload['skipped']} skipped (total={payload['total']})"
         )
         terminal_reporter.write_line(f"correctness: {correctness:.2f}")
-        if category_scores:
+        if len(category_scores) > 1:
             terminal_reporter.write_sep("-", "per-category correctness")
             for cat, score in sorted(category_scores.items()):
                 counts = _CATEGORY_RESULTS[cat]
@@ -196,6 +404,16 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if solve_rate is not None:
             terminal_reporter.write_line(f"solve_rate: {solve_rate:.4f}")
         terminal_reporter.write_line(f"median_duration_s: {median_duration_s:.4f}")
+        if _EXPERIMENT_LINKS:
+            terminal_reporter.write_sep("-", "langsmith experiments")
+            for link in _EXPERIMENT_LINKS:
+                public_url = link.get("public_url")
+                if public_url:
+                    terminal_reporter.write_line(f"  {link['name']}:")
+                    terminal_reporter.write_line(f"    Public:   {public_url}")
+                    terminal_reporter.write_line(f"    Internal: {link['url']}")
+                else:
+                    terminal_reporter.write_line(f"  {link['name']}: {link['url']}")
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:

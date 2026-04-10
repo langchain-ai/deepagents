@@ -276,6 +276,7 @@ def _make_app() -> MagicMock:
     app._mount_message = AsyncMock(side_effect=capture_mount)
     app._handle_user_message = AsyncMock()
     app._send_to_agent = AsyncMock()
+    app._invoke_skill = DeepAgentsApp._invoke_skill.__get__(app)
     app._handle_skill_command = DeepAgentsApp._handle_skill_command.__get__(app)
     app._discover_skills_and_roots = DeepAgentsApp._discover_skills_and_roots.__get__(
         app
@@ -305,6 +306,60 @@ def _fake_skill(
         "allowed_tools": [],
         "source": "user",
     }
+
+
+class TestBuildSkillInvocationEnvelope:
+    """Direct unit tests for `build_skill_invocation_envelope`."""
+
+    def test_happy_path_with_args(self) -> None:
+        """Envelope should contain wrapped prompt and full metadata."""
+        from deepagents_cli.skills.invocation import build_skill_invocation_envelope
+
+        skill = {
+            "name": "code-review",
+            "description": "Review code changes",
+            "source": "user",
+            "path": "/skills/code-review/SKILL.md",
+        }
+        envelope = build_skill_invocation_envelope(
+            skill,  # type: ignore[arg-type]
+            "# Instructions\nDo stuff",
+            "review this patch",
+        )
+        assert "I'm invoking the skill `code-review`." in envelope.prompt
+        assert "---\n# Instructions\nDo stuff\n---" in envelope.prompt
+        assert "**User request:** review this patch" in envelope.prompt
+        meta = envelope.message_kwargs["additional_kwargs"]["__skill"]
+        assert meta["name"] == "code-review"
+        assert meta["description"] == "Review code changes"
+        assert meta["source"] == "user"
+        assert meta["args"] == "review this patch"
+
+    def test_empty_args_omits_user_request(self) -> None:
+        """No `**User request:**` line when args is empty."""
+        from deepagents_cli.skills.invocation import build_skill_invocation_envelope
+
+        skill = {"name": "test", "description": "", "source": "built-in", "path": "/x"}
+        envelope = build_skill_invocation_envelope(
+            skill,  # type: ignore[arg-type]
+            "body",
+            "",
+        )
+        assert "**User request:**" not in envelope.prompt
+        assert envelope.message_kwargs["additional_kwargs"]["__skill"]["args"] == ""
+
+    def test_missing_optional_fields_default_to_empty(self) -> None:
+        """Skill dicts without `description`/`source` should default to ''."""
+        from deepagents_cli.skills.invocation import build_skill_invocation_envelope
+
+        skill = {"name": "minimal", "path": "/x"}
+        envelope = build_skill_invocation_envelope(
+            skill,  # type: ignore[arg-type]
+            "body",
+        )
+        meta = envelope.message_kwargs["additional_kwargs"]["__skill"]
+        assert meta["description"] == ""
+        assert meta["source"] == ""
 
 
 class TestHandleSkillCommand:
@@ -428,6 +483,28 @@ class TestHandleSkillCommand:
         skill_msgs = [m for m in app._mounted_messages if isinstance(m, SkillMessage)]
         assert len(skill_msgs) == 1
         assert skill_msgs[0]._args == "find quantum"
+
+    async def test_direct_invoke_preserves_exact_args(self) -> None:
+        """Startup skill invocation should preserve the original prompt text."""
+        app = _make_app()
+        skill = _fake_skill()
+        with (
+            patch("deepagents_cli.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_cli.skills.load.load_skill_content",
+                return_value="# Instructions\nDo stuff",
+            ),
+            patch("deepagents_cli.config.settings"),
+        ):
+            await app._invoke_skill("test-skill", "  keep leading whitespace")
+
+        prompt = app._send_to_agent.call_args[0][0]
+        assert "**User request:**   keep leading whitespace" in prompt
+        metadata = app._send_to_agent.call_args.kwargs["message_kwargs"]
+        assert (
+            metadata["additional_kwargs"]["__skill"]["args"]
+            == "  keep leading whitespace"
+        )
 
     async def test_filesystem_error_shows_specific_message(self) -> None:
         app = _make_app()

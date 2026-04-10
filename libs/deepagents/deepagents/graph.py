@@ -129,20 +129,14 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
-    instance and used as a best-effort fallback.
-
-    For pre-built model instances (where `spec` is `None`), the identifier alone
-    (e.g. `"claude-sonnet-4-6"`) has no provider prefix, so
-    `get_harness_profile` cannot resolve the provider-level profile. As a
-    fallback we use `get_model_provider` (backed by `_get_ls_params`) to recover
-    the provider name and look up the profile directly.
+    instance (via `ls_params`) and used as a best-effort fallback.
 
     Args:
         model: Resolved chat model instance.
         spec: Original model spec string, or `None` for pre-built instances.
 
     Returns:
-        The matching `HarnessProfile`, or an empty default.
+        The matching `HarnessProfile`, or an empty default (null object).
     """
     if spec is not None:
         return get_harness_profile(spec)
@@ -408,10 +402,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
     """
-    model = get_default_model() if model is None else resolve_model(model)
+    _model_spec: str | None = model if isinstance(model, str) else None
 
-    model_spec: str | None = model if isinstance(model, str) else None
-    _profile = _harness_profile_for_model(model, model_spec)
+    model = get_default_model() if model is None else resolve_model(model)
+    _profile = _harness_profile_for_model(model, _model_spec)
 
     # Apply tool description overrides, if any
     default_tools = _apply_tool_description_overrides(
@@ -468,9 +462,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         else:
             # SubAgent - fill in defaults and prepend base middleware
             raw_subagent_model = spec.get("model", model)
-            subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
             subagent_model = resolve_model(raw_subagent_model)
-            _subagent_profile = _harness_profile_for_model(subagent_model, subagent_spec)
+
+            _subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
+            _subagent_profile = _harness_profile_for_model(subagent_model, _subagent_spec)
 
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
@@ -571,7 +566,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     base_prompt = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
     if _profile.system_prompt_suffix is not None:
         base_prompt = base_prompt + "\n\n" + _profile.system_prompt_suffix
-
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = base_prompt
     elif isinstance(system_prompt, SystemMessage):

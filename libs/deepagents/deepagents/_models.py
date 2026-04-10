@@ -33,14 +33,16 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
 
     profile = get_harness_profile(model)
 
+    # Execute any pre-initialization logic
     if profile.pre_init is not None:
         profile.pre_init(model)
 
+    # Combine static and factory kwargs, with factory taking precedence
     kwargs: dict[str, Any] = {**profile.init_kwargs}
     if profile.init_kwargs_factory is not None:
         kwargs.update(profile.init_kwargs_factory())
 
-    return init_chat_model(model, **kwargs)
+    return init_chat_model(model, **kwargs)  # kwargs may be empty
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:
@@ -65,8 +67,7 @@ def get_model_provider(model: BaseChatModel) -> str | None:
 
     Uses the model's `_get_ls_params` method. The base `BaseChatModel`
     implementation derives `ls_provider` from the class name, and all major
-    providers override it with a hardcoded value (e.g. `"anthropic"`,
-    `"openai"`). Returns `None` if the field is absent or extraction fails.
+    providers override it with a hardcoded value (e.g. `"anthropic"`).
 
     Args:
         model: Chat model instance to inspect.

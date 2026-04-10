@@ -98,7 +98,9 @@ class CompiledSubAgent(TypedDict):
         This is required for the subagent to communicate results back to the main agent.
 
     When the subagent completes, the final message in the 'messages' list will be
-    extracted and returned as a `ToolMessage` to the parent agent.
+    extracted and returned as a `ToolMessage` to the parent agent. The full `content`
+    is forwarded, so standard content blocks (including `NonStandardContentBlock`) are
+    preserved. If the final message carries an `artifact`, it is forwarded as well.
     """
 
     name: str
@@ -343,12 +345,24 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+        last_msg = result["messages"][-1]
+
+        # Forward full content to preserve content blocks (e.g. NonStandardContentBlock).
+        # When content is a plain string, strip trailing whitespace to prevent API errors
+        # with Anthropic. When it is a list of content blocks, leave it unchanged so that
+        # all blocks (text, non_standard, etc.) are available to the parent agent.
+        raw_content = last_msg.content
+        if isinstance(raw_content, str):
+            raw_content = raw_content.rstrip()
+
+        # Propagate artifact when the last message carries one, so CompiledSubAgent
+        # authors can use ToolMessage.artifact to pass structured data alongside text.
+        artifact = getattr(last_msg, "artifact", None)
+
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content=raw_content, tool_call_id=tool_call_id, artifact=artifact)],
             }
         )
 

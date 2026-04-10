@@ -122,7 +122,8 @@ class TestRenderPyproject:
 
     def test_deps_cover_all_validated_providers(self) -> None:
         """Every validated provider must have a bundler dep."""
-        missing = set(_MODEL_PROVIDER_ENV) - set(_MODEL_PROVIDER_DEPS)
+        no_partner_pkg = {"together"}
+        missing = set(_MODEL_PROVIDER_ENV) - set(_MODEL_PROVIDER_DEPS) - no_partner_pkg
         assert not missing, (
             f"Providers validated but missing from bundler deps: {missing}"
         )

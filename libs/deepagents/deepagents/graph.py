@@ -273,12 +273,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
-        system_prompt: Custom system instructions prepended before the base
-            system prompt (`BASE_AGENT_PROMPT`, or the provider profile's
-            `base_system_prompt` when set).
+        system_prompt: Custom system instructions to prepend before the base
+            Deep Agent prompt.
 
-            Does not replace the base prompt — use
-            `HarnessProfile.base_system_prompt` for that.
+            If a string, it's concatenated with the base prompt.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -296,9 +294,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Tail stack:
 
-            - Provider-specific middleware (from `HarnessProfile.extra_middleware`)
             - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
-              non-Anthropic models)
+                non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
@@ -417,8 +414,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if isinstance(model, str):
         model_spec = model
     elif model is None:
-        # Default model is always Anthropic; derive a spec so the profile
-        # registry resolves correctly (bare model names lack a provider prefix).
         model_spec = "anthropic:claude-sonnet-4-6"
     else:
         model_spec = None

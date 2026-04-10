@@ -15,10 +15,11 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
 
     If `model` is already a `BaseChatModel`, returns it unchanged.
 
-    String models are resolved via `init_chat_model` with provider-specific
-    kwargs drawn from the `HarnessProfile` registry. For example, OpenAI models
-    default to the Responses API, and OpenRouter models include app
-    attribution headers.
+    String models are resolved via `init_chat_model`. OpenAI models
+    (prefixed with `openai:`) default to the Responses API.
+
+    OpenRouter models include default app attribution headers unless overridden
+    via `OPENROUTER_APP_URL` / `OPENROUTER_APP_TITLE` env vars.
 
     Args:
         model: Model string (e.g. `"openai:gpt-5.4"`) or pre-configured

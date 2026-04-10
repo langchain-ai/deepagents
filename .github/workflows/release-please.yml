@@ -223,6 +223,7 @@ jobs:
     with:
       package: deepagents-cli
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -237,6 +238,7 @@ jobs:
     with:
       package: deepagents
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -250,6 +252,7 @@ jobs:
     with:
       package: deepagents-acp
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -263,6 +266,7 @@ jobs:
     with:
       package: langchain-daytona
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -276,6 +280,7 @@ jobs:
     with:
       package: langchain-modal
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -289,6 +294,7 @@ jobs:
     with:
       package: langchain-runloop
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -302,6 +308,7 @@ jobs:
     with:
       package: langchain-quickjs
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -315,6 +322,7 @@ jobs:
     with:
       package: langchain-repl
       version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write

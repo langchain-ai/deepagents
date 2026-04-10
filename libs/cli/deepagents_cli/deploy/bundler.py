@@ -124,9 +124,9 @@ def _build_seed(
     }
     ```
 
-    `memories` always contains `/AGENTS.md` — the agent reads it at runtime
-    via `/memories/AGENTS.md`. Writes and edits to that path are blocked
-    by `ReadOnlyStoreBackend` in the generated graph.
+    `memories` always contains `/AGENTS.md` — the middleware loads it at
+    startup via `/memories/AGENTS.md`. Agent reads of `/memories/` and
+    `/skills/` are denied by `FilesystemPermission` rules.
 
     `skills` walks `skills/` if present. Keys are paths relative to the
     skills dir with a leading slash; the runtime namespace handles the

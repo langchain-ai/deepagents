@@ -4,8 +4,9 @@ These templates are rendered by the bundler with values from
 `~deepagents_cli.deploy.config.DeployConfig`.
 
 The generated `deploy_graph.py` uses a `CompositeBackend` with two
-read-only `StoreBackend` routes (memories and skills) and the configured sandbox
-as the default writable backend.
+`StoreBackend` routes (memories and skills) and the configured sandbox
+as the default writable backend. Write access to memories and skills is
+denied at runtime via `PermissionMiddleware`.
 
 There is no hub path and no custom Python tools.
 """
@@ -195,12 +196,12 @@ async def _load_mcp_tools():
 # ---------------------------------------------------------------------------
 # deploy_graph.py — the generated server entry point
 #
-# Store layout (CompositeBackend with sandbox default + two read-only routes):
+# Store layout (CompositeBackend with sandbox default + two store routes):
 #
 #   Mount          Namespace                         Writable
 #   -------------  --------------------------------  --------
-#   /memories/     (assistant_id, "memories")        no
-#   /skills/       (assistant_id, "skills")          no
+#   /memories/     (assistant_id, "memories")        no (denied by PermissionMiddleware)
+#   /skills/       (assistant_id, "skills")          no (denied by PermissionMiddleware)
 #   default        sandbox (per `[sandbox].scope`)    yes
 #
 # `make_graph` takes the `RunnableConfig` at factory time, pulls
@@ -227,8 +228,9 @@ from typing import TYPE_CHECKING
 
 from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.protocol import EditResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.store import StoreBackend
+from deepagents.permissions import FilesystemPermission
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -258,8 +260,8 @@ SEED_PATH = Path(__file__).parent / "_seed.json"
 # AGENTS.md is loaded at build time and baked into this module as the
 # system prompt. The same content is seeded into the store under the
 # ``memories`` namespace so the agent can read /memories/AGENTS.md at
-# runtime — writes to /memories/ and /skills/ are blocked by
-# ReadOnlyStoreBackend.
+# runtime — writes to /memories/ and /skills/ are denied via
+# the ``permissions`` parameter.
 SYSTEM_PROMPT = {system_prompt!r}
 
 
@@ -342,31 +344,6 @@ class SandboxSyncMiddleware(AgentMiddleware):
         return await handler(request)
 
 
-class ReadOnlyStoreBackend(StoreBackend):
-    """StoreBackend that rejects all writes and edits."""
-
-    _READ_ONLY_MSG = (
-        "This path is read-only. /memories/ and /skills/ are managed by "
-        "the deployment config — they cannot be edited at runtime."
-    )
-
-    def write(self, file_path, content):  # noqa: ARG002
-        return WriteResult(error=self._READ_ONLY_MSG)
-
-    async def awrite(self, file_path, content):  # noqa: ARG002
-        return WriteResult(error=self._READ_ONLY_MSG)
-
-    def edit(  # noqa: ARG002, FBT002
-        self, file_path, old_string, new_string, replace_all=False,
-    ):
-        return EditResult(error=self._READ_ONLY_MSG)
-
-    async def aedit(  # noqa: ARG002, FBT002
-        self, file_path, old_string, new_string, replace_all=False,
-    ):
-        return EditResult(error=self._READ_ONLY_MSG)
-
-
 _SEED_CACHE: dict | None = None
 
 
@@ -446,10 +423,10 @@ def _build_backend_factory(assistant_id: str):
         return CompositeBackend(
             default=sandbox_backend,
             routes={{
-                MEMORIES_PREFIX: ReadOnlyStoreBackend(
+                MEMORIES_PREFIX: StoreBackend(
                     namespace=_make_namespace_factory(assistant_id, "memories"),
                 ),
-                SKILLS_PREFIX: ReadOnlyStoreBackend(
+                SKILLS_PREFIX: StoreBackend(
                     namespace=_make_namespace_factory(assistant_id, "skills"),
                 ),
             }},
@@ -484,6 +461,13 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
         skills=[SKILLS_PREFIX],
         tools=tools,
         backend=backend_factory,
+        permissions=[
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/memories/**", "/skills/**"],
+                mode="deny",
+            ),
+        ],
         middleware=[
             SandboxSyncMiddleware(backend=backend_factory, sources=[SKILLS_PREFIX]),
         ],

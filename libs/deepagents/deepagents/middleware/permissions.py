@@ -74,6 +74,7 @@ class FilesystemPermission:
     mode: Literal["allow", "deny"] = "allow"
 
     def __post_init__(self) -> None:
+        """Validate that all paths start with '/'."""
         for path in self.paths:
             if not path.startswith("/"):
                 msg = f"Permission path must start with '/': {path!r}"

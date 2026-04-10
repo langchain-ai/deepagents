@@ -2,7 +2,7 @@
 
 Provides `create_deep_agent`, the main entry point for constructing a fully
 configured Deep Agent with planning, filesystem, subagent, and summarization
-middleware.  Also defines `BASE_AGENT_PROMPT` and the default model fallback.
+middleware.
 """
 
 from collections.abc import Callable, Sequence

@@ -96,10 +96,11 @@ ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
 openai = ["langchain-openai>=1.1.12,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.0,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
+together = ["langchain-together>=0.4.0,<1.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
 all-providers = [
-    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
+    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertexai,xai]",
 ]
 
 # Sandbox providers

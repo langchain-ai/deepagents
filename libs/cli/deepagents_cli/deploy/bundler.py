@@ -36,13 +36,23 @@ from deepagents_cli.deploy.templates import (
 
 logger = logging.getLogger(__name__)
 
-_MODEL_PROVIDER_DEPS = {
+_MODEL_PROVIDER_DEPS: dict[str, str] = {
     "anthropic": "langchain-anthropic",
-    "openai": "langchain-openai",
+    "azure_openai": "langchain-openai",
+    "baseten": "langchain-baseten",
+    "cohere": "langchain-cohere",
+    "deepseek": "langchain-deepseek",
+    "fireworks": "langchain-fireworks",
     "google_genai": "langchain-google-genai",
     "google_vertexai": "langchain-google-vertexai",
     "groq": "langchain-groq",
     "mistralai": "langchain-mistralai",
+    "nvidia": "langchain-nvidia-ai-endpoints",
+    "openai": "langchain-openai",
+    "openrouter": "langchain-openrouter",
+    "perplexity": "langchain-perplexity",
+    "together": "langchain-together",
+    "xai": "langchain-xai",
 }
 """Dependencies inferred from a provider: prefix on the model string."""
 

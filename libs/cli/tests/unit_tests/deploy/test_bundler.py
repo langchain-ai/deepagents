@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from deepagents_cli.deploy.bundler import (
+    _MODEL_PROVIDER_DEPS,
     _build_seed,
     _render_deploy_graph,
     _render_langgraph_json,
@@ -16,6 +17,7 @@ from deepagents_cli.deploy.bundler import (
     print_bundle_summary,
 )
 from deepagents_cli.deploy.config import (
+    _MODEL_PROVIDER_ENV,
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
@@ -117,6 +119,22 @@ class TestRenderPyproject:
         config = _minimal_config(model="openai:gpt-5.3-codex")
         result = _render_pyproject(config, mcp_present=False)
         assert "langchain-openai" in result
+
+    def test_deps_cover_all_validated_providers(self) -> None:
+        """Every validated provider must have a bundler dep."""
+        missing = set(_MODEL_PROVIDER_ENV) - set(_MODEL_PROVIDER_DEPS)
+        assert not missing, (
+            f"Providers validated but missing from bundler deps: {missing}"
+        )
+
+    @pytest.mark.parametrize(
+        "provider",
+        sorted(_MODEL_PROVIDER_DEPS),
+    )
+    def test_each_model_provider_dep_rendered(self, provider: str) -> None:
+        config = _minimal_config(model=f"{provider}:some-model")
+        result = _render_pyproject(config, mcp_present=False)
+        assert _MODEL_PROVIDER_DEPS[provider] in result
 
 
 class TestRenderDeployGraph:

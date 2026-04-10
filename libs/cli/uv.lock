@@ -1080,7 +1080,6 @@ all-providers = [
     { name = "langchain-openai" },
     { name = "langchain-openrouter" },
     { name = "langchain-perplexity" },
-    { name = "langchain-together" },
     { name = "langchain-xai" },
 ]
 all-sandboxes = [
@@ -1149,9 +1148,6 @@ perplexity = [
 runloop = [
     { name = "langchain-runloop" },
 ]
-together = [
-    { name = "langchain-together" },
-]
 vertexai = [
     { name = "langchain-google-vertexai" },
 ]
@@ -1185,7 +1181,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.4" },
     { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
-    { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertexai", "xai"], marker = "extra == 'all-providers'" },
+    { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.1" },
@@ -1214,7 +1210,6 @@ requires-dist = [
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.2.0,<2.0.0" },
     { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
-    { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<1.0.0" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langgraph", specifier = ">=1.1.6,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
@@ -1237,7 +1232,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.10.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertexai", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "all-sandboxes"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "all-sandboxes"]
 
 [package.metadata.requires-dev]
 test = [
@@ -2943,24 +2938,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/41/42/c178dcdc157b473330eb7cc30883ea69b8ec60078c7b85e2d521054c4831/langchain_text_splitters-1.1.0.tar.gz", hash = "sha256:75e58acb7585dc9508f3cd9d9809cb14751283226c2d6e21fb3a9ae57582ca22", size = 272230, upload-time = "2025-12-14T01:15:38.659Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d8/1a/a84ed1c046deecf271356b0179c1b9fba95bfdaa6f934e1849dee26fad7b/langchain_text_splitters-1.1.0-py3-none-any.whl", hash = "sha256:f00341fe883358786104a5f881375ac830a4dd40253ecd42b4c10536c6e4693f", size = 34182, upload-time = "2025-12-14T01:15:37.382Z" },
-]
-
-[[package]]
-name = "langchain-together"
-version = "0.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "h11" },
-    { name = "langchain-core" },
-    { name = "langchain-openai" },
-    { name = "langsmith" },
-    { name = "requests" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fa/a9/2624fffd4d341454a292dde416c3d2cfbbb6354a2388a57a3d06d6ca4014/langchain_together-0.4.0.tar.gz", hash = "sha256:f488392ecdfeb05c5f2f8162596aff43a3b4d6a4ccf2f821d6e2602a0c5563c6", size = 11031, upload-time = "2026-03-24T20:56:37.903Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/95/733358fb831b73585a40dfa3c59b170772e89ce06af1c888254fbaaaf5d9/langchain_together-0.4.0-py3-none-any.whl", hash = "sha256:a94a0d15b0c01844edf22941aef6fe0f065d0e31e2ba215a544b366d8a1eba89", size = 12909, upload-time = "2026-03-24T20:56:37.081Z" },
 ]
 
 [[package]]

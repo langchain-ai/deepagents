@@ -1,9 +1,13 @@
 """Harness profile registry for model- and provider-specific configuration.
 
+!!! warning
+
+    This is an internal API subject to change without deprecation. It is not
+    intended for external use or consumption.
+
 Defines the `HarnessProfile` dataclass and the harness profile registry used
-by `resolve_model` and `create_deep_agent` to apply provider- and
-model-specific configuration (init kwargs, extra middleware, system prompt
-    patches, and supported tool-description overrides).
+by `resolve_model` and `create_deep_agent` to apply provider- and model-specific
+configuration.
 """
 
 from __future__ import annotations
@@ -20,11 +24,10 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import AgentMiddleware
 
-OPENROUTER_MIN_VERSION = "0.2.0"
+OPENROUTER_MIN_VERSION = "0.2.0"  # app attribution support added
 """Minimum required version of `langchain-openrouter`.
 
-Used by both the SDK (`resolve_model`) and the CLI (`config.py`) to enforce a
-consistent version floor at runtime.
+Used to enforce a consistent version floor at runtime.
 """
 
 _OPENROUTER_APP_URL = "https://github.com/langchain-ai/deepagents"

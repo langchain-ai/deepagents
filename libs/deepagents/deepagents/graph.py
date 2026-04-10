@@ -410,27 +410,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
     """
-    model_spec: str | None
-    if isinstance(model, str):
-        model_spec = model
-    elif model is None:
-        model_spec = "anthropic:claude-sonnet-4-6"
-    else:
-        model_spec = None
+    model_spec: str | None = model if isinstance(model, str) else None
     model = get_default_model() if model is None else resolve_model(model)
-    profile = _harness_profile_for_model(model, model_spec)
-    backend = backend if backend is not None else StateBackend()
+    _profile = _harness_profile_for_model(model, model_spec)
     default_tools = _apply_tool_description_overrides(
         tools,
-        profile.tool_description_overrides,
+        _profile.tool_description_overrides,
     )
+
+    backend = backend if backend is not None else StateBackend()
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(
             backend=backend,
-            custom_tool_descriptions=profile.tool_description_overrides,
+            custom_tool_descriptions=_profile.tool_description_overrides,
         ),
         create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
@@ -438,7 +433,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     # Provider-specific middleware from the harness profile.
-    gp_middleware.extend(_resolve_extra_middleware(profile))
+    gp_middleware.extend(_resolve_extra_middleware(_profile))
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic
     # models, and the CLI's dynamic model swap may switch to Anthropic at
     # runtime after the middleware stack is already built.
@@ -529,12 +524,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         [
             FilesystemMiddleware(
                 backend=backend,
-                custom_tool_descriptions=profile.tool_description_overrides,
+                custom_tool_descriptions=_profile.tool_description_overrides,
             ),
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
-                task_description=profile.tool_description_overrides.get("task"),
+                task_description=_profile.tool_description_overrides.get("task"),
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -551,7 +546,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Provider-specific middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
-    deepagent_middleware.extend(_resolve_extra_middleware(profile))
+    deepagent_middleware.extend(_resolve_extra_middleware(_profile))
     # Unconditional prompt caching (see general-purpose subagent comment).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
@@ -562,12 +557,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if permissions:
         deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
-    # Assemble base prompt: use profile.base_system_prompt if set, else
+    # Assemble base prompt: use _profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.
     # Finally prepend user system_prompt (handled below).
-    base_prompt = profile.base_system_prompt if profile.base_system_prompt is not None else BASE_AGENT_PROMPT
-    if profile.system_prompt_suffix is not None:
-        base_prompt = base_prompt + "\n\n" + profile.system_prompt_suffix
+    base_prompt = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
+    if _profile.system_prompt_suffix is not None:
+        base_prompt = base_prompt + "\n\n" + _profile.system_prompt_suffix
 
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = base_prompt

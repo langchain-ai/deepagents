@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.37](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.36...deepagents-cli==0.0.37) (2026-04-10)
+
+
+### Features
+
+* **ci:** include version in workflow run name ([#2627](https://github.com/langchain-ai/deepagents/issues/2627)) ([336ffd8](https://github.com/langchain-ai/deepagents/commit/336ffd88821114bcbde7408c49483770f0a758b9))
+* **cli:** add permissions to deepagents deploy ([#2651](https://github.com/langchain-ai/deepagents/issues/2651)) ([5d93b73](https://github.com/langchain-ai/deepagents/commit/5d93b736af6ffb165f33569233d533ced95a6943))
+
+
+### Bug Fixes
+
+* **cli:** add missing model provider deps to deploy bundler [closes [#2647](https://github.com/langchain-ai/deepagents/issues/2647)] ([#2660](https://github.com/langchain-ai/deepagents/issues/2660)) ([b710a69](https://github.com/langchain-ai/deepagents/commit/b710a69b12e49479045eaa54dfb709326473500b))
+* **cli:** bug w/ `AGENTS.md` in system prompt twice ([#2652](https://github.com/langchain-ai/deepagents/issues/2652)) ([9052be9](https://github.com/langchain-ai/deepagents/commit/9052be98d9f4ef9b11a88c9b1df3fae5e5ac666c))
+* **cli:** harden deploy config parsing and add unit tests ([#2636](https://github.com/langchain-ai/deepagents/issues/2636)) ([0469d14](https://github.com/langchain-ai/deepagents/commit/0469d1429d129e604fc1b622263923162f719314))
+* **cli:** load project .env before deploy/dev config validation ([#2644](https://github.com/langchain-ai/deepagents/issues/2644)) ([8299091](https://github.com/langchain-ai/deepagents/commit/829909166606f8a9d9571b00da725845bad08da7))
+
 ## [0.0.36](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.35...deepagents-cli==0.0.36) (2026-04-09)
 
 ### Features

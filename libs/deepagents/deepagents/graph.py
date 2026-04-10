@@ -28,7 +28,7 @@ from deepagents._models import get_model_identifier, get_model_provider, resolve
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._tool_exclusion import ToolExclusionMiddleware
+from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
@@ -436,7 +436,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Strip excluded tools after all tool-injecting middleware has run
     if _profile.excluded_tools:
-        gp_middleware.append(ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+        gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
@@ -493,7 +493,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Provider-specific middleware for this subagent's model
             subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
             if _subagent_profile.excluded_tools:
-                subagent_middleware.append(ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
@@ -565,7 +565,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_resolve_extra_middleware(_profile))
     if _profile.excluded_tools:
-        deepagent_middleware.append(ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Unconditional prompt caching (see general-purpose subagent comment).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:

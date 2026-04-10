@@ -26,7 +26,7 @@ def _tool_name(tool: BaseTool | dict[str, str]) -> str | None:
     return getattr(tool, "name", None)
 
 
-class ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
+class _ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
     """Middleware that filters excluded tools from the model request.
 
     Should be placed late in the middleware stack (after all

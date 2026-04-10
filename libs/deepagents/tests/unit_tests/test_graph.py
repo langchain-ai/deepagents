@@ -19,7 +19,7 @@ from deepagents.graph import (
     _tool_name,
     create_deep_agent,
 )
-from deepagents.middleware._tool_exclusion import ToolExclusionMiddleware
+from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -382,7 +382,7 @@ class TestSystemPromptAssembly:
 
 
 class TestToolExclusionMiddleware:
-    """Tests for ToolExclusionMiddleware."""
+    """Tests for _ToolExclusionMiddleware."""
 
     def test_filters_tools_from_request(self) -> None:
         tool_a = MagicMock()
@@ -398,7 +398,7 @@ class TestToolExclusionMiddleware:
 
         handler = MagicMock(return_value="response")
 
-        mw = ToolExclusionMiddleware(excluded=frozenset({"drop"}))
+        mw = _ToolExclusionMiddleware(excluded=frozenset({"drop"}))
         result = mw.wrap_model_call(request, handler)
 
         request.override.assert_called_once()
@@ -412,7 +412,7 @@ class TestToolExclusionMiddleware:
         request = MagicMock()
         handler = MagicMock(return_value="response")
 
-        mw = ToolExclusionMiddleware(excluded=frozenset())
+        mw = _ToolExclusionMiddleware(excluded=frozenset())
         result = mw.wrap_model_call(request, handler)
 
         request.override.assert_not_called()
@@ -433,7 +433,7 @@ class TestToolExclusionMiddleware:
         async def async_handler(_req: ModelRequest) -> str:  # type: ignore[type-arg]
             return "async_response"
 
-        mw = ToolExclusionMiddleware(excluded=frozenset({"drop"}))
+        mw = _ToolExclusionMiddleware(excluded=frozenset({"drop"}))
         result = await mw.awrap_model_call(request, async_handler)  # type: ignore[arg-type]
 
         filtered = request.override.call_args.kwargs["tools"]
@@ -443,7 +443,7 @@ class TestToolExclusionMiddleware:
 
 
 class TestToolExclusionWiring:
-    """Tests that excluded_tools on a profile wires ToolExclusionMiddleware into create_deep_agent."""
+    """Tests that excluded_tools on a profile wires _ToolExclusionMiddleware into create_deep_agent."""
 
     def test_exclusion_middleware_added_when_profile_has_excluded_tools(self) -> None:
         original = dict(_HARNESS_PROFILES)
@@ -468,9 +468,9 @@ class TestToolExclusionWiring:
                 result = create_deep_agent(model="exclprov:some-model")
 
             assert result == "compiled-agent"
-            # The middleware stack should contain a ToolExclusionMiddleware
+            # The middleware stack should contain a _ToolExclusionMiddleware
             mw_stack = mock_create.call_args.kwargs["middleware"]
-            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 1
             assert exclusion_mws[0]._excluded == frozenset({"execute", "write_file"})
         finally:
@@ -500,7 +500,7 @@ class TestToolExclusionWiring:
                 create_deep_agent(model="noxprov:some-model")
 
             mw_stack = mock_create.call_args.kwargs["middleware"]
-            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 0
         finally:
             _HARNESS_PROFILES.clear()
@@ -543,7 +543,7 @@ class TestToolExclusionWiring:
 
             # But the middleware is in the stack to handle filtering at call time
             mw_stack = mock_create.call_args.kwargs["middleware"]
-            exclusion_mws = [m for m in mw_stack if isinstance(m, ToolExclusionMiddleware)]
+            exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 1
             assert "my_tool" in exclusion_mws[0]._excluded
         finally:

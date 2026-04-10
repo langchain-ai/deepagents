@@ -189,13 +189,59 @@ def _resolve_middleware_seq(
     return middleware
 
 
+def _merge_middleware(
+    base_mw: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
+    over_mw: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
+) -> Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]]:
+    """Merge two middleware sequences by type.
+
+    If the override supplies a middleware whose type already exists in the base,
+    the override instance replaces it in-place (preserving position). Novel
+    override entries are appended.
+
+    Example: a provider profile registers `CachingMiddleware(ttl=60)` and a
+    model-specific profile registers `CachingMiddleware(ttl=0)`. The merged
+    result contains a single `CachingMiddleware(ttl=0)` — the model-specific
+    instance replaces the provider-level one rather than duplicating it.
+
+    Args:
+        base_mw: Base middleware (lower priority).
+        over_mw: Override middleware (higher priority).
+
+    Returns:
+        Merged middleware sequence or factory.
+    """
+    if not base_mw or not over_mw:
+        return over_mw or base_mw
+
+    def factory() -> Sequence[AgentMiddleware]:
+        base_seq = _resolve_middleware_seq(base_mw)
+        over_seq = _resolve_middleware_seq(over_mw)
+        over_by_type: dict[type, AgentMiddleware] = {type(m): m for m in over_seq}
+        merged: list[AgentMiddleware] = []
+        seen: set[type] = set()
+        for m in base_seq:
+            mtype = type(m)
+            if mtype in over_by_type:
+                merged.append(over_by_type[mtype])
+                seen.add(mtype)
+            else:
+                merged.append(m)
+        merged.extend(m for m in over_seq if type(m) not in seen)
+        return merged
+
+    return factory
+
+
 def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessProfile:
     """Merge two profiles, layering `override` on top of `base`.
 
     Dict fields are merged (override wins per-key). Callables (`pre_init`,
-    `init_kwargs_factory`) are chained. Middleware sequences are concatenated.
-    Scalar fields use the override value when it differs from the dataclass
-    default.
+    `init_kwargs_factory`) are chained. Middleware sequences are merged by
+    type: if the override supplies a middleware whose type already exists in
+    the base, it replaces the base entry (preserving position); novel override
+    entries are appended. Scalar fields (e.g. prompts) use the override
+    value when set, otherwise fall back to the base.
 
     Args:
         base: Provider-level profile (lower priority).
@@ -231,21 +277,6 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     else:
         init_kwargs_factory = override.init_kwargs_factory or base.init_kwargs_factory
 
-    # Concatenate extra_middleware (preserve deferred resolution)
-    base_mw = base.extra_middleware
-    over_mw = override.extra_middleware
-    if base_mw and over_mw:
-
-        def merged_middleware() -> Sequence[AgentMiddleware]:
-            return [
-                *_resolve_middleware_seq(base_mw),
-                *_resolve_middleware_seq(over_mw),
-            ]
-
-        extra_mw: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = merged_middleware
-    else:
-        extra_mw = over_mw or base_mw
-
     return HarnessProfile(
         init_kwargs={**base.init_kwargs, **override.init_kwargs},
         pre_init=pre_init,
@@ -256,7 +287,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
             **base.tool_description_overrides,
             **override.tool_description_overrides,
         },
-        extra_middleware=extra_mw,
+        extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
     )
 
 

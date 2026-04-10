@@ -232,9 +232,12 @@ class _LangSmithProvider(SandboxProvider):
 
         from deepagents_cli.model_config import resolve_env_var
 
-        self._api_key = (
+        sandbox_key = resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
+        if sandbox_key:
+            logger.debug("Using LangSmith API key from LANGSMITH_SANDBOX_API_KEY")
+        self._api_key: str | None = (
             api_key
-            or resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
+            or sandbox_key
             or resolve_env_var("LANGSMITH_API_KEY")
             or resolve_env_var("LANGCHAIN_API_KEY")
         )

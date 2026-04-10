@@ -224,6 +224,7 @@ def _deploy(
         config_path: Path to config file, or `None` for default.
         dry_run: If `True`, generate artifacts but don't deploy.
     """
+    from deepagents_cli.config import _load_dotenv
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
     from deepagents_cli.deploy.config import (
         DEFAULT_CONFIG_FILENAME,
@@ -239,6 +240,11 @@ def _deploy(
         cfg_path = discovered or Path.cwd() / DEFAULT_CONFIG_FILENAME
 
     project_root = cfg_path.parent
+    # Ensure the project .env is loaded into os.environ before validation.
+    # The main CLI bootstrap loads .env lazily (on first `settings` access),
+    # but deploy/dev commands may never touch `settings`, so the project
+    # .env would be missing when _validate_model_credentials checks os.environ.
+    _load_dotenv(start_path=project_root)
 
     # Load and validate config
     try:
@@ -302,6 +308,7 @@ def _dev(
     """
     import shutil
 
+    from deepagents_cli.config import _load_dotenv
     from deepagents_cli.deploy.bundler import bundle, print_bundle_summary
     from deepagents_cli.deploy.config import (
         DEFAULT_CONFIG_FILENAME,
@@ -315,6 +322,8 @@ def _dev(
         discovered = find_config()
         cfg_path = discovered or Path.cwd() / DEFAULT_CONFIG_FILENAME
     project_root = cfg_path.parent
+    # Ensure the project .env is loaded before validation (see _deploy).
+    _load_dotenv(start_path=project_root)
 
     try:
         config = load_config(cfg_path)

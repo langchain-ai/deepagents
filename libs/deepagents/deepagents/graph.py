@@ -31,6 +31,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -221,6 +222,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
+    permissions: list[FilesystemPermission] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -296,6 +298,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - Provider-specific middleware (from `ProviderProfile.extra_middleware`)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
+            - `_PermissionMiddleware` (if permission rules are present, always last)
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -357,6 +360,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For execution support, use a backend that
             implements `SandboxBackendProtocol`.
+        permissions: List of ``FilesystemPermission`` rules for the main agent
+            and its subagents.
+
+            Rules are evaluated in declaration order; the first match wins.
+            If no rule matches, the call is allowed.
+
+            Subagents inherit these rules unless they specify their own
+            `permissions` field, which replaces the parent's rules entirely.
+
+            `_PermissionMiddleware` is appended last in the stack so it sees
+            all tools (including those injected by other middleware).
         interrupt_on: Mapping of tool names to interrupt configs.
 
             Pass to pause agent execution at specified tool calls for human
@@ -427,6 +441,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     # Provider-specific middleware (e.g. Anthropic prompt caching).
     gp_middleware.extend(_resolve_extra_middleware(profile))
+    if permissions:
+        gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
@@ -454,6 +470,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_model = resolve_model(raw_subagent_model)
             subagent_profile = _profile_for_model(subagent_model, subagent_spec)
 
+            # Resolve permissions: subagent's own rules take priority, else inherit parent's
+            subagent_permissions = spec.get("permissions", permissions)
+
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
@@ -470,6 +489,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(spec.get("middleware", []))
             # Provider-specific middleware for this subagent's model.
             subagent_middleware.extend(_resolve_extra_middleware(subagent_profile))
+            if subagent_permissions:
+                subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
@@ -531,6 +552,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+    # _PermissionMiddleware must be last so it sees all tools from prior middleware
+    if permissions:
+        deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
     # Assemble base prompt: use profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.

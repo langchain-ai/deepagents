@@ -1887,7 +1887,7 @@ class TestStateBackendConfigKeys:
         factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
         assert len(factory_warnings) >= 1
 
-    def test_upload_files_via_after_model_middleware(self) -> None:
+    def test_state_backend_upload_files_works_in_graph_context(self) -> None:
         """upload_files called in an after-model middleware hook stores readable files."""
         backend = StateBackend()
 

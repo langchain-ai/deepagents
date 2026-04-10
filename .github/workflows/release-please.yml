@@ -7,7 +7,7 @@
 # GitHub releases are created by release.yml after all checks pass,
 # not by release-please directly (skip-github-release: true in config).
 
-name: Release Please
+name: "⚠️ (Automated) Release Please"
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
       # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
 
@@ -55,7 +55,7 @@ jobs:
       - name: Label release PRs
         if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           RELEASE_PRS: ${{ steps.release.outputs.prs }}
         with:
@@ -170,7 +170,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
 
@@ -209,6 +209,7 @@ jobs:
     with:
       package: deepagents-cli
     permissions:
+      actions: write
       contents: write
       id-token: write
       # write needed to update PR label from "autorelease: pending" to "autorelease: tagged"
@@ -222,6 +223,7 @@ jobs:
     with:
       package: deepagents
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -234,6 +236,7 @@ jobs:
     with:
       package: deepagents-acp
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -246,6 +249,7 @@ jobs:
     with:
       package: langchain-daytona
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -258,6 +262,7 @@ jobs:
     with:
       package: langchain-modal
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -270,6 +275,7 @@ jobs:
     with:
       package: langchain-runloop
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -282,6 +288,7 @@ jobs:
     with:
       package: langchain-quickjs
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write
@@ -294,6 +301,7 @@ jobs:
     with:
       package: langchain-repl
     permissions:
+      actions: write
       contents: write
       id-token: write
       pull-requests: write

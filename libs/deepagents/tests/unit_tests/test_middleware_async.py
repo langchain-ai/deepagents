@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import patch
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
@@ -27,7 +28,7 @@ def _make_backend(files=None):
                     "modified_at": fdata.get("modified_at", ""),
                 },
             )
-    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     return backend, mem_store
 
 
@@ -56,7 +57,7 @@ class TestFilesystemMiddlewareAsync:
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
-        assert result == str(["/test.txt", "/test2.txt"])
+        assert result.content == str(["/test.txt", "/test2.txt"])
 
     async def test_als_shortterm_with_path(self):
         """Test async ls tool with specific path."""
@@ -92,10 +93,10 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # ls should only return files directly in /pokemon/, not in subdirectories
-        assert "/pokemon/test2.txt" in result
-        assert "/pokemon/charmander.txt" in result
-        assert "/pokemon/water/squirtle.txt" not in result  # In subdirectory
-        assert "/pokemon/water/" in result
+        assert "/pokemon/test2.txt" in result.content
+        assert "/pokemon/charmander.txt" in result.content
+        assert "/pokemon/water/squirtle.txt" not in result.content  # In subdirectory
+        assert "/pokemon/water/" in result.content
 
     async def test_als_shortterm_lists_directories(self):
         """Test async ls lists directories with trailing /."""
@@ -131,12 +132,12 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # ls should list both files and directories at root level
-        assert "/test.txt" in result
-        assert "/pokemon/" in result
-        assert "/docs/" in result
+        assert "/test.txt" in result.content
+        assert "/pokemon/" in result.content
+        assert "/docs/" in result.content
         # But NOT subdirectory files
-        assert "/pokemon/charmander.txt" not in result
-        assert "/pokemon/water/squirtle.txt" not in result
+        assert "/pokemon/charmander.txt" not in result.content
+        assert "/pokemon/water/squirtle.txt" not in result.content
 
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
@@ -172,7 +173,7 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result == str(["/test.py"])
+        assert result.content == str(["/test.py"])
 
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
@@ -202,9 +203,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" in result
-        assert "/tests/test_main.py" in result
+        assert "/src/main.py" in result.content
+        assert "/src/utils/helper.py" in result.content
+        assert "/tests/test_main.py" in result.content
 
     async def test_aglob_search_shortterm_with_path(self):
         """Test async glob with specific path."""
@@ -235,9 +236,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" not in result
-        assert "/tests/test_main.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/src/utils/helper.py" not in result.content
+        assert "/tests/test_main.py" not in result.content
 
     async def test_aglob_search_shortterm_brace_expansion(self):
         """Test async glob with brace expansion."""
@@ -267,9 +268,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.pyi" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.pyi" in result.content
+        assert "/test.txt" not in result.content
 
     async def test_aglob_search_shortterm_no_matches(self):
         """Test async glob with no matches."""
@@ -289,7 +290,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result == str([])
+        assert result.content == str([])
 
     async def test_glob_timeout_returns_error_message_async(self):
         backend, _ = _make_backend()
@@ -343,9 +344,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/helper.txt" in result
-        assert "/main.py" not in result
+        assert "/test.py" in result.content
+        assert "/helper.txt" in result.content
+        assert "/main.py" not in result.content
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
@@ -366,9 +367,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "1: import os" in result
-        assert "2: import sys" in result
-        assert "print" not in result
+        assert "1: import os" in result.content
+        assert "2: import sys" in result.content
+        assert "print" not in result.content
 
     async def test_agrep_search_shortterm_count_mode(self):
         """Test async grep with count mode."""
@@ -394,8 +395,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py:2" in result or "/test.py: 2" in result
-        assert "/main.py:1" in result or "/main.py: 1" in result
+        assert "/test.py:2" in result.content or "/test.py: 2" in result.content
+        assert "/main.py:1" in result.content or "/main.py: 1" in result.content
 
     async def test_agrep_search_shortterm_with_include(self):
         """Test async grep with glob filter."""
@@ -421,8 +422,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.txt" not in result.content
 
     async def test_agrep_search_shortterm_with_path(self):
         """Test async grep with specific path."""
@@ -448,8 +449,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/tests/test.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/tests/test.py" not in result.content
 
     async def test_agrep_search_shortterm_regex_pattern(self):
         """Test async grep with literal pattern (not regex)."""
@@ -471,9 +472,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "1: def hello():" in result
-        assert "2: def world():" in result
-        assert "x = 5" not in result
+        assert "1: def hello():" in result.content
+        assert "2: def world():" in result.content
+        assert "x = 5" not in result.content
 
     async def test_agrep_search_shortterm_no_matches(self):
         """Test async grep with no matches."""
@@ -493,7 +494,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result == "No matches found"
+        assert result.content == "No matches found"
 
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
@@ -514,7 +515,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "No matches found" in result
+        content = result.content if isinstance(result, ToolMessage) else result
+        assert "No matches found" in content
 
     async def test_aread_file(self):
         """Test async read_file tool."""

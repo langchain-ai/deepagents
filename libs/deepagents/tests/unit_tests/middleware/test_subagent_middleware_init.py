@@ -124,7 +124,7 @@ class TestSubagentMiddlewareInit:
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call subagents.",
             middleware=[
                 SubAgentMiddleware(
@@ -134,7 +134,7 @@ class TestSubagentMiddlewareInit:
                             "name": "subagent1",
                             "description": "First subagent.",
                             "system_prompt": "You are subagent 1.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },
@@ -142,7 +142,7 @@ class TestSubagentMiddlewareInit:
                             "name": "subagent2",
                             "description": "Second subagent.",
                             "system_prompt": "You are subagent 2.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },

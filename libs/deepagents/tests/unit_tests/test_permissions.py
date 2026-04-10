@@ -89,6 +89,14 @@ class TestFilesystemPermission:
         assert "read" in rule.operations
         assert "write" in rule.operations
 
+    def test_path_without_leading_slash_raises(self):
+        with pytest.raises(ValueError, match="Permission path must start with '/'"):
+            FilesystemPermission(operations=["read"], paths=["workspace/**"])
+
+    def test_mixed_paths_with_missing_slash_raises(self):
+        with pytest.raises(ValueError, match="Permission path must start with '/'"):
+            FilesystemPermission(operations=["read"], paths=["/valid/**", "invalid/**"])
+
 
 class TestPermissionMiddleware:
     def _backend(self):

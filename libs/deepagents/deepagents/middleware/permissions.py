@@ -73,6 +73,12 @@ class FilesystemPermission:
     paths: list[str]
     mode: Literal["allow", "deny"] = "allow"
 
+    def __post_init__(self) -> None:
+        for path in self.paths:
+            if not path.startswith("/"):
+                msg = f"Permission path must start with '/': {path!r}"
+                raise ValueError(msg)
+
 
 # ---------------------------------------------------------------------------
 # Glob flags

@@ -900,32 +900,18 @@ def _assert_expectations(
 # ---------------------------------------------------------------------------
 
 
-def run_agent(
-    agent: CompiledStateGraph[Any, Any],
+def _prepare_invoke(
     *,
     query: str | list[AnyMessage],
     model: BaseChatModel,
-    initial_files: dict[str, str] | None = None,
-    scorer: TrajectoryScorer | None = None,
-    thread_id: str | None = None,
-    eval_metadata: dict[str, object] | None = None,
-) -> AgentTrajectory:
-    """Run agent eval against the given query.
-
-    Args:
-        agent: The compiled state graph to invoke.
-        query: A string prompt or list of messages.
-        model: The chat model (used for logging only).
-        initial_files: Optional initial files to seed the agent with.
-        scorer: Optional trajectory expectations to validate.
-        thread_id: Optional thread ID for the invocation.
-        eval_metadata: Optional metadata to attach to the logged inputs.
+    initial_files: dict[str, str] | None,
+    thread_id: str | None,
+    eval_metadata: dict[str, object] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build invoke inputs and config, and log to LangSmith.
 
     Returns:
-        The resulting `AgentTrajectory`.
-
-    Raises:
-        TypeError: If the invoke result is not a `Mapping`.
+        A ``(invoke_inputs, config)`` tuple.
     """
     if isinstance(query, str):
         invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
@@ -965,7 +951,26 @@ def run_agent(
             "run_tree is None; run_tree.inputs will not be overridden "
             "(sync_example may record auto-captured inputs)"
         )
-    result = agent.invoke(invoke_inputs, config)
+
+    return invoke_inputs, config
+
+
+def _finalize(
+    result: object,
+    scorer: TrajectoryScorer | None,
+) -> AgentTrajectory:
+    """Log outputs, build trajectory, and run assertions.
+
+    Args:
+        result: The raw result from ``agent.invoke()`` or ``agent.ainvoke()``.
+        scorer: Optional trajectory expectations to validate.
+
+    Returns:
+        The resulting `AgentTrajectory`.
+
+    Raises:
+        TypeError: If the invoke result is not a `Mapping`.
+    """
     t.log_outputs(result)
 
     if not isinstance(result, Mapping):
@@ -976,3 +981,82 @@ def run_agent(
     if scorer is not None:
         _assert_expectations(trajectory, scorer)
     return trajectory
+
+
+def run_agent(
+    agent: CompiledStateGraph[Any, Any],
+    *,
+    query: str | list[AnyMessage],
+    model: BaseChatModel,
+    initial_files: dict[str, str] | None = None,
+    scorer: TrajectoryScorer | None = None,
+    thread_id: str | None = None,
+    eval_metadata: dict[str, object] | None = None,
+) -> AgentTrajectory:
+    """Run agent eval against the given query (sync).
+
+    Args:
+        agent: The compiled state graph to invoke.
+        query: A string prompt or list of messages.
+        model: The chat model (used for logging only).
+        initial_files: Optional initial files to seed the agent with.
+        scorer: Optional trajectory expectations to validate.
+        thread_id: Optional thread ID for the invocation.
+        eval_metadata: Optional metadata to attach to the logged inputs.
+
+    Returns:
+        The resulting `AgentTrajectory`.
+
+    Raises:
+        TypeError: If the invoke result is not a `Mapping`.
+    """
+    invoke_inputs, config = _prepare_invoke(
+        query=query,
+        model=model,
+        initial_files=initial_files,
+        thread_id=thread_id,
+        eval_metadata=eval_metadata,
+    )
+    result = agent.invoke(invoke_inputs, config)
+    return _finalize(result, scorer)
+
+
+async def arun_agent(
+    agent: CompiledStateGraph[Any, Any],
+    *,
+    query: str | list[AnyMessage],
+    model: BaseChatModel,
+    initial_files: dict[str, str] | None = None,
+    scorer: TrajectoryScorer | None = None,
+    thread_id: str | None = None,
+    eval_metadata: dict[str, object] | None = None,
+) -> AgentTrajectory:
+    """Run agent eval against the given query (async).
+
+    Async variant of `run_agent` for tools that only support async
+    invocation (e.g. `swarm`).
+
+    Args:
+        agent: The compiled state graph to invoke.
+        query: A string prompt or list of messages.
+        model: The chat model (used for logging only).
+        initial_files: Optional initial files to seed the agent with.
+        scorer: Optional trajectory expectations to validate.
+        thread_id: Optional thread ID for the invocation.
+        eval_metadata: Optional metadata to attach to the logged inputs.
+
+    Returns:
+        The resulting `AgentTrajectory`.
+
+    Raises:
+        TypeError: If the invoke result is not a `Mapping`.
+    """
+    invoke_inputs, config = _prepare_invoke(
+        query=query,
+        model=model,
+        initial_files=initial_files,
+        thread_id=thread_id,
+        eval_metadata=eval_metadata,
+    )
+    result = await agent.ainvoke(invoke_inputs, config)
+    return _finalize(result, scorer)

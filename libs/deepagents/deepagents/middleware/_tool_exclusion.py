@@ -22,8 +22,10 @@ if TYPE_CHECKING:
 def _tool_name(tool: BaseTool | dict[str, str]) -> str | None:
     """Extract tool name from a `BaseTool` or dict tool."""
     if isinstance(tool, dict):
-        return tool.get("name")
-    return getattr(tool, "name", None)
+        name = tool.get("name")
+        return name if isinstance(name, str) else None
+    name = getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
 
 
 class _ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):

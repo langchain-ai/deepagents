@@ -213,6 +213,10 @@ class TestCheckOpenRouterVersion:
         ):
             check_openrouter_version()
 
+    def test_skips_check_for_invalid_version(self) -> None:
+        with patch("deepagents._openrouter.pkg_version", return_value="not-a-version"):
+            check_openrouter_version()  # should not raise
+
     def test_resolve_model_calls_check(self) -> None:
         with (
             patch("deepagents._harness_profiles.check_openrouter_version") as mock_check,

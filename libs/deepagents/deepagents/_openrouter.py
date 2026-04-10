@@ -15,7 +15,7 @@ import os
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any
 
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 OPENROUTER_MIN_VERSION = "0.2.0"  # app attribution support added
 """Minimum required version of `langchain-openrouter`.
@@ -66,7 +66,12 @@ def check_openrouter_version() -> None:
         installed = pkg_version("langchain-openrouter")
     except PackageNotFoundError:
         return
-    if Version(installed) < Version(OPENROUTER_MIN_VERSION):
+    try:
+        is_old = Version(installed) < Version(OPENROUTER_MIN_VERSION)
+    except InvalidVersion:
+        # Non-PEP-440 version (dev build, fork, etc.) — skip the check
+        return
+    if is_old:
         msg = (
             f"deepagents requires langchain-openrouter>={OPENROUTER_MIN_VERSION}, "
             f"but {installed} is installed. "

@@ -97,10 +97,9 @@ class HarnessProfile:
     excluded_tools: frozenset[str] = frozenset()
     """Tool names to remove from the tool set for this provider/model.
 
-    Applies to both user-supplied tools (filtered before passing to
-    `create_agent`) and middleware-injected tools (filtered via a
-    `_ToolExclusionMiddleware` that strips them from `request.tools` before
-    the model sees them).
+    Filtered via `_ToolExclusionMiddleware`, which strips both user-supplied
+    and middleware-injected tools from `request.tools` before the model
+    sees them.
 
     Merged via union when profiles are combined, so provider-level exclusions
     and model-level exclusions accumulate.
@@ -266,7 +265,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
         over_fac = override.init_kwargs_factory
 
         def chained_factory() -> dict[str, Any]:
-            result = base_fac()
+            result = {**base_fac()}
             result.update(over_fac())
             return result
 

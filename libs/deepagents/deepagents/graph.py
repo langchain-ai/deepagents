@@ -5,6 +5,7 @@ configured Deep Agent with planning, filesystem, subagent, and summarization
 middleware.
 """
 
+import logging
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -42,6 +43,8 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+
+logger = logging.getLogger(__name__)
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -85,12 +88,13 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default system prompt appended to every Deep Agent.
+"""Default base system prompt for every Deep Agent.
 
 When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
 is prepended and this base prompt is appended. When `system_prompt` is `None`,
 this is used as the sole system prompt.
 """
+# Replaceable via `HarnessProfile.base_system_prompt` (internal)
 
 
 def get_default_model() -> ChatAnthropic:
@@ -130,7 +134,7 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
-    instance (via `ls_params`) and used as a best-effort fallback.
+    instance (via `model_dump`) and used as a best-effort fallback.
 
     Args:
         model: Resolved chat model instance.
@@ -146,10 +150,12 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         profile = get_harness_profile(identifier)
         if profile != HarnessProfile():
             return profile
+        logger.debug("No profile for identifier %r, trying provider fallback", identifier)
     # Bare model name (no colon) — fall back to provider from the model class.
     provider = get_model_provider(model)
     if provider is not None:
         return get_harness_profile(provider)
+    logger.debug("No harness profile found for pre-built model %s, using defaults", type(model).__name__)
     return HarnessProfile()
 
 
@@ -165,7 +171,8 @@ def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
     if isinstance(tool, dict):
         name = tool.get("name")  # ty: ignore[invalid-argument-type]  # Callable & dict intersection confuses ty
         return name if isinstance(name, str) else None
-    return getattr(tool, "name", None)
+    name = getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
 
 
 def _apply_tool_description_overrides(
@@ -287,6 +294,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Tail stack:
 
+            - Profile `extra_middleware` (provider-specific, if any)
+            - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
             - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
                 non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)

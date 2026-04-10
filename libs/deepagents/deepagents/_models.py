@@ -77,7 +77,7 @@ def get_model_provider(model: BaseChatModel) -> str | None:
     """
     try:
         ls_params = model._get_ls_params()
-    except Exception:  # noqa: BLE001
+    except (AttributeError, TypeError, NotImplementedError):
         return None
     provider = ls_params.get("ls_provider")
     if isinstance(provider, str) and provider:

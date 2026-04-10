@@ -305,18 +305,6 @@ def check_openrouter_version() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _anthropic_extra_middleware() -> Sequence[AgentMiddleware]:
-    """Build Anthropic prompt-caching middleware (deferred import).
-
-    Returns:
-        Single-element sequence containing an `AnthropicPromptCachingMiddleware`
-        configured with `unsupported_model_behavior="ignore"`.
-    """
-    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
-
-    return [AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")]
-
-
 register_harness_profile(
     "openai",
     HarnessProfile(init_kwargs={"use_responses_api": True}),
@@ -328,9 +316,4 @@ register_harness_profile(
         pre_init=lambda _spec: check_openrouter_version(),
         init_kwargs_factory=_openrouter_attribution_kwargs,
     ),
-)
-
-register_harness_profile(
-    "anthropic",
-    HarnessProfile(extra_middleware=_anthropic_extra_middleware),
 )

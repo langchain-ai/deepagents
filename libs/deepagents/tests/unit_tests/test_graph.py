@@ -214,7 +214,6 @@ class TestDefaultModelProfile:
         # Verify the built-in anthropic profile is registered
         anthropic_profile = _HARNESS_PROFILES.get("anthropic")
         assert anthropic_profile is not None
-        assert callable(anthropic_profile.extra_middleware)
 
 
 class TestToolDescriptionOverrideWiring:

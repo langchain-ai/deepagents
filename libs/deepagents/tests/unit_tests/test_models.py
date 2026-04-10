@@ -490,9 +490,8 @@ class TestProfileMergingEndToEnd:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_anthropic_exact_model_inherits_caching_middleware(self) -> None:
-        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
-
+    def test_anthropic_exact_model_inherits_provider_profile(self) -> None:
+        """Per-model Anthropic profile merges with the provider-level profile."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -501,10 +500,9 @@ class TestProfileMergingEndToEnd:
             )
             profile = get_harness_profile("anthropic:claude-sonnet-4-6-20250514")
             assert profile.system_prompt_suffix == "be concise"
-            # Middleware is a factory (merged); should produce caching middleware
-            assert callable(profile.extra_middleware)
-            mw = profile.extra_middleware()
-            assert any(isinstance(m, AnthropicPromptCachingMiddleware) for m in mw)
+            # AnthropicPromptCachingMiddleware is applied unconditionally in
+            # graph.py, not via the profile, so extra_middleware should be empty.
+            assert profile.extra_middleware == ()
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -545,17 +543,10 @@ class TestBuiltInProfiles:
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
-    def test_anthropic_profile_has_extra_middleware(self) -> None:
+    def test_anthropic_returns_default_profile(self) -> None:
+        """Anthropic has no registered profile; caching is unconditional in graph.py."""
         profile = get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert callable(profile.extra_middleware)
-
-    def test_anthropic_extra_middleware_produces_caching(self) -> None:
-        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware  # noqa: PLC0415
-
-        profile = get_harness_profile("anthropic:claude-sonnet-4-6")
-        middleware = profile.extra_middleware()
-        assert len(middleware) == 1
-        assert isinstance(middleware[0], AnthropicPromptCachingMiddleware)
+        assert profile == HarnessProfile()
 
 
 class TestResolveModelWithProfiles:

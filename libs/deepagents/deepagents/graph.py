@@ -13,6 +13,7 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
@@ -296,6 +297,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Tail stack:
 
             - Provider-specific middleware (from `HarnessProfile.extra_middleware`)
+            - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
+              non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
@@ -439,8 +442,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    # Provider-specific middleware (e.g. Anthropic prompt caching).
+    # Provider-specific middleware from the harness profile.
     gp_middleware.extend(_resolve_extra_middleware(profile))
+    # Prompt caching is unconditional: "ignore" silently skips non-Anthropic
+    # models, and the CLI's dynamic model swap may switch to Anthropic at
+    # runtime after the middleware stack is already built.
+    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if permissions:
         gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
@@ -489,6 +496,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(spec.get("middleware", []))
             # Provider-specific middleware for this subagent's model.
             subagent_middleware.extend(_resolve_extra_middleware(subagent_profile))
+            # Unconditional prompt caching (see general-purpose subagent comment).
+            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
@@ -548,6 +557,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_resolve_extra_middleware(profile))
+    # Unconditional prompt caching (see general-purpose subagent comment).
+    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if interrupt_on is not None:

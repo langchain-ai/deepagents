@@ -1,10 +1,11 @@
-"""Permission middleware for filesystem access control.
+"""Permission types and middleware for filesystem access control.
 
-Enforces ``FilesystemPermission`` rules via ``wrap_tool_call`` /
-``awrap_tool_call``.
+Defines ``FilesystemPermission`` rules and enforces them via
+``wrap_tool_call`` / ``awrap_tool_call``.
 """
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import wcmatch.glob as wcglob
@@ -24,10 +25,53 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware.filesystem import supports_execution
-from deepagents.permissions import (
-    FilesystemOperation,
-    FilesystemPermission,
-)
+
+# ---------------------------------------------------------------------------
+# Permission types
+# ---------------------------------------------------------------------------
+
+FilesystemOperation = Literal["read", "write"]
+"""Operation type for filesystem permission rules.
+
+- `read`: covers `ls`, `read_file`, `glob`, `grep`
+- `write`: covers `write_file`, `edit_file`
+"""
+
+
+@dataclass
+class FilesystemPermission:
+    """A single access rule for filesystem operations.
+
+    Rules are evaluated in declaration order. The first matching rule's
+    `mode` is applied. If no rule matches, the call is allowed (permissive
+    default).
+
+    Args:
+        operations: Operations this rule applies to. `"read"` covers
+            `ls`, `read_file`, `glob`, `grep`. `"write"` covers
+            `write_file`, `edit_file`.
+        paths: Glob patterns for matching file paths
+            (e.g. `["/workspace/**", "/tmp/*.log"]`). Uses
+            `wcmatch` with `BRACE | GLOBSTAR` flags. Paths are
+            canonicalized before matching to prevent traversal bypasses.
+        mode: Whether to allow or deny matching calls.
+
+    Example:
+        ```python
+        from deepagents.middleware.permissions import FilesystemPermission
+
+        # Deny all writes anywhere
+        FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
+
+        # Allow reads only under /workspace
+        FilesystemPermission(operations=["read"], paths=["/workspace/**"])
+        ```
+    """
+
+    operations: list[FilesystemOperation]
+    paths: list[str]
+    mode: Literal["allow", "deny"] = "allow"
+
 
 # ---------------------------------------------------------------------------
 # Glob flags
@@ -99,7 +143,7 @@ def _filter_paths_by_permission(
     return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
 
 
-class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware enforcing filesystem permission rules.
 
     Intercepts each tool call via ``wrap_tool_call`` / ``awrap_tool_call``.
@@ -125,10 +169,9 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     Example:
         ```python
-        from deepagents.permissions import FilesystemPermission
-        from deepagents.middleware.permissions import PermissionMiddleware
+        from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
 
-        middleware = PermissionMiddleware(
+        middleware = _PermissionMiddleware(
             rules=[
                 FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
             ]
@@ -152,7 +195,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """
         if isinstance(backend, BackendProtocol) and supports_execution(backend):
             msg = (
-                "PermissionMiddleware does not yet support backends with command "
+                "_PermissionMiddleware does not yet support backends with command "
                 "execution (SandboxBackendProtocol). Tool-level permissions for "
                 "the execute tool are not implemented. Either remove permissions "
                 "or use a backend without execution support."
@@ -181,6 +224,7 @@ class PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         content=f"Error: permission denied for {operation} on {canonical}",
                         name=tool_name,
                         tool_call_id=tool_call_id,
+                        status="error",
                     )
         return None
 

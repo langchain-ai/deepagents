@@ -44,6 +44,18 @@ Deep Agents Deploy is built on [Deep Agents](https://github.com/langchain-ai/dee
 | **`mcp.json`** | MCP tools (HTTP/SSE). See [MCP docs](https://docs.langchain.com/oss/python/langchain/mcp). |
 | **`sandbox`** | Optional execution environment. See [Sandbox providers](#sandbox-providers). |
 
+## Install
+
+Install the CLI or run directly with `uvx`:
+
+```bash
+# Install globally
+uv tool install deepagents-cli
+
+# Or run without installing
+uvx deepagents-cli deploy
+```
+
 ## Usage
 
 ```bash

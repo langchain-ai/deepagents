@@ -28,7 +28,7 @@ def _make_backend(files=None):
                     "modified_at": fdata.get("modified_at", ""),
                 },
             )
-    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     return backend, mem_store
 
 

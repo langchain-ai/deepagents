@@ -27,9 +27,9 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
+from deepagents.middleware.permissions import FilesystemPermission
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
-from deepagents.permissions import FilesystemPermission
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -72,7 +72,7 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
         return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
     if request.param == "state":
         return StateBackend()
-    return StoreBackend(store=InMemoryStore())
+    return StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
 
 
 def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
@@ -2036,7 +2036,7 @@ class TestCompactConversationTool:
         agent = create_deep_agent(
             model=agent_model,
             middleware=[
-                create_summarization_tool_middleware(summary_model, StateBackend),
+                create_summarization_tool_middleware(summary_model, StateBackend()),
             ],
             checkpointer=InMemorySaver(),
         )
@@ -2248,7 +2248,7 @@ class TestStateBackendConfigKeys:
                 model=model,
                 backend=StateBackend,
             )
-        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+            result = agent.invoke({"messages": [HumanMessage(content="go")]})
 
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
         assert any("works" in m.content for m in tool_msgs)
@@ -2308,7 +2308,7 @@ class TestStateBackendConfigKeys:
         mem_store = InMemoryStore()
         agent = create_deep_agent(
             model=model,
-            backend=StoreBackend(store=mem_store),
+            backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
             store=mem_store,
         )
         result = agent.invoke({"messages": [HumanMessage(content="go")]})
@@ -2350,7 +2350,7 @@ class TestStateBackendConfigKeys:
 
         agent = create_deep_agent(
             model=model,
-            backend=StoreBackend(),  # No explicit store
+            backend=StoreBackend(namespace=lambda _rt: ("filesystem",)),  # No explicit store
             store=InMemoryStore(),  # Passed to graph — get_store() picks it up
         )
         result = agent.invoke({"messages": [HumanMessage(content="go")]})

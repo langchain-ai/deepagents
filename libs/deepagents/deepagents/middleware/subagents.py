@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.permissions import FilesystemPermission
+from deepagents.middleware.permissions import FilesystemPermission
 
 
 class SubAgent(TypedDict):
@@ -84,7 +84,7 @@ class SubAgent(TypedDict):
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    ``PermissionMiddleware`` is appended last in the middleware stack.
+    ``_PermissionMiddleware`` is appended last in the middleware stack.
     """
 
 

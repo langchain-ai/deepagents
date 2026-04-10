@@ -432,14 +432,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    # Provider-specific middleware from the harness profile.
+
+    # Provider-specific middleware
     gp_middleware.extend(_resolve_extra_middleware(_profile))
-    # Prompt caching is unconditional: "ignore" silently skips non-Anthropic
-    # models, and the CLI's dynamic model swap may switch to Anthropic at
-    # runtime after the middleware stack is already built.
+
+    # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+
+    # Permissions are also unconditional since they need to be last to see
+    # all tools, but they may be empty if no rules are provided.
     if permissions:
         gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
@@ -465,7 +469,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             raw_subagent_model = spec.get("model", model)
             subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
             subagent_model = resolve_model(raw_subagent_model)
-            subagent_profile = _harness_profile_for_model(subagent_model, subagent_spec)
+            _subagent_profile = _harness_profile_for_model(subagent_model, subagent_spec)
 
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
@@ -475,7 +479,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 TodoListMiddleware(),
                 FilesystemMiddleware(
                     backend=backend,
-                    custom_tool_descriptions=subagent_profile.tool_description_overrides,
+                    custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -484,18 +488,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
+
             # Provider-specific middleware for this subagent's model.
-            subagent_middleware.extend(_resolve_extra_middleware(subagent_profile))
-            # Unconditional prompt caching (see general-purpose subagent comment).
+            subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
+
+            # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+
             raw_subagent_tools = spec.get("tools") if "tools" in spec else tools
             subagent_tools = _apply_tool_description_overrides(
                 raw_subagent_tools,
-                subagent_profile.tool_description_overrides,
+                _subagent_profile.tool_description_overrides,
             )
 
             processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]

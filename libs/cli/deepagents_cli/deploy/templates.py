@@ -480,7 +480,7 @@ name = {agent_name!r}
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents==0.5.2a1",
+    "deepagents==0.5.2a2",
 {extra_deps}]
 
 [tool.setuptools]

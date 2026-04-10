@@ -126,7 +126,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts changelog and collects contributor shoutouts; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
 5. **Publish** - Publishes to PyPI
-6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest`.
+6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).
 
 ### Release PR Labels
 
@@ -191,7 +191,9 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Enable `dangerous-nonmain-release` ✓
    - (CLI only): leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
-5. **Clean up** — delete the branch after the workflow succeeds:
+5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
+
+6. **Clean up** — delete the branch after the workflow succeeds:
 
    ```bash
    git checkout main

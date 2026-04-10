@@ -116,6 +116,7 @@ jobs:
     outputs:
       pkg-name: ${{ steps.check-version.outputs.pkg-name }}
       version: ${{ steps.check-version.outputs.version }}
+      is-prerelease: ${{ steps.check-version.outputs.is-prerelease }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -153,14 +154,18 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           import os
+          import re
           import tomllib
           with open("pyproject.toml", "rb") as f:
               data = tomllib.load(f)
           pkg_name = data["project"]["name"]
           version = data["project"]["version"]
+          # PEP 440 pre-release: contains a/b/rc/dev suffix or dash separator
+          is_pre = bool(re.search(r"(a|b|rc|\.dev)\d", version) or "-" in version)
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
+              f.write(f"is-prerelease={'true' if is_pre else 'false'}\n")
 
       - name: Update workflow run name with version
         continue-on-error: true
@@ -190,6 +195,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Check tags
         id: check-tags
@@ -208,11 +214,30 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
+          # Detect PEP 440 pre-release versions:
+          #   - Dash separator: 1.0.0-rc.1
+          #   - PEP 440 suffixes: 1.0.0a1, 1.0.0b1, 1.0.0rc1, 1.0.0.dev1
+          IS_PRERELEASE=false
+          if [[ "$VERSION" == *"-"* ]] || [[ "$VERSION" =~ [0-9](a|b|rc)[0-9] ]] || [[ "$VERSION" =~ [.]dev[0-9] ]]; then
+            IS_PRERELEASE=true
+          fi
+          echo "is-prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
           # Determine previous tag
-          if [[ "$VERSION" == *"-"* ]]; then
-            BASE_VERSION=${VERSION%%-*}
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
+            # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
+            BASE_VERSION=$(echo "$VERSION" | sed 's/-.*$//' | sed -E 's/\.dev[0-9]+$//' | sed -E 's/(a|b|rc)[0-9]+$//')
+            echo "Pre-release detected: base version is $BASE_VERSION"
+
+            if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
+            fi
+
+            # Try exact base version tag first (e.g. deepagents==0.5.2)
             PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==${BASE_VERSION}$" || true) | head -1)
             if [ -z "$PREV_TAG" ]; then
+              # Fall back to latest stable release tag
               PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
             fi
           else
@@ -234,18 +259,23 @@ jobs:
           echo "Previous tag: $PREV_TAG"
           echo "prev-tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
-          # Resolve the actual release commit instead of using HEAD.
-          # release-please always updates CHANGELOG.md in the release commit,
-          # so on workflow_call this resolves to HEAD (effectively a no-op).
-          # On workflow_dispatch (manual/recovery), HEAD may be ahead of the
-          # release commit — this avoids attributing post-release commits to
-          # this release's contributor list.
-          RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
-          if [ -z "$RELEASE_COMMIT" ]; then
-            echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+          # Resolve the actual release commit.
+          # For stable releases: release-please updates CHANGELOG.md in the release
+          # commit, so we use the last CHANGELOG.md touch. On workflow_dispatch
+          # (manual/recovery), HEAD may be ahead — this avoids attributing
+          # post-release commits to this release's contributor list.
+          # For pre-releases: CHANGELOG.md is not updated, so use HEAD directly.
+          if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_COMMIT=$(git rev-parse HEAD)
+            echo "Pre-release: using HEAD as release commit"
+          else
+            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
+            if [ -z "$RELEASE_COMMIT" ]; then
+              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
+              RELEASE_COMMIT=$(git rev-parse HEAD)
+            fi
           fi
-          echo "Release commit (from CHANGELOG.md): $RELEASE_COMMIT"
+          echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Generate release body
@@ -256,6 +286,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
         run: |
           if [ -z "$RELEASE_COMMIT" ]; then
             echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
@@ -266,6 +297,8 @@ jobs:
           RELEASE_BODY=""
 
           # Try to extract current version's section from CHANGELOG.md
+          # (Pre-releases won't have a CHANGELOG entry and the git log fallback is
+          # also skipped for them — they get the banner + contributors only)
           if [ -f "$CHANGELOG_PATH" ]; then
             echo "Found CHANGELOG.md, extracting version $VERSION section..."
 
@@ -290,7 +323,8 @@ jobs:
           fi
 
           # Fallback to git log if CHANGELOG extraction failed
-          if [ -z "$RELEASE_BODY" ]; then
+          # (Skip for pre-releases — they get the banner + contributors only)
+          if [ -z "$RELEASE_BODY" ] && [ "$IS_PRERELEASE" != "true" ]; then
             echo "Falling back to git log for release notes..."
 
             FALLBACK_PREV="$PREV_TAG"
@@ -429,6 +463,11 @@ jobs:
           done
 
           echo "Found internal maintainers: $INTERNAL_LIST"
+
+          # Prepend pre-release banner
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
+          fi
 
           # Append contributor shoutouts
           SEPARATOR_ADDED=false
@@ -714,7 +753,8 @@ jobs:
           tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
           commit: ${{ github.sha }}
-          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
+          prerelease: ${{ needs.build.outputs.is-prerelease == 'true' }}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' && needs.build.outputs.is-prerelease != 'true' }}
           draft: false
 
       # Mark the release PR as tagged so release-please knows it's been released

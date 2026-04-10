@@ -51,6 +51,7 @@ _MODEL_PROVIDER_DEPS: dict[str, str] = {
     "openai": "langchain-openai",
     "openrouter": "langchain-openrouter",
     "perplexity": "langchain-perplexity",
+    "together": "langchain-together",
     "xai": "langchain-xai",
 }
 """Dependencies inferred from a provider: prefix on the model string."""

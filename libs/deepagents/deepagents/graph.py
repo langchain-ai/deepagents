@@ -112,8 +112,6 @@ def _resolve_extra_middleware(
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Materialize the `extra_middleware` from a provider profile.
 
-    Handles both static sequences and zero-arg factories.
-
     Args:
         profile: The provider profile to read from.
 
@@ -122,7 +120,7 @@ def _resolve_extra_middleware(
     """
     extra = profile.extra_middleware
     if callable(extra):
-        return list(extra())  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
+        return list(extra())  # ty: ignore[call-top-callable]
     return list(extra)
 
 
@@ -410,9 +408,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
     """
-    model_spec: str | None = model if isinstance(model, str) else None
     model = get_default_model() if model is None else resolve_model(model)
+
+    model_spec: str | None = model if isinstance(model, str) else None
     _profile = _harness_profile_for_model(model, model_spec)
+
+    # Apply tool description overrides, if any
     default_tools = _apply_tool_description_overrides(
         tools,
         _profile.tool_description_overrides,
@@ -433,7 +434,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
-    # Provider-specific middleware
+    # Add provider-specific middleware, if any
     gp_middleware.extend(_resolve_extra_middleware(_profile))
 
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models

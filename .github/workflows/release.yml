@@ -7,7 +7,7 @@
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "⚠️ Manual Package Release"
-run-name: "Release ${{ inputs.package }}"
+run-name: "Release ${{ inputs.package }}${{ inputs.version && format(' {0}', inputs.version) || '' }}"
 on:
   workflow_call:
     inputs:
@@ -15,6 +15,11 @@ on:
         required: true
         type: string
         description: "Package to release"
+      version:
+        required: false
+        type: string
+        default: ""
+        description: "Version being released (used in run name)"
   workflow_dispatch:
     inputs:
       package:
@@ -32,6 +37,11 @@ on:
           - langchain-repl
           - langchain-runloop
         default: deepagents
+      version:
+        required: false
+        type: string
+        default: ""
+        description: "Version string — does NOT control the released version"
       dangerous-nonmain-release:
         required: false
         type: boolean
@@ -108,7 +118,6 @@ jobs:
     if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
-      actions: write
       contents: read
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
@@ -167,14 +176,14 @@ jobs:
               f.write(f"version={version}\n")
               f.write(f"is-prerelease={'true' if is_pre else 'false'}\n")
 
-      - name: Update workflow run name with version
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate version consistency
+        if: inputs.version != ''
         run: |
-          gh api --method PATCH \
-            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            -f "name=Release ${{ steps.check-version.outputs.pkg-name }} ${{ steps.check-version.outputs.version }}"
+          BUILD_VERSION="${{ steps.check-version.outputs.version }}"
+          INPUT_VERSION="${{ inputs.version }}"
+          if [ "$BUILD_VERSION" != "$INPUT_VERSION" ]; then
+            echo "::warning::Version mismatch — run name says '$INPUT_VERSION' but pyproject.toml says '$BUILD_VERSION'"
+          fi
 
   # Generate release notes from CHANGELOG.md (with git log fallback)
   # and collect contributor shoutouts from merged PRs

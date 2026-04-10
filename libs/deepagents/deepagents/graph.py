@@ -22,8 +22,8 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
+from deepagents._harness_profiles import HarnessProfile, get_harness_profile
 from deepagents._models import get_model_identifier, get_model_provider, resolve_model
-from deepagents._profiles import ProviderProfile, get_provider_profile
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -107,7 +107,7 @@ def get_default_model() -> ChatAnthropic:
 
 
 def _resolve_extra_middleware(
-    profile: ProviderProfile,
+    profile: HarnessProfile,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Materialize the `extra_middleware` from a provider profile.
 
@@ -125,8 +125,8 @@ def _resolve_extra_middleware(
     return list(extra)
 
 
-def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfile:
-    """Look up the `ProviderProfile` for an already-resolved model.
+def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
+    """Look up the `HarnessProfile` for an already-resolved model.
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
@@ -134,7 +134,7 @@ def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfil
 
     For pre-built model instances (where `spec` is `None`), the identifier alone
     (e.g. `"claude-sonnet-4-6"`) has no provider prefix, so
-    `get_provider_profile` cannot resolve the provider-level profile. As a
+    `get_harness_profile` cannot resolve the provider-level profile. As a
     fallback we use `get_model_provider` (backed by `_get_ls_params`) to recover
     the provider name and look up the profile directly.
 
@@ -143,20 +143,20 @@ def _profile_for_model(model: BaseChatModel, spec: str | None) -> ProviderProfil
         spec: Original model spec string, or `None` for pre-built instances.
 
     Returns:
-        The matching `ProviderProfile`, or an empty default.
+        The matching `HarnessProfile`, or an empty default.
     """
     if spec is not None:
-        return get_provider_profile(spec)
+        return get_harness_profile(spec)
     identifier = get_model_identifier(model)
     if identifier is not None:
-        profile = get_provider_profile(identifier)
-        if profile != ProviderProfile():
+        profile = get_harness_profile(identifier)
+        if profile != HarnessProfile():
             return profile
     # Bare model name (no colon) — fall back to provider from the model class.
     provider = get_model_provider(model)
     if provider is not None:
-        return get_provider_profile(provider)
-    return ProviderProfile()
+        return get_harness_profile(provider)
+    return HarnessProfile()
 
 
 def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
@@ -277,7 +277,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `base_system_prompt` when set).
 
             Does not replace the base prompt — use
-            `ProviderProfile.base_system_prompt` for that.
+            `HarnessProfile.base_system_prompt` for that.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -295,7 +295,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Tail stack:
 
-            - Provider-specific middleware (from `ProviderProfile.extra_middleware`)
+            - Provider-specific middleware (from `HarnessProfile.extra_middleware`)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
@@ -420,7 +420,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         model_spec = None
     model = get_default_model() if model is None else resolve_model(model)
-    profile = _profile_for_model(model, model_spec)
+    profile = _harness_profile_for_model(model, model_spec)
     backend = backend if backend is not None else StateBackend()
     default_tools = _apply_tool_description_overrides(
         tools,
@@ -468,7 +468,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             raw_subagent_model = spec.get("model", model)
             subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
             subagent_model = resolve_model(raw_subagent_model)
-            subagent_profile = _profile_for_model(subagent_model, subagent_spec)
+            subagent_profile = _harness_profile_for_model(subagent_model, subagent_spec)
 
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)

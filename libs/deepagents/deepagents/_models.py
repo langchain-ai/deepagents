@@ -7,7 +7,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from deepagents._profiles import get_provider_profile
+from deepagents._harness_profiles import get_harness_profile
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -16,7 +16,7 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     If `model` is already a `BaseChatModel`, returns it unchanged.
 
     String models are resolved via `init_chat_model` with provider-specific
-    kwargs drawn from the `ProviderProfile` registry. For example, OpenAI models
+    kwargs drawn from the `HarnessProfile` registry. For example, OpenAI models
     default to the Responses API, and OpenRouter models include app
     attribution headers.
 
@@ -30,7 +30,7 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     if isinstance(model, BaseChatModel):
         return model
 
-    profile = get_provider_profile(model)
+    profile = get_harness_profile(model)
 
     if profile.pre_init is not None:
         profile.pre_init(model)

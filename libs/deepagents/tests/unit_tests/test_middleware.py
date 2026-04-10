@@ -61,7 +61,7 @@ def _make_backend(files=None):
                     "modified_at": fdata.get("modified_at", ""),
                 },
             )
-    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     return backend, mem_store
 
 
@@ -1078,7 +1078,7 @@ class TestFilesystemMiddleware:
     def test_single_text_block_extracts_text_directly(self, file_format):
         """Test that single text block extracts text content directly, not stringified structure."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_single")
 
@@ -1106,7 +1106,7 @@ class TestFilesystemMiddleware:
     def test_multiple_text_blocks_joins_text(self, file_format):
         """Test that multiple text blocks are joined, not stringified."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_multi")
 
@@ -1135,7 +1135,7 @@ class TestFilesystemMiddleware:
     def test_mixed_content_blocks_preserves_non_text(self, file_format):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_mixed")
 

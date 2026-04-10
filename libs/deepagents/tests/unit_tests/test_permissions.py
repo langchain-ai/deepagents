@@ -89,6 +89,22 @@ class TestFilesystemPermission:
         assert "read" in rule.operations
         assert "write" in rule.operations
 
+    def test_path_without_leading_slash_raises(self):
+        with pytest.raises(ValueError, match="Permission path must start with '/'"):
+            FilesystemPermission(operations=["read"], paths=["workspace/**"])
+
+    def test_mixed_paths_with_missing_slash_raises(self):
+        with pytest.raises(ValueError, match="Permission path must start with '/'"):
+            FilesystemPermission(operations=["read"], paths=["/valid/**", "invalid/**"])
+
+    def test_path_with_dotdot_raises(self):
+        with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+            FilesystemPermission(operations=["read"], paths=["/workspace/../secrets/**"])
+
+    def test_path_with_tilde_raises_not_implemented(self):
+        with pytest.raises(NotImplementedError, match="must not contain '~'"):
+            FilesystemPermission(operations=["read"], paths=["/~/data/**"])
+
 
 class TestPermissionMiddleware:
     def _backend(self):

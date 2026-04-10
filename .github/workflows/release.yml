@@ -163,6 +163,7 @@ jobs:
               f.write(f"version={version}\n")
 
       - name: Update workflow run name with version
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

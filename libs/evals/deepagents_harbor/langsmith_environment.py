@@ -255,7 +255,8 @@ class LangSmithEnvironment(BaseEnvironment):
             raise ValueError(msg)
 
         api_key, key_source = resolved
-        logger.info("Using LangSmith API key from %s", key_source)
+        if key_source == "LANGSMITH_SANDBOX_API_KEY":
+            logger.info("Using LangSmith API key from %s", key_source)
 
         client = AsyncSandboxClient(api_key=api_key)
         self._client = client

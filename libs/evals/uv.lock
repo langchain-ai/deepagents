@@ -1066,7 +1066,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1122,7 +1122,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.36"
+version = "0.0.37"
 source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite" },

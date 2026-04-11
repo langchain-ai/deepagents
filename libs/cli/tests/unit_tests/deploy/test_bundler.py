@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from deepagents_cli.deploy.bundler import (
+    _MODEL_PROVIDER_DEPS,
     _build_seed,
     _render_deploy_graph,
     _render_langgraph_json,
@@ -16,6 +17,7 @@ from deepagents_cli.deploy.bundler import (
     print_bundle_summary,
 )
 from deepagents_cli.deploy.config import (
+    _MODEL_PROVIDER_ENV,
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
@@ -118,34 +120,49 @@ class TestRenderPyproject:
         result = _render_pyproject(config, mcp_present=False)
         assert "langchain-openai" in result
 
+    def test_deps_cover_all_validated_providers(self) -> None:
+        """Every validated provider must have a bundler dep."""
+        no_partner_pkg = {"together"}
+        missing = set(_MODEL_PROVIDER_ENV) - set(_MODEL_PROVIDER_DEPS) - no_partner_pkg
+        assert not missing, (
+            f"Providers validated but missing from bundler deps: {missing}"
+        )
+
+    @pytest.mark.parametrize(
+        "provider",
+        sorted(_MODEL_PROVIDER_DEPS),
+    )
+    def test_each_model_provider_dep_rendered(self, provider: str) -> None:
+        config = _minimal_config(model=f"{provider}:some-model")
+        result = _render_pyproject(config, mcp_present=False)
+        assert _MODEL_PROVIDER_DEPS[provider] in result
+
 
 class TestRenderDeployGraph:
     def test_output_is_valid_python(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(
-            config, "You are a helpful agent.", mcp_present=False
-        )
+        result = _render_deploy_graph(config, mcp_present=False)
         compile(result, "<deploy_graph>", "exec")
 
     def test_mcp_block_included_when_present(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(config, "prompt", mcp_present=True)
+        result = _render_deploy_graph(config, mcp_present=True)
         assert "_load_mcp_tools" in result
         assert "tools.extend(await _load_mcp_tools())" in result
 
     def test_mcp_block_absent_when_not_present(self) -> None:
         config = _minimal_config()
-        result = _render_deploy_graph(config, "prompt", mcp_present=False)
+        result = _render_deploy_graph(config, mcp_present=False)
         assert "_load_mcp_tools" not in result
         assert "pass  # no MCP servers configured" in result
 
-    def test_system_prompt_with_braces(self) -> None:
-        """Braces in AGENTS.md (e.g. code blocks) must not break .format()."""
-        prompt = 'Use JSON: {"key": "value"}'
+    def test_no_system_prompt_in_output(self) -> None:
+        """AGENTS.md should not be baked into the deploy graph as a system prompt."""
         config = _minimal_config()
-        result = _render_deploy_graph(config, prompt, mcp_present=False)
+        result = _render_deploy_graph(config, mcp_present=False)
         compile(result, "<deploy_graph>", "exec")
-        assert prompt in result  # embedded via !r, eval'd back at runtime
+        assert "SYSTEM_PROMPT" not in result
+        assert "system_prompt=" not in result
 
     def test_each_provider_renders(self) -> None:
         """Every valid provider should produce compilable output."""
@@ -153,7 +170,7 @@ class TestRenderDeployGraph:
 
         for provider in VALID_SANDBOX_PROVIDERS:
             config = _minimal_config(provider=provider)
-            result = _render_deploy_graph(config, "prompt", mcp_present=False)
+            result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
 

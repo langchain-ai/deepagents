@@ -1066,7 +1066,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1122,7 +1122,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.35"
+version = "0.0.37"
 source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite" },
@@ -1213,7 +1213,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.10.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "agentcore", "daytona", "modal", "runloop", "all-sandboxes", "all-providers"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "all-sandboxes"]
 
 [package.metadata.requires-dev]
 test = [
@@ -1243,6 +1243,7 @@ dependencies = [
     { name = "datasets" },
     { name = "deepagents" },
     { name = "deepagents-cli" },
+    { name = "dockerfile-parse" },
     { name = "harbor" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -1287,6 +1288,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-cli", directory = "../cli" },
+    { name = "dockerfile-parse", specifier = ">=2.0.1" },
     { name = "harbor", specifier = ">=0.1.12" },
     { name = "langchain", specifier = ">=1.2.13" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },

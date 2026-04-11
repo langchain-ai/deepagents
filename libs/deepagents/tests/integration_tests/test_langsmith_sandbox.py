@@ -34,3 +34,11 @@ class TestLangSmithSandboxStandard(SandboxIntegrationTests):
     @pytest.mark.xfail(reason="LangSmith runs as root and ignores file permissions")
     def test_download_error_permission_denied(self, sandbox_backend: SandboxBackendProtocol) -> None:
         super().test_download_error_permission_denied(sandbox_backend)
+
+    @pytest.mark.xfail(strict=True, reason="Upstream langchain_tests uses `in` on ReadResult dataclass")
+    def test_read_basic_file(self, sandbox_backend: SandboxBackendProtocol) -> None:
+        super().test_read_basic_file(sandbox_backend)
+
+    @pytest.mark.xfail(strict=True, reason="Upstream langchain_tests uses `in` on ReadResult dataclass")
+    def test_edit_single_occurrence(self, sandbox_backend: SandboxBackendProtocol) -> None:
+        super().test_edit_single_occurrence(sandbox_backend)

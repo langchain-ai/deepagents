@@ -363,42 +363,15 @@ class DeferredAction:
     """Async callable that performs the actual work."""
 
 
-class TextualTokenTracker:
-    """Token tracker that updates the status bar."""
+@dataclass(frozen=True, slots=True)
+class _ThreadHistoryPayload:
+    """Data returned by `_fetch_thread_history_data`."""
 
-    def __init__(
-        self,
-        update_callback: Callable[[int], None],
-        hide_callback: Callable[[], None] | None = None,
-    ) -> None:
-        """Initialize with callbacks to update the display."""
-        self._update_callback = update_callback
-        self._hide_callback = hide_callback
-        self.current_context = 0
+    messages: list[MessageData]
+    """Converted message data ready for bulk loading."""
 
-    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:
-        """Update token count from a response.
-
-        Args:
-            total_tokens: Total context tokens (input + output from usage_metadata)
-            _output_tokens: Unused, kept for backwards compatibility
-        """
-        self.current_context = total_tokens
-        self._update_callback(self.current_context)
-
-    def reset(self) -> None:
-        """Reset token count."""
-        self.current_context = 0
-        self._update_callback(0)
-
-    def hide(self) -> None:
-        """Hide the token display (e.g., during streaming)."""
-        if self._hide_callback:
-            self._hide_callback()
-
-    def show(self) -> None:
-        """Show the token display with current value (e.g., after interrupt)."""
-        self._update_callback(self.current_context)
+    context_tokens: int
+    """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
 
 
 def _new_thread_id() -> str:
@@ -544,6 +517,7 @@ class DeepAgentsApp(App):
         thread_id: str | None = None,
         resume_thread: str | None = None,
         initial_prompt: str | None = None,
+        initial_skill: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -574,6 +548,7 @@ class DeepAgentsApp(App):
 
                 Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
+            initial_skill: Optional skill name to invoke when session starts.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -621,6 +596,12 @@ class DeepAgentsApp(App):
 
         self._initial_prompt = initial_prompt
 
+        self._initial_skill = (
+            initial_skill.strip().lower()
+            if initial_skill and initial_skill.strip()
+            else None
+        )
+
         self._mcp_server_info = mcp_server_info
 
         self._profile_override = profile_override
@@ -667,6 +648,13 @@ class DeepAgentsApp(App):
 
         self._agent_running = False
 
+        self._server_startup_error: str | None = None
+        """Set when the background server fails to start; persists for the
+        session lifetime (server failure is terminal).
+
+        Shown in place of the generic 'Agent not configured' message.
+        """
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -676,7 +664,15 @@ class DeepAgentsApp(App):
 
         self._loading_widget: LoadingWidget | None = None
 
-        self._token_tracker: TextualTokenTracker | None = None
+        self._context_tokens: int = 0
+        """Local cache of the last total-context token count.
+
+        Source of truth is `_context_tokens` in graph state; this is a sync
+        copy for the status bar.
+        """
+
+        self._tokens_approximate: bool = False
+        """Whether the cached token count is stale (interrupted generation)."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -688,6 +684,16 @@ class DeepAgentsApp(App):
 
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this session."""
+
+        self._inflight_turn_stats: SessionStats | None = None
+        """Stats for the currently executing turn.
+
+        Held here so `exit()` can merge them synchronously before the event loop
+        tears down (e.g. `Ctrl+D` during a pending tool call).
+        """
+
+        self._inflight_turn_start: float = 0.0
+        """Monotonic timestamp when the current turn started."""
 
         self._pending_messages: deque[QueuedMessage] = deque()
         """User message queue for sequential processing."""
@@ -713,8 +719,8 @@ class DeepAgentsApp(App):
         """Cached skill metadata (populated by startup discovery worker,
         refreshed on `/reload`).
 
-        Used by `_handle_skill_command` to skip re-walking all skill directories
-        on every invocation.
+        Used by `_invoke_skill` to skip re-walking all skill directories on
+        every invocation.
         """
 
         self._skill_allowed_roots: list[Path] = []
@@ -755,8 +761,8 @@ class DeepAgentsApp(App):
 
         Most styling uses Textual's built-in variables (`$primary`,
         `$text-muted`, `$error-muted`, etc.).  This override injects the
-        few app-specific variables (`$mode-bash`, `$mode-command`) that
-        have no Textual equivalent.
+        app-specific variables (`$mode-bash`, `$mode-command`, `$skill`,
+        `$skill-hover`, `$tool`, `$tool-hover`) that have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.
@@ -831,6 +837,15 @@ class DeepAgentsApp(App):
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
 
+        # Prewarm heavy imports in a thread while the first frame renders.
+        # The user can't type yet, so GIL contention is harmless.  By the
+        # time _post_paint_init fires its inline imports are dict lookups.
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
+
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
         # the subprocess is already done. _post_paint_init fires the heavier
@@ -885,16 +900,36 @@ class DeepAgentsApp(App):
         Everything here is non-blocking: workers and thread-offloaded calls
         so the UI stays responsive.
         """
-        # Create token tracker (lightweight, no imports)
-        self._token_tracker = TextualTokenTracker(
-            self._update_tokens, self._hide_tokens
-        )
+        # Create UI adapter unconditionally — it only holds UI callbacks and
+        # doesn't depend on the agent. The agent is injected later at
+        # execute_task_textual() call time.
+        from deepagents_cli.textual_adapter import TextualUIAdapter
 
-        # Create UI adapter if agent is provided (deferred when connecting)
-        if self._agent:
-            self._init_agent_adapter()
+        self._ui_adapter = TextualUIAdapter(
+            mount_message=self._mount_message,
+            update_status=self._update_status,
+            request_approval=self._request_approval,
+            on_auto_approve_enabled=self._on_auto_approve_enabled,
+            set_spinner=self._set_spinner,
+            set_active_message=self._set_active_message,
+            sync_message_content=self._sync_message_content,
+            request_ask_user=self._request_ask_user,
+        )
+        # Wire token display callbacks
+        self._ui_adapter._on_tokens_update = self._on_tokens_update
+        self._ui_adapter._on_tokens_hide = self._hide_tokens
+        self._ui_adapter._on_tokens_show = self._show_tokens
 
         # Fire-and-forget workers — none of these block the event loop.
+
+        # Discover skills first so /skill: autocomplete is ready as early
+        # as possible. The heavy filesystem scan runs in a thread.
+        self.run_worker(
+            self._discover_skills(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
+
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
         # Server startup (model creation + server process)
@@ -921,11 +956,19 @@ class DeepAgentsApp(App):
                 group="startup-whats-new",
             )
 
-        # Prewarm deferred widget imports in a thread
+        # Prewarm model discovery and profile caches unconditionally so
+        # /model opens instantly even before the agent/server is ready.
         self.run_worker(
-            asyncio.to_thread(self._prewarm_deferred_imports),
+            self._prewarm_model_caches,
             exclusive=True,
-            group="startup-import-prewarm",
+            group="startup-model-prewarm",
+        )
+
+        # Prewarm thread message counts so /threads opens instantly.
+        self.run_worker(
+            self._prewarm_threads_cache,
+            exclusive=True,
+            group="startup-thread-prewarm",
         )
 
         # Optional tool warnings in a thread (shutil.which is sync I/O)
@@ -935,28 +978,23 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
-        # Discover skills for /skill: autocomplete (filesystem I/O, offloaded)
-        self.run_worker(
-            self._discover_skills(),
-            exclusive=True,
-            group="startup-skill-discovery",
-        )
-
-        # Auto-submit initial prompt if provided via -m flag.
+        # Auto-submit initial prompt or skill if provided via -m / --skill.
         # This check must come first because _lc_thread_id and _agent are
         # always set (even for brand-new sessions), so an elif after the
         # thread-history branch would never execute.
         # When connecting, defer until on_deep_agents_app_server_ready fires.
-        if not self._connecting:
-            if self._initial_prompt and self._initial_prompt.strip():
-                prompt = self._initial_prompt
-                self.call_after_refresh(
-                    lambda: asyncio.create_task(self._handle_user_message(prompt))
-                )
-            elif self._lc_thread_id and self._agent:
-                self.call_after_refresh(
-                    lambda: asyncio.create_task(self._load_thread_history())
-                )
+        # NOTE: _schedule_initial_submission() has a side effect (queues a
+        # task via call_after_refresh); short-circuit ensures it only runs
+        # when not connecting — the deferred path handles the connecting case.
+        if (
+            not self._connecting
+            and not self._schedule_initial_submission()
+            and self._lc_thread_id
+            and self._agent
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
+            )
 
     async def _init_session_state(self) -> None:
         """Create session state in a thread (imports deepagents_cli.sessions)."""
@@ -1068,72 +1106,16 @@ class DeepAgentsApp(App):
         """Discover skills and build pre-resolved containment roots.
 
         Shared by `_discover_skills` (startup/reload) and the cache-miss
-        fallback in `_handle_skill_command` to avoid duplicating the
+        fallback in `_invoke_skill` to avoid duplicating the
         `list_skills` call and root-resolution logic.
 
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
-        from deepagents_cli.config import settings
-        from deepagents_cli.skills.load import list_skills
+        from deepagents_cli.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or "agent"
-        skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
-            user_skills_dir=settings.get_user_skills_dir(assistant_id),
-            project_skills_dir=settings.get_project_skills_dir(),
-            user_agent_skills_dir=settings.get_user_agent_skills_dir(),
-            project_agent_skills_dir=settings.get_project_agent_skills_dir(),
-            user_claude_skills_dir=settings.get_user_claude_skills_dir(),
-            project_claude_skills_dir=settings.get_project_claude_skills_dir(),
-        )
-        # Pre-resolve containment roots once so _handle_skill_command
-        # doesn't repeat resolve() on every invocation.
-        roots = [
-            d.resolve()
-            for d in (
-                settings.get_built_in_skills_dir(),
-                settings.get_user_skills_dir(assistant_id),
-                settings.get_project_skills_dir(),
-                settings.get_user_agent_skills_dir(),
-                settings.get_project_agent_skills_dir(),
-                settings.get_user_claude_skills_dir(),
-                settings.get_project_claude_skills_dir(),
-            )
-            if d is not None
-        ]
-        # Extra dirs are containment-only (not discovery); they allow
-        # symlinks in standard dirs to point outside those dirs.
-        roots.extend(d.resolve() for d in settings.get_extra_skills_dirs())
-        return skills, roots
-
-    def _init_agent_adapter(self) -> None:
-        """Create the UI adapter and kick off background cache prewarming."""
-        from deepagents_cli.textual_adapter import TextualUIAdapter
-
-        self._ui_adapter = TextualUIAdapter(
-            mount_message=self._mount_message,
-            update_status=self._update_status,
-            request_approval=self._request_approval,
-            on_auto_approve_enabled=self._on_auto_approve_enabled,
-            set_spinner=self._set_spinner,
-            set_active_message=self._set_active_message,
-            sync_message_content=self._sync_message_content,
-            request_ask_user=self._request_ask_user,
-        )
-        if self._token_tracker:
-            self._ui_adapter.set_token_tracker(self._token_tracker)
-
-        self.run_worker(
-            self._prewarm_threads_cache,
-            exclusive=True,
-            group="startup-thread-prewarm",
-        )
-        self.run_worker(
-            self._prewarm_model_caches,
-            exclusive=True,
-            group="startup-model-prewarm",
-        )
+        return discover_skills_and_roots(assistant_id)
 
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
@@ -1305,16 +1287,10 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
-        # Now that the agent is available, set up the adapter
-        self._init_agent_adapter()
-
-        # Handle deferred initial prompt or thread history
-        if self._initial_prompt and self._initial_prompt.strip():
-            prompt = self._initial_prompt
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._handle_user_message(prompt))
-            )
-        elif self._lc_thread_id and self._agent:
+        # Handle deferred initial prompt, skill, or thread history
+        if not self._schedule_initial_submission() and (
+            self._lc_thread_id and self._agent
+        ):
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._load_thread_history())
             )
@@ -1340,10 +1316,8 @@ class DeepAgentsApp(App):
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
 
         # Drain any messages the user typed while the server was starting.
-        # (If an initial prompt exists, its cleanup path will drain the queue.)
-        if self._pending_messages and not (
-            self._initial_prompt and self._initial_prompt.strip()
-        ):
+        # (If an initial submission exists, its cleanup path will drain the queue.)
+        if self._pending_messages and not self._has_initial_submission():
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._process_next_from_queue())
             )
@@ -1351,11 +1325,12 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         self._connecting = False
+        self._server_startup_error = f"{type(event.error).__name__}: {event.error}"
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
         # Update banner to show persistent failure state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_failed(str(event.error))
+            banner.set_failed(self._server_startup_error)
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
 
@@ -1377,7 +1352,8 @@ class DeepAgentsApp(App):
         # Internal modules moved from top-level to local imports — a failure
         # here indicates a packaging or code bug, not a missing optional dep, so
         # we let the exception propagate (the worker catches it and logs
-        # at WARNING).
+        # at WARNING). textual_adapter and update_check are included so
+        # _post_paint_init's inline imports are dict lookups.
         from deepagents_cli.clipboard import (
             copy_selection_to_clipboard,  # noqa: F401
         )
@@ -1385,6 +1361,8 @@ class DeepAgentsApp(App):
         from deepagents_cli.config import settings  # noqa: F401
         from deepagents_cli.hooks import dispatch_hook  # noqa: F401
         from deepagents_cli.model_config import ModelSpec  # noqa: F401
+        from deepagents_cli.textual_adapter import TextualUIAdapter  # noqa: F401
+        from deepagents_cli.update_check import is_update_check_enabled  # noqa: F401
 
         try:
             # Heavy third-party deps deferred from textual_adapter /
@@ -1399,6 +1377,19 @@ class DeepAgentsApp(App):
             from langgraph.types import Command  # noqa: F401
         except Exception:
             logger.warning("Could not prewarm third-party imports", exc_info=True)
+
+        # Markdown rendering stack — ~170 ms cold (textual._markdown pulls in
+        # markdown_it, pygments, linkify_it — 438 modules).  Hit on first
+        # SkillMessage compose() and first code-fence highlight.  Warming
+        # here makes the first expand/Ctrl+O instant.
+        import markdown_it  # noqa: F401
+        from pygments.lexers import get_lexer_by_name as _get_lexer
+        from textual.widgets import Markdown  # noqa: F401
+
+        # Instantiate the Python lexer to populate Pygments' internal
+        # lexer cache (~12 ms cold).  Python is the most common fence
+        # language in skill bodies.
+        _get_lexer("python")
 
         # Widgets deferred from app.py module level — a failure here indicates
         # a packaging or code bug (same as the block above), so we let
@@ -1435,7 +1426,7 @@ class DeepAgentsApp(App):
                 get_model_profiles, cli_override=self._profile_override
             )
         except Exception:
-            logger.debug("Could not prewarm model caches", exc_info=True)
+            logger.warning("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer version and optionally auto-update."""
@@ -1487,7 +1478,8 @@ class DeepAgentsApp(App):
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}",
+                    f"Run: {cmd}\n\n"
+                    f"Enable auto-updates: /auto-update",
                     severity="information",
                     timeout=15,
                     markup=False,
@@ -1513,11 +1505,15 @@ class DeepAgentsApp(App):
 
         try:
             from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
+
+            if await asyncio.to_thread(_is_editable_install):
+                heading = f"Now running v{cli_version}"
+            else:
+                heading = f"Updated to v{cli_version}"
 
             await self._mount_message(
-                AppMessage(
-                    f"Updated to v{cli_version}\nSee what's new: {CHANGELOG_URL}"
-                )
+                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
             )
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)
@@ -1575,6 +1571,42 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
             )
 
+    async def _handle_auto_update_toggle(self) -> None:
+        """Handle the `/auto-update` slash command — persist toggle immediately."""
+        try:
+            from deepagents_cli.config import _is_editable_install
+            from deepagents_cli.update_check import (
+                is_auto_update_enabled,
+                set_auto_update,
+            )
+
+            if await asyncio.to_thread(_is_editable_install):
+                self.notify(
+                    "Auto-updates are not available for editable installs.",
+                    severity="warning",
+                    timeout=5,
+                )
+                return
+
+            currently_enabled = await asyncio.to_thread(is_auto_update_enabled)
+            new_state = not currently_enabled
+            await asyncio.to_thread(set_auto_update, new_state)
+            label = "enabled" if new_state else "disabled"
+            self.notify(
+                f"Auto-updates {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
+        except Exception as exc:
+            logger.warning("/auto-update command failed", exc_info=True)
+            self.notify(
+                f"Auto-update toggle failed: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
+
     def on_scroll_up(self, _event: ScrollUp) -> None:
         """Handle scroll up to check if we need to hydrate older messages."""
         self._check_hydration_needed()
@@ -1584,10 +1616,46 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_status_message(message)
 
-    def _update_tokens(self, count: int) -> None:
-        """Update the token count in status bar."""
+    def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
+        """Update the token count in the status bar.
+
+        Low-level helper — only touches the UI.  Callers that also need to
+        update the local cache should use `_on_tokens_update` instead.
+
+        Args:
+            count: Total context token count.
+            approximate: Append "+" to signal a stale/interrupted count.
+        """
         if self._status_bar:
-            self._status_bar.set_tokens(count)
+            self._status_bar.set_tokens(count, approximate=approximate)
+
+    def _on_tokens_update(self, count: int, *, approximate: bool = False) -> None:
+        """Update the local cache *and* the status bar.
+
+        This is the callback wired to the adapter's `_on_tokens_update`.
+
+        Args:
+            count: Total context token count to cache and display.
+            approximate: Append "+" to signal a stale/interrupted count.
+        """
+        self._context_tokens = count
+        self._tokens_approximate = approximate
+        self._update_tokens(count, approximate=approximate)
+
+    def _show_tokens(self, *, approximate: bool = False) -> None:
+        """Restore the status bar to the cached token value.
+
+        Args:
+            approximate: Append "+" to signal a stale/interrupted count.
+
+                This flag is sticky until `_on_tokens_update` receives a fresh
+                count from the model.
+        """
+        self._tokens_approximate = self._tokens_approximate or approximate
+        self._update_tokens(
+            self._context_tokens,
+            approximate=self._tokens_approximate,
+        )
 
     def _hide_tokens(self) -> None:
         """Hide the token display during streaming."""
@@ -2098,6 +2166,45 @@ class DeepAgentsApp(App):
             logger.warning("Unrecognized input mode %r, treating as normal", mode)
             await self._handle_user_message(value)
 
+    def _has_initial_submission(self) -> bool:
+        """Return whether startup should auto-submit a prompt or skill."""
+        return self._initial_skill is not None or bool(
+            self._initial_prompt and self._initial_prompt.strip()
+        )
+
+    def _schedule_initial_submission(self) -> bool:
+        """Schedule the startup prompt or skill after the next refresh.
+
+        Returns:
+            `True` when a startup submission was queued, `False` otherwise.
+        """
+        if not self._has_initial_submission():
+            return False
+        self.call_after_refresh(
+            lambda: asyncio.create_task(self._submit_initial_submission())
+        )
+        return True
+
+    async def _submit_initial_submission(self) -> None:
+        """Submit the startup prompt or skill after the UI is ready."""
+        try:
+            if self._initial_skill is not None:
+                await self._invoke_skill(
+                    self._initial_skill, self._initial_prompt or ""
+                )
+                return
+            if self._initial_prompt and self._initial_prompt.strip():
+                await self._handle_user_message(self._initial_prompt)
+        except Exception:
+            logger.exception("Unhandled error during initial submission")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "Failed to submit startup prompt. "
+                        "Try running the command manually in the session."
+                    )
+                )
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -2437,17 +2544,19 @@ class DeepAgentsApp(App):
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
 
-        Shows a hint if no conversation has been started yet or if LangSmith
-        tracing is not configured. Otherwise, opens the thread URL in the
-        default browser and displays a clickable link.
+        Resolves the URL and opens the browser immediately regardless of busy
+        state. When the app is busy, chat output (user echo + clickable link)
+        is deferred until the current task finishes. Error conditions (no
+        session, URL failure, tracing not configured) render immediately
+        regardless of busy state.
 
         Args:
             command: The raw command text (displayed as user message).
         """
         from deepagents_cli.config import build_langsmith_thread_url
 
-        await self._mount_message(UserMessage(command))
         if not self._session_state:
+            await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage("No active session."))
             return
         thread_id = self._session_state.thread_id
@@ -2455,11 +2564,13 @@ class DeepAgentsApp(App):
             url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
         except Exception:
             logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage("Failed to resolve LangSmith thread URL.")
             )
             return
         if not url:
+            await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
@@ -2467,10 +2578,39 @@ class DeepAgentsApp(App):
                 )
             )
             return
-        try:
-            webbrowser.open(url)
-        except Exception:
-            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+        def _open_browser() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                logger.debug("Could not open browser for URL: %s", url, exc_info=True)
+
+        asyncio.get_running_loop().run_in_executor(None, _open_browser)
+
+        # Defer chat output while a turn is in progress — rendering the user
+        # echo + link immediately would splice it into the middle of the
+        # streaming assistant response
+        if self._agent_running or self._shell_running:
+            queued_widget = QueuedUserMessage(command)
+            self._queued_widgets.append(queued_widget)
+            await self._mount_message(queued_widget)
+
+            async def _mount_output() -> None:
+                if queued_widget in self._queued_widgets:
+                    self._queued_widgets.remove(queued_widget)
+                with suppress(Exception):
+                    await queued_widget.remove()
+                await self._mount_message(UserMessage(command))
+                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
+                await self._mount_message(AppMessage(link))
+
+            # Append directly — no dedup; each /trace invocation gets its own output.
+            self._deferred_actions.append(
+                DeferredAction(kind="chat_output", execute=_mount_output)
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
         link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
         await self._mount_message(AppMessage(link))
 
@@ -2490,10 +2630,10 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /clear, /offload, /editor, /mcp, "
-                "/model [--model-params JSON] [--default], /reload, "
-                "/skill:<name>, /remember, /skill-creator, /theme, /tokens, "
-                "/threads, /trace, "
-                "/update, /changelog, /docs, /feedback, /help\n\n"
+                "/model [--model-params JSON] [--default], /notifications, "
+                "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
+                "/tokens, /threads, /trace, "
+                "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -2546,8 +2686,9 @@ class DeepAgentsApp(App):
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
-            if self._token_tracker:
-                self._token_tracker.reset()
+            self._context_tokens = 0
+            self._tokens_approximate = False
+            self._update_tokens(0)
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
             # Reset thread to start fresh conversation
@@ -2572,10 +2713,12 @@ class DeepAgentsApp(App):
             await self._handle_trace_command(command)
         elif cmd == "/update":
             await self._handle_update_command()
+        elif cmd == "/auto-update":
+            await self._handle_auto_update_toggle()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
-            if self._token_tracker and self._token_tracker.current_context > 0:
-                count = self._token_tracker.current_context
+            if self._context_tokens > 0:
+                count = self._context_tokens
                 formatted = format_token_count(count)
 
                 model_name = settings.model_name
@@ -2635,6 +2778,8 @@ class DeepAgentsApp(App):
             await self._show_mcp_viewer()
         elif cmd == "/theme":
             await self._show_theme_selector()
+        elif cmd == "/notifications":
+            await self._show_notification_settings()
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -2731,6 +2876,14 @@ class DeepAgentsApp(App):
             )
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
+        # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
+        elif cmd == "/debug-error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Server failed to start: RuntimeError: Server process"
+                    " exited with code 3"
+                )
+            )
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -2739,8 +2892,14 @@ class DeepAgentsApp(App):
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
 
-    async def _handle_skill_command(self, command: str) -> None:
-        """Handle a `/skill:<name>` command by loading and invoking a skill.
+    async def _invoke_skill(
+        self,
+        skill_name: str,
+        args: str = "",
+        *,
+        command: str | None = None,
+    ) -> None:
+        """Load a skill, render its widget, and send its prompt to the agent.
 
         Looks up the skill from cached metadata (populated at startup), falling
         back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
@@ -2748,20 +2907,31 @@ class DeepAgentsApp(App):
         and sends the composed message to the agent.
 
         Args:
-            command: The full command string (e.g., `/skill:web-research find X`).
+            skill_name: Skill name to invoke.
+            args: Optional user request to append after the skill body.
+            command: Original slash command text for UI echo, if any.
         """
-        from deepagents_cli.command_registry import parse_skill_command
+        from deepagents_cli.skills.invocation import build_skill_invocation_envelope
         from deepagents_cli.skills.load import load_skill_content
 
-        skill_name, args = parse_skill_command(command)
-        if not skill_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+        normalized_name = skill_name.strip().lower()
+
+        async def _mount_error(message: str) -> None:
+            if command is not None:
+                await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(message))
+
+        if not normalized_name:
+            if command is not None:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(AppMessage("Usage: /skill:<name> [args]"))
+            else:
+                await self._mount_message(AppMessage("Skill name is required."))
             return
 
         # Fast path: look up from the cached discovery results
         cached = next(
-            (s for s in self._discovered_skills if s["name"] == skill_name),
+            (s for s in self._discovered_skills if s["name"] == normalized_name),
             None,
         )
         allowed_roots = self._skill_allowed_roots
@@ -2775,34 +2945,28 @@ class DeepAgentsApp(App):
                 # Backfill cache so subsequent invocations are fast
                 self._discovered_skills = skills
                 self._skill_allowed_roots = allowed_roots
-                cached = next((s for s in skills if s["name"] == skill_name), None)
+                cached = next((s for s in skills if s["name"] == normalized_name), None)
             except OSError as exc:
                 logger.warning(
-                    "Filesystem error loading skill %r", skill_name, exc_info=True
+                    "Filesystem error loading skill %r", normalized_name, exc_info=True
                 )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        f"Could not load skill: {skill_name}. Filesystem error: {exc}"
-                    )
+                await _mount_error(
+                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
                 )
                 return
             except Exception as exc:
                 logger.warning(
-                    "Error searching for skill %r", skill_name, exc_info=True
+                    "Error searching for skill %r", normalized_name, exc_info=True
                 )
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage(
-                        f"Error loading skill: {skill_name}. "
-                        f"Unexpected error: {type(exc).__name__}: {exc}"
-                    )
+                await _mount_error(
+                    f"Error loading skill: {normalized_name}. "
+                    f"Unexpected error: {type(exc).__name__}: {exc}"
                 )
                 return
 
         if cached is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(f"Skill not found: {skill_name}"))
+            logger.warning("Skill not found: %r", normalized_name)
+            await _mount_error(f"Skill not found: {normalized_name}")
             return
 
         # Load SKILL.md content (filesystem I/O offloaded to thread)
@@ -2815,62 +2979,44 @@ class DeepAgentsApp(App):
             content = await asyncio.to_thread(_load)
         except PermissionError as exc:
             logger.warning(
-                "Containment check failed for skill %r", skill_name, exc_info=True
+                "Containment check failed for skill %r",
+                normalized_name,
+                exc_info=True,
             )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(str(exc)))
+            await _mount_error(str(exc))
             return
         except OSError as exc:
             logger.warning(
-                "Filesystem error loading skill %r", skill_name, exc_info=True
+                "Filesystem error loading skill %r", normalized_name, exc_info=True
             )
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Could not load skill: {skill_name}. Filesystem error: {exc}"
-                )
+            await _mount_error(
+                f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
             )
             return
         except Exception as exc:
-            logger.warning("Error reading skill %r", skill_name, exc_info=True)
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Error loading skill: {skill_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}"
-                )
+            logger.warning("Error reading skill %r", normalized_name, exc_info=True)
+            await _mount_error(
+                f"Error loading skill: {normalized_name}. "
+                f"Unexpected error: {type(exc).__name__}: {exc}"
             )
             return
 
         if content is None:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Could not read content for skill: {skill_name}. "
-                    "Check that the SKILL.md file exists, is readable, "
-                    "and is saved as UTF-8."
-                )
+            await _mount_error(
+                f"Could not read content for skill: {normalized_name}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
             )
             return
 
         if not content.strip():
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    f"Skill '{skill_name}' has an empty SKILL.md file. "
-                    "Add instructions to the file before invoking."
-                )
+            await _mount_error(
+                f"Skill '{normalized_name}' has an empty SKILL.md file. "
+                "Add instructions to the file before invoking."
             )
             return
 
-        prompt = (
-            f"I'm invoking the skill `{cached['name']}`. "
-            "Below are the full instructions from the skill's SKILL.md file. "
-            "Follow these instructions to complete the task.\n\n"
-            f"---\n{content}\n---"
-        )
-        if args:
-            prompt += f"\n\n**User request:** {args}"
+        envelope = build_skill_invocation_envelope(cached, content, args)
 
         await self._mount_message(
             SkillMessage(
@@ -2882,18 +3028,20 @@ class DeepAgentsApp(App):
             )
         )
         await self._send_to_agent(
-            prompt,
-            message_kwargs={
-                "additional_kwargs": {
-                    "__skill": {
-                        "name": cached["name"],
-                        "description": str(cached.get("description", "")),
-                        "source": str(cached.get("source", "")),
-                        "args": args,
-                    },
-                },
-            },
+            envelope.prompt,
+            message_kwargs=envelope.message_kwargs,
         )
+
+    async def _handle_skill_command(self, command: str) -> None:
+        """Handle a `/skill:<name>` command by loading and invoking a skill.
+
+        Args:
+            command: The full command string (e.g., `/skill:web-research find X`).
+        """
+        from deepagents_cli.command_registry import parse_skill_command
+
+        skill_name, args = parse_skill_command(command)
+        await self._invoke_skill(skill_name, args, command=command)
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -3007,9 +3155,7 @@ class DeepAgentsApp(App):
                 model_spec=(f"{settings.model_provider}:{settings.model_name}"),
                 profile_overrides=self._profile_override,
                 context_limit=settings.model_context_limit,
-                total_context_tokens=(
-                    self._token_tracker.current_context if self._token_tracker else 0
-                ),
+                total_context_tokens=self._context_tokens,
                 backend=self._backend,
             )
 
@@ -3068,8 +3214,10 @@ class DeepAgentsApp(App):
                 )
             )
 
-            if self._token_tracker:
-                self._token_tracker.add(result.tokens_after)
+            self._on_tokens_update(result.tokens_after)
+            from deepagents_cli.textual_adapter import _persist_context_tokens
+
+            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -3128,6 +3276,10 @@ class DeepAgentsApp(App):
                 self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
             )
+        elif self._server_startup_error:
+            await self._mount_message(
+                ErrorMessage(f"Server failed to start: {self._server_startup_error}")
+            )
         else:
             await self._mount_message(
                 AppMessage("Agent not configured for this session.")
@@ -3153,9 +3305,14 @@ class DeepAgentsApp(App):
             return
         from deepagents_cli.textual_adapter import execute_task_textual
 
-        turn_stats: SessionStats | None = None
+        # Create the stats object up-front and store on the app so
+        # exit() can merge it synchronously if the worker is cancelled
+        # before this method can return (e.g. Ctrl+D during HITL).
+        turn_stats = SessionStats()
+        self._inflight_turn_stats = turn_stats
+        self._inflight_turn_start = time.monotonic()
         try:
-            turn_stats = await execute_task_textual(
+            await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
                 assistant_id=self._assistant_id,
@@ -3169,6 +3326,7 @@ class DeepAgentsApp(App):
                     model=self._model_override,
                     model_params=self._model_params_override or {},
                 ),
+                turn_stats=turn_stats,
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
@@ -3183,12 +3341,15 @@ class DeepAgentsApp(App):
                     "Could not mount error message (app closing?)", exc_info=True
                 )
         finally:
-            # Clean up loading widget and agent state
+            # Merge turn stats before cleanup — _cleanup_agent_task may raise
+            # during teardown (widget removal on a torn-down DOM), and stats
+            # should ideally be captured regardless.
+            # exit() clears _inflight_turn_stats when it merges, so
+            # checking for None prevents double-counting.
+            if self._inflight_turn_stats is not None:
+                self._session_stats.merge(turn_stats)
+                self._inflight_turn_stats = None
             await self._cleanup_agent_task()
-
-        # Accumulate stats across all turns; printed once at session end
-        if isinstance(turn_stats, SessionStats):
-            self._session_stats.merge(turn_stats)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -3235,9 +3396,9 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
 
-        # Ensure token display is restored (in case of early cancellation)
-        if self._token_tracker:
-            self._token_tracker.show()
+        # Ensure token display is restored (in case of early cancellation).
+        # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
+        self._show_tokens(approximate=self._tokens_approximate)
 
         try:
             await self._maybe_drain_deferred()
@@ -3413,9 +3574,14 @@ class DeepAgentsApp(App):
             and "_summarization_event" in fallback_values
         ):
             values["_summarization_event"] = fallback_values["_summarization_event"]
+        if (
+            values.get("_context_tokens") is None
+            and "_context_tokens" in fallback_values
+        ):
+            values["_context_tokens"] = fallback_values["_context_tokens"]
         return values
 
-    async def _fetch_thread_history_data(self, thread_id: str) -> list[MessageData]:
+    async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
 
         In server mode the LangGraph dev server starts with an empty thread
@@ -3427,13 +3593,18 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
-            Converted message data ready for bulk loading.
+            Payload containing converted message data and the persisted
+            context-token count.
         """
         state_values = await self._get_thread_state_values(thread_id)
+        raw_tokens = state_values.get("_context_tokens")
+        context_tokens = (
+            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+        )
         messages = state_values.get("messages", [])
 
         if not messages:
-            return []
+            return _ThreadHistoryPayload([], context_tokens)
 
         # Server mode / direct checkpointer may return dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
@@ -3443,7 +3614,8 @@ class DeepAgentsApp(App):
             messages = convert_to_messages(messages)
 
         # Offload conversion so large histories don't block the UI loop.
-        return await asyncio.to_thread(self._convert_messages_to_data, messages)
+        data = await asyncio.to_thread(self._convert_messages_to_data, messages)
+        return _ThreadHistoryPayload(data, context_tokens)
 
     @staticmethod
     async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
@@ -3548,12 +3720,12 @@ class DeepAgentsApp(App):
         self,
         *,
         thread_id: str | None = None,
-        preloaded_data: list[MessageData] | None = None,
+        preloaded_payload: _ThreadHistoryPayload | None = None,
     ) -> None:
         """Load and render message history when resuming a thread.
 
-        When `preloaded_data` is provided (e.g., from `_resume_thread`), this
-        reuses that payload. Otherwise, it fetches checkpoint state from the
+        When `preloaded_payload` is provided (e.g., from `_resume_thread`),
+        this reuses that data. Otherwise, it fetches checkpoint state from the
         agent and converts stored messages into lightweight `MessageData`
         objects. The method then bulk-loads into the `MessageStore` and mounts
         only the last `WINDOW_SIZE` widgets to reduce DOM operations on large
@@ -3563,13 +3735,14 @@ class DeepAgentsApp(App):
             thread_id: Optional explicit thread ID to load.
 
                 Defaults to current.
-            preloaded_data: Optional pre-fetched history data for the thread.
+            preloaded_payload: Optional pre-fetched history payload for the
+                thread.
         """
         history_thread_id = thread_id or self._lc_thread_id
         if not history_thread_id:
             logger.debug("Skipping history load: no thread ID available")
             return
-        if preloaded_data is None and not self._agent:
+        if preloaded_payload is None and not self._agent:
             logger.debug(
                 "Skipping history load for %s: no active agent and no preloaded data",
                 history_thread_id,
@@ -3578,16 +3751,20 @@ class DeepAgentsApp(App):
 
         try:
             # Fetch + convert, or reuse preloaded payload on thread switch.
-            all_data = (
-                preloaded_data
-                if preloaded_data is not None
+            payload = (
+                preloaded_payload
+                if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
-            if not all_data:
+            if not payload.messages:
                 return
 
+            # Seed token cache from persisted state
+            if payload.context_tokens > 0:
+                self._on_tokens_update(payload.context_tokens)
+
             # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(all_data)
+            _archived, visible = self._message_store.bulk_load(payload.messages)
 
             # 5. Cache container ref (single query)
             try:
@@ -4025,11 +4202,25 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # Merge in-flight turn stats before any cleanup that might raise.
+        # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
+        # call), the worker's finally block will see _inflight_turn_stats is
+        # already None and skip the merge.
+        inflight = self._inflight_turn_stats
+        if inflight is not None:
+            self._inflight_turn_stats = None
+            if not inflight.wall_time_seconds:
+                inflight.wall_time_seconds = (
+                    time.monotonic() - self._inflight_turn_start
+                )
+            self._session_stats.merge(inflight)
+
         # Discard queued messages so _cleanup_agent_task won't try to
         # process them after the event loop is torn down, and cancel
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
         self._discard_queue()
+
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
@@ -4367,6 +4558,36 @@ class DeepAgentsApp(App):
         screen = ThemeSelectorScreen(current_theme=self.theme)
         self.push_screen(screen, handle_result)
 
+    async def _show_notification_settings(self) -> None:
+        """Show notification settings modal."""
+        from deepagents_cli.model_config import is_warning_suppressed
+        from deepagents_cli.widgets.notification_settings import (
+            WARNING_TOGGLES,
+            NotificationSettingsScreen,
+        )
+
+        suppressed: set[str] = set()
+        try:
+            for key, _ in WARNING_TOGGLES:
+                if await asyncio.to_thread(is_warning_suppressed, key):
+                    suppressed.add(key)
+        except Exception:
+            logger.warning("Failed to read notification settings", exc_info=True)
+            suppressed = set()
+            self.notify(
+                "Could not read notification preferences. Showing defaults.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+        def handle_result(_result: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = NotificationSettingsScreen(suppressed=suppressed)
+        self.push_screen(screen, handle_result)
+
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
@@ -4477,17 +4698,18 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        prefetched_history: list[MessageData] | None = None
+        prefetched_payload: _ThreadHistoryPayload | None = None
         try:
             self._update_status(f"Loading thread: {thread_id}")
-            prefetched_history = await self._fetch_thread_history_data(thread_id)
+            prefetched_payload = await self._fetch_thread_history_data(thread_id)
 
             # Clear conversation (similar to /clear, without creating a new thread)
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
-            if self._token_tracker:
-                self._token_tracker.reset()
+            self._context_tokens = 0
+            self._tokens_approximate = False
+            self._update_tokens(0)
             self._update_status("")
 
             # Switch to the selected thread
@@ -4503,10 +4725,10 @@ class DeepAgentsApp(App):
             # Load thread history
             await self._load_thread_history(
                 thread_id=thread_id,
-                preloaded_data=prefetched_history,
+                preloaded_payload=prefetched_payload,
             )
         except Exception as exc:
-            if prefetched_history is None:
+            if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
                 await self._mount_message(
                     AppMessage(
@@ -4765,6 +4987,7 @@ async def run_textual_app(
     thread_id: str | None = None,
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
+    initial_skill: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -4794,6 +5017,7 @@ async def run_textual_app(
 
             Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
+        initial_skill: Optional skill name to invoke when session starts.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -4820,6 +5044,7 @@ async def run_textual_app(
         thread_id=thread_id,
         resume_thread=resume_thread,
         initial_prompt=initial_prompt,
+        initial_skill=initial_skill,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

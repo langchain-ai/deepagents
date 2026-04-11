@@ -3,8 +3,9 @@
 Handles version checking against PyPI (with caching), install-method detection,
 auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
 
-Public entry points never raise; errors are caught and logged to avoid
-disrupting user experience.
+Most public entry points absorb errors and return sentinel values.
+`set_auto_update` raises on write failures so callers can surface
+actionable feedback.
 """
 
 from __future__ import annotations
@@ -325,12 +326,14 @@ async def perform_upgrade() -> tuple[bool, str]:
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_NO_UPDATE_CHECK` env var and the `[update].check` key
+    Checks `DEEPAGENTS_CLI_NO_UPDATE_CHECK` env var and the `[update].check` key
     in `config.toml`.
 
     Defaults to enabled.
     """
-    if os.environ.get("DEEPAGENTS_NO_UPDATE_CHECK"):
+    from deepagents_cli._env_vars import NO_UPDATE_CHECK
+
+    if os.environ.get(NO_UPDATE_CHECK):
         return False
     return _read_update_config().get("check", True)
 
@@ -338,20 +341,57 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-in via `DEEPAGENTS_AUTO_UPDATE=1` env var or
+    Opt-in via `DEEPAGENTS_CLI_AUTO_UPDATE=1` env var or
     `[update].auto_update = true` in `config.toml`.
 
     Defaults to `False`.
 
     Always disabled for editable installs.
     """
+    from deepagents_cli._env_vars import AUTO_UPDATE
     from deepagents_cli.config import _is_editable_install
 
     if _is_editable_install():
         return False
-    if os.environ.get("DEEPAGENTS_AUTO_UPDATE", "").lower() in {"1", "true", "yes"}:
+    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
         return True
     return _read_update_config().get("auto_update", False)
+
+
+def set_auto_update(enabled: bool) -> None:
+    """Persist the auto-update preference to `config.toml`.
+
+    Writes `[update].auto_update` so the setting survives across sessions.
+
+    Args:
+        enabled: Whether auto-update should be enabled.
+    """
+    import contextlib
+    import tempfile
+    from pathlib import Path
+
+    import tomli_w
+
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DEFAULT_CONFIG_PATH.exists():
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
+
+    if "update" not in data:
+        data["update"] = {}
+    data["update"]["auto_update"] = enabled
+
+    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            tomli_w.dump(data, f)
+        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            Path(tmp_path).unlink()
+        raise
 
 
 def _read_update_config() -> dict[str, bool]:

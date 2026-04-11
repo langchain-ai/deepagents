@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.5.0a2"
+version = "0.5.2"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -20,11 +20,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain-core>=1.2.21,<2.0.0",
+    "langchain-core>=1.2.27,<2.0.0",
     "langsmith>=0.3.0",
-    "langchain>=1.2.11,<2.0.0",
+    "langchain>=1.2.15,<2.0.0",
     "langchain-anthropic>=1.4.0,<2.0.0",
-    "langchain-google-genai>=4.2.0,<5.0.0",
+    "langchain-google-genai>=4.2.1,<5.0.0",
     "wcmatch",
 ]
 

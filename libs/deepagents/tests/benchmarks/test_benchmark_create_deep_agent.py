@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool, tool
 from pytest_benchmark.fixture import BenchmarkFixture
 
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -85,7 +86,14 @@ def _build_kwargs(**overrides: Any) -> dict[str, Any]:
 class TestCreateDeepAgentBenchmark:
     """Wall-time benchmarks for `create_deep_agent` graph construction."""
 
-    def test_bare_minimum(self, benchmark: BenchmarkFixture) -> None:
+    def test_filesystem_init(self, benchmark: BenchmarkFixture) -> None:
+        """Measure the cost of repeated `FilesystemMiddleware` setup."""
+
+        @benchmark  # type: ignore[misc]
+        def _() -> None:
+            FilesystemMiddleware()
+
+    def test_create_deep_agent_minimal(self, benchmark: BenchmarkFixture) -> None:
         """Baseline: no user-supplied tools, subagents, or middleware."""
         kwargs = _build_kwargs()
 

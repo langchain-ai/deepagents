@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -23,7 +23,7 @@ from deepagents_cli.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
-    _format_duration,
+    _handle_interrupt_cleanup,
     _is_summarization_chunk,
     execute_task_textual,
     format_token_count,
@@ -81,26 +81,40 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._current_tool_messages == {}
 
-    def test_token_tracker_initialized_none(self) -> None:
-        """Verify `_token_tracker` is initialized as `None`."""
+    def test_token_callbacks_initialized_none(self) -> None:
+        """Verify token callbacks are initialized as `None`."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        assert adapter._token_tracker is None
+        assert adapter._on_tokens_update is None
+        assert adapter._on_tokens_hide is None
+        assert adapter._on_tokens_show is None
 
-    def test_set_token_tracker(self) -> None:
-        """Verify `set_token_tracker` stores the tracker."""
+    def test_set_token_callbacks(self) -> None:
+        """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
 
-        mock_tracker = object()
-        adapter.set_token_tracker(mock_tracker)
-        assert adapter._token_tracker is mock_tracker
+        def update_cb(count: int, *, approximate: bool = False) -> None:
+            pass
+
+        def hide_cb() -> None:
+            pass
+
+        def show_cb(*, approximate: bool = False) -> None:
+            pass
+
+        adapter._on_tokens_update = update_cb
+        adapter._on_tokens_hide = hide_cb
+        adapter._on_tokens_show = show_cb
+        assert adapter._on_tokens_update is update_cb
+        assert adapter._on_tokens_hide is hide_cb
+        assert adapter._on_tokens_show is show_cb
 
     def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
         """Pending tool widgets should be marked error and then cleared."""
@@ -122,6 +136,69 @@ class TestTextualUIAdapterInit:
         tool_2.set_error.assert_called_once_with("Agent error: boom")
         assert adapter._current_tool_messages == {}
         set_active.assert_called_once_with(None)
+
+
+class TestInterruptCleanup:
+    """Tests for interrupt cleanup token handling."""
+
+    async def test_tool_only_interrupt_marks_tokens_approximate(self) -> None:
+        """Tool-only interrupted turns should keep the stale-token marker."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        set_spinner = AsyncMock()
+        set_active = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+            set_active_message=set_active,
+        )
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        show_calls: list[bool] = []
+
+        def show_cb(*, approximate: bool = False) -> None:
+            show_calls.append(approximate)
+
+        adapter._on_tokens_show = show_cb
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        turn_stats = SessionStats()
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        with patch("deepagents_cli.textual_adapter.time.monotonic", return_value=101.0):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config=config,  # type: ignore[arg-type]
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=turn_stats,
+                start_time=100.0,
+            )
+
+        assert mounted
+        assert show_calls == [True]
+        assert turn_stats.wall_time_seconds == 1.0
+        set_active.assert_called_once_with(None)
+        set_spinner.assert_awaited_once_with(None)
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
+
+        interrupted_payload = agent.aupdate_state.await_args_list[0].args[1]
+        interrupted_msg = interrupted_payload["messages"][0]
+        assert interrupted_msg.tool_calls[0]["id"] == "call-1"
+        assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
 
 class TestBuildStreamConfig:
@@ -238,6 +315,18 @@ class TestBuildStreamConfig:
         from deepagents_cli._version import __version__
 
         assert config["metadata"]["versions"]["deepagents-cli"] == __version__
+
+    def test_user_id_included_when_set(self) -> None:
+        """DEEPAGENTS_CLI_USER_ID should appear in metadata when set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": "mason"}):
+            config = build_stream_config("t-uid", assistant_id=None)
+        assert config["metadata"]["user_id"] == "mason"
+
+    def test_user_id_absent_when_unset(self) -> None:
+        """user_id should be absent from metadata when env var is not set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CLI_USER_ID": ""}):
+            config = build_stream_config("t-nouid", assistant_id=None)
+        assert "user_id" not in config["metadata"]
 
 
 class TestGetGitBranch:
@@ -1227,44 +1316,3 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
-
-
-# ---------------------------------------------------------------------------
-# _format_duration tests
-# ---------------------------------------------------------------------------
-
-
-class TestFormatDuration:
-    """Tests for `_format_duration` human-readable formatter."""
-
-    def test_sub_minute(self) -> None:
-        assert _format_duration(45.3) == "45.3s"
-
-    def test_exactly_one_minute(self) -> None:
-        assert _format_duration(60.0) == "1m 0s"
-
-    def test_minutes_and_seconds(self) -> None:
-        assert _format_duration(125.7) == "2m 5s"
-
-    def test_exactly_one_hour(self) -> None:
-        assert _format_duration(3600.0) == "1h 0m 0s"
-
-    def test_hours_minutes_seconds(self) -> None:
-        # 1383.5s -> 23m 3s
-        assert _format_duration(1383.5) == "23m 3s"
-
-    def test_large_duration(self) -> None:
-        # 2h 30m 45s = 9045s
-        assert _format_duration(9045.0) == "2h 30m 45s"
-
-    def test_zero(self) -> None:
-        assert _format_duration(0.0) == "0.0s"
-
-    def test_fractional_under_minute(self) -> None:
-        assert _format_duration(0.1) == "0.1s"
-
-    def test_rounding_near_minute_boundary(self) -> None:
-        assert _format_duration(59.95) == "1m 0s"
-
-    def test_just_under_minute_no_rounding(self) -> None:
-        assert _format_duration(59.94) == "59.9s"

@@ -6,6 +6,7 @@ lives in that module; this script only handles argument parsing.
 """
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 from deepagents_harbor.langsmith import (
     add_feedback,
     create_dataset,
-    create_experiment,
+    create_experiment_async,
     ensure_dataset,
 )
 
@@ -97,6 +98,11 @@ def main() -> int:
         help="Name for the experiment (auto-generated if not provided)",
     )
     experiment_parser.add_argument(
+        "--model",
+        type=str,
+        help="Model identifier used as suffix in auto-generated experiment names (e.g. 'anthropic:claude-sonnet-4-6')",
+    )
+    experiment_parser.add_argument(
         "--metadata",
         type=str,
         default="{}",
@@ -151,12 +157,27 @@ def main() -> int:
         if not isinstance(metadata, dict):
             print("Error: --metadata must be a JSON object.", file=sys.stderr)
             return 1
-        name = create_experiment(
-            dataset_name=args.dataset_name,
-            experiment_name=args.name,
-            metadata={str(key): str(value) for key, value in metadata.items()},
-        )
+        try:
+            name, url = asyncio.run(
+                create_experiment_async(
+                    dataset_name=args.dataset_name,
+                    experiment_name=args.name,
+                    model=args.model,
+                    metadata={str(key): str(value) for key, value in metadata.items()},
+                )
+            )
+        except LookupError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        except (RuntimeError, OSError) as exc:
+            print(f"Error: failed to create experiment: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:  # noqa: BLE001  # unexpected; distinct exit code
+            print(f"Error: unexpected failure creating experiment: {exc!r}", file=sys.stderr)
+            return 2
+        # stdout contract: exactly 2 lines (name, then url) — parsed by harbor.yml
         print(name)
+        print(url)
     elif args.command == "add-feedback":
         if not args.job_folder.exists():
             print(f"Error: Job folder does not exist: {args.job_folder}")

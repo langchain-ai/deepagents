@@ -22,6 +22,9 @@ on:
         # https://github.com/CodSpeedHQ/pytest-codspeed/issues/106
         default: "3.13.11"
 
+permissions:
+  contents: read
+
 env:
   UV_NO_SYNC: "true"
 
@@ -37,7 +40,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: "Checkout"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "Set up Python + uv"
         uses: ./.github/actions/uv_setup
@@ -51,7 +54,7 @@ jobs:
         run: uv sync --group test
 
       - name: "Run benchmarks"
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@dfaf2584d705312e4ab4e23a4dd3e2f56b71ef3b # v4
         with:
           working-directory: ${{ inputs.working-directory }}
           run: uv run --no-sync pytest ./tests -m benchmark --codspeed

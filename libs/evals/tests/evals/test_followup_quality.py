@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 from tests.evals.llm_judge import llm_judge
 from tests.evals.utils import TrajectoryScorer, run_agent
 
-pytestmark = [pytest.mark.eval_category("followup_quality")]
+pytestmark = [pytest.mark.eval_category("conversation")]
+"""Apply conversation category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
 # Test cases — each describes a user request (varying in specificity) and
@@ -85,6 +86,7 @@ FOLLOWUP_CASES = [
 ]
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize(
     "case",

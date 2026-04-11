@@ -1,3 +1,12 @@
+"""Unit tests for human-in-the-loop interrupt configuration.
+
+Verifies that the agent's interrupt_on config correctly pauses execution
+for approval, respects per-tool approval/rejection settings, and
+propagates interrupt config through subagent delegation.
+
+These are SDK integration tests, not model capability evals.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -15,7 +24,8 @@ from langgraph.types import Command
 
 from tests.evals.utils import run_agent
 
-pytestmark = [pytest.mark.eval_category("hitl")]
+pytestmark = [pytest.mark.eval_category("unit_test"), pytest.mark.eval_tier("baseline")]
+"""Apply unit_test category and baseline tier to all tests in this module."""
 
 
 @tool(description="Use this tool to get the weather")

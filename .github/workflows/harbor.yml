@@ -1,52 +1,42 @@
-name: "⚓ Harbor"
+name: "📊 Evals - Harbor"
 
 on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to run. Set definitions: .github/scripts/models.py. Use models_override for individual models."
-        required: true
-        default: "all"
+        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
         type: choice
         options:
+          - ""
           - all
           - set0
           - set1
           - set2
+          - frontier
+          - fast
           - open
           - anthropic
-          - openai
-          - google_genai
-          - openrouter
           - baseten
           - fireworks
-          - ollama
+          - google_genai
           - groq
-          - xai
           - nvidia
+          - openai
+          - ollama
+          - openrouter
+          - xai
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
-          - "openai:gpt-4o"
-          - "openai:gpt-4o-mini"
-          - "openai:gpt-4.1"
-          - "openai:o3"
-          - "openai:o4-mini"
-          - "openai:gpt-5.1-codex"
-          - "openai:gpt-5.2-codex"
-          - "openai:gpt-5.4"
-          - "google_genai:gemini-2.5-flash"
-          - "google_genai:gemini-2.5-pro"
-          - "google_genai:gemini-3-flash-preview"
-          - "google_genai:gemini-3.1-pro-preview"
-          - "openrouter:minimax/minimax-m2.7"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:fireworks/deepseek-v3p2"
           - "fireworks:fireworks/deepseek-v3-0324"
@@ -55,22 +45,41 @@ on:
           - "fireworks:fireworks/kimi-k2p5"
           - "fireworks:fireworks/glm-5"
           - "fireworks:fireworks/minimax-m2p5"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
           - "ollama:glm-5"
+          - "ollama:glm-5.1"
           - "ollama:minimax-m2.5"
+          - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:397b-cloud"
           - "ollama:nemotron-3-nano:30b"
+          - "ollama:nemotron-3-super"
           - "ollama:cogito-2.1:671b"
           - "ollama:devstral-2:123b"
           - "ollama:ministral-3:14b"
           - "ollama:qwen3-next:80b"
           - "ollama:qwen3-coder:480b-cloud"
           - "ollama:deepseek-v3.2:cloud"
-          - "groq:openai/gpt-oss-120b"
-          - "groq:qwen/qwen3-32b"
-          - "groq:moonshotai/kimi-k2-instruct"
+          - "openai:gpt-4o"
+          - "openai:gpt-4o-mini"
+          - "openai:gpt-4.1"
+          - "openai:o3"
+          - "openai:o4-mini"
+          - "openai:gpt-5.1-codex"
+          - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
+          - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:z-ai/glm-5.1"
+          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
-          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
       models_override:
         description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
         required: false
@@ -104,7 +113,7 @@ on:
         type: choice
         options:
           - sdk
-          - cli
+          # - cli # need to support properly first
 
 permissions:
   contents: read
@@ -118,6 +127,7 @@ jobs:
   prep:
     name: "🔧 Prepare matrix"
     runs-on: ubuntu-latest
+    environment: evals
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     env:
@@ -128,19 +138,20 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
           AGENT_MODE: ${{ inputs.agent_mode }}
         run: |
-          echo "### ⚓ Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${MODELS_OVERRIDE}" != "(empty)" ]; then
+            echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
           if [ "${N_TASKS}" = "0" ]; then
             echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
@@ -150,10 +161,9 @@ jobs:
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
@@ -177,9 +187,10 @@ jobs:
         run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
 
   harbor:
-    name: "⚓ Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
+    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
     needs: prep
     runs-on: ubuntu-latest
+    environment: evals
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -189,28 +200,29 @@ jobs:
       run:
         working-directory: libs/evals
     env:
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING_V2: "true"
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # tracing + experiments + dataset mgmt
+      LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }} # sandbox creation (LangSmithEnvironment)
+      LANGSMITH_TRACING: "true"
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
         working-directory: .
@@ -267,7 +279,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -282,9 +294,24 @@ jobs:
       - name: "🧪 Create LangSmith experiment"
         id: langsmith
         run: |
-          experiment_name=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME")
+          set -euo pipefail
+          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
+          line_count=$(echo "$output" | wc -l | tr -d ' ')
+          if [ "$line_count" -ne 2 ]; then
+            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
+            echo "$output" | head -5
+            exit 1
+          fi
+          experiment_name=$(echo "$output" | head -1)
+          experiment_url=$(echo "$output" | tail -1)
+          if [ -z "$experiment_name" ] || [ -z "$experiment_url" ]; then
+            echo "::error::create-experiment returned empty name or URL: name='$experiment_name' url='$experiment_url'"
+            exit 1
+          fi
           echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
+          echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
           echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
+          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -293,17 +320,32 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
+          # Print LangSmith experiment link
+          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
+          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
+          echo ""
+
+          # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+
+          # LangSmith sandboxes are not a built-in harbor environment type,
+          # so we use --environment-import-path instead of --env.
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_flag="--environment-import-path deepagents_harbor.langsmith_environment:LangSmithEnvironment"
+          else
+            env_flag="--env $HARBOR_SANDBOX_ENV"
+          fi
+
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
             --jobs-dir jobs/terminal-bench \
-            --env "$HARBOR_SANDBOX_ENV" \
+            $env_flag \
             --model "$HARBOR_MODEL" \
             --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
 
@@ -337,6 +379,7 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
           LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
+          LANGSMITH_EXPERIMENT_URL: ${{ steps.langsmith.outputs.experiment_url }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
         run: |
           {
@@ -352,7 +395,11 @@ jobs:
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
             echo "- Agent mode: ${HARBOR_AGENT_MODE}"
-            echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
+              echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
+            else
+              echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
+            fi
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
               echo "- Harbor job dir: $HARBOR_JOB_DIR"
             fi
@@ -360,7 +407,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: harbor-${{ strategy.job-index }}
           path: |

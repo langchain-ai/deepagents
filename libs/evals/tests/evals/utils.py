@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -9,10 +10,13 @@ import pytest
 from deepagents.backends.utils import create_file_data, file_data_to_string
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langsmith import testing as t
+from langsmith.run_helpers import get_current_run_tree
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +64,8 @@ class AgentTrajectory:
                     name = tc.get("name")
                     args = tc.get("args")
                     lines.append(f"  - {name} {args}")
-            else:
-                text = step.action.text
+            text = step.action.text
+            if text and text.strip():
                 text_preview = text.strip().replace("\n", "\\n")
                 lines.append(f"  text: {text_preview}")
         return "\n".join(lines)
@@ -918,65 +922,6 @@ def run_agent(
         eval_metadata: Optional metadata to attach to the logged inputs.
 
     Returns:
-        The resulting ``AgentTrajectory``.
-
-    Raises:
-        TypeError: If the invoke result is not a ``Mapping``.
-    """
-    if isinstance(query, str):
-        invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
-    else:
-        invoke_inputs = {"messages": query}
-    if initial_files is not None:
-        invoke_inputs["files"] = {
-            path: create_file_data(content) for path, content in initial_files.items()
-        }
-
-    if thread_id is None:
-        thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-
-    logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
-    if eval_metadata is not None:
-        logged_inputs["eval_metadata"] = eval_metadata
-
-    t.log_inputs(logged_inputs)
-    result = agent.invoke(invoke_inputs, config)
-    t.log_outputs(result)
-
-    if not isinstance(result, Mapping):
-        msg = f"Expected invoke result to be Mapping, got {type(result)}"
-        raise TypeError(msg)
-
-    trajectory = _trajectory_from_result(result)
-    if scorer is not None:
-        _assert_expectations(trajectory, scorer)
-    return trajectory
-
-
-async def run_agent_async(
-    agent: CompiledStateGraph[Any, Any],
-    *,
-    query: str | list[AnyMessage],
-    model: BaseChatModel,
-    initial_files: dict[str, str] | None = None,
-    scorer: TrajectoryScorer | None = None,
-    thread_id: str | None = None,
-    eval_metadata: dict[str, object] | None = None,
-) -> AgentTrajectory:
-    """Run agent eval against the given query asynchronously.
-
-    Args:
-        agent: The compiled state graph to invoke.
-        query: A string prompt or list of messages.
-        model: The chat model (used for logging only).
-        initial_files: Optional initial files to seed the agent with.
-        scorer: Optional trajectory expectations to validate.
-        thread_id: Optional thread ID for the invocation.
-        eval_metadata: Optional metadata to attach to the logged inputs.
-
-    Returns:
         The resulting `AgentTrajectory`.
 
     Raises:
@@ -995,13 +940,32 @@ async def run_agent_async(
         thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    logged_inputs = dict(invoke_inputs)
-    logged_inputs["model"] = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
+    # Build clean inputs for the LangSmith dataset example. The
+    # @pytest.mark.langsmith decorator auto-captures all test function params
+    # (e.g. tmp_path) via inspect.signature into run_tree.inputs. Calling
+    # t.log_inputs() only *merges* into run_tree.inputs (via add_inputs),
+    # so the unwanted auto-captured keys persist. We also assign
+    # run_tree.inputs directly to fully replace them, since _end_run passes
+    # run_tree.inputs (not _TestCase.inputs) to sync_example when
+    # creating/updating the dataset example.
+    run_tree = get_current_run_tree()
+    model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
+    logged_inputs: dict[str, Any] = {
+        "test_name": run_tree.name if run_tree else "unknown",
+        "model": model_str,
+    }
     if eval_metadata is not None:
         logged_inputs["eval_metadata"] = eval_metadata
 
     t.log_inputs(logged_inputs)
-    result = await agent.ainvoke(invoke_inputs, config)
+    if run_tree is not None:
+        run_tree.inputs = logged_inputs
+    else:
+        logger.debug(
+            "run_tree is None; run_tree.inputs will not be overridden "
+            "(sync_example may record auto-captured inputs)"
+        )
+    result = agent.invoke(invoke_inputs, config)
     t.log_outputs(result)
 
     if not isinstance(result, Mapping):

@@ -26,7 +26,8 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_usage")]
+pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
 # Mock tools — lightweight stubs that return a fixed string
@@ -98,6 +99,7 @@ ALL_TOOLS = [
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_direct_request_slack_dm(model: BaseChatModel) -> None:
     """Agent uses the Slack DM tool when explicitly asked."""
@@ -120,6 +122,7 @@ def test_direct_request_slack_dm(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_direct_request_github_pr(model: BaseChatModel) -> None:
     """Agent uses the GitHub PR tool when explicitly asked."""
@@ -147,6 +150,7 @@ def test_direct_request_github_pr(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_direct_request_multiple_tools(model: BaseChatModel) -> None:
     """Agent uses both Linear and GitHub issue tools when asked for both."""
@@ -178,6 +182,7 @@ def test_direct_request_multiple_tools(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_indirect_schedule_meeting(model: BaseChatModel) -> None:
     """Agent infers the calendar tool from a scheduling request."""
@@ -200,6 +205,7 @@ def test_indirect_schedule_meeting(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_indirect_notify_team(model: BaseChatModel) -> None:
     """Agent infers the Slack channel post tool from a 'notify the team' request."""
@@ -227,6 +233,7 @@ def test_indirect_notify_team(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_indirect_email_report(model: BaseChatModel) -> None:
     """Agent infers the Gmail tool from 'email a report' request."""
@@ -259,6 +266,7 @@ def test_indirect_email_report(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_chain_search_then_email(model: BaseChatModel) -> None:
     """Agent searches the web then emails results — two tools in sequence."""
@@ -282,6 +290,7 @@ def test_chain_search_then_email(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_chain_create_issue_then_notify(model: BaseChatModel) -> None:
     """Agent creates a GitHub issue then notifies Slack — two tools in sequence."""

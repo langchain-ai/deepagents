@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -17,6 +18,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from textual.app import ComposeResult
 
 from deepagents_cli import theme
@@ -197,7 +200,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen .model-detail-footer {
         height: 4;
         padding: 0 2;
-        border-top: solid $primary-lighten-2;
+        margin-top: 1;
     }
     """
 
@@ -208,6 +211,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_profile_override: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
+
+        Data loading (model discovery, profiles) is deferred to `on_mount`
+        so the screen pushes instantly and populates asynchronously.
 
         Args:
             current_model: The currently active model name (to highlight).
@@ -220,26 +226,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         super().__init__()
         self._current_model = current_model
         self._current_provider = current_provider
+        self._cli_profile_override = cli_profile_override
 
-        # Build list from dynamically discovered models (falls back to defaults)
+        # Model data — populated asynchronously in on_mount via _load_model_data
         self._all_models: list[tuple[str, str]] = []
-        for provider, models in get_available_models().items():
-            for model in models:
-                model_spec = f"{provider}:{model}"
-                self._all_models.append((model_spec, provider))
-
-        self._filtered_models: list[tuple[str, str]] = list(self._all_models)
-        self._selected_index = self._find_current_model_index()
+        self._filtered_models: list[tuple[str, str]] = []
+        self._selected_index = 0
         self._options_container: Container | None = None
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
         self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
-
-        config = ModelConfig.load()
-        self._default_spec: str | None = config.default_model
-        self._profiles = get_model_profiles(cli_override=cli_profile_override)
+        self._default_spec: str | None = None
+        self._profiles: Mapping[str, ModelProfileEntry] = {}
+        self._loaded = False
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -298,19 +299,88 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
             yield Static(help_text, classes="model-selector-help")
 
+    @staticmethod
+    def _load_model_data(
+        cli_override: dict[str, Any] | None,
+    ) -> tuple[
+        list[tuple[str, str]],
+        str | None,
+        Mapping[str, ModelProfileEntry],
+    ]:
+        """Gather model discovery data synchronously.
+
+        Intended to be called via `asyncio.to_thread` so filesystem I/O in
+        `get_available_models` does not block the event loop.
+
+        Returns:
+            Tuple of (all_models, default_spec, profiles) where
+                `all_models` is a list of `(provider:model spec, provider)`
+                pairs, `default_spec` is the configured default model or
+                `None`, and `profiles` maps spec strings to profile entries.
+        """
+        all_models: list[tuple[str, str]] = [
+            (f"{provider}:{model}", provider)
+            for provider, models in get_available_models().items()
+            for model in models
+        ]
+
+        config = ModelConfig.load()
+        profiles = get_model_profiles(cli_override=cli_override)
+        return all_models, config.default_model, profiles
+
     async def on_mount(self) -> None:
-        """Set up the screen on mount."""
+        """Set up the screen on mount.
+
+        Loads model data in a background thread so the screen frame renders
+        immediately, then populates the model list.
+        """
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", colors.success)
 
-        await self._update_display()
-        self._update_footer()
-
-        # Focus the filter input
+        # Focus the filter input immediately so the user can start typing
+        # while model data loads.
         filter_input = self.query_one("#model-filter", Input)
         filter_input.focus()
+
+        # Offload to thread because get_available_models does filesystem I/O
+        try:
+            all_models, default_spec, profiles = await asyncio.to_thread(
+                self._load_model_data, self._cli_profile_override
+            )
+        except Exception:
+            logger.exception("Failed to load model data for /model selector")
+            self._loaded = True
+            if self.is_running:
+                self.notify(
+                    "Could not load model list. "
+                    "Check provider packages and config.toml.",
+                    severity="error",
+                    timeout=10,
+                    markup=False,
+                )
+                await self._update_display()
+                self._update_footer()
+            return
+
+        # Screen may have been dismissed while the thread was running
+        if not self.is_running:
+            return
+
+        self._all_models = all_models
+        self._default_spec = default_spec
+        self._profiles = profiles
+        self._filtered_models = list(self._all_models)
+        self._selected_index = self._find_current_model_index()
+        self._loaded = True
+
+        # Re-apply any filter text the user typed while data was loading
+        if self._filter_text:
+            self._update_filtered_list()
+
+        await self._update_display()
+        self._update_footer()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models as user types.
@@ -319,6 +389,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The input changed event.
         """
         self._filter_text = event.value
+        if not self._loaded:
+            return  # on_mount will re-apply filter after data loads
         self._update_filtered_list()
         self.call_after_refresh(self._update_display)
 
@@ -390,8 +462,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._option_widgets = []
 
         if not self._filtered_models:
-            no_matches = Static(Content.styled("No matching models", "dim"))
-            await self._options_container.mount(no_matches)
+            msg = "Loading models…" if not self._loaded else "No matching models"
+            await self._options_container.mount(Static(Content.styled(msg, "dim")))
             self._update_footer()
             return
 
@@ -836,8 +908,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         If the highlighted model is already the default, clears it.
         Otherwise sets it as the new default.
         """
-        import asyncio
-
         if not self._filtered_models or not self._option_widgets:
             return
 

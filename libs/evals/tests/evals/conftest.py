@@ -27,6 +27,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "eval_category(name): tag an eval test with a category for grouping and reporting",
     )
+    config.addinivalue_line(
+        "markers",
+        "eval_tier(name): tag an eval as 'baseline' (regression gate) or 'hillclimb' (progress tracking)",
+    )
 
     tracing_enabled = any(
         os.environ.get(var, "").lower() == "true"
@@ -59,36 +63,68 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--eval-category",
         action="append",
         default=[],
-        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category hitl",
+        help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
+    )
+    parser.addoption(
+        "--eval-tier",
+        action="append",
+        default=[],
+        help="Run only evals tagged with this tier (repeatable). E.g. --eval-tier baseline --eval-tier hillclimb",
+    )
+    parser.addoption(
+        "--openrouter-provider",
+        action="store",
+        default=None,
+        help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
     )
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    categories = config.getoption("--eval-category")
-    if not categories:
+def _filter_by_marker(
+    config: pytest.Config,
+    items: list[pytest.Item],
+    *,
+    option: str,
+    marker_name: str,
+) -> None:
+    """Deselect items whose *marker_name* value is not in the CLI *option* list.
+
+    Exits the test session with returncode 1 if any requested values are not
+    found among collected tests.
+
+    Args:
+        config: The pytest config object.
+        items: Mutable list of collected test items (modified in-place).
+        option: CLI option name (e.g. `--eval-category`).
+        marker_name: Pytest marker to read (e.g. `eval_category`).
+    """
+    values = config.getoption(option)
+    if not values:
         return
 
-    known = {
-        m.args[0] for item in items if (m := item.get_closest_marker("eval_category")) and m.args
-    }
-    unknown = set(categories) - known
+    known = {m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args}
+    unknown = set(values) - known
     if unknown:
         msg = (
-            f"Unknown --eval-category values: {sorted(unknown)}. "
-            f"Known categories in collected tests: {sorted(known)}"
+            f"Unknown {option} values: {sorted(unknown)}. "
+            f"Known values in collected tests: {sorted(known)}"
         )
         pytest.exit(msg, returncode=1)
 
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
-        marker = item.get_closest_marker("eval_category")
-        if marker and marker.args and marker.args[0] in categories:
+        marker = item.get_closest_marker(marker_name)
+        if marker and marker.args and marker.args[0] in values:
             selected.append(item)
         else:
             deselected.append(item)
     items[:] = selected
     config.hook.pytest_deselected(items=deselected)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    _filter_by_marker(config, items, option="--eval-category", marker_name="eval_category")
+    _filter_by_marker(config, items, option="--eval-tier", marker_name="eval_tier")
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -120,5 +156,20 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 
 
 @pytest.fixture
-def model(model_name: str) -> BaseChatModel:
-    return init_chat_model(model_name)
+def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
+    kwargs: dict[str, Any] = {}
+    provider = request.config.getoption("--openrouter-provider")
+    if provider:
+        if not model_name.startswith("openrouter:"):
+            msg = "--openrouter-provider requires an openrouter: model prefix"
+            raise ValueError(msg)
+        kwargs["openrouter_provider"] = {
+            "only": [provider],
+            "allow_fallbacks": False,
+        }
+    if model_name.startswith("openrouter:"):
+        # OpenRouter SDK passes timeout=None to httpx, disabling its default
+        # 5s read timeout. This causes indefinite hangs on TCP stalls.
+        # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
+        kwargs["timeout"] = 120_000  # ms
+    return init_chat_model(model_name, **kwargs)

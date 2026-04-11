@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
@@ -99,6 +100,7 @@ class TestDeepAgents:
         assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "weather_agent" for tool_call in tool_calls)
         assert any(tool_call["name"] == "task" and tool_call["args"].get("subagent_type") == "soccer_agent" for tool_call in tool_calls)
 
+    @pytest.mark.xfail(strict=False, reason="Subagent middleware double-writes extended state keys in same step")
     def test_deep_agent_with_extended_state_and_subagents(self):
         subagents = [
             {

@@ -15,8 +15,10 @@ import wcmatch.glob as wcglob
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GrepMatch,
@@ -24,12 +26,10 @@ from deepagents.backends.protocol import (
     LsResult,
     ReadResult,
     WriteResult,
-    map_file_operation_error,
 )
 from deepagents.backends.utils import (
     _get_file_type,
     check_empty_content,
-    create_file_data,
     perform_string_replacement,
 )
 
@@ -325,14 +325,14 @@ class FilesystemBackend(BackendProtocol):
                 with os.fdopen(fd, "rb") as f:
                     raw = f.read()
                 encoded = base64.standard_b64encode(raw).decode("ascii")
-                return ReadResult(file_data=create_file_data(encoded, encoding="base64"))
+                return ReadResult(file_data=FileData(content=encoded, encoding="base64"))
 
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
             empty_msg = check_empty_content(content)
             if empty_msg:
-                return ReadResult(file_data=create_file_data(empty_msg))
+                return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
             lines = content.splitlines()
             start_idx = offset
@@ -342,8 +342,8 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=create_file_data("\n".join(selected_lines)))
-        except OSError as e:
+            return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
@@ -359,7 +359,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `WriteResult` with path on success, or error message if the file
-                already exists or write fails. External storage sets `files_update=None`.
+                already exists or write fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -378,7 +378,7 @@ class FilesystemBackend(BackendProtocol):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            return WriteResult(path=file_path, files_update=None)
+            return WriteResult(path=file_path)
         except (OSError, UnicodeEncodeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
@@ -400,8 +400,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `EditResult` with path and occurrence count on success, or error
-                message if file not found or replacement fails. External storage sets
-                `files_update=None`.
+                message if file not found or replacement fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -413,6 +412,15 @@ class FilesystemBackend(BackendProtocol):
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
+
+            # Normalize line endings in old_string/new_string to match the
+            # text-mode read above. Python universal newlines (the default
+            # when newline=None) converts \r\n and bare \r to \n on read.
+            # Callers that obtained content via binary-mode reads (e.g.
+            # download_files) may pass strings with \r\n or \r that would
+            # fail to match the \n-only content.
+            old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+            new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
             result = perform_string_replacement(content, old_string, new_string, replace_all)
 
@@ -429,7 +437,7 @@ class FilesystemBackend(BackendProtocol):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+            return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
@@ -497,7 +505,7 @@ class FilesystemBackend(BackendProtocol):
                 timeout=30,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -692,7 +700,7 @@ class FilesystemBackend(BackendProtocol):
 
                 responses.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 responses.append(FileUploadResponse(path=path, error=error))
@@ -719,8 +727,34 @@ class FilesystemBackend(BackendProtocol):
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
-                error = map_file_operation_error(exc)
+                error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
+
+
+def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:
+    """Map a caught exception to a standardized `FileOperationError` code.
+
+    Classification is based on exception type only (stdlib hierarchy).
+    Returns `None` for any exception that cannot be classified by type,
+    letting callers decide whether to re-raise or fall back to `str(exc)`.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        A `FileOperationError` literal, or `None` if unrecognized.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    if isinstance(exc, IsADirectoryError):
+        return "is_directory"
+    if isinstance(exc, (NotADirectoryError, FileExistsError)):
+        return "invalid_path"
+    if isinstance(exc, ValueError):
+        return "invalid_path"
+    return None

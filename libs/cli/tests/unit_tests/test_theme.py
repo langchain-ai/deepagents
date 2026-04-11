@@ -166,6 +166,10 @@ EXPECTED_CSS_KEYS = frozenset(
     {
         "mode-bash",
         "mode-command",
+        "skill",
+        "skill-hover",
+        "tool",
+        "tool-hover",
     }
 )
 
@@ -309,7 +313,6 @@ class TestGetThemeColors:
         assert colors.primary == "#BD93F9"
         assert colors.background == "#282A36"
         # App-specific fields fall back to base
-        assert colors.primary_dev == DARK_COLORS.primary_dev
         assert colors.muted == DARK_COLORS.muted
 
     def test_builtin_theme_ansi_falls_back(self) -> None:
@@ -603,19 +606,24 @@ primary = "#FF0000"
         _load_user_themes(builtins, config_path=config)
         assert "bad" not in builtins
 
-    def test_missing_dark_skipped(self, tmp_path: Path) -> None:
+    def test_missing_dark_defaults_to_false(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         _write_config(
             config,
             """
-[themes.bad]
-label = "Bad Theme"
+[themes.my-light]
+label = "My Light"
 primary = "#FF0000"
 """,
         )
         builtins: dict[str, ThemeEntry] = {}
         _load_user_themes(builtins, config_path=config)
-        assert "bad" not in builtins
+        assert "my-light" in builtins
+        entry = builtins["my-light"]
+        assert entry.dark is False
+        assert entry.colors.primary == "#FF0000"
+        # Falls back to LIGHT_COLORS since dark defaults to False
+        assert entry.colors.muted == LIGHT_COLORS.muted
 
     def test_invalid_hex_skipped(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
@@ -632,19 +640,43 @@ primary = "not-a-color"
         _load_user_themes(builtins, config_path=config)
         assert "bad-hex" not in builtins
 
-    def test_builtin_name_shadowing_skipped(self, tmp_path: Path) -> None:
+    def test_builtin_color_override_merges(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         _write_config(
             config,
             """
 [themes.langchain]
-label = "Fake LangChain"
-dark = true
+primary = "#FF0000"
 """,
         )
-        builtins: dict[str, ThemeEntry] = {}
+        builtins = _builtin_themes()
+        original_label = builtins["langchain"].label
+        original_dark = builtins["langchain"].dark
+        original_custom = builtins["langchain"].custom
         _load_user_themes(builtins, config_path=config)
-        assert "langchain" not in builtins
+        entry = builtins["langchain"]
+        # Color overridden
+        assert entry.colors.primary == "#FF0000"
+        # Other colors unchanged
+        assert entry.colors.muted == DARK_COLORS.muted
+        # Label, dark, custom preserved from built-in
+        assert entry.label == original_label
+        assert entry.dark is original_dark
+        assert entry.custom is original_custom
+
+    def test_builtin_override_without_colors_is_noop(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        _write_config(
+            config,
+            """
+[themes.langchain]
+label = "My LangChain"
+""",
+        )
+        builtins = _builtin_themes()
+        original = builtins["langchain"]
+        _load_user_themes(builtins, config_path=config)
+        assert builtins["langchain"] is original
 
     def test_multiple_user_themes(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
@@ -772,6 +804,53 @@ dark = false
         assert "good" in builtins
         assert "also-good" in builtins
         assert "bad" not in builtins
+
+    def test_non_bool_dark_defaults_to_false(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        _write_config(
+            config,
+            """
+[themes.stringy]
+label = "Stringy Dark"
+dark = "yes"
+""",
+        )
+        builtins: dict[str, ThemeEntry] = {}
+        _load_user_themes(builtins, config_path=config)
+        assert "stringy" in builtins
+        assert builtins["stringy"].dark is False
+
+    def test_builtin_override_invalid_hex_skipped(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        _write_config(
+            config,
+            """
+[themes.langchain]
+primary = "not-a-color"
+""",
+        )
+        builtins = _builtin_themes()
+        original = builtins["langchain"]
+        _load_user_themes(builtins, config_path=config)
+        # Invalid override skipped — original preserved
+        assert builtins["langchain"] is original
+
+    def test_builtin_override_preserves_custom_flag(self, tmp_path: Path) -> None:
+        """Textual built-in themes keep custom=False after color override."""
+        config = tmp_path / "config.toml"
+        _write_config(
+            config,
+            """
+[themes.dracula]
+muted = "#AABBCC"
+""",
+        )
+        builtins = _builtin_themes()
+        assert builtins["dracula"].custom is False
+        _load_user_themes(builtins, config_path=config)
+        entry = builtins["dracula"]
+        assert entry.colors.muted == "#AABBCC"
+        assert entry.custom is False
 
     def test_non_string_color_value_uses_base_fallback(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"

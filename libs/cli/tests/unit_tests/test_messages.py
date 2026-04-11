@@ -20,6 +20,7 @@ from deepagents_cli.widgets.messages import (
     UserMessage,
     _show_timestamp_toast,
     _strip_frontmatter,
+    _strip_success_exit_line,
 )
 
 # Content that previously caused MarkupError crashes
@@ -149,17 +150,18 @@ class TestToolCallMessageMarkupSafety:
         assert msg._args == args
 
     def test_tool_header_escapes_markup_in_label(self) -> None:
-        """Tool header should safely render label content with markup-like chars."""
+        """Task description widget should safely render bracket content."""
         msg = ToolCallMessage(
             "task",
             {"description": "Search for closing tag [/dim] mismatches"},
         )
 
-        # `task` has no inline args widget, so this validates the header markup.
-        # Header uses markup=False so bracket content is shown verbatim.
-        header = next(iter(msg.compose()))
-        rendered = header.render()
-        assert "[/dim]" in rendered.plain
+        # Header shows subagent type; description is a separate dim widget.
+        widgets = list(msg.compose())
+        # Second widget is the task description line (Static with dim style).
+        # Content.styled() produces a Content object stored on the Static.
+        content = widgets[1]._Static__content  # type: ignore[attr-defined]
+        assert "[/dim]" in content.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
         """Inline args line should escape bracket content in argument values."""
@@ -756,3 +758,46 @@ class TestSkillMessageMarkupSafety:
         assert msg._expanded is False
         msg._expanded = True
         assert msg._expanded is True
+
+
+class TestStripSuccessExitLine:
+    """Test _strip_success_exit_line helper."""
+
+    def test_strips_success_trailer(self) -> None:
+        text = "hello world\n[Command succeeded with exit code 0]"
+        assert _strip_success_exit_line(text) == "hello world"
+
+    def test_strips_success_trailer_with_trailing_whitespace(self) -> None:
+        text = "output\n[Command succeeded with exit code 0]  \n"
+        assert _strip_success_exit_line(text) == "output"
+
+    def test_preserves_failed_exit_code(self) -> None:
+        text = "error\n[Command failed with exit code 1]"
+        assert _strip_success_exit_line(text) == text
+
+    def test_preserves_non_zero_success_code(self) -> None:
+        """Only exit code 0 is stripped; other codes are untouched."""
+        text = "output\n[Command succeeded with exit code 2]"
+        assert _strip_success_exit_line(text) == text
+
+    def test_empty_string(self) -> None:
+        assert _strip_success_exit_line("") == ""
+
+    def test_no_trailer(self) -> None:
+        text = "just some output"
+        assert _strip_success_exit_line(text) == text
+
+    def test_only_trailer(self) -> None:
+        text = "[Command succeeded with exit code 0]"
+        assert _strip_success_exit_line(text) == ""
+
+    def test_preserves_mid_string_trailer(self) -> None:
+        """Trailer not at end of string should be left intact."""
+        text = "before\n[Command succeeded with exit code 0]\nafter"
+        assert _strip_success_exit_line(text) == text
+
+    def test_set_success_strips_trailer(self) -> None:
+        """Integration: set_success should strip the exit code 0 line."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.set_success("hi\n[Command succeeded with exit code 0]")
+        assert msg._output == "hi"

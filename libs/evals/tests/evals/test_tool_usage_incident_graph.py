@@ -832,6 +832,105 @@ async def test_three_tools_find_service_owner_team(model: BaseChatModel) -> None
 
 
 @pytest.mark.langsmith
+async def test_multi_question_current_incident_service_and_incident_oncall(
+    model: BaseChatModel,
+) -> None:
+    agent = _create_agent(model)
+    await run_agent_async(
+        agent,
+        model=model,
+        query=(
+            "Answer both questions: 1) What service is affected by the current incident? "
+            "2) Who is the on-call engineer for incident 41029?"
+        ),
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("payments-api"),
+            final_text_contains("Cara Singh"),
+        )
+        .expect(
+            agent_steps=6,
+            tool_call_requests=7,
+            tool_calls=[
+                tool_call(name="get_current_incident_id"),
+                tool_call(name="get_incident_service", args_contains={"incident_id": 41017}),
+                tool_call(name="get_incident_service", args_contains={"incident_id": 41029}),
+                tool_call(name="get_service_team", args_contains={"service_id": 8514}),
+                tool_call(name="get_team_oncall_engineer", args_contains={"team_id": 562}),
+                tool_call(name="get_service_name", args_contains={"service_id": 8401}),
+                tool_call(name="get_engineer_name", args_contains={"engineer_id": 7381}),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
+async def test_multi_question_incident_oncall_and_incident_environment(
+    model: BaseChatModel,
+) -> None:
+    agent = _create_agent(model)
+    await run_agent_async(
+        agent,
+        model=model,
+        query=(
+            "Answer both questions: 1) Who is the on-call engineer for incident 41029? "
+            "2) What environment and region is incident 41058 running in?"
+        ),
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("Cara Singh"),
+            final_text_contains("staging"),
+            final_text_contains("us-west-2"),
+        )
+        .expect(
+            agent_steps=6,
+            tool_call_requests=8,
+            tool_calls=[
+                tool_call(name="get_incident_service", args_contains={"incident_id": 41029}),
+                tool_call(name="get_service_team", args_contains={"service_id": 8514}),
+                tool_call(name="get_team_oncall_engineer", args_contains={"team_id": 562}),
+                tool_call(name="get_engineer_name", args_contains={"engineer_id": 7381}),
+                tool_call(name="get_incident_service", args_contains={"incident_id": 41058}),
+                tool_call(name="get_service_environment", args_contains={"service_id": 8799}),
+                tool_call(name="get_environment_name", args_contains={"environment_id": 442}),
+                tool_call(name="get_environment_region", args_contains={"environment_id": 442}),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
+async def test_multi_question_incident_oncall_and_service_with_most_firing_alerts(
+    model: BaseChatModel,
+) -> None:
+    agent = _create_agent(model)
+    await run_agent_async(
+        agent,
+        model=model,
+        query=(
+            "Answer both questions: 1) Who is on call for incident 41029? "
+            "2) Which service currently has the most firing alerts?"
+        ),
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("Cara Singh"),
+            final_text_contains("payments-api"),
+            final_text_contains("2", case_insensitive=False),
+        )
+        .expect(
+            agent_steps=8,
+            tool_call_requests=13,
+            tool_calls=[
+                tool_call(name="get_incident_service", args_contains={"incident_id": 41029}),
+                tool_call(name="get_service_team", args_contains={"service_id": 8514}),
+                tool_call(name="get_team_oncall_engineer", args_contains={"team_id": 562}),
+                tool_call(name="get_engineer_name", args_contains={"engineer_id": 7381}),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
 async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
     agent = _create_agent(model)
     await run_agent_async(

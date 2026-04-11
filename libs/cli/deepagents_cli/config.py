@@ -866,6 +866,9 @@ class Settings:
     nvidia_api_key: str | None
     """NVIDIA API key if available."""
 
+    minimax_api_key: str | None
+    """MiniMax API key if available."""
+
     tavily_api_key: str | None
     """Tavily API key if available."""
 
@@ -926,6 +929,7 @@ class Settings:
         anthropic_key = resolve_env_var("ANTHROPIC_API_KEY")
         google_key = resolve_env_var("GOOGLE_API_KEY")
         nvidia_key = resolve_env_var("NVIDIA_API_KEY")
+        minimax_key = resolve_env_var("MINIMAX_API_KEY")
         tavily_key = resolve_env_var("TAVILY_API_KEY")
         google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
 
@@ -970,6 +974,7 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             nvidia_api_key=nvidia_key,
+            minimax_api_key=minimax_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -1011,6 +1016,7 @@ class Settings:
             "anthropic_api_key",
             "google_api_key",
             "nvidia_api_key",
+            "minimax_api_key",
             "tavily_api_key",
         }
         """Fields that hold API keys — used to mask values in change reports
@@ -1021,6 +1027,7 @@ class Settings:
             "anthropic_api_key",
             "google_api_key",
             "nvidia_api_key",
+            "minimax_api_key",
             "tavily_api_key",
             "google_cloud_project",
             "deepagents_langchain_project",
@@ -1069,6 +1076,7 @@ class Settings:
             "anthropic_api_key": resolve_env_var("ANTHROPIC_API_KEY"),
             "google_api_key": resolve_env_var("GOOGLE_API_KEY"),
             "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
+            "minimax_api_key": resolve_env_var("MINIMAX_API_KEY"),
             "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
             "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
             "deepagents_langchain_project": resolve_env_var(LANGSMITH_PROJECT),
@@ -1130,6 +1138,11 @@ class Settings:
     def has_nvidia(self) -> bool:
         """Check if NVIDIA API key is configured."""
         return self.nvidia_api_key is not None
+
+    @property
+    def has_minimax(self) -> bool:
+        """Check if MiniMax API key is configured."""
+        return self.minimax_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -1804,6 +1817,9 @@ def detect_provider(model_name: str) -> str | None:
     if model_lower.startswith(("nemotron", "nvidia/")):
         return "nvidia"
 
+    if model_lower.startswith("minimax"):
+        return "minimax"
+
     return None
 
 
@@ -1842,11 +1858,13 @@ def _get_default_model_spec() -> str:
         return "google_vertexai:gemini-3.1-pro-preview"
     if s.has_nvidia:
         return "nvidia:nvidia/nemotron-3-super-120b-a12b"
+    if s.has_minimax:
+        return "minimax:MiniMax-M2.7"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "GOOGLE_CLOUD_PROJECT, NVIDIA_API_KEY, or MINIMAX_API_KEY"
     )
     raise ModelConfigError(msg)
 
@@ -2041,6 +2059,7 @@ def _create_model_via_init(
 
         package_map = {
             "anthropic": "langchain-anthropic",
+            "minimax": "langchain-openai",
             "openai": "langchain-openai",
             "google_genai": "langchain-google-genai",
             "google_vertexai": "langchain-google-vertexai",

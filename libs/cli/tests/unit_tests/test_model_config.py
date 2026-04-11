@@ -505,12 +505,12 @@ class TestModelConfigLoad:
     """Tests for ModelConfig.load() method."""
 
     def test_returns_empty_config_when_file_not_exists(self, tmp_path):
-        """Returns empty config when file doesn't exist."""
+        """Returns config with built-in providers when file doesn't exist."""
         config_path = tmp_path / "nonexistent.toml"
         config = ModelConfig.load(config_path)
 
         assert config.default_model is None
-        assert config.providers == {}
+        assert "minimax" in config.providers
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""
@@ -560,7 +560,7 @@ models = ["llama3"]
         )
 
     def test_corrupt_toml_returns_empty_config(self, tmp_path, caplog):
-        """Corrupt TOML file returns empty config and logs a warning."""
+        """Corrupt TOML file returns config with built-in providers and logs a warning."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[[invalid toml content")
 
@@ -568,11 +568,11 @@ models = ["llama3"]
             config = ModelConfig.load(config_path)
 
         assert config.default_model is None
-        assert config.providers == {}
+        assert "minimax" in config.providers
         assert any("invalid TOML syntax" in r.message for r in caplog.records)
 
     def test_unreadable_file_returns_empty_config(self, tmp_path, caplog):
-        """Unreadable config file returns empty config and logs a warning."""
+        """Unreadable config file returns config with built-in providers and logs a warning."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[models]\ndefault = 'test'")
         config_path.chmod(0o000)
@@ -582,7 +582,7 @@ models = ["llama3"]
                 config = ModelConfig.load(config_path)
 
             assert config.default_model is None
-            assert config.providers == {}
+            assert "minimax" in config.providers
             assert any(
                 "Could not read config file" in r.message for r in caplog.records
             )
@@ -2975,3 +2975,86 @@ max_input_tokens = 8192
         assert entry["profile"]["max_output_tokens"] == 2048
         assert "max_output_tokens" in entry["overridden_keys"]
         assert "max_input_tokens" in entry["overridden_keys"]
+
+
+class TestBuiltinCustomProviders:
+    """Tests for built-in custom providers (e.g., MiniMax)."""
+
+    def test_minimax_in_provider_api_key_env(self):
+        """MiniMax is registered in PROVIDER_API_KEY_ENV."""
+        assert PROVIDER_API_KEY_ENV["minimax"] == "MINIMAX_API_KEY"
+
+    def test_minimax_loaded_by_default(self, tmp_path):
+        """MiniMax provider is loaded even without a config file."""
+        config_path = tmp_path / "nonexistent.toml"
+        config = ModelConfig.load(config_path)
+
+        assert "minimax" in config.providers
+        provider = config.providers["minimax"]
+        assert "MiniMax-M2.7" in provider["models"]
+        assert "MiniMax-M2.7-highspeed" in provider["models"]
+        assert provider["api_key_env"] == "MINIMAX_API_KEY"
+        assert provider["base_url"] == "https://api.minimax.io/v1"
+
+    def test_minimax_credentials_detected(self, tmp_path):
+        """has_provider_credentials returns True when MINIMAX_API_KEY is set."""
+        config_path = tmp_path / "nonexistent.toml"
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"MINIMAX_API_KEY": "test-key"}),
+        ):
+            assert has_provider_credentials("minimax") is True
+
+    def test_minimax_credentials_missing(self, tmp_path):
+        """has_provider_credentials returns False when MINIMAX_API_KEY is unset."""
+        config_path = tmp_path / "nonexistent.toml"
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert has_provider_credentials("minimax") is False
+
+    def test_user_config_overrides_builtin(self, tmp_path):
+        """User config.toml can override built-in MiniMax provider settings."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.minimax]
+models = ["MiniMax-M2.7"]
+api_key_env = "MY_CUSTOM_MINIMAX_KEY"
+base_url = "https://api.minimaxi.com/v1"
+""")
+        config = ModelConfig.load(config_path)
+
+        provider = config.providers["minimax"]
+        assert provider["models"] == ["MiniMax-M2.7"]
+        assert provider["api_key_env"] == "MY_CUSTOM_MINIMAX_KEY"
+        assert provider["base_url"] == "https://api.minimaxi.com/v1"
+
+    def test_minimax_profile_overrides(self, tmp_path):
+        """MiniMax model profile data is accessible via get_profile_overrides."""
+        config_path = tmp_path / "nonexistent.toml"
+        config = ModelConfig.load(config_path)
+
+        overrides = config.get_profile_overrides("minimax", model_name="MiniMax-M2.7")
+        assert overrides["max_input_tokens"] == 1000192
+        assert overrides["tool_calling"] is True
+
+    def test_returns_builtin_providers_when_file_not_exists(self, tmp_path):
+        """Returns config with built-in providers when file doesn't exist."""
+        config_path = tmp_path / "nonexistent.toml"
+        config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert "minimax" in config.providers
+
+    def test_corrupt_toml_returns_builtin_config(self, tmp_path, caplog):
+        """Corrupt TOML file returns config with built-in providers and logs a warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml content")
+
+        with caplog.at_level(logging.WARNING):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert "minimax" in config.providers
+        assert any("invalid TOML syntax" in r.message for r in caplog.records)

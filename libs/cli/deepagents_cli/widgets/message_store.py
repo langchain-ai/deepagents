@@ -376,6 +376,12 @@ class MessageStore:
         """Initialize the message store."""
         self._messages: list[MessageData] = []
         self._index: dict[str, MessageData] = {}
+        """ID -> MessageData lookup.
+
+        Must contain exactly one entry per element of `_messages`. Any method
+        that adds to or removes from `_messages` must update `_index`
+        in lockstep.
+        """
         self._visible_start: int = 0
         self._visible_end: int = 0
 
@@ -408,6 +414,12 @@ class MessageStore:
         Args:
             message: The message data to add.
         """
+        if message.id in self._index:
+            logger.warning(
+                "Duplicate message ID %r appended; previous entry will be "
+                "unreachable via get_message()",
+                message.id,
+            )
         self._messages.append(message)
         self._index[message.id] = message
         self._visible_end = len(self._messages)
@@ -429,6 +441,12 @@ class MessageStore:
         """
         self._messages.extend(messages)
         for msg in messages:
+            if msg.id in self._index:
+                logger.warning(
+                    "Duplicate message ID %r in bulk_load; previous entry "
+                    "will be unreachable via get_message()",
+                    msg.id,
+                )
             self._index[msg.id] = msg
         total = len(self._messages)
 
@@ -491,6 +509,10 @@ class MessageStore:
 
         msg_data = self._index.get(message_id)
         if msg_data is None:
+            logger.warning(
+                "update_message called for unknown ID %r; update discarded",
+                message_id,
+            )
             return False
         for key, value in updates.items():
             setattr(msg_data, key, value)

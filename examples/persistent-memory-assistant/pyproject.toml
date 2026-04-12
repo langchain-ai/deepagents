@@ -1,0 +1,26 @@
+[project]
+name = "persistent-memory-assistant"
+version = "0.1.0"
+description = "Personal assistant with persistent cross-session memory using StoreBackend and CompositeBackend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.5.0,<0.7.0",
+    "langchain>=1.2.3",
+    "langchain-anthropic>=1.3.1",
+    "langgraph>=1.0.6",
+]
+
+[project.optional-dependencies]
+sqlite = ["langgraph-checkpoint-sqlite>=3.0.0"]
+postgres = ["langgraph-checkpoint-postgres>=2.0.0"]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/persistent-memory-assistant"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

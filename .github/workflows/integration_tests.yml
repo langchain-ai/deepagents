@@ -1,0 +1,129 @@
+# On-demand integration tests with live API credentials.
+#
+# Uses `make integration_tests` within each library being tested.
+#
+# Manual dispatch only (no schedule yet). Select a package from the dropdown
+# or type a custom path in the override field.
+
+name: "⏰ Integration Tests"
+run-name: "integration tests — ${{ inputs.working-directory-override || (inputs.working-directory == 'all' && 'all libs') || inputs.working-directory }} (py ${{ inputs.python-version || '3.11, 3.13' }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      working-directory:
+        type: choice
+        description: "Package to test (ignored when override is set)"
+        default: "libs/deepagents"
+        options:
+          - all
+          - libs/deepagents
+          - libs/cli
+          - libs/repl
+          - libs/partners/daytona
+          - libs/partners/modal
+          - libs/partners/quickjs
+          - libs/partners/runloop
+      working-directory-override:
+        type: string
+        description: "Override: custom path (takes precedence over dropdown)"
+        default: ""
+      python-version:
+        type: string
+        description: "Python version (defaults to 3.11 and 3.13 matrix)"
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "true"
+  DEFAULT_LIBS: >-
+    ["libs/deepagents",
+    "libs/cli",
+    "libs/repl",
+    "libs/partners/daytona",
+    "libs/partners/modal",
+    "libs/partners/quickjs",
+    "libs/partners/runloop"]
+
+jobs:
+  compute-matrix:
+    if: github.repository_owner == 'langchain-ai'
+    runs-on: ubuntu-latest
+    name: "📋 Compute Test Matrix"
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: "🔢 Generate Python & Library Matrix"
+        id: set-matrix
+        env:
+          DEFAULT_LIBS: ${{ env.DEFAULT_LIBS }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          WORKING_DIRECTORY_OVERRIDE: ${{ inputs.working-directory-override }}
+          PYTHON_VERSION_FORCE: ${{ inputs.python-version }}
+        run: |
+          python_version='["3.11", "3.13"]'
+          working_directory="$DEFAULT_LIBS"
+
+          if [ -n "$PYTHON_VERSION_FORCE" ]; then
+            python_version="[\"$PYTHON_VERSION_FORCE\"]"
+          fi
+
+          # Override takes precedence over dropdown
+          if [ -n "$WORKING_DIRECTORY_OVERRIDE" ]; then
+            working_directory="[\"$WORKING_DIRECTORY_OVERRIDE\"]"
+          elif [ "$WORKING_DIRECTORY" != "all" ] && [ -n "$WORKING_DIRECTORY" ]; then
+            working_directory="[\"$WORKING_DIRECTORY\"]"
+          fi
+
+          matrix="{\"python-version\": $python_version, \"working-directory\": $working_directory}"
+          echo "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  integration-tests:
+    if: github.repository_owner == 'langchain-ai'
+    name: "🐍 Python ${{ matrix.python-version }}: ${{ matrix.working-directory }}"
+    runs-on: ubuntu-latest
+    environment: integration-tests
+    needs: [compute-matrix]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.compute-matrix.outputs.matrix).python-version }}
+        working-directory: ${{ fromJSON(needs.compute-matrix.outputs.matrix).working-directory }}
+
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "🐍 Set up Python ${{ matrix.python-version }} + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-suffix: integration-${{ matrix.working-directory }}
+          working-directory: ${{ matrix.working-directory }}
+
+      - name: "📦 Install Dependencies"
+        working-directory: ${{ matrix.working-directory }}
+        run: uv sync --group test
+
+      - name: "🚀 Run Integration Tests"
+        working-directory: ${{ matrix.working-directory }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # sandboxes
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+        run: make integration_tests
+
+      - name: "🧹 Verify Clean Working Directory"
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          set -eu
+          STATUS="$(git status)"
+          echo "$STATUS"
+          echo "$STATUS" | grep 'nothing to commit, working tree clean'

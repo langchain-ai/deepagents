@@ -127,6 +127,9 @@ ignore-var-parameters = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
+filterwarnings = [
+    "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
 ]

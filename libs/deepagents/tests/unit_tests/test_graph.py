@@ -561,13 +561,14 @@ class TestModelNoneDeprecationWarning:
             warnings.simplefilter("always")
             create_deep_agent(model=None)
 
-        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 1
         msg = str(deprecations[0].message)
-        assert "model=None" in msg
         assert "deprecated" in msg
         assert "BaseChatModel | str" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
+        # stacklevel=2 should point at the caller, not inside graph.py
+        assert deprecations[0].filename == __file__
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:
         """Calling create_deep_agent() with no model arg should emit a DeprecationWarning."""
@@ -575,7 +576,7 @@ class TestModelNoneDeprecationWarning:
             warnings.simplefilter("always")
             create_deep_agent()
 
-        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 1
 
     def test_explicit_model_no_deprecation_warning(self) -> None:
@@ -585,5 +586,5 @@ class TestModelNoneDeprecationWarning:
             warnings.simplefilter("always")
             create_deep_agent(model=model)
 
-        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 0

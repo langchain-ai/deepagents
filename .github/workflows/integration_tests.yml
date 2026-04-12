@@ -85,6 +85,7 @@ jobs:
     if: github.repository_owner == 'langchain-ai'
     name: "🐍 Python ${{ matrix.python-version }}: ${{ matrix.working-directory }}"
     runs-on: ubuntu-latest
+    environment: integration-tests
     needs: [compute-matrix]
     timeout-minutes: 30
     strategy:
@@ -112,21 +113,11 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # sandboxes
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: make integration_tests
 
       - name: "🧹 Verify Clean Working Directory"

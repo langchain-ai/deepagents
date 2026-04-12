@@ -81,7 +81,7 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic with many conditional branches
+def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
@@ -305,7 +305,17 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"}])
+        # Preserve string content when possible so models that do not support
+        # content-block lists (e.g., ChatLlamaCpp) keep working.
+        if isinstance(system_prompt.content, str):
+            final_system_prompt = SystemMessage(content=system_prompt.content + "\n\n" + BASE_AGENT_PROMPT)
+        else:
+            final_system_prompt = SystemMessage(
+                content_blocks=[
+                    *system_prompt.content_blocks,
+                    {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+                ]
+            )
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

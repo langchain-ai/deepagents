@@ -1,0 +1,3 @@
+[agent]
+name = "deploy-mcp-docs-agent"
+model = "anthropic:claude-sonnet-4-5"

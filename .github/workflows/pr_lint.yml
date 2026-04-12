@@ -2,14 +2,14 @@
 #
 # FORMAT (Conventional Commits 1.0.0):
 #
-#   <type>[optional scope]: <description>
+#   <type>(<scope>): <description>
 #   [optional body]
 #   [optional footer(s)]
 #
 # Examples:
 #     feat(sdk): add multi‐agent support
 #     fix(cli): resolve flag parsing error
-#     docs: update API usage examples
+#     docs(sdk): update API usage examples
 #
 # Allowed Types:
 #   * feat       — a new feature (MINOR)
@@ -26,18 +26,18 @@
 #   * release    — prepare a new release
 #   * hotfix     — urgent fix that won't trigger a release
 #
-# Allowed Scope(s) (optional):
-#   deepagents, sdk, deepagents-cli, cli, cli-gha, daytona, harbor, evals, acp,
-#   examples, infra, ci, deps, modal, quickjs, repl, runloop
+# Allowed Scope(s) (required):
+#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deps, evals,
+#   examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl, runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
 # Rules:
 #   1. The 'Type' must start with a lowercase letter.
-#   2. Breaking changes: append "!" after type/scope (e.g., feat!: drop x support)
+#   2. Breaking changes: append "!" after type/scope (e.g., feat(sdk)!: drop x support)
 #   3. When releasing (updating the pyproject.toml and uv.lock), the commit message
 #      should be: `release(scope): x.y.z` (e.g., `release(deepagents): 1.2.0` with no
-#      body, footer, or preceeding/proceeding text).
+#      body, footer, or preceding/following text).
 #
 # Enforces Conventional Commits format for pull request titles to maintain a clear and
 # machine-readable change history.
@@ -67,7 +67,7 @@ jobs:
             exit 1
           fi
       - name: "✅ Validate Conventional Commits Format"
-        uses: amannn/action-semantic-pull-request@v6
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -98,12 +98,13 @@ jobs:
             examples
             harbor
             infra
+            langsmith-sandbox
             modal
             quickjs
             repl
             runloop
             sdk
-          requireScope: false
+          requireScope: true
           disallowScopes: |
             release
             [A-Z]+

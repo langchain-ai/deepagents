@@ -1,6 +1,6 @@
 {
-  "libs/cli": "0.0.35",
-  "libs/deepagents": "0.5.1",
+  "libs/cli": "0.0.37",
+  "libs/deepagents": "0.5.2",
   "libs/acp": "0.0.5",
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",

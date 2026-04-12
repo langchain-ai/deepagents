@@ -7,7 +7,7 @@
 # GitHub releases are created by release.yml after all checks pass,
 # not by release-please directly (skip-github-release: true in config).
 
-name: Release Please
+name: "⚠️ (Automated) Release Please"
 
 on:
   push:
@@ -32,6 +32,7 @@ jobs:
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       repl-release: ${{ steps.check-releases.outputs.repl-release }}
+      release-version: ${{ steps.check-releases.outputs.release-version }}
       pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
@@ -45,7 +46,7 @@ jobs:
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
       # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
 
@@ -55,7 +56,7 @@ jobs:
       - name: Label release PRs
         if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           RELEASE_PRS: ${{ steps.release.outputs.prs }}
         with:
@@ -98,6 +99,19 @@ jobs:
 
           if [ -z "$COMMIT_MSG" ]; then
             echo "::warning::Commit message is empty — no release will be triggered."
+          fi
+
+          # Extract version from release commit message: "release(component): X.Y.Z"
+          # [^ ]+ stops at the first space to avoid capturing trailing PR refs like "(#1234)"
+          # NOTE: separate-pull-requests=true ensures one release commit per workflow run,
+          # so a single version output is correct — each package triggers its own run.
+          RELEASE_VERSION=$(echo "$COMMIT_MSG" | sed -nE 's/^release\([^)]+\): +([^ ]+).*/\1/p')
+          echo "release-version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+
+          if [ -n "$RELEASE_VERSION" ]; then
+            echo "Extracted release version: $RELEASE_VERSION"
+          elif echo "$COMMIT_MSG" | grep -qE "^release\("; then
+            echo "::warning::Commit looks like a release but version extraction failed: $COMMIT_MSG"
           fi
 
           # grep -q in an `if` conditional is safe under set -eo pipefail;
@@ -170,7 +184,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
 
@@ -208,6 +222,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: deepagents-cli
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -221,6 +237,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: deepagents
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -233,6 +251,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: deepagents-acp
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -245,6 +265,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-daytona
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -257,6 +279,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-modal
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -269,6 +293,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-runloop
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -281,6 +307,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-quickjs
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -293,6 +321,8 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-repl
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
     permissions:
       contents: write
       id-token: write

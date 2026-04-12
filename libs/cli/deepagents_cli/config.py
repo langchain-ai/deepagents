@@ -32,8 +32,8 @@ _bootstrap_done = False
 """Whether `_ensure_bootstrap()` has executed."""
 
 _bootstrap_lock = threading.Lock()
-"""Guards `_ensure_bootstrap()` against concurrent access from the main
-thread and the prewarm worker thread."""
+"""Guards `_ensure_bootstrap()` against concurrent access from the main thread
+and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
@@ -1937,7 +1937,9 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents._models import check_openrouter_version  # noqa: PLC2701
+        from deepagents.profiles._openrouter import (
+            check_openrouter_version,  # noqa: PLC2701
+        )
 
         check_openrouter_version()
         _apply_openrouter_defaults(result)

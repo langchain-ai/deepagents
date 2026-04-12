@@ -10,8 +10,8 @@ includes corrections to all 15 evaluated tasks.
 Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 
 Usage:
-    uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-20250514
-    uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-20250514
+    uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-6
+    uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-6
 """
 
 from __future__ import annotations

@@ -23,12 +23,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents import create_deep_agent
+from deepagents.backends import LangSmithSandbox
 from deepagents.middleware.subagents import (
     DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
     DEFAULT_SUBAGENT_PROMPT,
 )
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
+from langsmith.sandbox import SandboxClient
 
 from tests.evals.oolong.data_utils import OolongTask, load_oolong_tasks
 from tests.evals.oolong.scoring import Score, parse_gold, score_output
@@ -40,19 +42,21 @@ from tests.evals.utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from langchain_core.language_models import BaseChatModel
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these to control which tasks are loaded
 # ---------------------------------------------------------------------------
 
-OOLONG_DATASET: str = "trec_coarse"
-"""Source dataset to filter on (e.g. `"trec_coarse"`, `"spam"`, `"agnews"`)."""
+OOLONG_DATASET: str = "spam"
+"""Source dataset to filter on (e.g. `"spam"`, `"trec_coarse"`)."""
 
-OOLONG_CONTEXT_LEN: int = 131072
-"""Context length bucket (1024, 4096, 32768, or 131072)."""
+OOLONG_CONTEXT_LEN: int = 65536
+"""Context length bucket (e.g. 1024, 4096, 16384, 32768, 65536, 131072)."""
 
-OOLONG_TASK_IDS: set[int] | None = {17000218}
+OOLONG_TASK_IDS: set[int] | None = {116010200}
 """Specific task IDs to run. Set to `None` to run all matching tasks."""
 
 # ---------------------------------------------------------------------------
@@ -66,10 +70,24 @@ SUBAGENT_MODEL: str = "claude-haiku-4-5-20251001"
 # Marks
 # ---------------------------------------------------------------------------
 
+# TODO: consider adding a "long_context" category to categories.json
 pytestmark = [
-    pytest.mark.eval_category("long_context"),
+    pytest.mark.eval_category("tool_use"),
     pytest.mark.eval_tier("hillclimb"),
 ]
+
+# ---------------------------------------------------------------------------
+# Sandbox fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def sandbox_backend() -> Generator[LangSmithSandbox, None, None]:
+    """Create a LangSmith sandbox backend, cleaned up after the module."""
+    client = SandboxClient()
+    with client.sandbox(template_name="deepagents-cli") as sb:
+        yield LangSmithSandbox(sandbox=sb)
+
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -157,9 +175,17 @@ def _log_score(result: Score) -> None:
 
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task", TASKS, ids=[_task_label(t) for t in TASKS])
-async def test_oolong(model: BaseChatModel, task: OolongTask) -> None:
+async def test_oolong(
+    model: BaseChatModel,
+    task: OolongTask,
+    sandbox_backend: LangSmithSandbox,
+) -> None:
     """Run a single Oolong aggregation task."""
     gold = parse_gold(task.answer)
+
+    await sandbox_backend.aupload_files(
+        [("/context.txt", task.context_window_text.encode("utf-8"))]
+    )
 
     agent = create_deep_agent(
         model=model,
@@ -174,13 +200,13 @@ async def test_oolong(model: BaseChatModel, task: OolongTask) -> None:
         ],
         enable_swarm=True,
         checkpointer=MemorySaver(),
+        backend=sandbox_backend,
     )
 
     trajectory = await arun_agent(
         agent,
         model=model,
         query=task.question,
-        initial_files={"/context.txt": task.context_window_text},
         scorer=TrajectoryScorer().success(OolongCorrect(gold_answer=gold)),
         eval_metadata={
             "oolong_task_id": task.id,

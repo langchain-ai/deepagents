@@ -1,10 +1,18 @@
 """Oolong-Synth dataset loader.
 
-Downloads tasks from the HuggingFace `oolongbench/oolong-synth` dataset
-(validation split) and caches them locally as JSONL. Supports filtering
-by source dataset, context length, and task ID.
+Reads pre-built JSONL cache files from ``.cache/``. Each file contains
+rows for a single (dataset, context_len) pair, named
+``{dataset}_{context_len}.jsonl``.
+
+Cache files are built offline by running ``build_cache.py``::
+
+    cd libs/evals
+    uv run --group test python tests/evals/oolong/build_cache.py
+
+See ``build_cache.py`` for details on how the cache is generated.
 
 Reference: https://arxiv.org/abs/2511.02817
+Dataset: https://huggingface.co/datasets/oolongbench/oolong-synth
 """
 
 from __future__ import annotations
@@ -14,31 +22,25 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from datasets import load_dataset
-
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(__file__).parent / ".cache"
-_CACHE_PATH = _CACHE_DIR / "tasks.jsonl"
-
-_HF_DATASET = "oolongbench/oolong-synth"
-_HF_SPLIT = "validation"
 
 
 class OolongTask:
     """A single Oolong-Synth aggregation task."""
 
     __slots__ = (
-        "id",
-        "dataset",
-        "context_len",
-        "context_window_text",
-        "question",
-        "task_group",
-        "task",
         "answer",
         "answer_type",
+        "context_len",
         "context_window_id",
+        "context_window_text",
+        "dataset",
+        "id",
+        "question",
+        "task",
+        "task_group",
     )
 
     def __init__(self, row: dict[str, Any]) -> None:
@@ -54,64 +56,65 @@ class OolongTask:
         self.context_window_id: int = row["context_window_id"]
 
 
-def _fetch_and_cache() -> None:
-    """Download the full validation split and cache as JSONL."""
+def _cache_path(dataset: str, context_len: int) -> Path:
+    """Return the cache file path for a (dataset, context_len) pair.
 
-    logger.info("Downloading %s (%s split) from HuggingFace...", _HF_DATASET, _HF_SPLIT)
-    ds = load_dataset(_HF_DATASET, split=_HF_SPLIT)
+    Args:
+        dataset: Source dataset name.
+        context_len: Context length bucket.
 
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with _CACHE_PATH.open("w", encoding="utf-8") as f:
-        for row in ds:
-            f.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
-
-    logger.info("Cached %d tasks -> %s", len(ds), _CACHE_PATH)
-
-
-def _load_cache() -> list[dict[str, Any]]:
-    """Read cached JSONL rows."""
-    rows: list[dict[str, Any]] = []
-    with _CACHE_PATH.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    Returns:
+        Path to the JSONL cache file.
+    """
+    return _CACHE_DIR / f"{dataset}_{context_len}.jsonl"
 
 
 def load_oolong_tasks(
     *,
-    dataset: str | None = None,
-    context_len: int | None = None,
+    dataset: str,
+    context_len: int,
     task_ids: set[int] | None = None,
 ) -> list[OolongTask]:
-    """Load Oolong-Synth tasks with optional filtering.
-
-    Downloads from HuggingFace on first call, then reads from a local
-    JSONL cache.
+    """Load Oolong-Synth tasks from a pre-built cache file.
 
     Args:
-        dataset: Filter to a source dataset (e.g. `"trec_coarse"`).
-        context_len: Filter to a specific context length bucket
-            (e.g. `131072`).
+        dataset: Source dataset name (e.g. `"spam"`, `"agnews"`).
+        context_len: Context length bucket (e.g. `65536`).
         task_ids: If provided, only return tasks whose `id` is in this
-            set. Applied after dataset/context_len filtering.
+            set.
 
     Returns:
         List of matching `OolongTask` objects.
+
+    Raises:
+        FileNotFoundError: If the cache file does not exist. Run
+            ``build_cache.py`` first.
+        RuntimeError: If ``task_ids`` is provided but some IDs are
+            missing from the cache file.
     """
-    if not _CACHE_PATH.exists():
-        _fetch_and_cache()
+    path = _cache_path(dataset, context_len)
+    if not path.exists():
+        msg = (
+            f"Cache file not found: {path}\n"
+            f"Run build_cache.py first:\n"
+            f"  cd libs/evals\n"
+            f"  uv run --group test python tests/evals/oolong/build_cache.py"
+        )
+        raise FileNotFoundError(msg)
 
-    rows = _load_cache()
-
-    if dataset is not None:
-        rows = [r for r in rows if r.get("dataset") == dataset]
-
-    if context_len is not None:
-        rows = [r for r in rows if r.get("context_len") == context_len]
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()  # noqa: PLW2901  # intentional re-strip of loop variable
+            if line:
+                rows.append(json.loads(line))
 
     if task_ids is not None:
+        found_ids = {r["id"] for r in rows}
+        missing = task_ids - found_ids
+        if missing:
+            msg = f"Task IDs {missing} not found in {path.name}"
+            raise RuntimeError(msg)
         rows = [r for r in rows if r["id"] in task_ids]
 
     return [OolongTask(r) for r in rows]

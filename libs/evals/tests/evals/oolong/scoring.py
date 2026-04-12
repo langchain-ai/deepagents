@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
 
 _NUMERIC_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
@@ -68,7 +67,7 @@ def canonical_prediction(value: str) -> str:
     return _strip_markdown(text)
 
 
-def parse_gold(raw: Any) -> str:
+def parse_gold(raw: str | list[str]) -> str:
     """Normalize a gold answer field into a single string.
 
     Handles plain strings, Python-style list strings (e.g. `"['spam']"`),

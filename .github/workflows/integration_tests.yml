@@ -19,10 +19,8 @@ on:
           - all
           - libs/deepagents
           - libs/cli
-          - libs/repl
           - libs/partners/daytona
           - libs/partners/modal
-          - libs/partners/quickjs
           - libs/partners/runloop
       working-directory-override:
         type: string
@@ -41,10 +39,8 @@ env:
   DEFAULT_LIBS: >-
     ["libs/deepagents",
     "libs/cli",
-    "libs/repl",
     "libs/partners/daytona",
     "libs/partners/modal",
-    "libs/partners/quickjs",
     "libs/partners/runloop"]
 
 jobs:
@@ -108,6 +104,11 @@ jobs:
       - name: "📦 Install Dependencies"
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test
+
+      - name: "📦 Install Sandbox Extras (CLI only)"
+        if: matrix.working-directory == 'libs/cli'
+        working-directory: ${{ matrix.working-directory }}
+        run: uv sync --group test --extra all-sandboxes
 
       - name: "🚀 Run Integration Tests"
         working-directory: ${{ matrix.working-directory }}

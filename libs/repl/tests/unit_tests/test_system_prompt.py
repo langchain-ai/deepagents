@@ -85,8 +85,12 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
     assert "prefer writing one complete REPL program" in prompt
     assert "trust it and chain the calls" in prompt
     assert "print it inside the same REPL program" in prompt
+    assert "This language is NOT Python, JavaScript, or Lua" in prompt
+    assert "Do not use: Python block syntax" in prompt
     assert "Example syntax only - this shows the language shape" in prompt
     assert 'items = lookup_fn("value")' in prompt
+    assert 'users = find_users_by_name("Bob")' in prompt
+    assert 'for user in users do' in prompt
     assert "function find_users_by_name(name: string): UserLookup[]" in prompt
     assert "async function fetch_weather(city: string): Promise<string>" in prompt
     assert "Referenced types:" in prompt

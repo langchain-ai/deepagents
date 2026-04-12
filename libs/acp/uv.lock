@@ -421,7 +421,7 @@ requires-dist = [
 test = [
     { name = "build" },
     { name = "langchain-openai" },
-    { name = "langchain-tests", specifier = ">=1.1.5" },
+    { name = "langchain-tests", specifier = ">=1.1.6" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-benchmark" },

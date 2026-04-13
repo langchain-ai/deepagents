@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from deepagents_cli.skills.load import ExtendedSkillMetadata
@@ -233,15 +233,36 @@ ALL_CLASSIFIED: frozenset[str] = (
 
 
 # ---------------------------------------------------------------------------
-# Autocomplete tuples
+# Autocomplete entries
 # ---------------------------------------------------------------------------
 
-SLASH_COMMANDS: list[tuple[str, str, str, str]] = [
-    (cmd.name, cmd.description, cmd.hidden_keywords, cmd.argument_hint)
+
+class CommandEntry(NamedTuple):
+    """A single autocomplete entry for the slash-command controller."""
+
+    name: str
+    """Canonical command name (e.g. `/quit`)."""
+
+    description: str
+    """Short user-facing description."""
+
+    hidden_keywords: str
+    """Space-separated terms for fuzzy matching (never displayed)."""
+
+    argument_hint: str
+    """Placeholder text shown when the command accepts arguments (e.g. `[context]`)."""
+
+
+SLASH_COMMANDS: list[CommandEntry] = [
+    CommandEntry(
+        name=cmd.name,
+        description=cmd.description,
+        hidden_keywords=cmd.hidden_keywords,
+        argument_hint=cmd.argument_hint,
+    )
     for cmd in COMMANDS
 ]
-"""`(name, description, hidden_keywords, argument_hint)`
-    tuples for `SlashCommandController`."""
+"""Autocomplete entries derived from `COMMANDS` for `SlashCommandController`."""
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:
@@ -278,8 +299,8 @@ appear as `/skill:model`).
 
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
-) -> list[tuple[str, str, str, str]]:
-    """Build autocomplete tuples for discovered skills.
+) -> list[CommandEntry]:
+    """Build autocomplete entries for discovered skills.
 
     Each skill becomes a `/skill:<name>` entry with its description
     and the skill name as a hidden keyword for fuzzy matching.
@@ -292,14 +313,14 @@ def build_skill_commands(
         skills: List of discovered skill metadata.
 
     Returns:
-        List of `(name, description, hidden_keywords, argument_hint)` tuples.
+        List of `CommandEntry` instances.
     """
     return [
-        (
-            f"/skill:{skill['name']}",
-            skill["description"],
-            skill["name"],
-            skill.get("argument_hint") or "",
+        CommandEntry(
+            name=f"/skill:{skill['name']}",
+            description=skill["description"],
+            hidden_keywords=skill["name"],
+            argument_hint="",
         )
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES

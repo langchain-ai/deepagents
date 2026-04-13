@@ -9,6 +9,7 @@ import pytest
 
 from deepagents_cli.command_registry import (
     _STATIC_SKILL_ALIASES,
+    CommandEntry,
     build_skill_commands,
     parse_skill_command,
 )
@@ -109,11 +110,12 @@ class TestBuildSkillCommands:
         ]
         result = build_skill_commands(skills)  # type: ignore[arg-type]
         assert len(result) == 1
-        name, desc, keywords, hint = result[0]
-        assert name == "/skill:web-research"
-        assert desc == "Research topics on the web"
-        assert keywords == "web-research"
-        assert hint == ""
+        entry = result[0]
+        assert isinstance(entry, CommandEntry)
+        assert entry.name == "/skill:web-research"
+        assert entry.description == "Research topics on the web"
+        assert entry.hidden_keywords == "web-research"
+        assert entry.argument_hint == ""
 
     def test_multiple_skills(self) -> None:
         skills = [
@@ -140,11 +142,11 @@ class TestBuildSkillCommands:
         ]
         result = build_skill_commands(skills)  # type: ignore[arg-type]
         assert len(result) == 2
-        assert result[0][0] == "/skill:skill-a"
-        assert result[1][0] == "/skill:skill-b"
+        assert result[0].name == "/skill:skill-a"
+        assert result[1].name == "/skill:skill-b"
 
-    def test_tuple_format(self) -> None:
-        """Each entry is a 4-tuple of strings."""
+    def test_entry_format(self) -> None:
+        """Each entry is a `CommandEntry`."""
         skills = [
             {
                 "name": "test",
@@ -159,9 +161,7 @@ class TestBuildSkillCommands:
         ]
         result = build_skill_commands(skills)  # type: ignore[arg-type]
         for entry in result:
-            assert isinstance(entry, tuple)
-            assert len(entry) == 4
-            assert all(isinstance(s, str) for s in entry)
+            assert isinstance(entry, CommandEntry)
 
     def test_excludes_static_skill_aliases(self) -> None:
         """Skills with names matching static aliases are excluded."""

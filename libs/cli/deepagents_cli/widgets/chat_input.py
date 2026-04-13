@@ -19,7 +19,7 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
 from deepagents_cli import theme
-from deepagents_cli.command_registry import SLASH_COMMANDS
+from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -1016,15 +1016,14 @@ class ChatInput(Vertical):
         )
         self._text_area.focus()
 
-    def update_slash_commands(self, commands: list[tuple[str, str, str, str]]) -> None:
+    def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.
 
         Called by the app after discovering skills to merge static
         commands with dynamic `/skill:` entries.
 
         Args:
-            commands: Full list of
-                `(command, description, hidden_keywords, argument_hint)` tuples.
+            commands: Full list of `CommandEntry` instances.
         """
         if self._slash_controller:
             self._slash_controller.update_commands(commands)

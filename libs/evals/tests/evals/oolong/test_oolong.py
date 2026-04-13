@@ -81,9 +81,9 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def sandbox_backend() -> Generator[LangSmithSandbox, None, None]:
-    """Create a LangSmith sandbox backend, cleaned up after the module."""
+    """Create a LangSmith sandbox backend per test for isolation."""
     client = SandboxClient()
     with client.sandbox(template_name="deepagents-cli") as sb:
         yield LangSmithSandbox(sandbox=sb)

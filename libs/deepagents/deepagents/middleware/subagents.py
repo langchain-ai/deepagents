@@ -562,10 +562,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-            create_agent_kwargs: dict[str, Any] = {}
-            if "response_format" in spec:
-                create_agent_kwargs["response_format"] = spec["response_format"]
-
             specs.append(
                 {
                     "name": spec["name"],
@@ -576,7 +572,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
-                        **create_agent_kwargs,
+                        response_format=spec.get("response_format"),
                     ),
                 }
             )

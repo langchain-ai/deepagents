@@ -1031,8 +1031,12 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
                 tool_call(
                     name="get_service_environment", step=2, args_contains={"service_id": 8799}
                 ),
-                tool_call(name="get_environment_name", step=3, args_contains={"environment_id": 442}),
-                tool_call(name="get_environment_region", step=3, args_contains={"environment_id": 442}),
+                tool_call(
+                    name="get_environment_name", step=3, args_contains={"environment_id": 442}
+                ),
+                tool_call(
+                    name="get_environment_region", step=3, args_contains={"environment_id": 442}
+                ),
             ],
         ),
     )
@@ -1388,9 +1392,15 @@ async def test_metric_ranking_active_incident_highest_latency(model: BaseChatMod
                 tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41029}),
                 tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41043}),
                 tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41058}),
-                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41017}),
-                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41029}),
-                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41058}),
+                tool_call(
+                    name="get_incident_service", step=3, args_contains={"incident_id": 41017}
+                ),
+                tool_call(
+                    name="get_incident_service", step=3, args_contains={"incident_id": 41029}
+                ),
+                tool_call(
+                    name="get_incident_service", step=3, args_contains={"incident_id": 41058}
+                ),
                 tool_call(
                     name="get_metric_value",
                     step=4,

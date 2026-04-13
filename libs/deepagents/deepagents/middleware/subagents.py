@@ -2,10 +2,8 @@
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -450,9 +448,6 @@ DEFAULT_SWARM_CONCURRENCY = 10
 MAX_SWARM_CONCURRENCY = 50
 """Maximum allowed concurrency."""
 
-DEFAULT_SWARM_MAX_RETRIES = 3
-"""Default number of retry attempts per task."""
-
 SWARM_TASK_TIMEOUT_SECONDS = 300
 """Per-task timeout in seconds."""
 
@@ -480,38 +475,15 @@ SWARM_TOOL_DESCRIPTION = """Execute a batch of independent tasks in parallel acr
 
 The tool returns:
 ```json
-{{"total": 20, "completed": 19, "failed": 1, "results_dir": "swarm_runs/<uuid>"}}
+{{"total": 20, "completed": 19, "failed": 1,
+  "results_dir": "swarm_runs/<uuid>",
+  "failed_tasks": [{{"id": "chunk_5", "error": "timed out"}}]}}
 ```
+
+Each task runs exactly once — there are no automatic retries. Use the `failed_tasks` array to decide how to handle failures.
 
 Available subagent types: {available_agents}
 """
-
-
-def _sanitize_task_id(task_id: str, output_dir: str, fallback: str) -> str:
-    """Sanitize a task ID so it cannot escape the output directory.
-
-    Applies ``os.path.basename`` to strip directory components, then resolves
-    the resulting path and verifies it is still inside *output_dir*.
-
-    Args:
-        task_id: Raw task identifier (may contain path separators or ``..``).
-        output_dir: The directory that output files must stay within.
-        fallback: Value to use when *task_id* is empty after sanitization.
-
-    Returns:
-        A safe filename component (without extension).
-
-    Raises:
-        ValueError: If the resolved path escapes *output_dir*.
-    """
-    name = Path(task_id).name
-    safe = fallback if (not name or name in (".", "..")) else name
-    resolved = os.path.realpath(Path(output_dir) / f"{safe}.txt")
-    real_output_dir = os.path.realpath(output_dir)
-    if not resolved.startswith(real_output_dir + os.sep):
-        msg = f"task id {task_id!r} resolves outside output directory"
-        raise ValueError(msg)
-    return safe
 
 
 class SwarmTaskSpec(TypedDict):
@@ -699,60 +671,61 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             subagent: Runnable,
             parent_state: dict[str, Any],
         ) -> dict[str, Any]:
-            """Run a single task with a timeout. Returns a result dict."""
+            """Run a single task with a timeout. Returns a lean result dict."""
             subagent_state = dict(parent_state)
             subagent_state["messages"] = [HumanMessage(content=task["description"])]
+            subagent_type = task.get("subagent_type", "general-purpose")
 
-            result = await asyncio.wait_for(
-                subagent.ainvoke(subagent_state),
-                timeout=SWARM_TASK_TIMEOUT_SECONDS,
-            )
-            messages = result.get("messages", [])
-            text = messages[-1].text.rstrip() if messages and messages[-1].text else ""
-            return {**task, "status": "completed", "result": text}
+            try:
+                result = await asyncio.wait_for(
+                    subagent.ainvoke(subagent_state),
+                    timeout=SWARM_TASK_TIMEOUT_SECONDS,
+                )
+                messages = result.get("messages", [])
+                text = messages[-1].text.rstrip() if messages and messages[-1].text else ""
+                return {"id": task["id"], "subagent_type": subagent_type, "status": "completed", "result": text}
+            except Exception as exc:  # noqa: BLE001
+                return {"id": task["id"], "subagent_type": subagent_type, "status": "failed", "error": str(exc)}
 
         async def _execute_swarm(
             tasks: list[SwarmTaskSpec],
             parent_state: dict[str, Any],
             effective_concurrency: int,
-            effective_max_retries: int,
         ) -> list[dict[str, Any]]:
-            """Execute swarm with concurrency control and retry loop."""
+            """Dispatch all tasks in parallel under a concurrency semaphore.
+
+            Each task runs exactly once — there are no retries. The
+            orchestrator owns error recovery.
+            """
             semaphore = asyncio.Semaphore(effective_concurrency)
-            results_map: dict[str, dict[str, Any]] = {}
-            pending = list(tasks)
 
-            for attempt in range(1, effective_max_retries + 1):
-                if not pending:
-                    break
-                is_last_attempt = attempt == effective_max_retries
+            for task in tasks:
+                subagent_type = task.get("subagent_type", "general-purpose")
+                if subagent_type not in subagent_graphs:
+                    allowed = ", ".join(f'"{k}"' for k in subagent_graphs)
+                    msg = f'Task "{task["id"]}" references unknown subagent_type "{subagent_type}". Available: {allowed}'
+                    raise ValueError(msg)
 
-                async def run_with_semaphore(task: SwarmTaskSpec) -> dict[str, Any]:
-                    subagent_type = task.get("subagent_type", "general-purpose")
-                    subagent = subagent_graphs[subagent_type]
-                    async with semaphore:
-                        try:
-                            return await _run_single_task(task, subagent, parent_state)
-                        except Exception as exc:  # noqa: BLE001
-                            return {**task, "status": "failed", "error": str(exc)}
+            async def run_with_semaphore(task: SwarmTaskSpec) -> dict[str, Any]:
+                subagent = subagent_graphs[task.get("subagent_type", "general-purpose")]
+                async with semaphore:
+                    return await _run_single_task(task, subagent, parent_state)
 
-                pass_results = await asyncio.gather(
-                    *[run_with_semaphore(t) for t in pending],
-                    return_exceptions=True,
-                )
+            results = await asyncio.gather(
+                *[run_with_semaphore(t) for t in tasks],
+                return_exceptions=True,
+            )
 
-                next_pending: list[SwarmTaskSpec] = []
-                for idx, raw_result in enumerate(pass_results):
-                    if isinstance(raw_result, GraphInterrupt):
-                        raise raw_result
-                    resolved = {**pending[idx], "status": "failed", "error": str(raw_result)} if isinstance(raw_result, BaseException) else raw_result
-                    if resolved["status"] == "completed" or is_last_attempt:
-                        results_map[resolved["id"]] = resolved
-                    else:
-                        next_pending.append(pending[idx])
-                pending = next_pending
-
-            return [results_map.get(t["id"], {**t, "status": "failed", "error": "not executed"}) for t in tasks]
+            final: list[dict[str, Any]] = []
+            for idx, raw_result in enumerate(results):
+                if isinstance(raw_result, GraphInterrupt):
+                    raise raw_result
+                if isinstance(raw_result, BaseException):
+                    subagent_type = tasks[idx].get("subagent_type", "general-purpose")
+                    final.append({"id": tasks[idx]["id"], "subagent_type": subagent_type, "status": "failed", "error": str(raw_result)})
+                else:
+                    final.append(raw_result)
+            return final
 
         async def aswarm(
             tasks_path: Annotated[str, "Path to the tasks.jsonl file produced by the generation script."],
@@ -760,10 +733,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             concurrency: Annotated[
                 int | None,
                 f"Maximum number of subagents running simultaneously. Default: {DEFAULT_SWARM_CONCURRENCY}, max: {MAX_SWARM_CONCURRENCY}.",
-            ] = None,
-            max_retries: Annotated[
-                int | None,
-                f"Maximum attempts per task (including initial). Default: {DEFAULT_SWARM_MAX_RETRIES}.",
             ] = None,
         ) -> ToolMessage:
             """Run swarm tasks."""
@@ -796,28 +765,23 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
 
             effective_concurrency = max(1, min(concurrency or DEFAULT_SWARM_CONCURRENCY, MAX_SWARM_CONCURRENCY))
-            effective_max_retries = max(1, max_retries or DEFAULT_SWARM_MAX_RETRIES)
 
-            task_results = await _execute_swarm(tasks, parent_state, effective_concurrency, effective_max_retries)
+            task_results = await _execute_swarm(tasks, parent_state, effective_concurrency)
 
             results_dir = f"swarm_runs/{uuid.uuid4()}"
             results_path = f"{results_dir}/results.jsonl"
             results_content = "\n".join(json.dumps(r) for r in task_results) + "\n"
+            await resolved_backend.aupload_files([(results_path, results_content.encode("utf-8"))])
 
             completed_count = sum(1 for r in task_results if r["status"] == "completed")
-            failed_count = len(task_results) - completed_count
+            failed_results = [r for r in task_results if r["status"] == "failed"]
             summary: dict[str, Any] = {
                 "total": len(task_results),
                 "completed": completed_count,
-                "failed": failed_count,
+                "failed": len(failed_results),
                 "results_dir": results_dir,
+                "failed_tasks": [{"id": r["id"], "error": r.get("error", "unknown")} for r in failed_results],
             }
-
-            try:
-                await resolved_backend.aupload_files([(results_path, results_content.encode("utf-8"))])
-            except Exception as exc:  # noqa: BLE001
-                summary["write_error"] = f"Failed to write results: {exc}"
-                summary["results"] = task_results
 
             return ToolMessage(
                 content=json.dumps(summary),

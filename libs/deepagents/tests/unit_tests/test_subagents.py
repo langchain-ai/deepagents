@@ -7,7 +7,6 @@ and child agents.
 
 import asyncio
 import json
-import os
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -29,7 +28,7 @@ import deepagents.middleware.subagents as subagents_mod
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware, _sanitize_task_id
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -161,62 +160,6 @@ class TestSubAgents:
         assert tool_msg.status == "error"
         assert "tasks.jsonl validation failed" in tool_msg.content
 
-    async def test_swarm_retries_failed_tasks(self, tmp_path: Path) -> None:
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "tasks.jsonl")
-        tasks_jsonl = json.dumps({"id": "t0", "description": "Do work", "subagent_type": "general-purpose"}) + "\n"
-        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
-
-        call_count = 0
-
-        async def flaky_subagent(_state: dict) -> dict:
-            nonlocal call_count
-            call_count += 1
-            if call_count < 2:
-                msg = "transient error"
-                raise RuntimeError(msg)
-            return {"messages": [AIMessage(content="success")]}
-
-        leader_model = GenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "swarm",
-                                "args": {"tasks_path": config_path},
-                                "id": "call_swarm",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="done"),
-                ]
-            )
-        )
-
-        agent = create_deep_agent(
-            model=leader_model,
-            checkpointer=InMemorySaver(),
-            backend=backend,
-            subagents=[
-                CompiledSubAgent(name="general-purpose", description="gp", runnable=RunnableLambda(flaky_subagent)),
-            ],
-            enable_swarm=True,
-        )
-
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content="go")]},
-            config={"configurable": {"thread_id": "test_swarm_retry"}},
-        )
-
-        tool_msg = result["messages"][2]
-        summary = json.loads(tool_msg.content)
-        assert summary["completed"] == 1
-        assert summary["failed"] == 0
-        assert call_count == 2
-
     async def test_swarm_partial_failure(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         config_path = str(tmp_path / "tasks.jsonl")
@@ -243,7 +186,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path, "max_retries": 1},
+                                "args": {"tasks_path": config_path},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -274,6 +217,8 @@ class TestSubAgents:
         assert summary["total"] == 2
         assert summary["completed"] == 1
         assert summary["failed"] == 1
+        assert len(summary["failed_tasks"]) == 1
+        assert summary["failed_tasks"][0]["id"] == "bad"
 
         results_file = backend.download_files([f"{summary['results_dir']}/results.jsonl"])[0]
         lines = results_file.content.decode("utf-8").strip().split("\n")
@@ -301,7 +246,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path, "max_retries": 1},
+                                "args": {"tasks_path": config_path},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -2293,46 +2238,3 @@ class TestSubAgentMiddlewareValidation:
                 default_model="openai:gpt-4o",  # type: ignore[call-arg]
                 fooofoobar=2,  # type: ignore[call-arg]
             )
-
-
-@pytest.mark.parametrize(
-    ("task_id", "expected"),
-    [
-        ("simple", "simple"),
-        ("with spaces", "with spaces"),
-        ("0", "0"),
-    ],
-)
-def test_sanitize_task_id_allows_safe_ids(tmp_path: Path, task_id: str, expected: str) -> None:
-    assert _sanitize_task_id(task_id, str(tmp_path), fallback="0") == expected
-
-
-@pytest.mark.parametrize(
-    "task_id",
-    [
-        "../../etc/passwd",
-        "../escape",
-        "foo/../../etc/shadow",
-        "/absolute/path",
-    ],
-)
-def test_sanitize_task_id_strips_directory_components(tmp_path: Path, task_id: str) -> None:
-    result = _sanitize_task_id(task_id, str(tmp_path), fallback="0")
-    resolved = os.path.realpath(str(tmp_path / f"{result}.txt"))
-    assert resolved.startswith(os.path.realpath(str(tmp_path)) + os.sep)
-
-
-def test_sanitize_task_id_empty_after_basename(tmp_path: Path) -> None:
-    result = _sanitize_task_id("..", str(tmp_path), fallback="fallback")
-    assert result == "fallback"
-
-
-def test_sanitize_task_id_rejects_symlink_that_escapes(tmp_path: Path) -> None:
-    jail = tmp_path / "subdir"
-    jail.mkdir(parents=True)
-    escape_target = tmp_path / "escaped.txt"
-    escape_target.write_text("secret")
-    symlink = jail / "evil.txt"
-    symlink.symlink_to(escape_target)
-    with pytest.raises(ValueError, match="resolves outside output directory"):
-        _sanitize_task_id("evil", str(jail), fallback="0")

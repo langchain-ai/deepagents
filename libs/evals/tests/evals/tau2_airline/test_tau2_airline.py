@@ -20,7 +20,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
+from deepagents import TodoMode, create_deep_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
@@ -35,6 +35,7 @@ from tests.evals.tau2_airline.domain import (
 from tests.evals.tau2_airline.evaluation import evaluate_task, score_tau2_episode
 from tests.evals.tau2_airline.runner import run_multi_turn
 from tests.evals.tau2_airline.user_sim import UserSimulator
+from tests.evals.utils import TestRunMetrics, report_test_run_metrics
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -83,12 +84,13 @@ def _task_id_label(task_id: str) -> str:
 @pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
-def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
+def test_tau2_airline(model: BaseChatModel, task_id: str, todo_mode: TodoMode) -> None:
     """Run a multi-turn tau2 airline task and evaluate the result.
 
     Args:
         model: The agent's chat model (from --model CLI option).
         task_id: The tau2 task ID to run.
+        todo_mode: Planning mode for `create_deep_agent`.
     """
     # Immediately override @pytest.mark.langsmith auto-capture so the dataset
     # example records clean metadata even if run_multi_turn() raises.
@@ -130,6 +132,7 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
         tools=tools,
         system_prompt=AGENT_SYSTEM_PROMPT.format(domain_policy=policy),
         checkpointer=MemorySaver(),
+        todo_mode=todo_mode,
     )
 
     user_model = init_chat_model(USER_SIM_MODEL)
@@ -158,17 +161,35 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
     t.log_feedback(key="db_score", value=reward.db_score)
     t.log_feedback(key="communicate_score", value=reward.communicate_score)
     t.log_feedback(key="turn_count", value=conversation.turn_count)
+    t.log_feedback(key="agent_steps", value=conversation.total_agent_steps)
+    t.log_feedback(key="tool_call_requests", value=conversation.total_tool_calls)
+    t.log_feedback(key="input_tokens", value=conversation.total_input_tokens)
+    t.log_feedback(key="output_tokens", value=conversation.total_output_tokens)
     for key, value in episode_score.expected_metrics.items():
         t.log_feedback(key=key, value=value)
 
+    report_test_run_metrics(
+        TestRunMetrics(
+            turns=conversation.turn_count,
+            agent_steps=conversation.total_agent_steps,
+            tool_calls=conversation.total_tool_calls,
+            input_tokens=conversation.total_input_tokens,
+            output_tokens=conversation.total_output_tokens,
+        )
+    )
+
     logger.info(
-        "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls",
+        "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls, "
+        "%d steps, %d in_tok, %d out_tok",
         task_id,
         episode_score.success,
         ",".join(episode_score.success_reasons) if episode_score.success_reasons else "none",
         reward.details,
         conversation.turn_count,
         len(tool_log),
+        conversation.total_agent_steps,
+        conversation.total_input_tokens,
+        conversation.total_output_tokens,
     )
 
     assert episode_score.success, (

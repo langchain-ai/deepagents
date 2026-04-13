@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog run-todo-experiment run-todo-experiment-evals run-todo-experiment-evals-all
 
 .DEFAULT_GOAL := help
 
@@ -45,6 +45,83 @@ run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+
+# Todo middleware ablation experiment
+# 10 curated medium tasks from terminal-bench@2.0 stratified by planning demand:
+#   High planning:  constraints-scheduling, multi-source-data-merger,
+#                   openssl-selfsigned-cert, nginx-request-logging, kv-store-grpc
+#   Medium planning: log-summary-date-ranges, build-pmars, db-wal-recovery
+#   Low planning (controls): regex-log, sqlite-db-truncate
+TODO_EXPERIMENT_TASKS = \
+	-t constraints-scheduling \
+	-t multi-source-data-merger \
+	-t openssl-selfsigned-cert \
+	-t nginx-request-logging \
+	-t kv-store-grpc \
+	-t log-summary-date-ranges \
+	-t build-pmars \
+	-t db-wal-recovery \
+	-t regex-log \
+	-t sqlite-db-truncate
+
+EXPERIMENT_ENV ?= docker
+EXPERIMENT_CONCURRENCY ?= 1
+TODO_MODE ?= tool
+
+run-todo-experiment: ## Run todo experiment (TODO_MODE=tool|prompt|filesystem)
+	@mkdir -p jobs/todo-experiment
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+		--dataset terminal-bench@2.0 \
+		$(TODO_EXPERIMENT_TASKS) \
+		-n $(EXPERIMENT_CONCURRENCY) \
+		--jobs-dir jobs/todo-experiment \
+		--env $(EXPERIMENT_ENV) \
+		--agent-kwarg use_cli_agent=false \
+		--agent-kwarg todo_mode=$(TODO_MODE)
+
+# Todo middleware ablation on the eval suite (non-Harbor)
+# 10 curated tests stratified by planning complexity:
+#   tau2 airline (multi-turn, high planning): task_14, task_32, task_44
+#   Relational tool chains (5/4/3 steps):
+#     test_five_steps_current_user_food_names_and_calories
+#     test_four_steps_find_user_city_weather_time_and_food_details
+#     test_four_steps_find_user_food_allergies
+#     test_three_tools_current_user_weather
+#   Controls (1-2 steps):
+#     test_single_tool_get_user_email
+#     test_two_tools_city_for_user
+#   Sequential tool selection:
+#     test_chain_search_then_email
+TODO_EVAL_K_EXPR = task_14 or task_32 or task_44
+	# or test_five_steps_current_user_food_names_and_calories \
+	# or test_four_steps_find_user_city_weather_time_and_food_details \
+	# or test_four_steps_find_user_food_allergies \
+	# or test_three_tools_current_user_weather \
+	# or test_single_tool_get_user_email \
+	# or test_two_tools_city_for_user \
+	# or test_chain_search_then_email
+
+EVAL_MODEL ?=
+TRIALS ?= 1
+
+run-todo-experiment-evals: ## Run eval todo experiment (TODO_MODE=tool|prompt|filesystem)
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-$(TODO_MODE) uv run --group test pytest \
+		tests/evals/tau2_airline/ \
+		-k "$(TODO_EVAL_K_EXPR)" \
+		--todo-mode $(TODO_MODE) \
+		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \
+		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
+		-v --tb=short $(PYTEST_EXTRA)
+
+run-todo-experiment-evals-all: ## Run all todo variants in one session (TRIALS=N for repeats)
+	LANGSMITH_TEST_SUITE=deepagents-evals-todo-experiment uv run --group test pytest \
+		tests/evals/tau2_airline/ \
+		-k "$(TODO_EVAL_K_EXPR)" \
+		--todo-variants all \
+		$(if $(filter-out 1,$(TRIALS)),--trials $(TRIALS)) \
+		$(if $(EVAL_MODEL),--model $(EVAL_MODEL)) \
+		--evals-report-file evals_report.json \
+		-v --tb=short $(PYTEST_EXTRA)
 
 ######################
 # CHARTS

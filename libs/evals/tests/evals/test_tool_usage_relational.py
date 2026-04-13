@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
+from deepagents import TodoMode, create_deep_agent
 from langchain_core.tools import ToolException, tool
 from typing_extensions import TypedDict
 
@@ -431,11 +431,12 @@ RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
 # ---------------------------------------------------------------------------
 
 
-def _create_agent(model: BaseChatModel):
+def _create_agent(model: BaseChatModel, *, todo_mode: TodoMode = "tool"):
     """Create agent."""
     return create_deep_agent(
         model=model,
         tools=RELATIONAL_TOOLS,
+        todo_mode=todo_mode,
     )
 
 
@@ -470,9 +471,9 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_single_tool_get_user_email(model: BaseChatModel) -> None:
+def test_single_tool_get_user_email(model: BaseChatModel, todo_mode: TodoMode) -> None:
     """Agent retrieves a user's email by ID."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,
@@ -546,9 +547,9 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_two_tools_city_for_user(model: BaseChatModel) -> None:
+def test_two_tools_city_for_user(model: BaseChatModel, todo_mode: TodoMode) -> None:
     """Agent resolves user 1's location ID, then gets the city name."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,
@@ -674,9 +675,9 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
+def test_three_tools_current_user_weather(model: BaseChatModel, todo_mode: TodoMode) -> None:
     """Agent resolves current user -> location ID -> weather."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,
@@ -830,9 +831,11 @@ def test_four_tools_current_user_location_time_and_weather(
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -> None:
+def test_five_steps_current_user_food_names_and_calories(
+    model: BaseChatModel, todo_mode: TodoMode
+) -> None:
     """Agent resolves current user -> fav foods -> names + calories (all parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,
@@ -926,9 +929,9 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
+def test_four_steps_find_user_food_allergies(model: BaseChatModel, todo_mode: TodoMode) -> None:
     """Agent finds Alice -> fav foods -> food names + allergies (all parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,
@@ -1045,9 +1048,10 @@ def test_four_steps_current_user_food_names_calories_and_allergies(
 @pytest.mark.langsmith
 def test_four_steps_find_user_city_weather_time_and_food_details(
     model: BaseChatModel,
+    todo_mode: TodoMode,
 ) -> None:
     """Agent finds Donna and gathers location plus detailed favorite-food info."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,

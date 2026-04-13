@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
+from deepagents import TodoMode, create_deep_agent
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
@@ -268,9 +268,9 @@ def test_indirect_email_report(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_chain_search_then_email(model: BaseChatModel) -> None:
+def test_chain_search_then_email(model: BaseChatModel, todo_mode: TodoMode) -> None:
     """Agent searches the web then emails results — two tools in sequence."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = create_deep_agent(model=model, tools=ALL_TOOLS, todo_mode=todo_mode)
     run_agent(
         agent,
         model=model,

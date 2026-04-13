@@ -796,13 +796,14 @@ async def test_two_tools_current_incident_service_name(model: BaseChatModel) -> 
         scorer=TrajectoryScorer()
         .success(final_text_contains("payments-api"))
         .expect(
-            agent_steps=3,
-            tool_call_requests=2,
+            agent_steps=4,
+            tool_call_requests=3,
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
                 tool_call(
                     name="get_incident_service", step=2, args_contains={"incident_id": 41017}
                 ),
+                tool_call(name="get_service_name", step=3, args_contains={"service_id": 8401}),
             ],
         ),
     )
@@ -925,6 +926,7 @@ async def test_multi_question_incident_oncall_and_service_with_most_firing_alert
                 tool_call(name="get_service_team", args_contains={"service_id": 8514}),
                 tool_call(name="get_team_oncall_engineer", args_contains={"team_id": 562}),
                 tool_call(name="get_engineer_name", args_contains={"engineer_id": 7381}),
+                tool_call(name="get_service_name", args_contains={"service_id": 8401}),
             ],
         ),
     )
@@ -1029,12 +1031,8 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
                 tool_call(
                     name="get_service_environment", step=2, args_contains={"service_id": 8799}
                 ),
-                tool_call(
-                    name="get_environment_name", step=3, args_contains={"environment_id": 442}
-                ),
-                tool_call(
-                    name="get_environment_region", step=3, args_contains={"environment_id": 442}
-                ),
+                tool_call(name="get_environment_name", step=3, args_contains={"environment_id": 442}),
+                tool_call(name="get_environment_region", step=3, args_contains={"environment_id": 442}),
             ],
         ),
     )
@@ -1111,7 +1109,7 @@ async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatM
             final_text_contains("ben@ops.example.com"),
         )
         .expect(
-            agent_steps=5,
+            agent_steps=6,
             tool_call_requests=6,
             tool_calls=[
                 tool_call(name="get_current_incident_id", step=1),
@@ -1171,11 +1169,9 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
             agent_steps=3,
             tool_call_requests=3,
             tool_calls=[
-                tool_call(name="get_incident_title", step=1, args_contains={"incident_id": 41043}),
-                tool_call(
-                    name="get_incident_severity", step=1, args_contains={"incident_id": 41043}
-                ),
-                tool_call(name="get_incident_status", step=1, args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_title", args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_severity", args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_status", args_contains={"incident_id": 41043}),
             ],
         ),
     )
@@ -1234,7 +1230,7 @@ async def test_aggregation_active_incident_count_by_team(model: BaseChatModel) -
         )
         .expect(
             agent_steps=5,
-            tool_call_requests=10,
+            tool_call_requests=13,
             tool_calls=[
                 tool_call(name="list_incident_ids", step=1),
                 tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41017}),
@@ -1329,7 +1325,7 @@ async def test_latest_selection_active_incident_most_recent_deploy(model: BaseCh
             final_text_contains("2024-08-12T09:05:00Z"),
         )
         .expect(
-            agent_steps=5,
+            agent_steps=7,
             tool_call_requests=15,
             tool_calls=[
                 tool_call(name="list_incident_ids", step=1),
@@ -1384,27 +1380,30 @@ async def test_metric_ranking_active_incident_highest_latency(model: BaseChatMod
             final_text_contains("Checkout Experience"),
         )
         .expect(
-            agent_steps=4,
-            tool_call_requests=5,
+            agent_steps=7,
+            tool_call_requests=12,
             tool_calls=[
-                tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "payments-api"}
-                ),
-                tool_call(
-                    name="find_services_by_name", step=1, args_contains={"name": "checkout-web"}
-                ),
+                tool_call(name="list_incident_ids", step=1),
+                tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41017}),
+                tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41029}),
+                tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41043}),
+                tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41058}),
+                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41017}),
+                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41029}),
+                tool_call(name="get_incident_service", step=3, args_contains={"incident_id": 41058}),
                 tool_call(
                     name="get_metric_value",
-                    step=2,
+                    step=4,
                     args_contains={"service_id": 8401, "metric_name": "latency_p95"},
                 ),
                 tool_call(
                     name="get_metric_value",
-                    step=2,
+                    step=4,
                     args_contains={"service_id": 8514, "metric_name": "latency_p95"},
                 ),
-                tool_call(name="get_service_team", step=3, args_contains={"service_id": 8514}),
-                tool_call(name="get_team_name", step=4, args_contains={"team_id": 562}),
+                tool_call(name="get_service_name", step=5, args_contains={"service_id": 8514}),
+                tool_call(name="get_service_team", step=5, args_contains={"service_id": 8514}),
+                tool_call(name="get_team_name", step=6, args_contains={"team_id": 562}),
             ],
         ),
     )
@@ -1426,7 +1425,7 @@ async def test_alert_aggregation_service_with_most_firing_alerts(model: BaseChat
         )
         .expect(
             agent_steps=6,
-            tool_call_requests=14,
+            tool_call_requests=16,
             tool_calls=[
                 tool_call(
                     name="find_services_by_name", step=1, args_contains={"name": "payments-api"}
@@ -1486,7 +1485,7 @@ async def test_dependency_reasoning_active_incident_depending_on_identity_api(
         )
         .expect(
             agent_steps=7,
-            tool_call_requests=15,
+            tool_call_requests=16,
             tool_calls=[
                 tool_call(name="list_incident_ids", step=1),
                 tool_call(name="get_incident_status", step=2, args_contains={"incident_id": 41017}),

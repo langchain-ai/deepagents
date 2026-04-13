@@ -66,7 +66,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"config_file": config_path, "output_dir": str(tmp_path / "results")},
+                                "args": {"tasks_path": config_path},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -119,7 +119,6 @@ class TestSubAgents:
     async def test_swarm_tool_surfaces_validation_error_as_tool_message(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         config_path = str(tmp_path / "tasks.jsonl")
-        output_dir = str(tmp_path / "results")
         tasks_jsonl = json.dumps({"description": "Say hi"}) + "\n"
         backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
 
@@ -131,7 +130,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"config_file": config_path, "output_dir": output_dir},
+                                "args": {"tasks_path": config_path},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }

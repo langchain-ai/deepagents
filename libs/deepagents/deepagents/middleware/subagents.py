@@ -444,6 +444,15 @@ def _build_task_tool(  # noqa: C901
     )
 
 
+DEFAULT_SWARM_CONCURRENCY = 10
+"""Default concurrency limit for swarm execution."""
+
+MAX_SWARM_CONCURRENCY = 50
+"""Maximum allowed concurrency."""
+
+DEFAULT_SWARM_MAX_RETRIES = 3
+"""Default number of retry attempts per task."""
+
 SWARM_TOOL_DESCRIPTION = """Execute a batch of independent tasks in parallel across multiple subagents.
 
 ## Workflow
@@ -713,21 +722,25 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return await asyncio.gather(*coros, return_exceptions=True)
 
         async def aswarm(  # noqa: C901, PLR0912
-            config_file: Annotated[str, "Path to the tasks.jsonl file produced by the generation script."],
-            output_dir: Annotated[
-                str,
-                "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
-            ],
+            tasks_path: Annotated[str, "Path to the tasks.jsonl file produced by the generation script."],
             runtime: ToolRuntime,
+            concurrency: Annotated[  # noqa: ARG001  # wired in follow-up (concurrency control)
+                int | None,
+                f"Maximum number of subagents running simultaneously. Default: {DEFAULT_SWARM_CONCURRENCY}, max: {MAX_SWARM_CONCURRENCY}.",
+            ] = None,
+            max_retries: Annotated[  # noqa: ARG001  # wired in follow-up (retry loop)
+                int | None,
+                f"Maximum attempts per task (including initial). Default: {DEFAULT_SWARM_MAX_RETRIES}.",
+            ] = None,
         ) -> ToolMessage:
             """Run swarm tasks."""
             resolved_backend = backend(runtime) if callable(backend) else backend  # ty: ignore[call-top-callable]
 
-            responses = await resolved_backend.adownload_files([config_file])
+            responses = await resolved_backend.adownload_files([tasks_path])
             response = responses[0]
             if response.error:
                 return ToolMessage(
-                    content=f'Failed to read tasks file at "{config_file}". '
+                    content=f'Failed to read tasks file at "{tasks_path}". '
                     f"Ensure the generation script writes the file to this exact path and try again.",
                     status="error",
                     tool_call_id=runtime.tool_call_id,

@@ -21,23 +21,32 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         # Iterate over the messages and add any dangling tool calls
         for i, msg in enumerate(messages):
             patched_messages.append(msg)
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                for tool_call in msg.tool_calls:
+            if isinstance(msg, AIMessage) and (msg.tool_calls or msg.invalid_tool_calls):
+                # Both lists always default to [] on AIMessage, so unpacking is safe.
+                for tool_call in [*msg.tool_calls, *msg.invalid_tool_calls]:
+                    call_id = tool_call["id"]
+                    if call_id is None:
+                        # No id means no ToolMessage can be correlated; skip.
+                        continue
                     corresponding_tool_msg = next(
-                        (msg for msg in messages[i:] if msg.type == "tool" and msg.tool_call_id == tool_call["id"]),  # ty: ignore[unresolved-attribute]
+                        (m for m in messages[i:] if m.type == "tool" and m.tool_call_id == call_id),  # ty: ignore[unresolved-attribute]
                         None,
                     )
                     if corresponding_tool_msg is None:
                         # We have a dangling tool call which needs a ToolMessage
-                        tool_msg = (
-                            f"Tool call {tool_call['name']} with id {tool_call['id']} was "
-                            "cancelled - another message came in before it could be completed."
-                        )
+                        call_name = tool_call["name"] or "unknown"
+                        is_invalid = tool_call.get("type") == "invalid_tool_call"
+                        if is_invalid:
+                            tool_msg = f"Tool call {call_name} with id {call_id} could not be executed - arguments were malformed or truncated."
+                        else:
+                            tool_msg = (
+                                f"Tool call {call_name} with id {call_id} was cancelled - another message came in before it could be completed."
+                            )
                         patched_messages.append(
                             ToolMessage(
                                 content=tool_msg,
-                                name=tool_call["name"],
-                                tool_call_id=tool_call["id"],
+                                name=call_name,
+                                tool_call_id=call_id,
                             )
                         )
 

@@ -1816,6 +1816,100 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
 
+    def test_invalid_tool_call_without_tool_message(self) -> None:
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            AIMessage(
+                content="I tried to call a tool but made a mistake",
+                invalid_tool_calls=[
+                    {"id": "inv_123", "name": "bad_tool", "args": "bad json", "error": "Malformed args", "type": "invalid_tool_call"}
+                ],
+                id="2",
+            ),
+            HumanMessage(content="What happened?", id="3"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        assert isinstance(state_update["messages"], Overwrite)
+        patched_messages = state_update["messages"].value
+
+        assert len(patched_messages) == 4
+        assert patched_messages[1].type == "ai"
+        assert patched_messages[2].type == "tool"
+        assert patched_messages[2].tool_call_id == "inv_123"
+        assert patched_messages[2].name == "bad_tool"
+        assert "could not be executed" in patched_messages[2].content
+        assert "malformed or truncated" in patched_messages[2].content
+
+    def test_invalid_tool_call_with_tool_message_present(self) -> None:
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            AIMessage(
+                content="I tried to call a tool but made a mistake",
+                invalid_tool_calls=[
+                    {"id": "inv_123", "name": "bad_tool", "args": "bad json", "error": "Malformed args", "type": "invalid_tool_call"}
+                ],
+                id="2",
+            ),
+            ToolMessage(content="You provided bad args", tool_call_id="inv_123", name="bad_tool", id="3"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        assert isinstance(state_update["messages"], Overwrite)
+        patched_messages = state_update["messages"].value
+
+        assert len(patched_messages) == 3
+        assert patched_messages[2].type == "tool"
+        assert patched_messages[2].tool_call_id == "inv_123"
+
+    def test_invalid_tool_call_with_none_id_skipped(self) -> None:
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            AIMessage(
+                content="I tried to call a tool but made a mistake",
+                invalid_tool_calls=[{"id": None, "name": "bad_tool", "args": "bad json", "error": "Malformed args", "type": "invalid_tool_call"}],
+                id="2",
+            ),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        assert isinstance(state_update["messages"], Overwrite)
+        patched_messages = state_update["messages"].value
+
+        # No ToolMessage added because id is None
+        assert len(patched_messages) == 2
+        assert patched_messages[1].type == "ai"
+
+    def test_mixed_valid_and_invalid_tool_calls_both_patched(self) -> None:
+        input_messages = [
+            AIMessage(
+                content="Multiple tools",
+                tool_calls=[{"id": "valid_1", "name": "good_tool", "args": {}}],
+                invalid_tool_calls=[{"id": "inv_1", "name": "bad_tool", "args": "bad json", "error": "Malformed args", "type": "invalid_tool_call"}],
+                id="1",
+            ),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        assert isinstance(state_update["messages"], Overwrite)
+        patched_messages = state_update["messages"].value
+
+        assert len(patched_messages) == 3
+        assert patched_messages[0].type == "ai"
+
+        # Order of appending is tool_calls then invalid_tool_calls
+        assert patched_messages[1].type == "tool"
+        assert patched_messages[1].tool_call_id == "valid_1"
+        assert "cancelled - another message came in" in patched_messages[1].content
+
+        assert patched_messages[2].type == "tool"
+        assert patched_messages[2].tool_call_id == "inv_1"
+        assert "could not be executed - arguments were malformed" in patched_messages[2].content
+
 
 class TestTruncation:
     def test_truncate_list_result_no_truncation(self):

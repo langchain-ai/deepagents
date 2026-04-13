@@ -50,15 +50,20 @@ CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation i
 Do NOT assume variables, functions, or helper values from prior `repl` calls are available.
 
 - The REPL executes a small imperative language.
+- This language is NOT Python, JavaScript, or Lua.
+- Use only the REPL syntax described here. Do not invent syntax from other languages.
 - Write assignments like `user = lookup_fn("value")`.
 - Use indexing like `items[0]` and `user["id"]`.
 - Use `if cond then ... else ... end` for branching.
 - Use `for item in items do ... end` for loops.
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
+- Values include strings, `None`, `True`, `False`, integers, floats, lists, and dicts.
 - Use `parallel(expr1, expr2)` only for independent expressions that can run concurrently.
 - Use `try(expr, fallback)` when a failed lookup or function call should fall back to another value.
 - The REPL can only use the language features above and the foreign functions listed below.
+- Do use: `if cond then ... else ... end`, `for item in items do ... end`, `None`, `True`, `False`, `items[0]`, and `user["id"]`.
+- Do not use: Python block syntax like `if cond:` or `for item in items:`, JavaScript block syntax like `{ ... }`, Lua helpers like `ipairs`, Lua values like `nil`, JavaScript values like `undefined`, semicolons, `#`, `len(...)`, or multiple loop variables like `for i, item in items do`.
 - If the task needs multiple foreign function calls, prefer writing one complete REPL program instead of splitting the work across multiple `repl` invocations.
 - If one foreign function returns an ID or other value that can be passed directly into the next foreign function, trust it and chain the calls instead of stopping to double-check it.
 - If you want to inspect an intermediate value, print it inside the same REPL program; otherwise, try to fetch as much information as possible in one program.
@@ -67,5 +72,11 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
   `first_item = items[0]`
   `item_id = first_item["id"]`
   `print(parallel(detail_fn(item_id), status_fn(item_id)))`
-- Use the repl for small computations, collection manipulation, branching, loops, and calling externally registered foreign functions.
+- Full example program:
+  `users = find_users_by_name("Bob")`
+  `for user in users do`
+  `  city = get_city_for_location(get_user_location(user["id"]))`
+  `  print(city)`
+  `end`
+- Use the repl for collection manipulation, branching, loops, indexing, and calling externally registered foreign functions.
 

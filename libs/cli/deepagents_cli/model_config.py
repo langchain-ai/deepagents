@@ -56,11 +56,9 @@ def resolve_env_var(name: str) -> str | None:
             val = os.environ[prefixed]
             if not val and os.environ.get(name):
                 logger.debug(
-                    "%s is set but empty, blocking non-empty %s. "
-                    "Unset %s to use the canonical variable.",
-                    prefixed,
-                    name,
-                    prefixed,
+                    "A prefixed environment variable is set but empty, blocking a "
+                    "non-empty canonical variable. Unset the prefixed variable to "
+                    "use the canonical variable."
                 )
             return val or None
     return os.environ.get(name) or None

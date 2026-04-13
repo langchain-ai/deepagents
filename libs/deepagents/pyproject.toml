@@ -52,7 +52,7 @@ test = [
   "ruff>=0.12.2,<0.16.0",
   "ty>=0.0.1,<1.0.0",
   "pytest-asyncio>=1.3.0",
-  "langchain-tests>=1.1.5",
+  "langchain-tests>=1.1.6",
   "langchain-openai",
   "twine",
   "build",
@@ -127,6 +127,9 @@ ignore-var-parameters = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
+filterwarnings = [
+    "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
 ]

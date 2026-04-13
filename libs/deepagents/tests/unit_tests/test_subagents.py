@@ -50,10 +50,11 @@ class TestSubAgents:
     async def test_swarm_tool_writes_results_via_backend(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         config_path = str(tmp_path / "tasks.jsonl")
-        output_dir = str(tmp_path / "results")
         tasks_jsonl = (
-            json.dumps({"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"}) + "\n"
-            + json.dumps({"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"}) + "\n"
+            json.dumps({"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"})
+            + "\n"
+            + json.dumps({"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"})
+            + "\n"
         )
         backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
 
@@ -65,7 +66,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"config_file": config_path, "output_dir": output_dir},
+                                "args": {"config_file": config_path, "output_dir": str(tmp_path / "results")},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -94,15 +95,26 @@ class TestSubAgents:
             enable_swarm=True,
         )
 
-        await agent.ainvoke(
+        result = await agent.ainvoke(
             {"messages": [HumanMessage(content="run swarm")]},
             config={"configurable": {"thread_id": "test_thread_swarm"}},
         )
 
-        r0 = backend.download_files([f"{output_dir}/t0.txt"])[0]
-        r1 = backend.download_files([f"{output_dir}/t1.txt"])[0]
-        assert (r0.error, r0.content) == (None, b"result")
-        assert (r1.error, r1.content) == (None, b"result")
+        tool_msg = result["messages"][2]
+        summary = json.loads(tool_msg.content)
+        assert summary["total"] == 2
+        assert summary["completed"] == 2
+        assert summary["failed"] == 0
+        assert "results_dir" in summary
+
+        results_file = backend.download_files([f"{summary['results_dir']}/results.jsonl"])[0]
+        assert results_file.error is None
+        lines = results_file.content.decode("utf-8").strip().split("\n")
+        assert len(lines) == 2
+        for line in lines:
+            row = json.loads(line)
+            assert row["status"] == "completed"
+            assert row["result"] == "result"
 
     async def test_swarm_tool_surfaces_validation_error_as_tool_message(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict, cast
@@ -560,7 +561,7 @@ def _parse_tasks_jsonl(content: str) -> ParsedSwarmConfig:
             continue
 
         if task["id"] in seen_ids:
-            errors.append(f"Line {line_number}: duplicate task id \"{task['id']}\"")
+            errors.append(f'Line {line_number}: duplicate task id "{task["id"]}"')
             continue
 
         seen_ids.add(task["id"])
@@ -688,7 +689,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ) -> list[tuple[str, str] | BaseException]:
             """Run tasks."""
 
-            async def run_task(task_spec: SwarmTaskSpec, idx: int) -> tuple[str, str]:
+            async def run_task(task_spec: SwarmTaskSpec) -> tuple[str, str]:
                 task_id = task_spec["id"]
                 desc = task_spec["description"]
                 subagent_type = task_spec.get("subagent_type", "general-purpose")
@@ -708,7 +709,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     return task_id, text.rstrip()
                 return task_id, ""
 
-            coros = [run_task(task_spec, idx) for idx, task_spec in enumerate(tasks)]
+            coros = [run_task(task_spec) for task_spec in tasks]
             return await asyncio.gather(*coros, return_exceptions=True)
 
         async def aswarm(  # noqa: C901, PLR0912
@@ -726,7 +727,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             response = responses[0]
             if response.error:
                 return ToolMessage(
-                    content=f"Failed to read tasks file at \"{config_file}\". "
+                    content=f'Failed to read tasks file at "{config_file}". '
                     f"Ensure the generation script writes the file to this exact path and try again.",
                     status="error",
                     tool_call_id=runtime.tool_call_id,
@@ -767,32 +768,36 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     raise GraphInterrupt(interrupts)
                 raise interrupt_excs[0]
 
-            output_dir_clean = output_dir.rstrip("/")
-
-            outputs: list[tuple[str, bytes]] = []
-            summaries: list[str] = []
-            for item in results:
+            task_results: list[dict[str, Any]] = []
+            for idx, item in enumerate(results):
+                task_spec = tasks[idx]
                 if isinstance(item, BaseException):
-                    summaries.append(f"Error: {item}")
-                    continue
-                task_id, result_text = item
-                task_id = _sanitize_task_id(task_id, output_dir_clean, fallback=str(results.index(item)))
-                output_path = f"{output_dir_clean}/{task_id}.txt"
-                outputs.append((output_path, result_text.encode("utf-8")))
-
-            upload_responses = await resolved_backend.aupload_files(outputs)
-            for upload in upload_responses:
-                if upload.error is not None:
-                    summaries.append(f"✗ {upload.path}: error writing result: {upload.error}")
+                    task_results.append({**task_spec, "status": "failed", "error": str(item)})
                 else:
-                    result_len = next((len(b) for p, b in outputs if p == upload.path), 0)
-                    summaries.append(f"✓ {upload.path}: wrote {result_len} chars")
+                    _task_id, result_text = item
+                    task_results.append({**task_spec, "status": "completed", "result": result_text})
 
-            completed = sum(1 for s in summaries if s.startswith("✓"))
-            summary = f"{completed}/{len(tasks)} tasks completed. Results in {output_dir_clean}/\n"
-            summary += "\n".join(summaries)
+            results_dir = f"swarm_runs/{uuid.uuid4()}"
+            results_path = f"{results_dir}/results.jsonl"
+            results_content = "\n".join(json.dumps(r) for r in task_results) + "\n"
+
+            completed_count = sum(1 for r in task_results if r["status"] == "completed")
+            failed_count = len(task_results) - completed_count
+            summary: dict[str, Any] = {
+                "total": len(task_results),
+                "completed": completed_count,
+                "failed": failed_count,
+                "results_dir": results_dir,
+            }
+
+            try:
+                await resolved_backend.aupload_files([(results_path, results_content.encode("utf-8"))])
+            except Exception as exc:  # noqa: BLE001
+                summary["write_error"] = f"Failed to write results: {exc}"
+                summary["results"] = task_results
+
             return ToolMessage(
-                content=summary,
+                content=json.dumps(summary),
                 status="success",
                 tool_call_id=runtime.tool_call_id,
             )

@@ -954,9 +954,11 @@ async def test_multi_question_three_independent_simple_lookups(model: BaseChatMo
             final_text_contains("us-west-2"),
         )
         .expect(
-            agent_steps=3,
+            agent_steps=2,
             tool_call_requests=3,
             tool_calls=[
+                # All three lookups are independent, so the optimal trajectory issues them
+                # together in one tool-calling step and then answers in the final step.
                 tool_call(
                     name="get_incident_severity", step=1, args_contains={"incident_id": 41017}
                 ),

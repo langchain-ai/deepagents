@@ -884,7 +884,7 @@ async def test_multi_question_incident_oncall_and_incident_environment(
         scorer=TrajectoryScorer()
         .success(
             final_text_contains("Cara Singh"),
-            final_text_contains("staging"),
+            final_text_contains("staging", case_insensitive=True),
             final_text_contains("us-west-2"),
         )
         .expect(

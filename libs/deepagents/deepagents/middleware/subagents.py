@@ -296,36 +296,62 @@ When NOT to use the task tool:
 
 _SWARM_SYSTEM_PROMPT_ADDITION = """
 
-Subagent limitations (continued):
-- A single subagent can handle large files for tasks like summarization. But when precise analysis is needed over a large file — counting, extraction, searching, or anything where accuracy matters — you MUST check the file size first and use `swarm` to split the work for any file over 500 lines. Do NOT send large files to a single `task` subagent for precise analysis, and do NOT try to process them with a single Python script via `execute` either.
-- CRITICAL: When a task requires looping over items and applying intelligence to each one (classifying, labeling, categorizing, identifying, tagging), you MUST use `swarm` (not `task`) — regardless of file size. Do NOT classify items inline, do NOT delegate to a single `task` subagent, and do NOT write Python regex/heuristic scripts. The only acceptable approach is `swarm`.
-- **Pre-pilot before full swarm fan-out:** Before launching the full swarm, run a calibration pilot:
-  1. Take a small sample (~20-30 items) and classify them YOURSELF first — write out your classifications with reasoning.
-  2. Send the SAME items to a single `task` subagent with your classification instructions.
-  3. DIFF the two results. For every disagreement, determine who is right and WHY the subagent got it wrong.
-  4. If you find systematic errors (e.g., the subagent consistently misclassifies a category boundary), add explicit corrective examples or rules to your instructions. For example: "IMPORTANT: 'What is [specific named thing]?' is entity, NOT description — unless the answer is an explanation/definition rather than a name."
-  5. Re-run the pilot with updated instructions until the subagent matches your classifications on the sample.
-  Only THEN launch the full swarm with the refined instructions.
+## `swarm` (parallel subagent execution)
 
-## `swarm` (parallel subagent fan-out)
+Use `swarm` to fan out many independent tasks across multiple subagents and aggregate their results.
 
-You also have access to a `swarm` tool for launching many subagents in parallel from a JSON config file. Use this when you need to process many chunks of data with the same (or similar) instructions. When specificity and precision is required over large files, you are best off using the `swarm` tool to split the work across many subagents.
+### When to use swarm
 
-When splitting work across subagents, figure out exactly how you would do the task yourself first — only after you have that clarity should you distribute to subagents. Before distributing work, write out the exact instructions you'll give to each worker. Be specific and leave no room for interpretation — workers will interpret ambiguity differently, and inconsistent results can't be aggregated reliably.
+**Trigger condition**: Use swarm when the input contains too much data to process in a single pass. Indicators: the file or dataset contains hundreds of items that each need individual analysis, or exceeds ~500 lines. When in doubt, check the size and prefer swarm over attempting to process a large input inline.
 
-### When to use `swarm` instead of `task`:
-- When you have multiple independent sub-tasks that follow a similar pattern
-- When you can define all the subtasks upfront (e.g., chunk a file by line ranges)
-- When you need to programmatically generate the task list
+Also use `swarm` when:
+- A task requires applying intelligence to each item in a large collection
+- Work can be decomposed into many independent, parallel subtasks
 
-### When to use `task` instead of `swarm`:
-- When the next subtask depends on results from a previous one
-- When you need exploratory/adaptive work (e.g., grep first, then investigate)
+Use `task` instead when:
+- You have a small number of independent subtasks
+- Each subtask depends on the result of a previous one
+- The work is exploratory or adaptive
 
-### Workflow:
-1. Write a JSON config file with all your tasks (or write a script to generate it)
-2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`
-3. Read the result files from the output directory to aggregate"""  # noqa: E501
+### How to use swarm
+
+Before calling swarm, understand what you're working with. Explore the data to learn its structure, format, and content using whatever tools are available. The goal is to write task descriptions detailed enough that each subagent can execute without needing to figure anything out on its own.
+
+Once you understand the data:
+
+1. **Generate tasks.** Write a generation script via `execute` that produces a `tasks.jsonl` file — one JSON object per line, each with `id`, `description`, and optional `subagent_type`. Each task should be a self-contained unit of work. **Prefer many small tasks over few large ones** — all tasks run in parallel, so 50 small tasks finish in roughly the same wall-clock time as 5 large ones. When splitting a file, aim for **30-60 lines** per chunk.
+2. **Call swarm.** Pass the path to your `tasks.jsonl` file.
+3. **Aggregate results.** Write an aggregation script via `execute` that reads `<results_dir>/results.jsonl` and combines the subagent outputs into a final answer.
+
+### Task description quality
+
+Each subagent receives **only its task description** — no other context. The quality of your descriptions determines the quality of swarm results. Invest time upfront to get them right.
+
+Good task descriptions are **prescriptive**: they tell the subagent the data format, the processing logic, the exact range of data to work on, and the expected output format. The subagent should not need to explore or interpret — just execute.
+
+When subagent results need to be aggregated (counting, classification, extraction), instruct each subagent to respond with **structured JSON only** — no explanations, no tables, just the JSON object. Include the exact output schema in the task description.
+
+### Error handling
+
+Each task runs exactly once — there are no automatic retries. If some tasks fail, the swarm summary includes a `failed_tasks` array with each failed task's ID and error message. Use this to decide:
+- **Retry via swarm**: generate a new tasks.jsonl targeting just the failures (with modifications) and call swarm again.
+- **Retry individually**: use `task` for a small number of failures.
+- **Proceed with partial results**: aggregate what completed and skip the rest.
+
+### Important: one swarm call per question
+
+**Never re-run swarm to verify or cross-check results.** Swarm is expensive — treat the first run's per-task outputs as authoritative. If you need to validate, do it in the aggregation script (e.g., check that each chunk returned the expected number of items). Do not generate a second tasks.jsonl or call swarm again for the same question.
+
+### Decomposition patterns
+
+**Flat fan-out**: Split a dataset into equal chunks. All tasks are identical in structure.
+Good for: large files, classification, extraction.
+
+**One-per-item**: One task per discrete unit (file, document, URL).
+Good for: summarizing collections, processing independent documents.
+
+**Dimensional**: Multiple tasks examine the same input from different angles.
+Good for: code review, multi-criteria evaluation."""  # noqa: E501
 
 TASK_SYSTEM_PROMPT = _TASK_ONLY_SYSTEM_PROMPT + _SWARM_SYSTEM_PROMPT_ADDITION
 

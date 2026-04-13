@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -59,12 +58,6 @@ def _event_field(event: object, key: str) -> object | None:
     return getattr(event, key, None)
 
 
-# https://github.com/langchain-ai/deepagents/issues/2624
-@pytest.mark.xfail(
-    condition=os.environ.get("CI") == "true",
-    strict=True,
-    reason="Polling loop too tight for slow CI runners (#2624)",
-)
 @pytest.mark.timeout(180)
 async def test_compact_resumed_thread_uses_persisted_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -169,8 +162,10 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
             async with app.run_test() as pilot:
                 # Let startup history loading settle before asserting on the UI.
-                for _ in range(60):
-                    await pilot.pause()
+                # Use a 0.1 s delay per iteration (up to 12 s) so slow CI
+                # runners have enough time for the async I/O to complete.
+                for _ in range(120):
+                    await pilot.pause(0.1)
                     if app._message_store.total_count > 0:
                         break
 
@@ -185,8 +180,8 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
                 # `/compact` posts a success message after the async state write
                 # and archive offload finish.
-                for _ in range(60):
-                    await pilot.pause()
+                for _ in range(120):
+                    await pilot.pause(0.1)
                     if any(
                         "Conversation compacted." in str(widget._content)
                         for widget in app.query(AppMessage)

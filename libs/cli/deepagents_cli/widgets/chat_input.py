@@ -967,6 +967,9 @@ class ChatInput(Vertical):
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
 
+        # command name (without /) → argument hint for inline ghost text
+        self._argument_hints: dict[str, str] = {}
+
         # Set up history manager
         if history_file is None:
             history_file = _default_history_path()
@@ -1009,6 +1012,8 @@ class ChatInput(Vertical):
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
+        self._rebuild_argument_hints(SLASH_COMMANDS)
+
         self.run_worker(
             self._file_controller.warm_cache(),
             exclusive=False,
@@ -1027,11 +1032,59 @@ class ChatInput(Vertical):
         """
         if self._slash_controller:
             self._slash_controller.update_commands(commands)
+            self._rebuild_argument_hints(commands)
         else:
             logger.warning(
                 "Cannot update slash commands: controller not initialized "
                 "(widget not yet mounted)"
             )
+
+    def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
+        """Rebuild the command-name → argument-hint lookup.
+
+        Args:
+            commands: Current list of `CommandEntry` instances.
+        """
+        self._argument_hints = {
+            entry.name.removeprefix("/"): entry.argument_hint
+            for entry in commands
+            if entry.argument_hint
+        }
+
+    def _update_argument_hint(self) -> None:
+        """Show or clear inline ghost text for slash-command argument hints.
+
+        Sets `TextArea.suggestion` when the input is a known slash command
+        with no args typed yet — either right after Tab completion
+        (``remember``) or after typing a trailing space (``remember ``).
+        """
+        if not self._text_area:
+            return
+
+        if self.mode != "command":
+            if self._text_area.suggestion:
+                self._text_area.suggestion = ""
+            return
+
+        text = self._text_area.text
+        # Only trigger when no args have been typed yet
+        cmd_name = text.rstrip()
+        if " " in cmd_name:
+            # Args present — clear any stale hint
+            if self._text_area.suggestion:
+                self._text_area.suggestion = ""
+            return
+
+        hint = self._argument_hints.get(cmd_name, "")
+        if hint:
+            # Prefix with space when cursor is flush against command name
+            display = f" {hint}" if not text.endswith(" ") else hint
+            if self._text_area.suggestion != display:
+                self._text_area.suggestion = display
+            return
+
+        if self._text_area.suggestion:
+            self._text_area.suggestion = ""
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
@@ -1096,6 +1149,10 @@ class ChatInput(Vertical):
             else:
                 vtext, vcursor = self._completion_text_and_cursor()
                 self._completion_manager.on_text_changed(vtext, vcursor)
+
+        # Show inline argument hint as ghost text when cursor is right after
+        # a completed slash command + space with no args typed yet.
+        self._update_argument_hint()
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()

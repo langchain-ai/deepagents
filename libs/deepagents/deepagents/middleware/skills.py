@@ -194,7 +194,7 @@ class SkillMetadata(TypedDict):
     argument_hint: str | None
     """Placeholder text shown during autocomplete when the skill accepts arguments.
 
-    For example, ``"[context]"`` for a skill invoked as ``/remember [context]``.
+    For example, `"[context]"` for a skill invoked as `/remember [context]`.
     """
 
 

@@ -18,6 +18,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.permissions import FilesystemPermission
@@ -794,7 +795,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             task_results = await _execute_swarm(tasks, parent_state, effective_concurrency)
 
-            results_dir = f"swarm_runs/{uuid.uuid4()}"
+            artifacts_root = resolved_backend.artifacts_root if isinstance(resolved_backend, CompositeBackend) else "/"
+            _root = artifacts_root.rstrip("/")
+            results_dir = f"{_root}/swarm_runs/{uuid.uuid4()}"
             results_path = f"{results_dir}/results.jsonl"
             results_content = "\n".join(json.dumps(r) for r in task_results) + "\n"
             await resolved_backend.aupload_files([(results_path, results_content.encode("utf-8"))])

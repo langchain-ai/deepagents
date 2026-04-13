@@ -22,10 +22,13 @@ from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel, Field
 
 import deepagents.middleware.subagents as subagents_mod
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -48,16 +51,15 @@ Instructions go here.
 class TestSubAgents:
     """Tests for sub-agent middleware functionality."""
 
-    async def test_swarm_tool_writes_results_via_backend(self, tmp_path: Path) -> None:
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "tasks.jsonl")
+    async def test_swarm_tool_writes_results_via_backend(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         tasks_jsonl = (
             json.dumps({"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"})
             + "\n"
             + json.dumps({"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"})
             + "\n"
         )
-        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+        backend.upload_files([("/tasks.jsonl", tasks_jsonl.encode("utf-8"))])
 
         leader_model = GenericFakeChatModel(
             messages=iter(
@@ -67,7 +69,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path},
+                                "args": {"tasks_path": "/tasks.jsonl"},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -106,7 +108,7 @@ class TestSubAgents:
         assert summary["total"] == 2
         assert summary["completed"] == 2
         assert summary["failed"] == 0
-        assert "results_dir" in summary
+        assert summary["results_dir"].startswith("/swarm_runs/")
 
         results_file = backend.download_files([f"{summary['results_dir']}/results.jsonl"])[0]
         assert results_file.error is None
@@ -117,11 +119,10 @@ class TestSubAgents:
             assert row["status"] == "completed"
             assert row["result"] == "result"
 
-    async def test_swarm_tool_surfaces_validation_error_as_tool_message(self, tmp_path: Path) -> None:
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "tasks.jsonl")
-        tasks_jsonl = json.dumps({"description": "Say hi"}) + "\n"
-        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+    async def test_swarm_results_dir_uses_artifacts_root(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        tasks_jsonl = json.dumps({"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"}) + "\n"
+        backend.upload_files([("/tasks.jsonl", tasks_jsonl.encode("utf-8"))])
 
         leader_model = GenericFakeChatModel(
             messages=iter(
@@ -131,7 +132,58 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path},
+                                "args": {"tasks_path": "/tasks.jsonl"},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        gp_model = GenericFakeChatModel(messages=iter([AIMessage(content="result")]))
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=CompositeBackend(default=backend, routes={}, artifacts_root="/workspace"),
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="gp",
+                    system_prompt="you are gp",
+                    model=gp_model,
+                    tools=[],
+                )
+            ],
+            enable_swarm=True,
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="run swarm")]},
+            config={"configurable": {"thread_id": "test_swarm_artifacts_root"}},
+        )
+
+        tool_msg = result["messages"][2]
+        summary = json.loads(tool_msg.content)
+        assert summary["results_dir"].startswith("/workspace/swarm_runs/")
+
+    async def test_swarm_tool_surfaces_validation_error_as_tool_message(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        tasks_jsonl = json.dumps({"description": "Say hi"}) + "\n"
+        backend.upload_files([("/tasks.jsonl", tasks_jsonl.encode("utf-8"))])
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"tasks_path": "/tasks.jsonl"},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -160,16 +212,15 @@ class TestSubAgents:
         assert tool_msg.status == "error"
         assert "tasks.jsonl validation failed" in tool_msg.content
 
-    async def test_swarm_partial_failure(self, tmp_path: Path) -> None:
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "tasks.jsonl")
+    async def test_swarm_partial_failure(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         tasks_jsonl = (
             json.dumps({"id": "ok", "description": "succeed", "subagent_type": "general-purpose"})
             + "\n"
             + json.dumps({"id": "bad", "description": "fail", "subagent_type": "general-purpose"})
             + "\n"
         )
-        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+        backend.upload_files([("/tasks.jsonl", tasks_jsonl.encode("utf-8"))])
 
         async def selective_subagent(state: dict) -> dict:
             desc = state["messages"][0].content
@@ -186,7 +237,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path},
+                                "args": {"tasks_path": "/tasks.jsonl"},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }
@@ -226,13 +277,12 @@ class TestSubAgents:
         assert results_by_id["ok"]["status"] == "completed"
         assert results_by_id["bad"]["status"] == "failed"
 
-    async def test_swarm_task_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_swarm_task_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(subagents_mod, "SWARM_TASK_TIMEOUT_SECONDS", 0.1)
 
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "tasks.jsonl")
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         tasks_jsonl = json.dumps({"id": "slow", "description": "hang", "subagent_type": "general-purpose"}) + "\n"
-        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+        backend.upload_files([("/tasks.jsonl", tasks_jsonl.encode("utf-8"))])
 
         async def slow_subagent(_state: dict) -> dict:
             await asyncio.sleep(10)
@@ -246,7 +296,7 @@ class TestSubAgents:
                         tool_calls=[
                             {
                                 "name": "swarm",
-                                "args": {"tasks_path": config_path},
+                                "args": {"tasks_path": "/tasks.jsonl"},
                                 "id": "call_swarm",
                                 "type": "tool_call",
                             }

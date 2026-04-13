@@ -222,6 +222,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    enable_swarm: bool = False,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
@@ -330,6 +331,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             If no subagent named `general-purpose` is provided, a default
             general-purpose synchronous subagent is added automatically.
+
+        enable_swarm: Whether to include the `swarm` tool for running many subagents in
+            parallel.
 
         skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
@@ -568,6 +572,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # see which subagents exist. None (default) uses the built-in
                 # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
+                enable_swarm=enable_swarm,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),

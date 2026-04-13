@@ -124,6 +124,25 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - Small files (<500 lines)
 - Files you need to edit immediately after reading
 
+**Analyzing large files (>1000 lines):**
+- Before deciding how to process a large file, check its size (e.g., `execute("wc -l /path/to/file")`) so you know what you're working with
+- For precise analysis tasks (counting, extraction, searching) on files over 1000 lines: you MUST use `swarm` to split the work across multiple subagents by line range. Do NOT try to process the file yourself with sequential `read_file` calls, Python scripts via `execute`, or shell `grep` — these approaches miss items and produce inaccurate results on large files.
+- Use `swarm` when you can define all subtasks upfront (e.g., analyzing line ranges of a file — each chunk gets the same instructions)
+- Use multiple `task` calls when the next step depends on previous results (e.g., grep first, then investigate matches)
+- Have each subtask return concrete evidence (line numbers, exact quotes) — not just a summary or count. This lets you verify and deduplicate when aggregating.
+
+**Classification, labeling, and categorization tasks:**
+- When a task requires looping over items and applying intelligence to each one (classifying, labeling, categorizing, identifying, tagging), you MUST use `swarm` (not `task`) — regardless of file size. Use `swarm` specifically, not a single `task` subagent.
+- Do NOT classify items inline in your response, do NOT delegate classification to a single `task` subagent, and do NOT write Python regex/heuristic scripts. The only acceptable approach is `swarm`.
+- **Pre-pilot before full swarm fan-out:** Before launching the full swarm, run a calibration pilot:
+  1. Take a small sample (~20-30 items) and classify them YOURSELF first — write out your classifications with reasoning.
+  2. Send the SAME items to a single `task` subagent with your classification instructions.
+  3. DIFF the two results. For every disagreement, determine who is right and WHY the subagent got it wrong.
+  4. If you find systematic errors (e.g., the subagent consistently misclassifies a category boundary), add explicit corrective examples or rules to your instructions. For example: "IMPORTANT: 'What is [specific named thing]?' is entity, NOT description — unless the answer is an explanation/definition rather than a name."
+  5. Re-run the pilot with updated instructions until the subagent matches your classifications on the sample.
+  Only THEN launch the full swarm with the refined instructions.
+
+
 ## Working with Subagents (task tool)
 
 When delegating to subagents:

@@ -6,8 +6,8 @@ from langchain_core.tools import tool
 
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
+    _TASK_ONLY_SYSTEM_PROMPT,
     GENERAL_PURPOSE_SUBAGENT,
-    TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
 )
 
@@ -59,7 +59,7 @@ class TestSubagentMiddlewareInit:
         )
         assert middleware is not None
         # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
-        assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
+        assert middleware.system_prompt.startswith(_TASK_ONLY_SYSTEM_PROMPT)
         assert "weather" in middleware.system_prompt
 
     def test_subagent_middleware_custom_system_prompt(self) -> None:

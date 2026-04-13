@@ -103,6 +103,9 @@ Subagent lifecycle:
 3. **Return** → The subagent provides a single structured result
 4. **Reconcile** → Incorporate or synthesize the result into the main thread
 
+Subagent limitations:
+- A subagent has the same context window and tool limitations you do. If a file is too large for you to process in one pass, it's too large for a single subagent too — split the work across multiple subagents instead.
+
 When NOT to use the task tool:
 - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)
 - If the task is trivial (a few tool calls or simple lookup)

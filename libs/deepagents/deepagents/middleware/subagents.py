@@ -1,7 +1,11 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import asyncio
+import json
+import os
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, NotRequired, TypedDict, cast
+from pathlib import Path
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -11,8 +15,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
-from pydantic import BaseModel, Field
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command, Interrupt
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -259,7 +264,7 @@ Since the user is greeting, use the greeting-responder agent to respond with a f
 assistant: "I'm going to use the Task tool to launch with the greeting-responder agent"
 </example>"""  # noqa: E501
 
-TASK_SYSTEM_PROMPT = """## `task` (subagent spawner)
+_TASK_ONLY_SYSTEM_PROMPT = """## `task` (subagent spawner)
 
 You have access to a `task` tool to launch short-lived subagents that handle isolated tasks. These agents are ephemeral — they live only for the duration of the task and return a single result.
 
@@ -276,6 +281,9 @@ Subagent lifecycle:
 3. **Return** → The subagent provides a single structured result
 4. **Reconcile** → Incorporate or synthesize the result into the main thread
 
+Subagent limitations:
+- A subagent has the same context window and tool limitations you do. If a file is too large for you to process in one pass, it's too large for a single subagent too — split the work across multiple subagents instead.
+
 When NOT to use the task tool:
 - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)
 - If the task is trivial (a few tool calls or simple lookup)
@@ -286,6 +294,41 @@ When NOT to use the task tool:
 - Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
 - Remember to use the `task` tool to silo independent tasks within a multi-part objective.
 - You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient."""  # noqa: E501
+
+_SWARM_SYSTEM_PROMPT_ADDITION = """
+
+Subagent limitations (continued):
+- A single subagent can handle large files for tasks like summarization. But when precise analysis is needed over a large file — counting, extraction, searching, or anything where accuracy matters — you MUST check the file size first and use `swarm` to split the work for any file over 500 lines. Do NOT send large files to a single `task` subagent for precise analysis, and do NOT try to process them with a single Python script via `execute` either.
+- CRITICAL: When a task requires looping over items and applying intelligence to each one (classifying, labeling, categorizing, identifying, tagging), you MUST use `swarm` (not `task`) — regardless of file size. Do NOT classify items inline, do NOT delegate to a single `task` subagent, and do NOT write Python regex/heuristic scripts. The only acceptable approach is `swarm`.
+- **Pre-pilot before full swarm fan-out:** Before launching the full swarm, run a calibration pilot:
+  1. Take a small sample (~20-30 items) and classify them YOURSELF first — write out your classifications with reasoning.
+  2. Send the SAME items to a single `task` subagent with your classification instructions.
+  3. DIFF the two results. For every disagreement, determine who is right and WHY the subagent got it wrong.
+  4. If you find systematic errors (e.g., the subagent consistently misclassifies a category boundary), add explicit corrective examples or rules to your instructions. For example: "IMPORTANT: 'What is [specific named thing]?' is entity, NOT description — unless the answer is an explanation/definition rather than a name."
+  5. Re-run the pilot with updated instructions until the subagent matches your classifications on the sample.
+  Only THEN launch the full swarm with the refined instructions.
+
+## `swarm` (parallel subagent fan-out)
+
+You also have access to a `swarm` tool for launching many subagents in parallel from a JSON config file. Use this when you need to process many chunks of data with the same (or similar) instructions. When specificity and precision is required over large files, you are best off using the `swarm` tool to split the work across many subagents.
+
+When splitting work across subagents, figure out exactly how you would do the task yourself first — only after you have that clarity should you distribute to subagents. Before distributing work, write out the exact instructions you'll give to each worker. Be specific and leave no room for interpretation — workers will interpret ambiguity differently, and inconsistent results can't be aggregated reliably.
+
+### When to use `swarm` instead of `task`:
+- When you have multiple independent sub-tasks that follow a similar pattern
+- When you can define all the subtasks upfront (e.g., chunk a file by line ranges)
+- When you need to programmatically generate the task list
+
+### When to use `task` instead of `swarm`:
+- When the next subtask depends on results from a previous one
+- When you need exploratory/adaptive work (e.g., grep first, then investigate)
+
+### Workflow:
+1. Write a JSON config file with all your tasks (or write a script to generate it)
+2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`
+3. Read the result files from the output directory to aggregate"""  # noqa: E501
+
+TASK_SYSTEM_PROMPT = _TASK_ONLY_SYSTEM_PROMPT + _SWARM_SYSTEM_PROMPT_ADDITION
 
 
 DEFAULT_GENERAL_PURPOSE_DESCRIPTION = "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent."  # noqa: E501
@@ -400,6 +443,128 @@ def _build_task_tool(  # noqa: C901
     )
 
 
+SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
+
+Use this when you need to fan out the same (or similar) work across many chunks of data — for example,
+processing sections of a large file, classifying batches of entries, or querying multiple documents.
+
+## Workflow
+1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.
+2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`.
+3. All tasks run in parallel. Each result is written to `<output_dir>/<task_id>.txt`.
+4. Read the result files to aggregate.
+
+## Config file format
+```json
+{{
+  "tasks": [
+    {{
+      "id": "chunk_0",
+      "description": "Read /tmp/context.txt lines 0-100. Classify each entry. Return JSON counts.",
+      "subagent_type": "general-purpose"
+    }},
+    {{
+      "id": "chunk_1",
+      "description": "Read /tmp/context.txt lines 100-200. Classify each entry. Return JSON counts.",
+      "subagent_type": "general-purpose"
+    }}
+  ]
+}}
+```
+
+Fields:
+- `id` (optional): Identifier for the task, used as the output filename. Defaults to the task index.
+- `description` (required): The task description, same as what you'd pass to `task(description=...)`.
+- `subagent_type` (required): Which subagent to use, same as `task(subagent_type=...)`.
+
+Available subagent types:
+{available_agents}
+"""
+
+
+def _sanitize_task_id(task_id: str, output_dir: str, fallback: str) -> str:
+    """Sanitize a task ID so it cannot escape the output directory.
+
+    Applies ``os.path.basename`` to strip directory components, then resolves
+    the resulting path and verifies it is still inside *output_dir*.
+
+    Args:
+        task_id: Raw task identifier (may contain path separators or ``..``).
+        output_dir: The directory that output files must stay within.
+        fallback: Value to use when *task_id* is empty after sanitization.
+
+    Returns:
+        A safe filename component (without extension).
+
+    Raises:
+        ValueError: If the resolved path escapes *output_dir*.
+    """
+    name = Path(task_id).name
+    safe = fallback if (not name or name in (".", "..")) else name
+    resolved = os.path.realpath(Path(output_dir) / f"{safe}.txt")
+    real_output_dir = os.path.realpath(output_dir)
+    if not resolved.startswith(real_output_dir + os.sep):
+        msg = f"task id {task_id!r} resolves outside output directory"
+        raise ValueError(msg)
+    return safe
+
+
+class SwarmTaskSpec(TypedDict):
+    """A single task entry in a swarm config.
+
+    Only `description`, `subagent_type`, and `id` are used by the swarm implementation.
+    Additional keys may be present but are ignored.
+
+    Fields:
+        description: The instruction passed to the subagent as a single `HumanMessage`.
+        subagent_type: The subagent name to dispatch to.
+        id: Optional identifier used as the output filename. If omitted, defaults to the
+            task index. This value is stringified when writing `<output_dir>/<id>.txt`.
+    """
+
+    description: str
+    subagent_type: str
+    id: NotRequired[str | int]
+
+
+class ParsedSwarmConfig(TypedDict):
+    """Result of parsing a swarm config file."""
+
+    tasks: list[SwarmTaskSpec] | None
+    error: str | None
+
+
+async def _load_swarm_tasks(
+    resolved_backend: BackendProtocol,
+    config_file: str,
+) -> ParsedSwarmConfig:
+    responses = await resolved_backend.adownload_files([config_file])
+    response = responses[0]
+    if response.error:
+        return {"tasks": None, "error": f"Error reading config file '{config_file}': {response.error}"}
+
+    content = response.content
+    if not isinstance(content, bytes):
+        return {"tasks": None, "error": f"Content was expected to be bytes. Got {type(content)}."}
+
+    try:
+        config_data = json.loads(content.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        return {"tasks": None, "error": f"Error reading config file '{config_file}': {e}"}
+
+    raw_tasks = config_data.get("tasks", [])
+    if not raw_tasks:
+        return {"tasks": None, "error": f"Error file '{config_file}' contains no tasks!"}
+
+    adapter = TypeAdapter(list[SwarmTaskSpec])
+    try:
+        tasks = adapter.validate_python(raw_tasks)
+    except ValidationError as e:
+        return {"tasks": None, "error": json.dumps(e.errors(), indent=2)}
+
+    return {"tasks": tasks, "error": None}
+
+
 class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for providing subagents to an agent via a `task` tool.
 
@@ -455,6 +620,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        enable_swarm: bool = False,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -468,6 +634,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         task_tool = _build_task_tool(subagent_specs, task_description)
 
+        # Use task-only prompt when swarm is disabled
+        if not enable_swarm and system_prompt == TASK_SYSTEM_PROMPT:
+            system_prompt = _TASK_ONLY_SYSTEM_PROMPT
+
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
             agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagent_specs)
@@ -475,7 +645,140 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
 
-        self.tools = [task_tool]
+        tools = [task_tool]
+        if enable_swarm and backend is not None:
+            tools.append(self._build_swarm_tool(subagent_specs))
+        self.tools = tools
+
+    def _build_swarm_tool(self, subagents: list[_SubagentSpec]) -> BaseTool:  # noqa: C901, PLR0915
+        """Create the `swarm` tool.
+
+        The `swarm` tool reads a JSON config file containing a list of task specs and
+        runs those tasks in parallel across subagents.
+
+        Each task result is written to `<output_dir>/<task_id>.txt` via the configured
+        backend.
+
+        Args:
+            subagents: The available subagents that `swarm` may dispatch to.
+
+        Returns:
+            A structured tool named `swarm`.
+        """
+        backend = self._backend
+        if backend is None:
+            msg = "backend is required"
+            raise ValueError(msg)
+
+        subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+        subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+        description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+
+        async def _run_swarm_tasks(
+            subagents: dict[str, Runnable],
+            parent_state: dict[str, Any],
+            tasks: list[SwarmTaskSpec],
+        ) -> list[tuple[str, str] | BaseException]:
+            """Run tasks."""
+
+            async def run_task(task_spec: SwarmTaskSpec, idx: int) -> tuple[str, str]:
+                task_id = str(task_spec.get("id", idx))
+                desc = task_spec["description"]
+                subagent_type = task_spec["subagent_type"]
+
+                subagent = subagents.get(subagent_type)
+                if subagent is None:
+                    allowed = ", ".join(subagents.keys())
+                    return task_id, f"Error: unknown subagent_type '{subagent_type}'. Allowed: {allowed}"
+
+                subagent_state = dict(parent_state)
+                subagent_state["messages"] = [HumanMessage(content=desc)]
+
+                result = await subagent.ainvoke(subagent_state)
+                messages = result.get("messages", [])
+                if messages:
+                    text = messages[-1].text or ""
+                    return task_id, text.rstrip()
+                return task_id, ""
+
+            coros = [run_task(task_spec, idx) for idx, task_spec in enumerate(tasks)]
+            return await asyncio.gather(*coros, return_exceptions=True)
+
+        async def aswarm(  # noqa: C901, PLR0912
+            config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
+            output_dir: Annotated[
+                str,
+                "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
+            ],
+            runtime: ToolRuntime,
+        ) -> ToolMessage:
+            """Run swarm tasks."""
+            resolved_backend = backend(runtime) if callable(backend) else backend  # ty: ignore[call-top-callable]
+
+            parsed = await _load_swarm_tasks(resolved_backend, config_file)
+            if parsed["error"] is not None:
+                return ToolMessage(content=parsed["error"], status="error", tool_call_id=runtime.tool_call_id)
+            tasks = parsed["tasks"]
+            if tasks is None:
+                msg = "parsed swarm tasks unexpectedly missing"
+                raise AssertionError(msg)
+
+            parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+
+            results = await _run_swarm_tasks(subagent_graphs, parent_state, tasks)
+
+            interrupts: list[Interrupt] = []
+            interrupt_excs: list[GraphInterrupt] = []
+
+            for item in results:
+                if isinstance(item, GraphInterrupt):
+                    interrupt_excs.append(item)
+                    if not item.args:
+                        continue
+                    seq = item.args[0]
+                    if isinstance(seq, tuple | list) and all(isinstance(x, Interrupt) for x in seq):
+                        interrupts.extend(seq)
+
+            if interrupt_excs:
+                if interrupts:
+                    raise GraphInterrupt(interrupts)
+                raise interrupt_excs[0]
+
+            output_dir_clean = output_dir.rstrip("/")
+
+            outputs: list[tuple[str, bytes]] = []
+            summaries: list[str] = []
+            for item in results:
+                if isinstance(item, BaseException):
+                    summaries.append(f"Error: {item}")
+                    continue
+                task_id, result_text = item
+                task_id = _sanitize_task_id(task_id, output_dir_clean, fallback=str(results.index(item)))
+                output_path = f"{output_dir_clean}/{task_id}.txt"
+                outputs.append((output_path, result_text.encode("utf-8")))
+
+            upload_responses = await resolved_backend.aupload_files(outputs)
+            for upload in upload_responses:
+                if upload.error is not None:
+                    summaries.append(f"✗ {upload.path}: error writing result: {upload.error}")
+                else:
+                    result_len = next((len(b) for p, b in outputs if p == upload.path), 0)
+                    summaries.append(f"✓ {upload.path}: wrote {result_len} chars")
+
+            completed = sum(1 for s in summaries if s.startswith("✓"))
+            summary = f"{completed}/{len(tasks)} tasks completed. Results in {output_dir_clean}/\n"
+            summary += "\n".join(summaries)
+            return ToolMessage(
+                content=summary,
+                status="success",
+                tool_call_id=runtime.tool_call_id,
+            )
+
+        return StructuredTool.from_function(
+            name="swarm",
+            coroutine=aswarm,
+            description=description,
+        )
 
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.

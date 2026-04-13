@@ -35,6 +35,7 @@ from tests.evals.tau2_airline.domain import (
 from tests.evals.tau2_airline.evaluation import evaluate_task, score_tau2_episode
 from tests.evals.tau2_airline.runner import run_multi_turn
 from tests.evals.tau2_airline.user_sim import UserSimulator
+from tests.evals.utils import TestRunMetrics, report_test_run_metrics
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -160,17 +161,35 @@ def test_tau2_airline(model: BaseChatModel, task_id: str, todo_mode: TodoMode) -
     t.log_feedback(key="db_score", value=reward.db_score)
     t.log_feedback(key="communicate_score", value=reward.communicate_score)
     t.log_feedback(key="turn_count", value=conversation.turn_count)
+    t.log_feedback(key="agent_steps", value=conversation.total_agent_steps)
+    t.log_feedback(key="tool_call_requests", value=conversation.total_tool_calls)
+    t.log_feedback(key="input_tokens", value=conversation.total_input_tokens)
+    t.log_feedback(key="output_tokens", value=conversation.total_output_tokens)
     for key, value in episode_score.expected_metrics.items():
         t.log_feedback(key=key, value=value)
 
+    report_test_run_metrics(
+        TestRunMetrics(
+            turns=conversation.turn_count,
+            agent_steps=conversation.total_agent_steps,
+            tool_calls=conversation.total_tool_calls,
+            input_tokens=conversation.total_input_tokens,
+            output_tokens=conversation.total_output_tokens,
+        )
+    )
+
     logger.info(
-        "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls",
+        "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls, "
+        "%d steps, %d in_tok, %d out_tok",
         task_id,
         episode_score.success,
         ",".join(episode_score.success_reasons) if episode_score.success_reasons else "none",
         reward.details,
         conversation.turn_count,
         len(tool_log),
+        conversation.total_agent_steps,
+        conversation.total_input_tokens,
+        conversation.total_output_tokens,
     )
 
     assert episode_score.success, (

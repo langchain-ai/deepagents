@@ -461,6 +461,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, os
+          from datetime import datetime, timezone
           from pathlib import Path
 
           job_dir = os.environ.get("HARBOR_JOB_DIR", "")
@@ -471,21 +472,56 @@ jobs:
           experiment_url = os.environ.get("LANGSMITH_EXPERIMENT_URL", "")
 
           rewards = {}
+          metrics = {}
           if job_dir and Path(job_dir).exists():
               for trial_dir in sorted(Path(job_dir).iterdir()):
                   result_path = trial_dir / "result.json"
                   if not result_path.exists():
                       continue
                   result = json.loads(result_path.read_text())
+                  task_name = trial_dir.name
+
                   vr = result.get("verifier_result")
                   if isinstance(vr, dict):
                       r = vr.get("rewards", {})
                       if isinstance(r, dict) and "reward" in r:
-                          rewards[trial_dir.name] = r["reward"]
+                          rewards[task_name] = r["reward"]
                       else:
-                          rewards[trial_dir.name] = 0.0
+                          rewards[task_name] = 0.0
                   else:
-                      rewards[trial_dir.name] = 0.0
+                      rewards[task_name] = 0.0
+
+                  task_metrics = {}
+
+                  started = result.get("started_at", "")
+                  finished = result.get("finished_at", "")
+                  if started and finished:
+                      try:
+                          t0 = datetime.fromisoformat(started)
+                          t1 = datetime.fromisoformat(finished)
+                          task_metrics["duration_s"] = round((t1 - t0).total_seconds(), 1)
+                      except (ValueError, TypeError):
+                          pass
+
+                  traj_path = trial_dir / "trajectory.json"
+                  if traj_path.exists():
+                      traj = json.loads(traj_path.read_text())
+                      fm = traj.get("final_metrics") or {}
+                      task_metrics["input_tokens"] = fm.get("total_prompt_tokens") or 0
+                      task_metrics["output_tokens"] = fm.get("total_completion_tokens") or 0
+                      task_metrics["agent_steps"] = fm.get("total_steps") or 0
+                      tool_calls = 0
+                      for step in traj.get("steps", []):
+                          tcs = step.get("tool_calls")
+                          if tcs:
+                              tool_calls += len(tcs)
+                      task_metrics["tool_calls"] = tool_calls
+
+                  task_metrics["total_tokens"] = (
+                      task_metrics.get("input_tokens", 0)
+                      + task_metrics.get("output_tokens", 0)
+                  )
+                  metrics[task_name] = task_metrics
 
           summary = {
               "model": model,
@@ -494,6 +530,7 @@ jobs:
               "experiment_name": experiment_name,
               "experiment_url": experiment_url,
               "rewards": rewards,
+              "metrics": metrics,
           }
           Path("job_summary.json").write_text(json.dumps(summary, indent=2))
           PY

@@ -821,6 +821,43 @@ _on_efficiency_result: Callable[[EfficiencyResult], None] | None = None
 """Callback set by the reporter plugin to collect per-test efficiency data."""
 
 
+@dataclass
+class TestRunMetrics:
+    """Per-test run metrics reported by eval tests for session-level aggregation.
+
+    Tests call `report_test_run_metrics` to push metrics into the reporter.
+    The reporter consumes them in ``pytest_runtest_logreport`` and associates
+    them with the test's node ID and variant.
+    """
+
+    turns: int = 0
+    agent_steps: int = 0
+    tool_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+_pending_test_run_metrics: TestRunMetrics | None = None
+"""Single-slot buffer for the most recently reported test metrics.
+
+Set by ``report_test_run_metrics``; consumed (and cleared) by the reporter
+plugin in ``pytest_runtest_logreport``.
+"""
+
+
+def report_test_run_metrics(metrics: TestRunMetrics) -> None:
+    """Register per-test run metrics for the currently executing test.
+
+    Must be called at most once per test, before the test returns.
+    The reporter plugin drains this in ``pytest_runtest_logreport``.
+
+    Args:
+        metrics: The metrics to register.
+    """
+    global _pending_test_run_metrics  # noqa: PLW0603 — simple single-slot IPC with reporter
+    _pending_test_run_metrics = metrics
+
+
 def _log_efficiency(
     trajectory: AgentTrajectory,
     scorer: TrajectoryScorer,

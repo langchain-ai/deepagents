@@ -29,19 +29,41 @@ def _load_summaries(results_dir: Path) -> list[dict]:
     return summaries
 
 
+def _fmt_tokens(n: int) -> str:
+    """Format a token count with thousands separators."""
+    return f"{n:,}"
+
+
 def _render_task_table(summaries: list[dict]) -> str:
-    """Render per-task reward table."""
+    """Render per-task reward table with efficiency metrics."""
     lines = ["## Per-task results", ""]
-    lines.append("| Model | Todo mode | Trial | Task | Reward |")
-    lines.append("|-------|-----------|-------|------|--------|")
+    lines.append(
+        "| Model | Todo mode | Trial | Task | Reward "
+        "| Steps | Tool calls | Input tok | Output tok | Total tok | Duration (s) |"
+    )
+    lines.append(
+        "|-------|-----------|-------|------|--------"
+        "|------:|----------:|---------:|----------:|---------:|------------:|"
+    )
 
     for s in sorted(summaries, key=lambda x: (x["model"], x["todo_mode"], x["trial"])):
         model = s["model"]
         mode = s["todo_mode"]
         trial = s["trial"]
+        all_metrics = s.get("metrics", {})
         for task, reward in sorted(s["rewards"].items()):
             r = f"{reward:.1f}" if isinstance(reward, float) else str(reward)
-            lines.append(f"| {model} | {mode} | {trial} | {task} | {r} |")
+            m = all_metrics.get(task, {})
+            steps = m.get("agent_steps", "—")
+            tool_calls = m.get("tool_calls", "—")
+            in_tok = _fmt_tokens(m["input_tokens"]) if "input_tokens" in m else "—"
+            out_tok = _fmt_tokens(m["output_tokens"]) if "output_tokens" in m else "—"
+            total_tok = _fmt_tokens(m["total_tokens"]) if "total_tokens" in m else "—"
+            dur = f"{m['duration_s']:.1f}" if "duration_s" in m else "—"
+            lines.append(
+                f"| {model} | {mode} | {trial} | {task} | {r} "
+                f"| {steps} | {tool_calls} | {in_tok} | {out_tok} | {total_tok} | {dur} |"
+            )
 
     return "\n".join(lines)
 
@@ -85,6 +107,57 @@ def _render_aggregate_table(summaries: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_METRIC_KEYS = (
+    "agent_steps",
+    "tool_calls",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "duration_s",
+)
+
+
+def _render_efficiency_table(summaries: list[dict]) -> str:
+    """Render aggregate efficiency metrics (summed across tasks) per model and todo_mode."""
+    totals: dict[tuple[str, str], dict[str, float]] = defaultdict(
+        lambda: {k: 0.0 for k in _METRIC_KEYS}
+    )
+    task_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    for s in summaries:
+        key = (s["model"], s["todo_mode"])
+        for m in s.get("metrics", {}).values():
+            task_counts[key] += 1
+            for k in _METRIC_KEYS:
+                totals[key][k] += m.get(k, 0) or 0
+
+    if not totals:
+        return ""
+
+    lines = ["## Efficiency metrics (totals across tasks)", ""]
+    lines.append(
+        "| Model | Todo mode | Tasks "
+        "| Steps | Tool calls | Input tok | Output tok | Total tok | Duration (s) |"
+    )
+    lines.append(
+        "|-------|-----------|------:"
+        "|------:|----------:|---------:|----------:|---------:|------------:|"
+    )
+
+    for key in sorted(totals):
+        model, mode = key
+        t = totals[key]
+        n = task_counts[key]
+        lines.append(
+            f"| {model} | {mode} | {n} "
+            f"| {int(t['agent_steps'])} | {int(t['tool_calls'])} "
+            f"| {_fmt_tokens(int(t['input_tokens']))} | {_fmt_tokens(int(t['output_tokens']))} "
+            f"| {_fmt_tokens(int(t['total_tokens']))} | {t['duration_s']:.1f} |"
+        )
+
+    return "\n".join(lines)
+
+
 def _render_experiment_links(summaries: list[dict]) -> str:
     """Render LangSmith experiment links."""
     seen: set[str] = set()
@@ -120,11 +193,13 @@ def main() -> int:
         print("# Todo experiment summary\n\nNo results found.")
         return 0
 
+    efficiency = _render_efficiency_table(summaries)
     parts = [
         "# Todo experiment summary",
         "",
         _render_aggregate_table(summaries),
         "",
+        *([efficiency, ""] if efficiency else []),
         _render_task_table(summaries),
         "",
         _render_experiment_links(summaries),

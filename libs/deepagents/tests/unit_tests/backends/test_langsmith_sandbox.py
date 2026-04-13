@@ -73,6 +73,8 @@ def test_execute_with_zero_timeout() -> None:
 
 def test_write_success() -> None:
     sb, mock_sdk = _make_sandbox()
+    # Preflight: file does not exist
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
 
     result = sb.write("/app/test.txt", "hello world")
 
@@ -81,8 +83,22 @@ def test_write_success() -> None:
     mock_sdk.write.assert_called_once_with("/app/test.txt", b"hello world")
 
 
+def test_write_existing_file_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    # Preflight: file already exists
+    mock_sdk.run.return_value = SimpleNamespace(stdout="Error: File already exists: '/app/test.txt'", stderr="", exit_code=1)
+
+    result = sb.write("/app/test.txt", "content")
+
+    assert result.error is not None
+    assert "already exists" in result.error.lower()
+    mock_sdk.write.assert_not_called()
+
+
 def test_write_error() -> None:
     sb, mock_sdk = _make_sandbox()
+    # Preflight succeeds, but SDK write fails
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
     mock_sdk.write.side_effect = SandboxClientError("permission denied")
 
     result = sb.write("/readonly/test.txt", "content")
@@ -173,3 +189,128 @@ def test_upload_files_partial_success() -> None:
     assert responses[0].error is None
     assert responses[1].error == "permission_denied"
     assert responses[2].error is None
+
+
+# -- read() tests -----------------------------------------------------------
+
+
+def test_write_preflight_empty_output_nonzero_exit() -> None:
+    sb, mock_sdk = _make_sandbox()
+    # Preflight fails with empty output (e.g., sandbox crash)
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=1)
+
+    result = sb.write("/app/test.txt", "content")
+
+    assert result.error == "Failed to write file '/app/test.txt'"
+    mock_sdk.write.assert_not_called()
+
+
+def test_read_text_file() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+    assert result.file_data["encoding"] == "utf-8"
+
+
+def test_read_with_pagination() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
+
+    result = sb.read("/app/test.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2"
+
+
+def test_read_trailing_newline_does_not_add_extra_line() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\n"
+
+    result = sb.read("/app/test.txt", offset=2, limit=10)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line2"
+
+
+def test_read_sandbox_client_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = SandboxClientError("connection timeout")
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is not None
+    assert "connection timeout" in result.error
+
+
+def test_read_file_not_found() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = ResourceNotFoundError("not found", resource_type="file")
+
+    result = sb.read("/missing.txt")
+
+    assert result.error is not None
+    assert "file_not_found" in result.error
+
+
+def test_read_empty_file() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b""
+
+    result = sb.read("/app/empty.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_read_binary_file() -> None:
+    import base64  # noqa: PLC0415 — local to avoid top-level import for one test
+
+    sb, mock_sdk = _make_sandbox()
+    raw = b"\x89PNG\r\n\x1a\n"
+    mock_sdk.read.return_value = raw
+
+    result = sb.read("/app/image.png")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert result.file_data["content"] == base64.b64encode(raw).decode("ascii")
+
+
+def test_read_large_binary_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * (500 * 1024)
+
+    result = sb.read("/app/large.png")
+
+    assert result.error is not None
+    assert "maximum preview size" in result.error
+
+
+def test_read_text_extension_with_invalid_utf8_falls_back_to_binary() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\xff\xfe invalid utf8 \x80\x81"
+
+    result = sb.read("/app/corrupted.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+
+
+def test_read_offset_exceeds_length() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"only one line"
+
+    result = sb.read("/app/test.txt", offset=5)
+
+    assert result.error is not None
+    assert "offset" in result.error.lower()

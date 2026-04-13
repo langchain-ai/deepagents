@@ -547,7 +547,11 @@ def get_metric_value(service_id: int, metric_name: str) -> str:
         service_id: The service ID.
         metric_name: The metric name.
     """
-    return _get_metric_snapshot(service_id, metric_name)["value"]
+    metric = _get_metric_snapshot(service_id, metric_name)
+    if metric is None:
+        msg = f"Metric {metric_name!r} is not available for service {service_id}"
+        raise ToolException(msg)
+    return metric["value"]
 
 
 @tool

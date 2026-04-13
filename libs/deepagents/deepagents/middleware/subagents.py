@@ -443,42 +443,34 @@ def _build_task_tool(  # noqa: C901
     )
 
 
-SWARM_TOOL_DESCRIPTION = """Launch many subagents in parallel from a JSON config file.
-
-Use this when you need to fan out the same (or similar) work across many chunks of data — for example,
-processing sections of a large file, classifying batches of entries, or querying multiple documents.
+SWARM_TOOL_DESCRIPTION = """Execute a batch of independent tasks in parallel across multiple subagents.
 
 ## Workflow
-1. Write a Python script (via `execute`) that reads your data, chunks it, and generates a JSON config file.
-2. Call `swarm(config_file="/path/to/config.json", output_dir="/path/to/results/")`.
-3. All tasks run in parallel. Each result is written to `<output_dir>/<task_id>.txt`.
-4. Read the result files to aggregate.
 
-## Config file format
+1. Write a generation script via `execute` that produces a tasks.jsonl file with one JSON object per line:
+   ```json
+   {{"id": "chunk_0", "description": "Read lines 1-100 of data.txt. Process each item. Return JSON results.", "subagent_type": "general-purpose"}}
+   {{"id": "chunk_1", "description": "Read lines 101-200 of data.txt. Process each item. Return JSON results.", "subagent_type": "general-purpose"}}
+   ```
+2. Call `swarm` with the path to the tasks.jsonl file.
+3. The tool returns a JSON summary with `total`, `completed`, `failed`, and `results_dir`.
+   Results are written to `<results_dir>/results.jsonl` — each line is the original task enriched with `status`, `result`, and/or `error` fields.
+4. Write an aggregation script via `execute` that reads `<results_dir>/results.jsonl` and combines the outputs.
+
+## tasks.jsonl fields
+
+- "id" (string, required): unique task identifier
+- "description" (string, required): complete, self-contained prompt — the subagent receives NOTHING else
+- "subagent_type" (string, optional): which subagent to use (default: "general-purpose")
+
+## After execution
+
+The tool returns:
 ```json
-{{
-  "tasks": [
-    {{
-      "id": "chunk_0",
-      "description": "Read /tmp/context.txt lines 0-100. Classify each entry. Return JSON counts.",
-      "subagent_type": "general-purpose"
-    }},
-    {{
-      "id": "chunk_1",
-      "description": "Read /tmp/context.txt lines 100-200. Classify each entry. Return JSON counts.",
-      "subagent_type": "general-purpose"
-    }}
-  ]
-}}
+{{"total": 20, "completed": 19, "failed": 1, "results_dir": "swarm_runs/<uuid>"}}
 ```
 
-Fields:
-- `id` (optional): Identifier for the task, used as the output filename. Defaults to the task index.
-- `description` (required): The task description, same as what you'd pass to `task(description=...)`.
-- `subagent_type` (required): Which subagent to use, same as `task(subagent_type=...)`.
-
-Available subagent types:
-{available_agents}
+Available subagent types: {available_agents}
 """
 
 
@@ -510,57 +502,72 @@ def _sanitize_task_id(task_id: str, output_dir: str, fallback: str) -> str:
 
 
 class SwarmTaskSpec(TypedDict):
-    """A single task entry in a swarm config.
-
-    Only `description`, `subagent_type`, and `id` are used by the swarm implementation.
-    Additional keys may be present but are ignored.
+    """A single task line in a ``tasks.jsonl`` file.
 
     Fields:
-        description: The instruction passed to the subagent as a single `HumanMessage`.
-        subagent_type: The subagent name to dispatch to.
-        id: Optional identifier used as the output filename. If omitted, defaults to the
-            task index. This value is stringified when writing `<output_dir>/<id>.txt`.
+        id: Unique task identifier (must be unique within the task list).
+        description: Complete, self-contained prompt for the subagent.
+        subagent_type: Which subagent to dispatch to. Defaults to
+            ``"general-purpose"`` when omitted.
     """
 
+    id: str
     description: str
-    subagent_type: str
-    id: NotRequired[str | int]
+    subagent_type: NotRequired[str]
 
 
 class ParsedSwarmConfig(TypedDict):
-    """Result of parsing a swarm config file."""
+    """Result of parsing a tasks JSONL file."""
 
     tasks: list[SwarmTaskSpec] | None
     error: str | None
 
 
-async def _load_swarm_tasks(
-    resolved_backend: BackendProtocol,
-    config_file: str,
-) -> ParsedSwarmConfig:
-    responses = await resolved_backend.adownload_files([config_file])
-    response = responses[0]
-    if response.error:
-        return {"tasks": None, "error": f"Error reading config file '{config_file}': {response.error}"}
+def _parse_tasks_jsonl(content: str) -> ParsedSwarmConfig:
+    """Parse and validate a ``tasks.jsonl`` string into task specs.
 
-    content = response.content
-    if not isinstance(content, bytes):
-        return {"tasks": None, "error": f"Content was expected to be bytes. Got {type(content)}."}
+    Validates that each line is valid JSON with required fields, that all
+    task IDs are unique, and that at least one task is present.
 
-    try:
-        config_data = json.loads(content.decode("utf-8"))
-    except UnicodeDecodeError as e:
-        return {"tasks": None, "error": f"Error reading config file '{config_file}': {e}"}
+    Args:
+        content: Raw JSONL string (one JSON object per line).
 
-    raw_tasks = config_data.get("tasks", [])
-    if not raw_tasks:
-        return {"tasks": None, "error": f"Error file '{config_file}' contains no tasks!"}
+    Returns:
+        Parsed config with task list or error message.
+    """
+    lines = [line for line in content.split("\n") if line.strip()]
+    if not lines:
+        return {"tasks": None, "error": "tasks.jsonl is empty. The generation script must write at least one task."}
 
-    adapter = TypeAdapter(list[SwarmTaskSpec])
-    try:
-        tasks = adapter.validate_python(raw_tasks)
-    except ValidationError as e:
-        return {"tasks": None, "error": json.dumps(e.errors(), indent=2)}
+    tasks: list[SwarmTaskSpec] = []
+    seen_ids: set[str] = set()
+    errors: list[str] = []
+
+    adapter = TypeAdapter(SwarmTaskSpec)
+    for idx, line in enumerate(lines):
+        line_number = idx + 1
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            errors.append(f"Line {line_number}: invalid JSON")
+            continue
+
+        try:
+            task = adapter.validate_python(parsed)
+        except ValidationError as e:
+            messages = [issue["msg"] for issue in e.errors()]
+            errors.append(f"Line {line_number}: {', '.join(messages)}")
+            continue
+
+        if task["id"] in seen_ids:
+            errors.append(f"Line {line_number}: duplicate task id \"{task['id']}\"")
+            continue
+
+        seen_ids.add(task["id"])
+        tasks.append(task)
+
+    if errors:
+        return {"tasks": None, "error": "tasks.jsonl validation failed:\n" + "\n".join(errors)}
 
     return {"tasks": tasks, "error": None}
 
@@ -682,9 +689,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             """Run tasks."""
 
             async def run_task(task_spec: SwarmTaskSpec, idx: int) -> tuple[str, str]:
-                task_id = str(task_spec.get("id", idx))
+                task_id = task_spec["id"]
                 desc = task_spec["description"]
-                subagent_type = task_spec["subagent_type"]
+                subagent_type = task_spec.get("subagent_type", "general-purpose")
 
                 subagent = subagents.get(subagent_type)
                 if subagent is None:
@@ -705,7 +712,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return await asyncio.gather(*coros, return_exceptions=True)
 
         async def aswarm(  # noqa: C901, PLR0912
-            config_file: Annotated[str, "Absolute path to the JSON config file containing the task definitions."],
+            config_file: Annotated[str, "Path to the tasks.jsonl file produced by the generation script."],
             output_dir: Annotated[
                 str,
                 "Absolute path to the directory where result files will be written. Each task result is written to <output_dir>/<task_id>.txt.",
@@ -715,7 +722,23 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             """Run swarm tasks."""
             resolved_backend = backend(runtime) if callable(backend) else backend  # ty: ignore[call-top-callable]
 
-            parsed = await _load_swarm_tasks(resolved_backend, config_file)
+            responses = await resolved_backend.adownload_files([config_file])
+            response = responses[0]
+            if response.error:
+                return ToolMessage(
+                    content=f"Failed to read tasks file at \"{config_file}\". "
+                    f"Ensure the generation script writes the file to this exact path and try again.",
+                    status="error",
+                    tool_call_id=runtime.tool_call_id,
+                )
+            file_content = response.content
+            if not isinstance(file_content, bytes):
+                return ToolMessage(
+                    content=f"Content was expected to be bytes. Got {type(file_content)}.",
+                    status="error",
+                    tool_call_id=runtime.tool_call_id,
+                )
+            parsed = _parse_tasks_jsonl(file_content.decode("utf-8"))
             if parsed["error"] is not None:
                 return ToolMessage(content=parsed["error"], status="error", tool_call_id=runtime.tool_call_id)
             tasks = parsed["tasks"]

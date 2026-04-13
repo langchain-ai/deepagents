@@ -49,15 +49,13 @@ class TestSubAgents:
 
     async def test_swarm_tool_writes_results_via_backend(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "swarm_config.json")
+        config_path = str(tmp_path / "tasks.jsonl")
         output_dir = str(tmp_path / "results")
-        config = {
-            "tasks": [
-                {"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"},
-                {"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"},
-            ]
-        }
-        backend.upload_files([(config_path, json.dumps(config).encode("utf-8"))])
+        tasks_jsonl = (
+            json.dumps({"id": "t0", "description": "Say hi", "subagent_type": "general-purpose"}) + "\n"
+            + json.dumps({"id": "t1", "description": "Say bye", "subagent_type": "general-purpose"}) + "\n"
+        )
+        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
 
         leader_model = GenericFakeChatModel(
             messages=iter(
@@ -108,10 +106,10 @@ class TestSubAgents:
 
     async def test_swarm_tool_surfaces_validation_error_as_tool_message(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        config_path = str(tmp_path / "swarm_config.json")
+        config_path = str(tmp_path / "tasks.jsonl")
         output_dir = str(tmp_path / "results")
-        config = {"tasks": [{"id": "t0", "description": "Say hi"}]}
-        backend.upload_files([(config_path, json.dumps(config).encode("utf-8"))])
+        tasks_jsonl = json.dumps({"description": "Say hi"}) + "\n"
+        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
 
         leader_model = GenericFakeChatModel(
             messages=iter(
@@ -146,9 +144,9 @@ class TestSubAgents:
         )
 
         assert [m.type for m in result["messages"]] == ["human", "ai", "tool", "ai"]
-        tool = result["messages"][2]
-        assert tool.status == "error"
-        assert json.loads(tool.content)[0]["type"] == "missing"
+        tool_msg = result["messages"][2]
+        assert tool_msg.status == "error"
+        assert "tasks.jsonl validation failed" in tool_msg.content
 
     def test_create_deep_agent_routes_async_subagents_from_subagents_param(self) -> None:
         agent = create_deep_agent(

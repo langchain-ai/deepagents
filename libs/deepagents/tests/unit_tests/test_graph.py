@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -549,3 +550,41 @@ class TestToolExclusionWiring:
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+
+class TestModelNoneDeprecationWarning:
+    """Tests for the deprecation warning when model=None."""
+
+    def test_model_none_emits_deprecation_warning(self) -> None:
+        """Passing model=None should emit a DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            create_deep_agent(model=None)
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
+        assert len(deprecations) == 1
+        msg = str(deprecations[0].message)
+        assert "deprecated" in msg
+        assert "BaseChatModel | str" in msg
+        assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
+        # stacklevel=2 should point at the caller, not inside graph.py
+        assert deprecations[0].filename == __file__
+
+    def test_model_none_default_emits_deprecation_warning(self) -> None:
+        """Calling create_deep_agent() with no model arg should emit a DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            create_deep_agent()
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
+        assert len(deprecations) == 1
+
+    def test_explicit_model_no_deprecation_warning(self) -> None:
+        """Passing an explicit model should not emit a DeprecationWarning."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            create_deep_agent(model=model)
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
+        assert len(deprecations) == 0

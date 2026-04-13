@@ -723,5 +723,76 @@ class TestBulkLoad:
         assert archived[0].id == "pre-0"
 
 
+class TestMessageStoreIndex:
+    """Tests for the _index dict that backs O(1) lookups."""
+
+    def test_index_populated_on_append(self):
+        """Appending a message adds it to _index keyed by ID."""
+        store = MessageStore()
+        msg = MessageData(type=MessageType.USER, content="test", id="idx-1")
+        store.append(msg)
+        assert store._index["idx-1"] is msg
+
+    def test_index_populated_on_bulk_load(self):
+        """bulk_load populates _index for every loaded message."""
+        store = MessageStore()
+        msgs = [
+            MessageData(type=MessageType.USER, content=f"m{i}", id=f"bl-{i}")
+            for i in range(5)
+        ]
+        store.bulk_load(msgs)
+        for i in range(5):
+            assert f"bl-{i}" in store._index
+            assert store._index[f"bl-{i}"] is msgs[i]
+
+    def test_index_cleared_on_clear(self):
+        """clear() empties _index alongside _messages."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="x", id="c-1"))
+        assert len(store._index) == 1
+        store.clear()
+        assert len(store._index) == 0
+
+    def test_index_and_list_share_same_objects(self):
+        """_index values are the same object references as _messages entries."""
+        store = MessageStore()
+        msg = MessageData(type=MessageType.USER, content="test", id="shared-1")
+        store.append(msg)
+        assert store._index["shared-1"] is store._messages[0]
+
+    def test_update_via_index_mutates_list_entry(self):
+        """update_message via _index mutates the same object in _messages."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="old", id="mut-1"))
+        store.update_message("mut-1", content="new")
+        assert store._messages[0].content == "new"
+
+    def test_duplicate_id_logs_warning(self, caplog):
+        """Appending a message with a duplicate ID logs a warning."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="a", id="dup-1"))
+        with caplog.at_level("WARNING"):
+            store.append(MessageData(type=MessageType.USER, content="b", id="dup-1"))
+        assert "Duplicate message ID" in caplog.text
+
+    def test_bulk_load_duplicate_id_logs_warning(self, caplog):
+        """bulk_load with a pre-existing ID logs a warning."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="a", id="dup-2"))
+        with caplog.at_level("WARNING"):
+            store.bulk_load(
+                [MessageData(type=MessageType.USER, content="b", id="dup-2")]
+            )
+        assert "Duplicate message ID" in caplog.text
+
+    def test_update_unknown_id_logs_warning(self, caplog):
+        """update_message for a missing ID logs a warning and returns False."""
+        store = MessageStore()
+        with caplog.at_level("WARNING"):
+            result = store.update_message("ghost", content="nope")
+        assert result is False
+        assert "update_message called for unknown ID" in caplog.text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -295,7 +295,7 @@ See `.github/RELEASING.md` for the full workflow (version bumping, pre-releases,
 
 ### PR labeling and linting
 
-**Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format and allowed scopes on PR titles
+**Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
 
 **Auto-labeling:**
 

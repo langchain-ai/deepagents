@@ -2,14 +2,14 @@
 #
 # FORMAT (Conventional Commits 1.0.0):
 #
-#   <type>[optional scope]: <description>
+#   <type>(<scope>): <description>
 #   [optional body]
 #   [optional footer(s)]
 #
 # Examples:
 #     feat(sdk): add multi‐agent support
 #     fix(cli): resolve flag parsing error
-#     docs: update API usage examples
+#     docs(sdk): update API usage examples
 #
 # Allowed Types:
 #   * feat       — a new feature (MINOR)
@@ -26,7 +26,7 @@
 #   * release    — prepare a new release
 #   * hotfix     — urgent fix that won't trigger a release
 #
-# Allowed Scope(s) (optional):
+# Allowed Scope(s) (required):
 #   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deps, evals,
 #   examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl, runloop, sdk
 #
@@ -34,10 +34,10 @@
 #
 # Rules:
 #   1. The 'Type' must start with a lowercase letter.
-#   2. Breaking changes: append "!" after type/scope (e.g., feat!: drop x support)
+#   2. Breaking changes: append "!" after type/scope (e.g., feat(sdk)!: drop x support)
 #   3. When releasing (updating the pyproject.toml and uv.lock), the commit message
 #      should be: `release(scope): x.y.z` (e.g., `release(deepagents): 1.2.0` with no
-#      body, footer, or preceeding/proceeding text).
+#      body, footer, or preceding/following text).
 #
 # Enforces Conventional Commits format for pull request titles to maintain a clear and
 # machine-readable change history.
@@ -104,7 +104,7 @@ jobs:
             repl
             runloop
             sdk
-          requireScope: false
+          requireScope: true
           disallowScopes: |
             release
             [A-Z]+

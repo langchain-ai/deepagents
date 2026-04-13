@@ -1,3 +1,4 @@
+import unicodedata
 import uuid
 
 import pytest
@@ -14,9 +15,14 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
-    _supports_execution,
+    supports_execution,
 )
 from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
+
+
+def _to_ascii(text: str) -> str:
+    """Normalize unicode to ASCII (e.g. 'pokémon' → 'pokemon')."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
 
 def build_composite_state_backend(*, routes):
@@ -36,7 +42,7 @@ class TestFilesystem:
             ],
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
-        assert "pokemon" in response["messages"][1].text.lower()
+        assert "pokemon" in _to_ascii(response["messages"][1].text.lower())
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
         def backend(_rt):
@@ -53,7 +59,7 @@ class TestFilesystem:
             store=InMemoryStore(),
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
-        assert "pizza" in response["messages"][1].text.lower()
+        assert "pizza" in _to_ascii(response["messages"][1].text.lower())
 
     def test_ls_longterm_without_path(self):
         checkpointer = MemorySaver()
@@ -969,7 +975,7 @@ class TestFilesystem:
         assert "Execute Tool" in prompt or "execute" in prompt
 
     def test_composite_backend_execution_support_detection(self):
-        """Verify _supports_execution correctly detects CompositeBackend capabilities."""
+        """Verify supports_execution correctly detects CompositeBackend capabilities."""
 
         # Mock sandbox backend
         class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
@@ -981,14 +987,14 @@ class TestFilesystem:
             default=MockSandboxBackend(),
             routes={"/memories/": StoreBackend()},
         )
-        assert _supports_execution(comp_with_sandbox)
+        assert supports_execution(comp_with_sandbox)
 
         # Test CompositeBackend with non-sandbox default
         comp_without_sandbox = CompositeBackend(
             default=StateBackend(),
             routes={"/memories/": StoreBackend()},
         )
-        assert not _supports_execution(comp_without_sandbox)
+        assert not supports_execution(comp_without_sandbox)
 
 
 # Take actions on multiple threads to test longterm memory

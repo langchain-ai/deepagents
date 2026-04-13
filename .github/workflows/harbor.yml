@@ -1,4 +1,31 @@
+# Harbor evaluation workflow for Deep Agents
+#
+# Runs terminal-bench evaluations via Harbor with configurable sandbox
+# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# Models are selected via dropdown or comma-separated override.
+#
+# Required secrets (vary by sandbox + model provider):
+#   LANGSMITH_API_KEY          — experiment tracking (always required)
+#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   ANTHROPIC_API_KEY          — needed for Anthropic models
+#   OPENAI_API_KEY             — needed for OpenAI models
+#   GOOGLE_API_KEY             — needed for Google models
+#   XAI_API_KEY                — needed for xAI/Grok models
+#   GROQ_API_KEY               — needed for Groq-hosted models
+#   OLLAMA_API_KEY             — needed for Ollama Cloud models
+#   OLLAMA_HOST                — set to https://ollama.com for cloud inference
+#   NVIDIA_API_KEY             — needed for NVIDIA NIM models
+#   BASETEN_API_KEY            — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY         — needed for OpenRouter-hosted models
+#   DAYTONA_API_KEY            — needed for Daytona sandbox
+#   MODAL_TOKEN_ID             — needed for Modal sandbox
+#   MODAL_TOKEN_SECRET         — needed for Modal sandbox
+#   RUNLOOP_API_KEY            — needed for Runloop sandbox
+
 name: "📊 Evals - Harbor"
+run-name: >-
+  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }}
 
 on:
   workflow_dispatch:
@@ -330,13 +357,22 @@ jobs:
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+
+          # LangSmith sandboxes are not a built-in harbor environment type,
+          # so we use --environment-import-path instead of --env.
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_flag="--environment-import-path deepagents_harbor.langsmith_environment:LangSmithEnvironment"
+          else
+            env_flag="--env $HARBOR_SANDBOX_ENV"
+          fi
+
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
             --jobs-dir jobs/terminal-bench \
-            --env "$HARBOR_SANDBOX_ENV" \
+            $env_flag \
             --model "$HARBOR_MODEL" \
             --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
 

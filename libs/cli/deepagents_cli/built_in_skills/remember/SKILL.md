@@ -8,8 +8,6 @@ compatibility: designed for deepagents-cli
 
 Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
 
-**Scoping:** If a **User request** is provided below, limit your review strictly to that context. Only extract and persist knowledge directly related to the stated scope — do not infer or capture unrelated information from the broader conversation.
-
 ## Step 1: Identify Best Practices and Key Learnings
 
 Scan the conversation for:

@@ -937,6 +937,39 @@ async def test_multi_question_incident_oncall_and_service_with_most_firing_alert
 
 
 @pytest.mark.langsmith
+async def test_multi_question_three_independent_simple_lookups(model: BaseChatModel) -> None:
+    agent = _create_agent(model)
+    await run_agent_async(
+        agent,
+        model=model,
+        query=(
+            "Answer all three questions: 1) What is the severity of incident 41017? "
+            "2) What is the default branch for repo 9217? "
+            "3) What is the region for environment 442?"
+        ),
+        scorer=TrajectoryScorer()
+        .success(
+            final_text_contains("sev1", case_insensitive=True),
+            final_text_contains("main"),
+            final_text_contains("us-west-2"),
+        )
+        .expect(
+            agent_steps=3,
+            tool_call_requests=3,
+            tool_calls=[
+                tool_call(
+                    name="get_incident_severity", step=1, args_contains={"incident_id": 41017}
+                ),
+                tool_call(name="get_repo_default_branch", step=1, args_contains={"repo_id": 9217}),
+                tool_call(
+                    name="get_environment_region", step=1, args_contains={"environment_id": 442}
+                ),
+            ],
+        ),
+    )
+
+
+@pytest.mark.langsmith
 async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
     agent = _create_agent(model)
     await run_agent_async(

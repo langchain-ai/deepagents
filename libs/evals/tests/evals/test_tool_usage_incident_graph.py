@@ -753,7 +753,7 @@ async def _incident_graph_tool_error_middleware(
     except ToolException as e:
         tool_call = request.tool_call
         return ToolMessage(
-            content=e.msg,
+            content=str(e),
             name=tool_call["name"],
             tool_call_id=tool_call["id"],
             status="error",

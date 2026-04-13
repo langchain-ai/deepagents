@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphInterrupt
-from langgraph.types import Command, Interrupt
+from langgraph.types import Command
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -453,6 +453,9 @@ MAX_SWARM_CONCURRENCY = 50
 DEFAULT_SWARM_MAX_RETRIES = 3
 """Default number of retry attempts per task."""
 
+SWARM_TASK_TIMEOUT_SECONDS = 300
+"""Per-task timeout in seconds."""
+
 SWARM_TOOL_DESCRIPTION = """Execute a batch of independent tasks in parallel across multiple subagents.
 
 ## Workflow
@@ -691,44 +694,74 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
         description = SWARM_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
 
-        async def _run_swarm_tasks(
-            subagents: dict[str, Runnable],
+        async def _run_single_task(
+            task: SwarmTaskSpec,
+            subagent: Runnable,
             parent_state: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Run a single task with a timeout. Returns a result dict."""
+            subagent_state = dict(parent_state)
+            subagent_state["messages"] = [HumanMessage(content=task["description"])]
+
+            result = await asyncio.wait_for(
+                subagent.ainvoke(subagent_state),
+                timeout=SWARM_TASK_TIMEOUT_SECONDS,
+            )
+            messages = result.get("messages", [])
+            text = messages[-1].text.rstrip() if messages and messages[-1].text else ""
+            return {**task, "status": "completed", "result": text}
+
+        async def _execute_swarm(
             tasks: list[SwarmTaskSpec],
-        ) -> list[tuple[str, str] | BaseException]:
-            """Run tasks."""
+            parent_state: dict[str, Any],
+            effective_concurrency: int,
+            effective_max_retries: int,
+        ) -> list[dict[str, Any]]:
+            """Execute swarm with concurrency control and retry loop."""
+            semaphore = asyncio.Semaphore(effective_concurrency)
+            results_map: dict[str, dict[str, Any]] = {}
+            pending = list(tasks)
 
-            async def run_task(task_spec: SwarmTaskSpec) -> tuple[str, str]:
-                task_id = task_spec["id"]
-                desc = task_spec["description"]
-                subagent_type = task_spec.get("subagent_type", "general-purpose")
+            for attempt in range(1, effective_max_retries + 1):
+                if not pending:
+                    break
+                is_last_attempt = attempt == effective_max_retries
 
-                subagent = subagents.get(subagent_type)
-                if subagent is None:
-                    allowed = ", ".join(subagents.keys())
-                    return task_id, f"Error: unknown subagent_type '{subagent_type}'. Allowed: {allowed}"
+                async def run_with_semaphore(task: SwarmTaskSpec) -> dict[str, Any]:
+                    subagent_type = task.get("subagent_type", "general-purpose")
+                    subagent = subagent_graphs[subagent_type]
+                    async with semaphore:
+                        try:
+                            return await _run_single_task(task, subagent, parent_state)
+                        except Exception as exc:  # noqa: BLE001
+                            return {**task, "status": "failed", "error": str(exc)}
 
-                subagent_state = dict(parent_state)
-                subagent_state["messages"] = [HumanMessage(content=desc)]
+                pass_results = await asyncio.gather(
+                    *[run_with_semaphore(t) for t in pending],
+                    return_exceptions=True,
+                )
 
-                result = await subagent.ainvoke(subagent_state)
-                messages = result.get("messages", [])
-                if messages:
-                    text = messages[-1].text or ""
-                    return task_id, text.rstrip()
-                return task_id, ""
+                next_pending: list[SwarmTaskSpec] = []
+                for idx, raw_result in enumerate(pass_results):
+                    if isinstance(raw_result, GraphInterrupt):
+                        raise raw_result
+                    resolved = {**pending[idx], "status": "failed", "error": str(raw_result)} if isinstance(raw_result, BaseException) else raw_result
+                    if resolved["status"] == "completed" or is_last_attempt:
+                        results_map[resolved["id"]] = resolved
+                    else:
+                        next_pending.append(pending[idx])
+                pending = next_pending
 
-            coros = [run_task(task_spec) for task_spec in tasks]
-            return await asyncio.gather(*coros, return_exceptions=True)
+            return [results_map.get(t["id"], {**t, "status": "failed", "error": "not executed"}) for t in tasks]
 
-        async def aswarm(  # noqa: C901, PLR0912
+        async def aswarm(
             tasks_path: Annotated[str, "Path to the tasks.jsonl file produced by the generation script."],
             runtime: ToolRuntime,
-            concurrency: Annotated[  # noqa: ARG001  # wired in follow-up (concurrency control)
+            concurrency: Annotated[
                 int | None,
                 f"Maximum number of subagents running simultaneously. Default: {DEFAULT_SWARM_CONCURRENCY}, max: {MAX_SWARM_CONCURRENCY}.",
             ] = None,
-            max_retries: Annotated[  # noqa: ARG001  # wired in follow-up (retry loop)
+            max_retries: Annotated[
                 int | None,
                 f"Maximum attempts per task (including initial). Default: {DEFAULT_SWARM_MAX_RETRIES}.",
             ] = None,
@@ -762,33 +795,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             parent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
 
-            results = await _run_swarm_tasks(subagent_graphs, parent_state, tasks)
+            effective_concurrency = max(1, min(concurrency or DEFAULT_SWARM_CONCURRENCY, MAX_SWARM_CONCURRENCY))
+            effective_max_retries = max(1, max_retries or DEFAULT_SWARM_MAX_RETRIES)
 
-            interrupts: list[Interrupt] = []
-            interrupt_excs: list[GraphInterrupt] = []
-
-            for item in results:
-                if isinstance(item, GraphInterrupt):
-                    interrupt_excs.append(item)
-                    if not item.args:
-                        continue
-                    seq = item.args[0]
-                    if isinstance(seq, tuple | list) and all(isinstance(x, Interrupt) for x in seq):
-                        interrupts.extend(seq)
-
-            if interrupt_excs:
-                if interrupts:
-                    raise GraphInterrupt(interrupts)
-                raise interrupt_excs[0]
-
-            task_results: list[dict[str, Any]] = []
-            for idx, item in enumerate(results):
-                task_spec = tasks[idx]
-                if isinstance(item, BaseException):
-                    task_results.append({**task_spec, "status": "failed", "error": str(item)})
-                else:
-                    _task_id, result_text = item
-                    task_results.append({**task_spec, "status": "completed", "result": result_text})
+            task_results = await _execute_swarm(tasks, parent_state, effective_concurrency, effective_max_retries)
 
             results_dir = f"swarm_runs/{uuid.uuid4()}"
             results_path = f"{results_dir}/results.jsonl"

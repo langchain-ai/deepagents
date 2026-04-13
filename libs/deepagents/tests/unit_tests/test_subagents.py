@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -24,6 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+import deepagents.middleware.subagents as subagents_mod
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
@@ -158,6 +160,177 @@ class TestSubAgents:
         tool_msg = result["messages"][2]
         assert tool_msg.status == "error"
         assert "tasks.jsonl validation failed" in tool_msg.content
+
+    async def test_swarm_retries_failed_tasks(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        config_path = str(tmp_path / "tasks.jsonl")
+        tasks_jsonl = json.dumps({"id": "t0", "description": "Do work", "subagent_type": "general-purpose"}) + "\n"
+        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+
+        call_count = 0
+
+        async def flaky_subagent(_state: dict) -> dict:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                msg = "transient error"
+                raise RuntimeError(msg)
+            return {"messages": [AIMessage(content="success")]}
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"tasks_path": config_path},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[
+                CompiledSubAgent(name="general-purpose", description="gp", runnable=RunnableLambda(flaky_subagent)),
+            ],
+            enable_swarm=True,
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="go")]},
+            config={"configurable": {"thread_id": "test_swarm_retry"}},
+        )
+
+        tool_msg = result["messages"][2]
+        summary = json.loads(tool_msg.content)
+        assert summary["completed"] == 1
+        assert summary["failed"] == 0
+        assert call_count == 2
+
+    async def test_swarm_partial_failure(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        config_path = str(tmp_path / "tasks.jsonl")
+        tasks_jsonl = (
+            json.dumps({"id": "ok", "description": "succeed", "subagent_type": "general-purpose"})
+            + "\n"
+            + json.dumps({"id": "bad", "description": "fail", "subagent_type": "general-purpose"})
+            + "\n"
+        )
+        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+
+        async def selective_subagent(state: dict) -> dict:
+            desc = state["messages"][0].content
+            if "fail" in desc:
+                msg = "permanent error"
+                raise RuntimeError(msg)
+            return {"messages": [AIMessage(content="ok")]}
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"tasks_path": config_path, "max_retries": 1},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[
+                CompiledSubAgent(name="general-purpose", description="gp", runnable=RunnableLambda(selective_subagent)),
+            ],
+            enable_swarm=True,
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="go")]},
+            config={"configurable": {"thread_id": "test_swarm_partial"}},
+        )
+
+        tool_msg = result["messages"][2]
+        summary = json.loads(tool_msg.content)
+        assert summary["total"] == 2
+        assert summary["completed"] == 1
+        assert summary["failed"] == 1
+
+        results_file = backend.download_files([f"{summary['results_dir']}/results.jsonl"])[0]
+        lines = results_file.content.decode("utf-8").strip().split("\n")
+        results_by_id = {json.loads(line)["id"]: json.loads(line) for line in lines}
+        assert results_by_id["ok"]["status"] == "completed"
+        assert results_by_id["bad"]["status"] == "failed"
+
+    async def test_swarm_task_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(subagents_mod, "SWARM_TASK_TIMEOUT_SECONDS", 0.1)
+
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        config_path = str(tmp_path / "tasks.jsonl")
+        tasks_jsonl = json.dumps({"id": "slow", "description": "hang", "subagent_type": "general-purpose"}) + "\n"
+        backend.upload_files([(config_path, tasks_jsonl.encode("utf-8"))])
+
+        async def slow_subagent(_state: dict) -> dict:
+            await asyncio.sleep(10)
+            return {"messages": [AIMessage(content="done")]}
+
+        leader_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "swarm",
+                                "args": {"tasks_path": config_path, "max_retries": 1},
+                                "id": "call_swarm",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=leader_model,
+            checkpointer=InMemorySaver(),
+            backend=backend,
+            subagents=[
+                CompiledSubAgent(name="general-purpose", description="gp", runnable=RunnableLambda(slow_subagent)),
+            ],
+            enable_swarm=True,
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="go")]},
+            config={"configurable": {"thread_id": "test_swarm_timeout"}},
+        )
+
+        tool_msg = result["messages"][2]
+        summary = json.loads(tool_msg.content)
+        assert summary["failed"] == 1
+        assert summary["completed"] == 0
 
     def test_create_deep_agent_routes_async_subagents_from_subagents_param(self) -> None:
         agent = create_deep_agent(

@@ -888,7 +888,7 @@ async def test_multi_question_incident_oncall_and_incident_environment(
             final_text_contains("us-west-2"),
         )
         .expect(
-            agent_steps=6,
+            agent_steps=5,
             tool_call_requests=8,
             tool_calls=[
                 tool_call(name="get_incident_service", args_contains={"incident_id": 41029}),
@@ -1031,7 +1031,7 @@ async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) 
             final_text_contains("payments-api@2024.08.12.1"),
         )
         .expect(
-            agent_steps=5,
+            agent_steps=4,
             tool_call_requests=5,
             tool_calls=[
                 tool_call(
@@ -1209,7 +1209,7 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
             final_text_contains("resolved", case_insensitive=True),
         )
         .expect(
-            agent_steps=3,
+            agent_steps=2,
             tool_call_requests=3,
             tool_calls=[
                 tool_call(name="get_incident_title", args_contains={"incident_id": 41043}),
@@ -1272,7 +1272,7 @@ async def test_aggregation_active_incident_count_by_team(model: BaseChatModel) -
             final_text_contains("1"),
         )
         .expect(
-            agent_steps=5,
+            agent_steps=6,
             tool_call_requests=13,
             tool_calls=[
                 tool_call(name="list_incident_ids", step=1),
@@ -1368,7 +1368,7 @@ async def test_latest_selection_active_incident_most_recent_deploy(model: BaseCh
             final_text_contains("2024-08-12T09:05:00Z"),
         )
         .expect(
-            agent_steps=7,
+            agent_steps=6,
             tool_call_requests=15,
             tool_calls=[
                 tool_call(name="list_incident_ids", step=1),

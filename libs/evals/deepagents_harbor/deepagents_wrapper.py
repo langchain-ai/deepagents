@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.graph import get_default_model
+from deepagents.middleware.summarization import SummarizationStrategy
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
@@ -80,6 +81,7 @@ class DeepAgentsWrapper(BaseAgent):
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
+        summarization_strategy: SummarizationStrategy = "default",
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -96,6 +98,9 @@ class DeepAgentsWrapper(BaseAgent):
                 (e.g. `"MiniMax"`).
 
                 Requires an `openrouter:` model prefix.
+            summarization_strategy: Context management strategy for summarization.
+                ``"default"`` uses threshold-driven summarization.
+                ``"cat"`` uses proactive compaction with structured summaries.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
@@ -124,6 +129,7 @@ class DeepAgentsWrapper(BaseAgent):
         self._temperature = temperature
         self._verbose = verbose
         self._use_cli_agent = use_cli_agent
+        self._summarization_strategy = summarization_strategy
 
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None
@@ -254,7 +260,10 @@ class DeepAgentsWrapper(BaseAgent):
             system_prompt = await self._get_formatted_system_prompt(backend)
 
             deep_agent = create_deep_agent(
-                model=self._model, backend=backend, system_prompt=system_prompt
+                model=self._model,
+                backend=backend,
+                system_prompt=system_prompt,
+                summarization_strategy=self._summarization_strategy,
             )
 
         # Build metadata with experiment tracking info
@@ -275,6 +284,7 @@ class DeepAgentsWrapper(BaseAgent):
             "harbor_session_id": environment.session_id,
             # Tag to indicate which agent implementation is being used
             "agent_mode": "cli" if self._use_cli_agent else "sdk",
+            "summarization_strategy": self._summarization_strategy,
         }
         metadata.update(configuration)
 
@@ -287,6 +297,7 @@ class DeepAgentsWrapper(BaseAgent):
                 self._model_name,
                 environment.session_id,
                 "cli-agent" if self._use_cli_agent else "sdk-agent",
+                f"summarization:{self._summarization_strategy}",
             ],
             "configurable": {
                 "thread_id": str(uuid.uuid4()),

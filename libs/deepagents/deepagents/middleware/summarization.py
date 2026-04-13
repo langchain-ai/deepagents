@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -95,6 +95,19 @@ class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
 
 
+SummarizationStrategy = Literal["default", "cat"]
+"""Strategy for context management behavior.
+
+- ``"default"``: Original threshold-driven summarization. The ``compact_conversation``
+  tool is framed as a cleanup utility for topic switches.
+- ``"cat"``: Context-as-a-Tool strategy inspired by the CAT paper (arXiv 2025).
+  Reframes ``compact_conversation`` as a proactive reasoning tool the agent should
+  call at natural milestones (subtask completion, strategy switches, error recovery).
+  Uses a structured summary prompt that preserves decision-critical information in
+  categories rather than a narrative blob.
+"""
+
+
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
 You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
@@ -103,6 +116,103 @@ You should use the tool when:
 - The user asks to move on to a completely new task for which previous context is likely irrelevant.
 - You have finished extracting or synthesizing a result and previous working context is no longer needed.
 """
+
+
+CAT_SUMMARIZATION_SYSTEM_PROMPT = """## Context Management Tool `compact_conversation`
+
+You have access to a `compact_conversation` tool that compresses your conversation history \
+into a structured summary, freeing context window space while preserving decision-critical information.
+
+**Proactively call this tool when:**
+- You have completed a subtask or logical phase of work
+- You are switching strategies or approaches
+- You have recovered from errors and are starting fresh
+- Your context is getting large and you are about to start a new phase of work
+- You have gathered information and are ready to act on it (compress the research, keep the conclusions)
+
+**Do not wait** for the context to fill up. Compact early at natural milestones \
+so you always have room to work. Think of it as closing tabs you are done with, not \
+as emergency cleanup.
+
+An automatic safety net will compress your context if it gets critically full, \
+but proactive compaction produces better summaries because you know what matters.
+"""
+
+
+CAT_SUMMARY_PROMPT = """<role>
+Structured Context Extraction Assistant
+</role>
+
+<primary_objective>
+Extract and organize the most important information from the conversation history \
+into a structured workspace that preserves decision-critical context.
+</primary_objective>
+
+<instructions>
+The conversation history below will be replaced with the structured context you produce. \
+Organize the extracted information into the following sections. Each section is mandatory — \
+populate it with relevant information or explicitly state "None."
+
+## SESSION INTENT
+What is the user's primary goal or request? What overall task are you trying to \
+accomplish? This anchors all subsequent reasoning and must be preserved across \
+compressions to prevent semantic drift.
+
+## COMPLETED WORK
+What subtasks have been finished? For each, state the outcome and any artifacts produced \
+(file paths, code changes, results). This prevents repeating work.
+
+## KEY DECISIONS AND CONSTRAINTS
+Important decisions made and why. Constraints or requirements discovered during the work. \
+Strategies that were tried and their outcomes, including failed approaches and why they \
+were abandoned. Error patterns encountered and how they were resolved.
+
+## CURRENT STATE
+What files exist and their purposes (if relevant). What has been modified and how. \
+Any partial or in-progress work. The current working hypothesis or approach.
+
+## REMAINING PLAN
+What specific tasks remain to achieve the overall goal? What should be done next? \
+Include any ordering dependencies between remaining tasks.
+
+</instructions>
+
+Be concise but preserve all information needed to continue working effectively. \
+Omit routine tool-call details unless the outcome was surprising or important. \
+Focus on the "why" behind decisions, not just the "what."
+
+<messages>
+Messages to summarize:
+{messages}
+</messages>"""
+
+
+def _get_system_prompt_for_strategy(strategy: SummarizationStrategy) -> str:
+    """Return the compact-tool system prompt for the given strategy.
+
+    Args:
+        strategy: The summarization strategy.
+
+    Returns:
+        System prompt string to inject on every model call.
+    """
+    if strategy == "cat":
+        return CAT_SUMMARIZATION_SYSTEM_PROMPT
+    return SUMMARIZATION_SYSTEM_PROMPT
+
+
+def _get_summary_prompt_for_strategy(strategy: SummarizationStrategy) -> str:
+    """Return the LLM summary generation prompt for the given strategy.
+
+    Args:
+        strategy: The summarization strategy.
+
+    Returns:
+        Prompt template string with a ``{messages}`` placeholder.
+    """
+    if strategy == "cat":
+        return CAT_SUMMARY_PROMPT
+    return DEFAULT_SUMMARY_PROMPT
 
 
 class SummarizationEvent(TypedDict):
@@ -1101,6 +1211,8 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    strategy: SummarizationStrategy = "default",
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a `SummarizationMiddleware` with model-aware defaults.
 
@@ -1112,6 +1224,12 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
+        strategy: Context management strategy.
+
+            ``"default"`` uses the standard LangChain summary prompt.
+            ``"cat"`` uses a structured prompt inspired by the CAT paper
+            that organizes summaries into categories (completed work, key
+            decisions, current state, remaining plan).
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1133,12 +1251,15 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
+        summary_prompt=_get_summary_prompt_for_strategy(strategy),
     )
 
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    strategy: SummarizationStrategy = "default",
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1149,6 +1270,11 @@ def create_summarization_tool_middleware(
     Args:
         model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
+        strategy: Context management strategy.
+
+            ``"default"`` uses the original prompts. ``"cat"`` uses
+            proactive compaction prompts and structured summaries inspired
+            by the CAT paper.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1198,8 +1324,8 @@ def create_summarization_tool_middleware(
 
     if isinstance(model, str):
         model = resolve_model(model)
-    summarization = create_summarization_middleware(model, backend)
-    return SummarizationToolMiddleware(summarization)
+    summarization = create_summarization_middleware(model, backend, strategy=strategy)
+    return SummarizationToolMiddleware(summarization, strategy=strategy)
 
 
 class SummarizationToolMiddleware(AgentMiddleware):
@@ -1239,14 +1365,27 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     state_schema = SummarizationState
 
-    def __init__(self, summarization: _DeepAgentsSummarizationMiddleware) -> None:
+    def __init__(
+        self,
+        summarization: _DeepAgentsSummarizationMiddleware,
+        *,
+        strategy: SummarizationStrategy = "default",
+    ) -> None:
         """Initialize with a reference to the summarization middleware.
 
         Args:
             summarization: The `SummarizationMiddleware` instance whose
                 summarization engine this tool will delegate to.
+            strategy: Context management strategy.
+
+                ``"default"`` uses the original system prompt that frames
+                ``compact_conversation`` as a cleanup utility. ``"cat"`` uses
+                a proactive prompt that encourages the agent to compact at
+                natural milestones (subtask completion, strategy switches,
+                error recovery).
         """
         self._summarization = summarization
+        self._system_prompt = _get_system_prompt_for_strategy(strategy)
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
     def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
@@ -1511,7 +1650,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        new_system_message = append_to_system_message(request.system_message, self._system_prompt)
         return handler(request.override(system_message=new_system_message))
 
     async def awrap_model_call(
@@ -1532,5 +1671,5 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        new_system_message = append_to_system_message(request.system_message, self._system_prompt)
         return await handler(request.override(system_message=new_system_message))

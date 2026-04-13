@@ -42,7 +42,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.summarization import SummarizationStrategy, create_summarization_middleware
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
@@ -231,6 +231,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    summarization_strategy: SummarizationStrategy = "default",
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -396,6 +397,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        summarization_strategy: Context management strategy for both the main
+            agent and its subagents.
+
+            ``"default"`` uses threshold-driven summarization with the original
+            prompts. ``"cat"`` uses proactive compaction prompts and structured
+            summaries inspired by the CAT paper.
         debug: Whether to enable debug mode.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -446,7 +453,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
         ),
-        create_summarization_middleware(model, backend),
+        create_summarization_middleware(model, backend, strategy=summarization_strategy),
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
@@ -503,7 +510,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                 ),
-                create_summarization_middleware(subagent_model, backend),
+                create_summarization_middleware(subagent_model, backend, strategy=summarization_strategy),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
@@ -569,7 +576,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
             ),
-            create_summarization_middleware(model, backend),
+            create_summarization_middleware(model, backend, strategy=summarization_strategy),
             PatchToolCallsMiddleware(),
         ]
     )

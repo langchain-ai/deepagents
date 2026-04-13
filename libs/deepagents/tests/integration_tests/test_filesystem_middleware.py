@@ -1,3 +1,4 @@
+import unicodedata
 import uuid
 
 import pytest
@@ -19,6 +20,11 @@ from deepagents.middleware.filesystem import (
 from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
 
 
+def _to_ascii(text: str) -> str:
+    """Normalize unicode to ASCII (e.g. 'pokémon' → 'pokemon')."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
 def build_composite_state_backend(*, routes):
     return CompositeBackend(default=StateBackend(), routes=routes)
 
@@ -36,7 +42,7 @@ class TestFilesystem:
             ],
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
-        assert "pokemon" in response["messages"][1].text.lower()
+        assert "pokemon" in _to_ascii(response["messages"][1].text.lower())
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
         def backend(_rt):
@@ -53,7 +59,7 @@ class TestFilesystem:
             store=InMemoryStore(),
         )
         response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
-        assert "pizza" in response["messages"][1].text.lower()
+        assert "pizza" in _to_ascii(response["messages"][1].text.lower())
 
     def test_ls_longterm_without_path(self):
         checkpointer = MemorySaver()

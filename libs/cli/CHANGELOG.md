@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.37](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.36...deepagents-cli==0.0.37) (2026-04-10)
+
+### Features
+
+* Permissions for `deepagents deploy` ([#2651](https://github.com/langchain-ai/deepagents/issues/2651)) ([5d93b73](https://github.com/langchain-ai/deepagents/commit/5d93b736af6ffb165f33569233d533ced95a6943))
+
+### Bug Fixes
+
+* Add missing model provider deps to `deepagents deploy` bundler [closes [#2647](https://github.com/langchain-ai/deepagents/issues/2647)] ([#2660](https://github.com/langchain-ai/deepagents/issues/2660)) ([b710a69](https://github.com/langchain-ai/deepagents/commit/b710a69b12e49479045eaa54dfb709326473500b))
+* `AGENTS.md` in system prompt twice ([#2652](https://github.com/langchain-ai/deepagents/issues/2652)) ([9052be9](https://github.com/langchain-ai/deepagents/commit/9052be98d9f4ef9b11a88c9b1df3fae5e5ac666c))
+* Harden `deepagents deploy` config parsing and add unit tests ([#2636](https://github.com/langchain-ai/deepagents/issues/2636)) ([0469d14](https://github.com/langchain-ai/deepagents/commit/0469d1429d129e604fc1b622263923162f719314))
+* Load `deepagents deploy` project `.env` before deploy/dev config validation ([#2644](https://github.com/langchain-ai/deepagents/issues/2644)) ([8299091](https://github.com/langchain-ai/deepagents/commit/829909166606f8a9d9571b00da725845bad08da7))
+
 ## [0.0.36](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.35...deepagents-cli==0.0.36) (2026-04-09)
 
 ### Features

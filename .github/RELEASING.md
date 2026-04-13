@@ -6,14 +6,14 @@ This document describes the release process for packages in the Deep Agents mono
 
 | Package | Path | Component | PyPI |
 | ------- | ---- | --------- | ---- |
-| `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [deepagents](https://pypi.org/project/deepagents/) |
-| `deepagents-cli` | `libs/cli` | `deepagents-cli` | [deepagents-cli](https://pypi.org/project/deepagents-cli/) |
-| `deepagents-acp` | `libs/acp` | `deepagents-acp` | [deepagents-acp](https://pypi.org/project/deepagents-acp/) |
-| `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [langchain-daytona](https://pypi.org/project/langchain-daytona/) |
-| `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [langchain-modal](https://pypi.org/project/langchain-modal/) |
-| `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [langchain-runloop](https://pypi.org/project/langchain-runloop/) |
-| `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [langchain-quickjs](https://pypi.org/project/langchain-quickjs/) |
-| `langchain-repl` | `libs/repl` | `langchain-repl` | [langchain-repl](https://pypi.org/project/langchain-repl/) |
+| `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [`deepagents`](https://pypi.org/project/deepagents/) |
+| `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
+| `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
+| `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
+| `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
+| `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
+| `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
+| `langchain-repl` | `libs/repl` | `langchain-repl` | [`langchain-repl`](https://pypi.org/project/langchain-repl/) |
 
 ## Overview
 
@@ -61,7 +61,7 @@ Version bumps are determined by commit types. All packages are currently pre-1.0
 
 ## Commit Format
 
-All commits must follow [Conventional Commits](https://www.conventionalcommits.org/) format with types and scopes defined in [`.github/workflows/pr_lint.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml):
+All commits must follow [Conventional Commits](https://www.conventionalcommits.org/) format with types and scopes defined in [`.github/workflows/pr_lint.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml). **Scope is required** — PRs without a scope will fail the title lint check.
 
 ```text
 <type>(<scope>): <description>
@@ -125,7 +125,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 2. **Build** - Creates distribution package
 3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts changelog and collects contributor shoutouts; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
-5. **Publish** - Publishes to PyPI
+5. **Publish** - Publishes to PyPI (requires Test PyPI to succeed)
 6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).
 
 ### Release PR Labels
@@ -288,6 +288,9 @@ PyPI does not allow re-uploading the same version. If a release failed partway:
 1. If already on PyPI: bump the version and release again
 2. If only on test PyPI: the workflow uses `skip-existing: true`, so re-running should work
 3. If the GitHub release exists but PyPI publish failed (e.g., from a manual re-run): delete the release/tag and re-run the workflow
+
+> [!NOTE]
+> The Test PyPI step uses `skip-existing: true` so that **workflow re-runs** don't fail when the version was already uploaded on a previous attempt. The tradeoff: on re-runs the Test PyPI step is silently skipped rather than re-validated, so it no longer acts as an upload gate.
 
 ### Unexpected Commit Authors in Release PRs
 

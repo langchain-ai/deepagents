@@ -1505,11 +1505,15 @@ class DeepAgentsApp(App):
 
         try:
             from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
+
+            if await asyncio.to_thread(_is_editable_install):
+                heading = f"Now running v{cli_version}"
+            else:
+                heading = f"Updated to v{cli_version}"
 
             await self._mount_message(
-                AppMessage(
-                    f"Updated to v{cli_version}\nSee what's new: {CHANGELOG_URL}"
-                )
+                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
             )
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)

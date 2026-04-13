@@ -9,8 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
@@ -918,3 +920,249 @@ def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
     assert existing_path in result["memory_contents"]
     assert missing_path not in result["memory_contents"]
     assert backend.download_files_call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Rehydration after summarization tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_runtime() -> MagicMock:
+    """Create a mock Runtime for wrap_model_call tests."""
+    runtime = MagicMock()
+    runtime.context = {}
+    runtime.stream_writer = MagicMock()
+    runtime.store = None
+    del runtime.config
+    return runtime
+
+
+def _make_mock_model() -> MagicMock:
+    """Create a mock chat model for ModelRequest."""
+    model = MagicMock()
+    model._llm_type = "test-model"
+    model.profile = {"max_input_tokens": 100000}
+    model._get_ls_params.return_value = {"ls_provider": "test"}
+    return model
+
+
+def _make_model_request(state: dict, runtime: MagicMock) -> ModelRequest:
+    """Build a ModelRequest from state and runtime."""
+    return ModelRequest(
+        model=_make_mock_model(),
+        messages=state.get("messages", []),
+        system_message=None,
+        tools=[],
+        runtime=runtime,
+        state=state,
+    )
+
+
+def test_needs_rehydration_false_without_event() -> None:
+    """No rehydration when _summarization_event is absent."""
+    middleware = MemoryMiddleware(backend=None, sources=[])  # type: ignore[arg-type]
+    assert middleware._needs_rehydration({}) is False
+
+
+def test_needs_rehydration_true_with_new_event() -> None:
+    """Rehydration needed when a new summarization event appears."""
+    middleware = MemoryMiddleware(backend=None, sources=[])  # type: ignore[arg-type]
+    state = {"_summarization_event": {"cutoff_index": 5, "summary_message": None, "file_path": None}}
+    assert middleware._needs_rehydration(state) is True
+
+
+def test_needs_rehydration_false_after_already_rehydrated() -> None:
+    """No rehydration when the event cutoff matches the last rehydrated cutoff."""
+    middleware = MemoryMiddleware(backend=None, sources=[])  # type: ignore[arg-type]
+    middleware._last_rehydrated_cutoff = 5
+    state = {"_summarization_event": {"cutoff_index": 5, "summary_message": None, "file_path": None}}
+    assert middleware._needs_rehydration(state) is False
+
+
+def test_needs_rehydration_true_with_different_cutoff() -> None:
+    """Rehydration needed when a new summarization event has a different cutoff."""
+    middleware = MemoryMiddleware(backend=None, sources=[])  # type: ignore[arg-type]
+    middleware._last_rehydrated_cutoff = 5
+    state = {"_summarization_event": {"cutoff_index": 10, "summary_message": None, "file_path": None}}
+    assert middleware._needs_rehydration(state) is True
+
+
+def test_wrap_model_call_rehydrates_after_summarization(tmp_path: Path) -> None:
+    """wrap_model_call re-reads memory files when a summarization event is detected."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+
+    original_content = make_memory_content("Original", "Original content")
+    backend.upload_files([(memory_path, original_content.encode("utf-8"))])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+
+    stale_contents = {memory_path: "Stale content from initial load"}
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": stale_contents,
+        "_summarization_event": {"cutoff_index": 5, "summary_message": None, "file_path": None},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    captured_requests: list[ModelRequest] = []
+
+    def handler(req: ModelRequest) -> ModelResponse:
+        captured_requests.append(req)
+        return AIMessage(content="response")
+
+    result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    rehydrated = result.command.update["memory_contents"]
+    assert "Original content" in rehydrated[memory_path]
+    assert "Stale" not in rehydrated[memory_path]
+
+    assert len(captured_requests) == 1
+    injected_state = captured_requests[0].state
+    assert "Original content" in injected_state["memory_contents"][memory_path]
+
+    assert middleware._last_rehydrated_cutoff == 5
+
+
+def test_wrap_model_call_no_rehydration_without_event(tmp_path: Path) -> None:
+    """wrap_model_call does not rehydrate when no summarization event exists."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+    backend.upload_files([(memory_path, b"# Memory\nContent")])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": {memory_path: "Cached content"},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    def handler(_req: ModelRequest) -> ModelResponse:
+        return AIMessage(content="response")
+
+    result = middleware.wrap_model_call(request, handler)
+
+    assert not isinstance(result, ExtendedModelResponse)
+
+
+def test_wrap_model_call_skips_rehydration_for_same_event(tmp_path: Path) -> None:
+    """wrap_model_call does not re-read files for the same summarization event."""
+    spy_backend = _SpyBackend(root_dir=str(tmp_path))
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+    spy_backend.upload_files([(memory_path, b"# Memory\nContent")])
+
+    middleware = MemoryMiddleware(backend=spy_backend, sources=[memory_path])
+    middleware._last_rehydrated_cutoff = 5
+
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": {memory_path: "Already rehydrated"},
+        "_summarization_event": {"cutoff_index": 5, "summary_message": None, "file_path": None},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    def handler(_req: ModelRequest) -> ModelResponse:
+        return AIMessage(content="response")
+
+    result = middleware.wrap_model_call(request, handler)
+
+    assert not isinstance(result, ExtendedModelResponse)
+    assert spy_backend.download_files_call_count == 0
+
+
+def test_wrap_model_call_rehydrates_with_updated_file(tmp_path: Path) -> None:
+    """wrap_model_call picks up file edits made by the agent during the session."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+
+    backend.upload_files([(memory_path, b"# Memory\nOriginal")])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert result is not None
+    assert "Original" in result["memory_contents"][memory_path]
+
+    backend.upload_files([(memory_path, b"# Memory\nUpdated by agent")])
+
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": result["memory_contents"],
+        "_summarization_event": {"cutoff_index": 10, "summary_message": None, "file_path": None},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    def handler(_req: ModelRequest) -> ModelResponse:
+        return AIMessage(content="response")
+
+    wrap_result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(wrap_result, ExtendedModelResponse)
+    rehydrated = wrap_result.command.update["memory_contents"]
+    assert "Updated by agent" in rehydrated[memory_path]
+    assert "Original" not in rehydrated[memory_path]
+
+
+async def test_awrap_model_call_rehydrates_after_summarization(tmp_path: Path) -> None:
+    """awrap_model_call re-reads memory files when a summarization event is detected."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+
+    original_content = make_memory_content("Original", "Original async content")
+    backend.upload_files([(memory_path, original_content.encode("utf-8"))])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": {memory_path: "Stale async content"},
+        "_summarization_event": {"cutoff_index": 7, "summary_message": None, "file_path": None},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    async def handler(_req: ModelRequest) -> ModelResponse:
+        return AIMessage(content="response")
+
+    result = await middleware.awrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    rehydrated = result.command.update["memory_contents"]
+    assert "Original async content" in rehydrated[memory_path]
+    assert middleware._last_rehydrated_cutoff == 7
+
+
+async def test_awrap_model_call_no_rehydration_without_event(tmp_path: Path) -> None:
+    """awrap_model_call does not rehydrate when no summarization event exists."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "user" / "AGENTS.md")
+    backend.upload_files([(memory_path, b"# Memory\nContent")])
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+
+    state = {
+        "messages": [HumanMessage(content="hello")],
+        "memory_contents": {memory_path: "Cached content"},
+    }
+
+    runtime = _make_mock_runtime()
+    request = _make_model_request(state, runtime)
+
+    async def handler(_req: ModelRequest) -> ModelResponse:
+        return AIMessage(content="response")
+
+    result = await middleware.awrap_model_call(request, handler)
+
+    assert not isinstance(result, ExtendedModelResponse)

@@ -51,7 +51,7 @@ Common sections include:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -65,12 +65,14 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
 )
 from langchain.tools import ToolRuntime
+from langgraph.types import Command
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -190,6 +192,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """
         self._backend = backend
         self.sources = sources
+        self._last_rehydrated_cutoff: int | None = None
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -214,6 +217,98 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
             )
             return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
         return self._backend
+
+    def _get_backend_from_runtime(self, state: MemoryState, runtime: Runtime) -> BackendProtocol:
+        """Resolve backend from a runtime context (used in wrap_model_call).
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            Resolved backend instance.
+        """
+        if callable(self._backend):
+            config = cast("RunnableConfig", getattr(runtime, "config", {}))
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config=config,
+                tool_call_id=None,
+            )
+            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+        return self._backend
+
+    def _needs_rehydration(self, state: MemoryState) -> bool:
+        """Check if memory contents need rehydration after a summarization event.
+
+        Args:
+            state: Current agent state.
+
+        Returns:
+            True if a new summarization event occurred since last rehydration.
+        """
+        event = state.get("_summarization_event")
+        if event is None:
+            return False
+        cutoff = event.get("cutoff_index")
+        if not isinstance(cutoff, int):
+            return False
+        return cutoff != self._last_rehydrated_cutoff
+
+    def _rehydrate_memory(self, state: MemoryState, runtime: Runtime) -> dict[str, str]:
+        """Re-read memory files from the backend after summarization.
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            Fresh memory contents dict mapping source paths to content.
+        """
+        backend = self._get_backend_from_runtime(state, runtime)
+        contents: dict[str, str] = {}
+        results = backend.download_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                logger.warning("Failed to rehydrate memory from %s: %s", path, response.error)
+                continue
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
+                logger.debug("Rehydrated memory from: %s", path)
+        event = state.get("_summarization_event", {})
+        self._last_rehydrated_cutoff = event.get("cutoff_index")
+        return contents
+
+    async def _arehydrate_memory(self, state: MemoryState, runtime: Runtime) -> dict[str, str]:
+        """Re-read memory files from the backend after summarization (async).
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            Fresh memory contents dict mapping source paths to content.
+        """
+        backend = self._get_backend_from_runtime(state, runtime)
+        contents: dict[str, str] = {}
+        results = await backend.adownload_files(list(self.sources))
+        for path, response in zip(self.sources, results, strict=True):
+            if response.error is not None:
+                if response.error == "file_not_found":
+                    continue
+                logger.warning("Failed to rehydrate memory from %s: %s", path, response.error)
+                continue
+            if response.content is not None:
+                contents[path] = response.content.decode("utf-8")
+                logger.debug("Rehydrated memory from: %s", path)
+        event = state.get("_summarization_event", {})
+        self._last_rehydrated_cutoff = event.get("cutoff_index")
+        return contents
 
     def _format_agent_memory(self, contents: dict[str, str]) -> str:
         """Format memory with locations and contents paired together.
@@ -323,32 +418,69 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
         """Wrap model call to inject memory into system prompt.
+
+        Rehydrates memory contents from the backend after a summarization event
+        so the system prompt reflects any edits the agent made to memory files.
 
         Args:
             request: Model request being processed.
             handler: Handler function to call with modified request.
 
         Returns:
-            Model response from handler.
+            Model response, or `ExtendedModelResponse` with updated memory contents
+                when rehydration occurs.
         """
+        rehydrated: dict[str, str] | None = None
+        if self._needs_rehydration(request.state):
+            rehydrated = self._rehydrate_memory(request.state, request.runtime)
+            request = request.override(
+                state={**request.state, "memory_contents": rehydrated},
+            )
+
         modified_request = self.modify_request(request)
-        return handler(modified_request)
+        response = handler(modified_request)
+
+        if rehydrated is not None:
+            return ExtendedModelResponse(
+                model_response=response,
+                command=Command(update={"memory_contents": rehydrated}),
+            )
+        return response
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
         """Async wrap model call to inject memory into system prompt.
+
+        Rehydrates memory contents from the backend after a summarization event
+        so the system prompt reflects any edits the agent made to memory files.
 
         Args:
             request: Model request being processed.
             handler: Async handler function to call with modified request.
 
         Returns:
-            Model response from handler.
+            Model response, or `ExtendedModelResponse` with updated memory contents
+                when rehydration occurs.
         """
+        rehydrated: dict[str, str] | None = None
+        if self._needs_rehydration(request.state):
+            rehydrated = await self._arehydrate_memory(request.state, request.runtime)
+            request = request.override(
+                state={**request.state, "memory_contents": rehydrated},
+            )
+
         modified_request = self.modify_request(request)
-        return await handler(modified_request)
+        response = await handler(modified_request)
+
+        if rehydrated is not None:
+            return ExtendedModelResponse(
+                model_response=response,
+                command=Command(update={"memory_contents": rehydrated}),
+            )
+        return response
+

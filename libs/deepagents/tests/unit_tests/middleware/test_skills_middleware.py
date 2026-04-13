@@ -151,7 +151,6 @@ name: test-skill
 description: A test skill
 license: MIT
 compatibility: Python 3.8+
-argument-hint: "[context]"
 metadata:
   author: Test Author
   version: 1.0.0
@@ -172,7 +171,6 @@ Instructions here.
         "compatibility": "Python 3.8+",
         "metadata": {"author": "Test Author", "version": "1.0.0"},
         "allowed_tools": ["read_file", "write_file"],
-        "argument_hint": "[context]",
         "path": "/skills/test-skill/SKILL.md",
     }
 
@@ -196,7 +194,6 @@ description: Minimal skill
         "compatibility": None,
         "metadata": {},
         "allowed_tools": [],
-        "argument_hint": None,
         "path": "/skills/minimal-skill/SKILL.md",
     }
 
@@ -393,7 +390,6 @@ def test_format_skill_annotations_both_fields() -> None:
         compatibility="Python 3.10+",
         metadata={},
         allowed_tools=[],
-        argument_hint=None,
     )
     assert _format_skill_annotations(skill) == "License: MIT, Compatibility: Python 3.10+"
 
@@ -408,7 +404,6 @@ def test_format_skill_annotations_license_only() -> None:
         compatibility=None,
         metadata={},
         allowed_tools=[],
-        argument_hint=None,
     )
     assert _format_skill_annotations(skill) == "License: Apache-2.0"
 
@@ -423,7 +418,6 @@ def test_format_skill_annotations_compatibility_only() -> None:
         compatibility="Requires poppler",
         metadata={},
         allowed_tools=[],
-        argument_hint=None,
     )
     assert _format_skill_annotations(skill) == "Compatibility: Requires poppler"
 
@@ -438,7 +432,6 @@ def test_format_skill_annotations_neither_field() -> None:
         compatibility=None,
         metadata={},
         allowed_tools=[],
-        argument_hint=None,
     )
     assert _format_skill_annotations(skill) == ""
 
@@ -571,7 +564,6 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -661,7 +653,6 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -702,7 +693,6 @@ Content
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -738,7 +728,6 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -811,7 +800,6 @@ def test_format_skills_list_single_skill() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -841,7 +829,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         },
         {
             "name": "skill-b",
@@ -851,7 +838,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         },
         {
             "name": "skill-c",
@@ -861,7 +847,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         },
     ]
 
@@ -891,7 +876,6 @@ def test_format_skills_list_with_license_and_compatibility() -> None:
             "compatibility": "Requires poppler",
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -912,7 +896,6 @@ def test_format_skills_list_license_only() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -934,7 +917,6 @@ def test_format_skills_list_compatibility_only() -> None:
             "compatibility": "Python 3.10+",
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -956,7 +938,6 @@ def test_format_skills_list_no_optional_fields() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
 
@@ -1050,7 +1031,6 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
-        "argument_hint": None,
     }
 
 
@@ -1322,7 +1302,6 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "argument_hint": None,
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
@@ -1446,7 +1425,6 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
     assert checkpoint["channel_values"]["skills_metadata"] == [
         {
             "allowed_tools": [],
-            "argument_hint": None,
             "compatibility": None,
             "description": "A test skill for default backend",
             "license": None,

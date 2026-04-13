@@ -49,7 +49,7 @@ Parsed from YAML frontmatter per Agent Skills specification:
 - `name`: Skill identifier (max 64 chars, lowercase alphanumeric and hyphens)
 - `description`: What the skill does (max 1024 chars)
 - `path`: Backend path to the SKILL.md file
-- Optional: `license`, `compatibility`, `metadata`, `allowed_tools`, `argument_hint`
+- Optional: `license`, `compatibility`, `metadata`, `allowed_tools`
 
 ## Sources
 
@@ -189,12 +189,6 @@ class SkillMetadata(TypedDict):
     Constraints per Agent Skills specification:
 
     - Space-delimited list of tool names
-    """
-
-    argument_hint: str | None
-    """Placeholder text shown during autocomplete when the skill accepts arguments.
-
-    For example, `"[context]"` for a skill invoked as `/remember [context]`.
     """
 
 
@@ -347,8 +341,6 @@ def _parse_skill_metadata(  # noqa: C901
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
-    argument_hint = str(frontmatter_data.get("argument-hint", "")).strip() or None
-
     return SkillMetadata(
         name=str(name),
         description=description_str,
@@ -357,7 +349,6 @@ def _parse_skill_metadata(  # noqa: C901
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
-        argument_hint=argument_hint,
     )
 
 

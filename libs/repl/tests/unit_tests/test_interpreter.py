@@ -499,7 +499,7 @@ def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> Non
 
 
 def test_foreign_object_dispatcher_errors_without_handler() -> None:
+    """Test foreign function dispatcher errors without handler."""
     interpreter = Interpreter(env={"math": math})
-
     with pytest.raises(TypeError, match="No foreign object handler for module"):
         interpreter.evaluate("math.sin(23)")

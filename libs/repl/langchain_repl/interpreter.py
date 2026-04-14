@@ -134,7 +134,10 @@ class ParseError(ValueError):
 
 
 class ForeignObjectInterface(Protocol):
-    """Protocol for dispatching operations on foreign objects."""
+    """Protocol for dispatching operations on foreign objects.
+
+    Currently limited to sync invocation only.
+    """
 
     def supports(self, value: Any) -> bool:
         """Return whether this handler manages the provided runtime value."""

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.tools import BaseTool
@@ -423,16 +424,12 @@ class _Parser:
         while True:
             if self._match("+"):
                 expr = BinaryOperation(
-                    left=expr,
-                    operator="+",
-                    right=self._parse_postfix(),
+                    left=expr, operator="+", right=self._parse_postfix()
                 )
                 continue
             if self._match("-"):
                 expr = BinaryOperation(
-                    left=expr,
-                    operator="-",
-                    right=self._parse_postfix(),
+                    left=expr, operator="-", right=self._parse_postfix()
                 )
                 continue
             break
@@ -465,10 +462,10 @@ class _Parser:
             return Literal(self._advance().value)
         if token.kind == "TRUE":
             self._advance()
-            return Literal(value=True)
+            return Literal(True)
         if token.kind == "FALSE":
             self._advance()
-            return Literal(value=False)
+            return Literal(False)
         if token.kind == "NONE":
             self._advance()
             return Literal(None)
@@ -548,10 +545,7 @@ class _Parser:
     def _expect(self, kind: str) -> Token:
         token = self._current()
         if token.kind != kind:
-            msg = (
-                f"Expected {kind}, got {token.kind} at line {token.line}, "
-                f"column {token.column}"
-            )
+            msg = f"Expected {kind}, got {token.kind} at line {token.line}, column {token.column}"
             raise ParseError(msg)
         return self._advance()
 
@@ -562,9 +556,158 @@ class _Parser:
         return True
 
 
-class Interpreter:
-    """Evaluate programs written in the mini REPL language."""
+class OpCode(str, Enum):
+    LOAD_CONST = "LOAD_CONST"
+    LOAD_NAME = "LOAD_NAME"
+    STORE_NAME = "STORE_NAME"
+    SET_LAST = "SET_LAST"
+    BUILD_LIST = "BUILD_LIST"
+    BUILD_DICT = "BUILD_DICT"
+    BINARY_OP = "BINARY_OP"
+    GET_INDEX = "GET_INDEX"
+    GET_ATTR = "GET_ATTR"
+    CALL = "CALL"
+    TRY_CALL = "TRY_CALL"
+    JUMP = "JUMP"
+    JUMP_IF_FALSE = "JUMP_IF_FALSE"
+    ITER_PREP = "ITER_PREP"
+    ITER_NEXT = "ITER_NEXT"
+    RETURN_VALUE = "RETURN_VALUE"
 
+
+@dataclass(frozen=True)
+class Instruction:
+    opcode: OpCode
+    arg: Any = None
+
+
+@dataclass
+class ForLoopState:
+    target_name: str
+    items: list[Any]
+    index: int = 0
+
+
+@dataclass
+class VMState:
+    instructions: tuple[Instruction, ...]
+    env: MutableMapping[str, Any]
+    pc: int = 0
+    stack: list[Any] = field(default_factory=list)
+    last_value: Any = None
+    loop_stack: list[ForLoopState] = field(default_factory=list)
+
+
+class _Compiler:
+    def compile_program(self, program: Program) -> tuple[Instruction, ...]:
+        instructions: list[Instruction] = []
+        for statement in program.statements:
+            self._compile_statement(statement, instructions)
+        instructions.append(Instruction(OpCode.RETURN_VALUE))
+        return tuple(instructions)
+
+    def _compile_block(
+        self, statements: Iterable[Statement], instructions: list[Instruction]
+    ) -> None:
+        for statement in statements:
+            self._compile_statement(statement, instructions)
+
+    def _compile_statement(
+        self, statement: Statement, instructions: list[Instruction]
+    ) -> None:
+        if isinstance(statement, Assign):
+            self._compile_expression(statement.value, instructions)
+            instructions.append(Instruction(OpCode.STORE_NAME, statement.name))
+            instructions.append(Instruction(OpCode.SET_LAST))
+            return
+        if isinstance(statement, ExpressionStatement):
+            self._compile_expression(statement.expression, instructions)
+            instructions.append(Instruction(OpCode.SET_LAST))
+            return
+        if isinstance(statement, IfStatement):
+            self._compile_expression(statement.condition, instructions)
+            jump_if_false_index = len(instructions)
+            instructions.append(Instruction(OpCode.JUMP_IF_FALSE, None))
+            self._compile_block(statement.then_body, instructions)
+            jump_end_index = len(instructions)
+            instructions.append(Instruction(OpCode.JUMP, None))
+            else_start = len(instructions)
+            self._compile_block(statement.else_body, instructions)
+            end_index = len(instructions)
+            instructions[jump_if_false_index] = Instruction(
+                OpCode.JUMP_IF_FALSE, else_start
+            )
+            instructions[jump_end_index] = Instruction(OpCode.JUMP, end_index)
+            return
+        if isinstance(statement, ForStatement):
+            self._compile_expression(statement.iterable, instructions)
+            instructions.append(Instruction(OpCode.ITER_PREP, statement.name))
+            loop_start = len(instructions)
+            iter_next_index = len(instructions)
+            instructions.append(Instruction(OpCode.ITER_NEXT, None))
+            self._compile_block(statement.body, instructions)
+            instructions.append(Instruction(OpCode.JUMP, loop_start))
+            loop_end = len(instructions)
+            instructions[iter_next_index] = Instruction(OpCode.ITER_NEXT, loop_end)
+            return
+        msg = f"Unsupported statement: {type(statement).__name__}"
+        raise ValueError(msg)
+
+    def _compile_expression(
+        self, expression: Expression, instructions: list[Instruction]
+    ) -> None:
+        if isinstance(expression, Literal):
+            instructions.append(Instruction(OpCode.LOAD_CONST, expression.value))
+            return
+        if isinstance(expression, Name):
+            if expression.value == "print":
+                instructions.append(Instruction(OpCode.LOAD_CONST, _PRINT_SENTINEL))
+            elif expression.value == "parallel":
+                instructions.append(Instruction(OpCode.LOAD_CONST, _PARALLEL_SENTINEL))
+            elif expression.value == "try":
+                instructions.append(Instruction(OpCode.LOAD_CONST, _TRY_SENTINEL))
+            else:
+                instructions.append(Instruction(OpCode.LOAD_NAME, expression.value))
+            return
+        if isinstance(expression, ListLiteral):
+            for item in expression.items:
+                self._compile_expression(item, instructions)
+            instructions.append(Instruction(OpCode.BUILD_LIST, len(expression.items)))
+            return
+        if isinstance(expression, DictLiteral):
+            for key, value in expression.items:
+                instructions.append(Instruction(OpCode.LOAD_CONST, key))
+                self._compile_expression(value, instructions)
+            instructions.append(Instruction(OpCode.BUILD_DICT, len(expression.items)))
+            return
+        if isinstance(expression, BinaryOperation):
+            self._compile_expression(expression.left, instructions)
+            self._compile_expression(expression.right, instructions)
+            instructions.append(Instruction(OpCode.BINARY_OP, expression.operator))
+            return
+        if isinstance(expression, Index):
+            self._compile_expression(expression.target, instructions)
+            self._compile_expression(expression.index, instructions)
+            instructions.append(Instruction(OpCode.GET_INDEX))
+            return
+        if isinstance(expression, Attribute):
+            self._compile_expression(expression.target, instructions)
+            instructions.append(Instruction(OpCode.GET_ATTR, expression.name))
+            return
+        if isinstance(expression, Call):
+            if isinstance(expression.target, Name) and expression.target.value == "try":
+                instructions.append(Instruction(OpCode.TRY_CALL, expression))
+                return
+            self._compile_expression(expression.target, instructions)
+            for arg in expression.args:
+                self._compile_expression(arg, instructions)
+            instructions.append(Instruction(OpCode.CALL, len(expression.args)))
+            return
+        msg = f"Unsupported expression: {type(expression).__name__}"
+        raise ValueError(msg)
+
+
+class Interpreter:
     def __init__(
         self,
         *,
@@ -574,221 +717,335 @@ class Interpreter:
         max_workers: int | None = None,
         runtime: ToolRuntime | None = None,
     ) -> None:
-        """Initialize the interpreter with optional foreign functions."""
         self._functions = dict(functions or {})
-        self._foreign_interfaces = foreign_interfaces
+        self._foreign_interfaces = tuple(foreign_interfaces)
         self._env: MutableMapping[str, Any] = env if env is not None else {}
         self._printed_lines: list[str] = []
         self._max_workers = max_workers
         self._runtime = runtime
+        self._compiler = _Compiler()
 
     @property
     def env(self) -> dict[str, Any]:
-        """Return a copy of the current variable bindings."""
         return dict(self._env)
 
     @property
     def printed_lines(self) -> list[str]:
-        """Return the captured output lines."""
         return list(self._printed_lines)
 
-    def evaluate(
-        self,
-        source: str,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        """Parse and evaluate REPL source code."""
-        program = self.parse(source)
-        return self._eval_program(program, self._env, print_callback=print_callback)
-
     def parse(self, source: str) -> Program:
-        """Parse REPL source code into a program object."""
-        tokens = _Tokenizer(source).tokenize()
-        return _Parser(tokens).parse()
+        return _Parser(_Tokenizer(source).tokenize()).parse()
 
-    def _eval_program(
+    def evaluate(
+        self, source: str, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        return self.evaluate_program(self.parse(source), print_callback=print_callback)
+
+    async def aevaluate(
+        self, source: str, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        return await self.aevaluate_program(
+            self.parse(source), print_callback=print_callback
+        )
+
+    def evaluate_program(
         self,
         program: Program,
-        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        result: Any = None
-        for statement in program.statements:
-            result = self._eval_statement(statement, env, print_callback=print_callback)
-        return result
+        state = self._new_state(program, self._env)
+        value = self._run_vm_sync(state, print_callback=print_callback)
+        self._env = state.env
+        return value
 
-    def _eval_block(
+    async def aevaluate_program(
         self,
-        statements: Iterable[Statement],
-        env: MutableMapping[str, Any],
+        program: Program,
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        result: Any = None
-        for statement in statements:
-            result = self._eval_statement(statement, env, print_callback=print_callback)
-        return result
+        state = self._new_state(program, self._env)
+        value = await self._run_vm_async(state, print_callback=print_callback)
+        self._env = state.env
+        return value
 
-    def _eval_statement(
+    def _new_state(self, program: Program, env: MutableMapping[str, Any]) -> VMState:
+        return VMState(instructions=self._compiler.compile_program(program), env=env)
+
+    def _run_vm_sync(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        while state.pc < len(state.instructions):
+            instruction = state.instructions[state.pc]
+            state.pc += 1
+            result = self._step_sync(state, instruction, print_callback=print_callback)
+            if result is not _NO_RESULT:
+                return result
+        return state.last_value
+
+    async def _run_vm_async(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        while state.pc < len(state.instructions):
+            instruction = state.instructions[state.pc]
+            state.pc += 1
+            result = await self._step_async(
+                state, instruction, print_callback=print_callback
+            )
+            if result is not _NO_RESULT:
+                return result
+        return state.last_value
+
+    def _step_sync(
         self,
-        statement: Statement,
-        env: MutableMapping[str, Any],
+        state: VMState,
+        instruction: Instruction,
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        if isinstance(statement, Assign):
-            value = self._eval_expression(
-                statement.value,
-                env,
-                print_callback=print_callback,
+        if instruction.opcode is OpCode.LOAD_CONST:
+            state.stack.append(instruction.arg)
+            return _NO_RESULT
+        if instruction.opcode is OpCode.LOAD_NAME:
+            state.stack.append(self._load_name(state.env, instruction.arg))
+            return _NO_RESULT
+        if instruction.opcode is OpCode.STORE_NAME:
+            value = state.stack[-1]
+            state.env[instruction.arg] = value
+            return _NO_RESULT
+        if instruction.opcode is OpCode.SET_LAST:
+            state.last_value = state.stack[-1] if state.stack else None
+            return _NO_RESULT
+        if instruction.opcode is OpCode.BUILD_LIST:
+            count = int(instruction.arg)
+            items = state.stack[-count:] if count else []
+            if count:
+                del state.stack[-count:]
+            state.stack.append(list(items))
+            return _NO_RESULT
+        if instruction.opcode is OpCode.BUILD_DICT:
+            count = int(instruction.arg)
+            items = state.stack[-(2 * count) :] if count else []
+            if count:
+                del state.stack[-(2 * count) :]
+            built: dict[str, Any] = {}
+            for index in range(0, len(items), 2):
+                built[str(items[index])] = items[index + 1]
+            state.stack.append(built)
+            return _NO_RESULT
+        if instruction.opcode is OpCode.BINARY_OP:
+            right = state.stack.pop()
+            left = state.stack.pop()
+            state.stack.append(
+                self._eval_binary_operation(left, instruction.arg, right)
             )
-            env[statement.name] = value
-            return value
-        if isinstance(statement, IfStatement):
-            condition = self._eval_expression(
-                statement.condition,
-                env,
-                print_callback=print_callback,
+            return _NO_RESULT
+        if instruction.opcode is OpCode.GET_INDEX:
+            index = state.stack.pop()
+            target = state.stack.pop()
+            state.stack.append(self._eval_index(target, index))
+            return _NO_RESULT
+        if instruction.opcode is OpCode.GET_ATTR:
+            target = state.stack.pop()
+            state.stack.append(self._resolve_member(target, instruction.arg))
+            return _NO_RESULT
+        if instruction.opcode is OpCode.CALL:
+            arg_count = int(instruction.arg)
+            target_index = len(state.stack) - arg_count - 1
+            target = state.stack[target_index]
+            args = tuple(state.stack[target_index + 1 :])
+            del state.stack[target_index:]
+            state.stack.append(
+                self._call_sync(target, args, print_callback=print_callback)
             )
-            branch = (
-                statement.then_body
-                if self._is_truthy(condition)
-                else statement.else_body
+            return _NO_RESULT
+        if instruction.opcode is OpCode.TRY_CALL:
+            state.stack.append(
+                self._eval_try_call_sync(instruction.arg, print_callback=print_callback)
             )
-            return self._eval_block(branch, env, print_callback=print_callback)
-        if isinstance(statement, ForStatement):
-            result: Any = None
-            iterable = self._eval_expression(
-                statement.iterable,
-                env,
-                print_callback=print_callback,
-            )
+            return _NO_RESULT
+        if instruction.opcode is OpCode.JUMP:
+            state.pc = int(instruction.arg)
+            return _NO_RESULT
+        if instruction.opcode is OpCode.JUMP_IF_FALSE:
+            value = state.stack.pop()
+            if not self._is_truthy(value):
+                state.pc = int(instruction.arg)
+            return _NO_RESULT
+        if instruction.opcode is OpCode.ITER_PREP:
+            iterable = state.stack.pop()
             if not isinstance(iterable, list):
                 msg = "for loops require a list iterable"
                 raise TypeError(msg)
-            for item in iterable:
-                env[statement.name] = item
-                result = self._eval_block(
-                    statement.body,
-                    env,
-                    print_callback=print_callback,
+            state.loop_stack.append(ForLoopState(instruction.arg, iterable))
+            return _NO_RESULT
+        if instruction.opcode is OpCode.ITER_NEXT:
+            loop_state = state.loop_stack[-1]
+            if loop_state.index >= len(loop_state.items):
+                state.loop_stack.pop()
+                state.pc = int(instruction.arg)
+                return _NO_RESULT
+            item = loop_state.items[loop_state.index]
+            loop_state.index += 1
+            state.env[loop_state.target_name] = item
+            return _NO_RESULT
+        if instruction.opcode is OpCode.RETURN_VALUE:
+            return state.last_value
+        msg = f"Unsupported opcode: {instruction.opcode}"
+        raise ValueError(msg)
+
+    async def _step_async(
+        self,
+        state: VMState,
+        instruction: Instruction,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if instruction.opcode is OpCode.TRY_CALL:
+            state.stack.append(
+                await self._eval_try_call_async(
+                    instruction.arg, print_callback=print_callback
                 )
+            )
+            return _NO_RESULT
+        if instruction.opcode is not OpCode.CALL:
+            return self._step_sync(state, instruction, print_callback=print_callback)
+        arg_count = int(instruction.arg)
+        target_index = len(state.stack) - arg_count - 1
+        target = state.stack[target_index]
+        args = tuple(state.stack[target_index + 1 :])
+        del state.stack[target_index:]
+        state.stack.append(
+            await self._call_async(target, args, print_callback=print_callback)
+        )
+        return _NO_RESULT
+
+    def _load_name(self, env: MutableMapping[str, Any], name: str) -> Any:
+        if name in env:
+            return env[name]
+        if name in self._functions:
+            return self._functions[name]
+        msg = f"Unknown name: {name}"
+        raise NameError(msg)
+
+    def _call_sync(
+        self,
+        target: Any,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if target is _PRINT_SENTINEL:
+            return self._eval_print(args, print_callback=print_callback)
+        if target is _PARALLEL_SENTINEL:
+            return self._eval_parallel_sync(args)
+        if target is _TRY_SENTINEL:
+            return self._eval_try(args)
+        if isinstance(target, BaseTool):
+            return target.invoke(
+                _build_tool_payload(target, args, runtime=self._runtime)
+            )
+        if callable(target):
+            result = target(*args)
+            if asyncio.iscoroutine(result):
+                msg = "Async call encountered in synchronous interpreter"
+                raise TypeError(msg)
             return result
-        if isinstance(statement, ExpressionStatement):
-            return self._eval_expression(
-                statement.expression,
-                env,
-                print_callback=print_callback,
-            )
-        msg = f"Unsupported statement: {type(statement).__name__}"
-        raise ValueError(msg)
+        return self._handler_for(target).call(target, args)
 
-    def _eval_expression(  # noqa: C901, PLR0911  # expression dispatch is centralized here
+    async def _call_async(
         self,
-        expression: Expression,
-        env: MutableMapping[str, Any],
+        target: Any,
+        args: tuple[Any, ...],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        if isinstance(expression, Literal):
-            return expression.value
-        if isinstance(expression, Name):
-            if expression.value in env:
-                return env[expression.value]
-            if expression.value in self._functions:
-                return self._functions[expression.value]
-            msg = f"Unknown name: {expression.value}"
-            raise NameError(msg)
-        if isinstance(expression, ListLiteral):
-            return [
-                self._eval_expression(item, env, print_callback=print_callback)
-                for item in expression.items
-            ]
-        if isinstance(expression, DictLiteral):
-            return {
-                key: self._eval_expression(value, env, print_callback=print_callback)
-                for key, value in expression.items
-            }
-        if isinstance(expression, BinaryOperation):
-            left = self._eval_expression(
-                expression.left,
-                env,
-                print_callback=print_callback,
-            )
-            right = self._eval_expression(
-                expression.right,
-                env,
-                print_callback=print_callback,
-            )
-            return self._eval_binary_operation(left, expression.operator, right)
-        if isinstance(expression, Index):
-            target = self._eval_expression(
-                expression.target,
-                env,
-                print_callback=print_callback,
-            )
-            index = self._eval_expression(
-                expression.index,
-                env,
-                print_callback=print_callback,
-            )
-            return self._eval_index(target, index)
-        if isinstance(expression, Attribute):
-            target = self._eval_expression(
-                expression.target,
-                env,
-                print_callback=print_callback,
-            )
-            return self._resolve_member(target, expression.name)
-        if isinstance(expression, Call):
-            return self._eval_call(expression, env, print_callback=print_callback)
-        msg = f"Unsupported expression: {type(expression).__name__}"
-        raise ValueError(msg)
-
-    def _eval_call(
-        self,
-        expression: Call,
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if isinstance(expression.target, Name):
-            if expression.target.value == "print":
-                return self._eval_print(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-            if expression.target.value == "parallel":
-                return self._eval_parallel(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-            if expression.target.value == "try":
-                return self._eval_try(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-        target = self._eval_expression(
-            expression.target,
-            env,
-            print_callback=print_callback,
-        )
-        args = tuple(
-            self._eval_expression(arg, env, print_callback=print_callback)
-            for arg in expression.args
-        )
+        if target is _PRINT_SENTINEL:
+            return self._eval_print(args, print_callback=print_callback)
+        if target is _PARALLEL_SENTINEL:
+            return await self._eval_parallel_async(args)
+        if target is _TRY_SENTINEL:
+            return self._eval_try(args)
         if isinstance(target, BaseTool):
             payload = _build_tool_payload(target, args, runtime=self._runtime)
+            if getattr(target, "coroutine", None) is not None:
+                return await target.ainvoke(payload)
             return target.invoke(payload)
         if callable(target):
-            return target(*args)
-        handler = self._handler_for(target)
-        return handler.call(target, args)
+            result = target(*args)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+        return self._handler_for(target).call(target, args)
+
+    def _eval_print(
+        self,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if len(args) != 1:
+            msg = "print expects exactly one argument"
+            raise ValueError(msg)
+        value = args[0]
+        formatted = self._format_value(value)
+        self._printed_lines.append(formatted)
+        if print_callback is not None:
+            print_callback(formatted)
+        return value
+
+    def _eval_parallel_sync(self, args: tuple[Any, ...]) -> list[Any]:
+        return list(args)
+
+    async def _eval_parallel_async(self, args: tuple[Any, ...]) -> list[Any]:
+        return list(args)
+
+    def _eval_try(self, args: tuple[Any, ...]) -> Any:
+        if len(args) != 2:
+            msg = "try expects exactly two arguments"
+            raise ValueError(msg)
+        return args[0]
+
+    def _eval_try_call_sync(
+        self,
+        expression: Call,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if len(expression.args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
+            msg = "try expects exactly two arguments"
+            raise ValueError(msg)
+        try:
+            return self.evaluate_program(
+                Program((ExpressionStatement(expression.args[0]),)),
+                print_callback=print_callback,
+            )
+        except Exception:  # noqa: BLE001
+            return self.evaluate_program(
+                Program((ExpressionStatement(expression.args[1]),)),
+                print_callback=print_callback,
+            )
+
+    async def _eval_try_call_async(
+        self,
+        expression: Call,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if len(expression.args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
+            msg = "try expects exactly two arguments"
+            raise ValueError(msg)
+        try:
+            return await self.aevaluate_program(
+                Program((ExpressionStatement(expression.args[0]),)),
+                print_callback=print_callback,
+            )
+        except Exception:  # noqa: BLE001
+            return await self.aevaluate_program(
+                Program((ExpressionStatement(expression.args[1]),)),
+                print_callback=print_callback,
+            )
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
         if isinstance(left, bool) or isinstance(right, bool):
@@ -815,12 +1072,16 @@ class Interpreter:
                 msg = "dict indexes must be strings"
                 raise TypeError(msg)
             return target[index]
-        handler = self._handler_for(target)
-        return handler.get_item(target, index)
+        if self._has_handler(target):
+            return self._handler_for(target).get_item(target, index)
+        msg = f"'{type(target).__name__}' object is not subscriptable"
+        raise TypeError(msg)
 
     def _resolve_member(self, target: Any, name: str) -> Any:
-        handler = self._handler_for(target)
-        return handler.resolve_member(target, name)
+        return self._handler_for(target).resolve_member(target, name)
+
+    def _has_handler(self, value: Any) -> bool:
+        return any(handler.supports(value) for handler in self._foreign_interfaces)
 
     def _handler_for(self, value: Any) -> ForeignObjectInterface:
         for handler in self._foreign_interfaces:
@@ -828,58 +1089,6 @@ class Interpreter:
                 return handler
         msg = f"No foreign object handler for {type(value).__name__}"
         raise TypeError(msg)
-
-    def _eval_print(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(args) != 1:
-            msg = "print expects exactly one argument"
-            raise ValueError(msg)
-        value = self._eval_expression(args[0], env, print_callback=print_callback)
-        formatted = self._format_value(value)
-        self._printed_lines.append(formatted)
-        if print_callback is not None:
-            print_callback(formatted)
-        return value
-
-    def _eval_parallel(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> list[Any]:
-        snapshots = [dict(env) for _ in args]
-        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            futures = [
-                executor.submit(
-                    self._eval_expression,
-                    arg,
-                    snapshot,
-                    print_callback=print_callback,
-                )
-                for arg, snapshot in zip(args, snapshots, strict=False)
-            ]
-            return [future.result() for future in futures]
-
-    def _eval_try(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
-            msg = "try expects exactly two arguments"
-            raise ValueError(msg)
-        try:
-            return self._eval_expression(args[0], env, print_callback=print_callback)
-        except Exception:  # noqa: BLE001
-            return self._eval_expression(args[1], env, print_callback=print_callback)
 
     def _format_value(self, value: Any) -> str:
         if value is None:
@@ -892,6 +1101,12 @@ class Interpreter:
 
     def _is_truthy(self, value: Any) -> bool:
         return bool(value)
+
+
+_PRINT_SENTINEL = object()
+_PARALLEL_SENTINEL = object()
+_TRY_SENTINEL = object()
+_NO_RESULT = object()
 
 
 __all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "Program"]

@@ -9,6 +9,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
 from langchain_repl import ForeignObjectInterface, Interpreter
+from langchain_repl.interpreter import OpCode
 
 
 def test_evaluates_literals_and_stateful_assignments() -> None:
@@ -463,6 +464,99 @@ def test_parse_method_returns_program_object() -> None:
 
     program = interpreter.parse("x = 1\nx")
     assert len(program.statements) == 2
+
+
+def test_compiler_emits_load_store_and_return_opcodes() -> None:
+    interpreter = Interpreter()
+
+    instructions = interpreter._compiler.compile_program(interpreter.parse("x = 1\nx"))
+
+    assert [instruction.opcode for instruction in instructions] == [
+        OpCode.LOAD_CONST,
+        OpCode.STORE_NAME,
+        OpCode.SET_LAST,
+        OpCode.LOAD_NAME,
+        OpCode.SET_LAST,
+        OpCode.RETURN_VALUE,
+    ]
+
+
+def test_compiler_emits_jump_opcodes_for_if_else() -> None:
+    interpreter = Interpreter()
+
+    instructions = interpreter._compiler.compile_program(
+        interpreter.parse('if True then\n    "yes"\nelse\n    "no"\nend')
+    )
+
+    assert [instruction.opcode for instruction in instructions] == [
+        OpCode.LOAD_CONST,
+        OpCode.JUMP_IF_FALSE,
+        OpCode.LOAD_CONST,
+        OpCode.SET_LAST,
+        OpCode.JUMP,
+        OpCode.LOAD_CONST,
+        OpCode.SET_LAST,
+        OpCode.RETURN_VALUE,
+    ]
+
+
+def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
+    interpreter = Interpreter()
+
+    instructions = interpreter._compiler.compile_program(
+        interpreter.parse("for item in [1, 2] do\n    item\nend")
+    )
+
+    assert [instruction.opcode for instruction in instructions] == [
+        OpCode.LOAD_CONST,
+        OpCode.LOAD_CONST,
+        OpCode.BUILD_LIST,
+        OpCode.ITER_PREP,
+        OpCode.ITER_NEXT,
+        OpCode.LOAD_NAME,
+        OpCode.SET_LAST,
+        OpCode.JUMP,
+        OpCode.RETURN_VALUE,
+    ]
+
+
+def test_compiler_emits_try_call_opcode() -> None:
+    interpreter = Interpreter()
+
+    instructions = interpreter._compiler.compile_program(
+        interpreter.parse('try(fail(), "fallback")')
+    )
+
+    assert [instruction.opcode for instruction in instructions] == [
+        OpCode.TRY_CALL,
+        OpCode.SET_LAST,
+        OpCode.RETURN_VALUE,
+    ]
+
+
+def test_compiler_emits_call_getattr_getindex_and_build_dict_opcodes() -> None:
+    interpreter = Interpreter()
+
+    instructions = interpreter._compiler.compile_program(
+        interpreter.parse('math.sin({"items": [10, 20]}["items"][0])')
+    )
+
+    assert [instruction.opcode for instruction in instructions] == [
+        OpCode.LOAD_NAME,
+        OpCode.GET_ATTR,
+        OpCode.LOAD_CONST,
+        OpCode.LOAD_CONST,
+        OpCode.LOAD_CONST,
+        OpCode.BUILD_LIST,
+        OpCode.BUILD_DICT,
+        OpCode.LOAD_CONST,
+        OpCode.GET_INDEX,
+        OpCode.LOAD_CONST,
+        OpCode.GET_INDEX,
+        OpCode.CALL,
+        OpCode.SET_LAST,
+        OpCode.RETURN_VALUE,
+    ]
 
 
 def test_parse_errors_are_clear() -> None:

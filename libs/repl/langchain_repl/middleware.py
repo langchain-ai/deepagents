@@ -239,6 +239,13 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
                 external_functions[name] = implementation
         return external_functions
 
+    def _format_interpreter_result(self, interpreter: Interpreter, value: Any) -> str:
+        if interpreter.printed_lines:
+            return "\n".join(interpreter.printed_lines).rstrip()
+        if value is None:
+            return ""
+        return str(value)
+
     def _run_interpreter(self, code: str, *, runtime: ToolRuntime | None = None) -> str:
         interpreter = Interpreter(
             functions=self._build_external_functions(runtime=runtime),
@@ -249,11 +256,21 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             value = interpreter.evaluate(code)
         except Exception as exc:  # noqa: BLE001
             return f"Error: {exc}"
-        if interpreter.printed_lines:
-            return "\n".join(interpreter.printed_lines).rstrip()
-        if value is None:
-            return ""
-        return str(value)
+        return self._format_interpreter_result(interpreter, value)
+
+    async def _arun_interpreter(
+        self, code: str, *, runtime: ToolRuntime | None = None
+    ) -> str:
+        interpreter = Interpreter(
+            functions=self._build_external_functions(runtime=runtime),
+            max_workers=self._max_workers,
+            runtime=runtime,
+        )
+        try:
+            value = await interpreter.aevaluate(code)
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+        return self._format_interpreter_result(interpreter, value)
 
     def _create_repl_tool(self) -> BaseTool:
         def _sync_repl(
@@ -266,7 +283,7 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
             code: Annotated[str, "Code string to evaluate in the REPL."],
             runtime: ToolRuntime,
         ) -> str:
-            return self._run_interpreter(code, runtime=runtime)
+            return await self._arun_interpreter(code, runtime=runtime)
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=self._format_external_functions_section()

@@ -41,6 +41,7 @@ DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 # Canonical filenames inside the project root.
 AGENTS_MD_FILENAME = "AGENTS.md"
 SKILLS_DIRNAME = "skills"
+USER_DIRNAME = "user"
 MCP_FILENAME = "mcp.json"
 
 

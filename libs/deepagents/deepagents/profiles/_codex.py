@@ -1,13 +1,14 @@
-"""OpenAI Codex model harness profile.
+"""OpenAI Codex model harness profiles.
 
 !!! warning
 
     This is an internal API subject to change without deprecation. It is not
     intended for external use or consumption.
 
-Registers a per-model profile for ``gpt-5.3-codex`` that layers on top of
-the provider-wide OpenAI profile.  The merge gives us ``use_responses_api``
-from the provider level plus Codex-specific tuning here.
+Registers per-model profiles for Codex variants (``gpt-5.2-codex``,
+``gpt-5.3-codex``) that layer on top of the provider-wide OpenAI profile.
+The merge gives us ``use_responses_api`` from the provider level plus
+Codex-specific tuning here.
 
 Prompt additions are derived from the official Codex Prompting Guide
 (https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide)
@@ -28,9 +29,10 @@ through implementation, verification, and a clear explanation of outcomes.
 - Bias to action: default to implementing with reasonable assumptions. Do not \
 end your turn with clarifications unless truly blocked.
 - Do not communicate an upfront plan or status preamble before acting. Just act.
-- Avoid excessive looping or repetition. If you find yourself re-reading or \
-re-editing the same files without clear progress, stop and summarize what is \
-blocking you.
+- Avoid excessive looping or repetition. If you have already called a tool and \
+received a valid response, use that information — do not re-invoke the same \
+tool with identical arguments. If you find yourself re-reading, re-querying, \
+or re-editing without clear progress, stop and summarize what is blocking you.
 
 ## Parallel Tool Use
 
@@ -54,11 +56,11 @@ _CODEX_TOOL_DESCRIPTION_OVERRIDES: dict[str, str] = {
     ),
 }
 
-_register_harness_profile(
-    "openai:gpt-5.3-codex",
-    _HarnessProfile(
-        init_kwargs={"reasoning_effort": "medium"},
-        system_prompt_suffix=_CODEX_SYSTEM_PROMPT_SUFFIX,
-        tool_description_overrides=_CODEX_TOOL_DESCRIPTION_OVERRIDES,
-    ),
+_CODEX_PROFILE = _HarnessProfile(
+    init_kwargs={"reasoning_effort": "medium"},
+    system_prompt_suffix=_CODEX_SYSTEM_PROMPT_SUFFIX,
+    tool_description_overrides=_CODEX_TOOL_DESCRIPTION_OVERRIDES,
 )
+
+for _model in ("openai:gpt-5.2-codex", "openai:gpt-5.3-codex"):
+    _register_harness_profile(_model, _CODEX_PROFILE)

@@ -575,28 +575,33 @@ class TestBuiltInProfiles:
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
         assert profile == _HarnessProfile()
 
-    def test_codex_profile_registered(self) -> None:
-        assert "openai:gpt-5.3-codex" in _HARNESS_PROFILES
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_registered(self, spec: str) -> None:
+        assert spec in _HARNESS_PROFILES
 
-    def test_codex_profile_merges_with_openai_provider(self) -> None:
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_merges_with_openai_provider(self, spec: str) -> None:
         """Codex profile inherits use_responses_api from the OpenAI provider."""
-        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        profile = _get_harness_profile(spec)
         assert profile.init_kwargs["use_responses_api"] is True
         assert profile.init_kwargs["reasoning_effort"] == "medium"
 
-    def test_codex_profile_has_system_prompt_suffix(self) -> None:
-        profile = _get_harness_profile("openai:gpt-5.3-codex")
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_has_system_prompt_suffix(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
         assert profile.system_prompt_suffix is not None
         assert "autonomous" in profile.system_prompt_suffix.lower()
         assert "parallel" in profile.system_prompt_suffix.lower()
         assert "bias to action" in profile.system_prompt_suffix.lower()
 
-    def test_codex_profile_has_execute_tool_override(self) -> None:
-        profile = _get_harness_profile("openai:gpt-5.3-codex")
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_has_execute_tool_override(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
         assert "execute" in profile.tool_description_overrides
 
-    def test_codex_profile_does_not_replace_base_system_prompt(self) -> None:
-        profile = _get_harness_profile("openai:gpt-5.3-codex")
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_does_not_replace_base_system_prompt(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
         assert profile.base_system_prompt is None
 
     def test_other_openai_models_unaffected_by_codex_profile(self) -> None:

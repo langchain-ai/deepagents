@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 
 import pytest
 
-from langchain_repl import Interpreter
+from langchain_repl import ForeignObjectInterface, Interpreter
 
 
 def test_evaluates_literals_and_stateful_assignments() -> None:
@@ -38,29 +39,50 @@ def test_state_persists_across_evaluations() -> None:
     assert interpreter.env == {"x": 10}
 
 
+def test_uses_provided_environment_mapping() -> None:
+    env = {"x": 10}
+    interpreter = Interpreter(env=env)
+
+    result = interpreter.evaluate("y = x\ny")
+
+    assert result == 10
+    assert interpreter.env == {"x": 10, "y": 10}
+    assert env == {"x": 10, "y": 10}
+
+
 def test_print_records_output_and_returns_value() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate('print("hello")')
 
     assert result == "hello"
     assert interpreter.printed_lines == ["hello"]
 
 
+def test_print_callback_is_scoped_to_evaluate_call() -> None:
+    interpreter = Interpreter()
+    printed: list[str] = []
+
+    result = interpreter.evaluate(
+        'print("hello")\nprint("goodbye")',
+        print_callback=printed.append,
+    )
+    # result has the value of the last expression
+    assert result == "goodbye"
+    assert printed == ["hello", "goodbye"]
+    interpreter.evaluate('print("later")')
+    assert printed == ["hello", "goodbye"]
+
+
 def test_if_uses_truthiness_to_choose_branch() -> None:
     interpreter = Interpreter()
-
     truthy = interpreter.evaluate('if True then "big" else "small" end')
     falsy = interpreter.evaluate('if None then "big" else "small" end')
-
     assert (truthy, falsy) == ("big", "small")
 
 
 def test_calls_registered_functions_and_uses_variables() -> None:
     interpreter = Interpreter(functions={"add": lambda left, right: left + right})
-
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
-
     assert result == 30
     assert interpreter.env == {"x": 10, "y": 20}
 
@@ -176,6 +198,13 @@ def test_calling_unknown_function_raises_name_error() -> None:
 
     with pytest.raises(NameError, match="Unknown name: missing_fn"):
         interpreter.evaluate("missing_fn(1, 2)")
+
+
+def test_binary_operations_require_numeric_operands() -> None:
+    interpreter = Interpreter()
+
+    with pytest.raises(TypeError, match="binary operations require numeric operands"):
+        interpreter.evaluate('"hello" + 1')
 
 
 def test_print_requires_exactly_one_argument() -> None:
@@ -392,19 +421,16 @@ def test_try_only_catches_primary_expression_errors() -> None:
 
 def test_try_returns_primary_value_when_no_error_occurs() -> None:
     interpreter = Interpreter()
-
     assert interpreter.evaluate('try("value", "fallback")') == "value"
 
 
 def test_parallel_accepts_no_arguments() -> None:
     interpreter = Interpreter()
-
     assert interpreter.evaluate("parallel()") == []
 
 
 def test_function_call_accepts_no_arguments() -> None:
     interpreter = Interpreter(functions={"greet": lambda: "hello"})
-
     assert interpreter.evaluate("greet()") == "hello"
 
 
@@ -430,7 +456,43 @@ def test_parse_error_for_missing_closing_bracket_is_clear() -> None:
 
 
 def test_parse_error_for_invalid_character_is_clear() -> None:
+    """Test parse error for invalid characters."""
     interpreter = Interpreter()
 
     with pytest.raises(ValueError, match="Unexpected character '@'"):
         interpreter.evaluate("@")
+
+
+class _MathForeignInterface(ForeignObjectInterface):
+    def supports(self, value: object) -> bool:
+        return value is math
+
+    def get_item(self, value: object, key: object) -> object:
+        msg = "unsupported foreign get_item"
+        raise TypeError(msg)
+
+    def resolve_member(self, value: object, name: str) -> object:
+        if value is math and name in {"sin", "cos"}:
+            return getattr(math, name)
+        msg = f"Unknown foreign member: {name}"
+        raise AttributeError(msg)
+
+    def call(self, value: object, args: tuple[object, ...]) -> object:
+        msg = "unsupported foreign call"
+        raise TypeError(msg)
+
+
+def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> None:
+    """Foreign object dispatch."""
+    interpreter = Interpreter(
+        foreign_interfaces=[_MathForeignInterface()],
+        env={"math": math},
+    )
+    assert interpreter.evaluate("math.sin(23)") == math.sin(23)
+
+
+def test_foreign_object_dispatcher_errors_without_handler() -> None:
+    """Test foreign function dispatcher errors without handler."""
+    interpreter = Interpreter(env={"math": math})
+    with pytest.raises(TypeError, match="No foreign object handler for module"):
+        interpreter.evaluate("math.sin(23)")

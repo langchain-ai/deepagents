@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -97,10 +97,27 @@ class DictLiteral(Expression):
 
 
 @dataclass(frozen=True)
-class Call(Expression):
-    """A function call expression."""
+class BinaryOperation(Expression):
+    """A binary operation expression."""
 
+    left: Expression
+    operator: str
+    right: Expression
+
+
+@dataclass(frozen=True)
+class Attribute(Expression):
+    """An attribute access expression."""
+
+    target: Expression
     name: str
+
+
+@dataclass(frozen=True)
+class Call(Expression):
+    """A function or callable invocation expression."""
+
+    target: Expression
     args: tuple[Expression, ...]
 
 
@@ -114,6 +131,25 @@ class Index(Expression):
 
 class ParseError(ValueError):
     """Raised when REPL source cannot be parsed."""
+
+
+class ForeignObjectInterface(Protocol):
+    """Protocol for dispatching operations on foreign objects.
+
+    Currently limited to sync invocation only.
+    """
+
+    def supports(self, value: Any) -> bool:
+        """Return whether this handler manages the provided runtime value."""
+
+    def get_item(self, value: Any, key: Any) -> Any:
+        """Resolve `value[key]` for a supported foreign object."""
+
+    def resolve_member(self, value: Any, name: str) -> Any:
+        """Resolve `value.name` for a supported foreign object."""
+
+    def call(self, value: Any, args: tuple[Any, ...]) -> Any:
+        """Invoke `value(*args)` for a supported foreign object."""
 
 
 class _Tokenizer:
@@ -138,7 +174,7 @@ class _Tokenizer:
             if char == "#":
                 self._skip_comment()
                 continue
-            if char in "()[]{}:,.=":
+            if char in "()+-[]{}:,.=":
                 tokens.append(Token(char, char, self._line, self._column))
                 self._advance()
                 continue
@@ -310,6 +346,26 @@ class _Parser:
         return ForStatement(name=name, iterable=iterable, body=body)
 
     def _parse_expression(self) -> Expression:
+        expr = self._parse_postfix()
+        while True:
+            if self._match("+"):
+                expr = BinaryOperation(
+                    left=expr,
+                    operator="+",
+                    right=self._parse_postfix(),
+                )
+                continue
+            if self._match("-"):
+                expr = BinaryOperation(
+                    left=expr,
+                    operator="-",
+                    right=self._parse_postfix(),
+                )
+                continue
+            break
+        return expr
+
+    def _parse_postfix(self) -> Expression:
         expr = self._parse_primary()
         while True:
             if self._match("["):
@@ -317,16 +373,19 @@ class _Parser:
                 self._expect("]")
                 expr = Index(target=expr, index=index)
                 continue
+            if self._match("."):
+                expr = Attribute(target=expr, name=self._expect("NAME").value)
+                continue
+            if self._match("("):
+                expr = Call(target=expr, args=tuple(self._parse_arguments()))
+                continue
             break
         return expr
 
-    def _parse_primary(self) -> Expression:  # noqa: C901, PLR0911
+    def _parse_primary(self) -> Expression:  # noqa: PLR0911
         token = self._current()
         if token.kind == "NAME":
-            name = self._advance().value
-            if self._match("("):
-                return Call(name=name, args=tuple(self._parse_arguments()))
-            return Name(name)
+            return Name(self._advance().value)
         if token.kind == "NUMBER":
             return Literal(self._advance().value)
         if token.kind == "STRING":
@@ -437,11 +496,14 @@ class Interpreter:
         self,
         *,
         functions: Mapping[str, Callable[..., Any]] | None = None,
+        env: MutableMapping[str, Any] | None = None,
+        foreign_interfaces: Sequence[ForeignObjectInterface] = (),
         max_workers: int | None = None,
     ) -> None:
         """Initialize the interpreter with optional foreign functions."""
         self._functions = dict(functions or {})
-        self._env: dict[str, Any] = {}
+        self._foreign_interfaces = foreign_interfaces
+        self._env: MutableMapping[str, Any] = env if env is not None else {}
         self._printed_lines: list[str] = []
         self._max_workers = max_workers
 
@@ -455,57 +517,106 @@ class Interpreter:
         """Return the captured output lines."""
         return list(self._printed_lines)
 
-    def evaluate(self, source: str) -> Any:
+    def evaluate(
+        self,
+        source: str,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         """Parse and evaluate REPL source code."""
         program = self.parse(source)
-        return self._eval_program(program, self._env)
+        return self._eval_program(program, self._env, print_callback=print_callback)
 
     def parse(self, source: str) -> Program:
         """Parse REPL source code into a program object."""
         tokens = _Tokenizer(source).tokenize()
         return _Parser(tokens).parse()
 
-    def _eval_program(self, program: Program, env: dict[str, Any]) -> Any:
+    def _eval_program(
+        self,
+        program: Program,
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         result: Any = None
         for statement in program.statements:
-            result = self._eval_statement(statement, env)
+            result = self._eval_statement(statement, env, print_callback=print_callback)
         return result
 
-    def _eval_block(self, statements: Iterable[Statement], env: dict[str, Any]) -> Any:
+    def _eval_block(
+        self,
+        statements: Iterable[Statement],
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         result: Any = None
         for statement in statements:
-            result = self._eval_statement(statement, env)
+            result = self._eval_statement(statement, env, print_callback=print_callback)
         return result
 
-    def _eval_statement(self, statement: Statement, env: dict[str, Any]) -> Any:
+    def _eval_statement(
+        self,
+        statement: Statement,
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         if isinstance(statement, Assign):
-            value = self._eval_expression(statement.value, env)
+            value = self._eval_expression(
+                statement.value,
+                env,
+                print_callback=print_callback,
+            )
             env[statement.name] = value
             return value
         if isinstance(statement, IfStatement):
-            condition = self._eval_expression(statement.condition, env)
+            condition = self._eval_expression(
+                statement.condition,
+                env,
+                print_callback=print_callback,
+            )
             branch = (
                 statement.then_body
                 if self._is_truthy(condition)
                 else statement.else_body
             )
-            return self._eval_block(branch, env)
+            return self._eval_block(branch, env, print_callback=print_callback)
         if isinstance(statement, ForStatement):
             result: Any = None
-            iterable = self._eval_expression(statement.iterable, env)
+            iterable = self._eval_expression(
+                statement.iterable,
+                env,
+                print_callback=print_callback,
+            )
             if not isinstance(iterable, list):
                 msg = "for loops require a list iterable"
                 raise TypeError(msg)
             for item in iterable:
                 env[statement.name] = item
-                result = self._eval_block(statement.body, env)
+                result = self._eval_block(
+                    statement.body,
+                    env,
+                    print_callback=print_callback,
+                )
             return result
         if isinstance(statement, ExpressionStatement):
-            return self._eval_expression(statement.expression, env)
+            return self._eval_expression(
+                statement.expression,
+                env,
+                print_callback=print_callback,
+            )
         msg = f"Unsupported statement: {type(statement).__name__}"
         raise ValueError(msg)
 
-    def _eval_expression(self, expression: Expression, env: dict[str, Any]) -> Any:  # noqa: C901, PLR0911, PLR0912
+    def _eval_expression(  # noqa: C901, PLR0911  # expression dispatch is centralized here
+        self,
+        expression: Expression,
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         if isinstance(expression, Literal):
             return expression.value
         if isinstance(expression, Name):
@@ -516,62 +627,181 @@ class Interpreter:
             msg = f"Unknown name: {expression.value}"
             raise NameError(msg)
         if isinstance(expression, ListLiteral):
-            return [self._eval_expression(item, env) for item in expression.items]
+            return [
+                self._eval_expression(item, env, print_callback=print_callback)
+                for item in expression.items
+            ]
         if isinstance(expression, DictLiteral):
             return {
-                key: self._eval_expression(value, env)
+                key: self._eval_expression(value, env, print_callback=print_callback)
                 for key, value in expression.items
             }
+        if isinstance(expression, BinaryOperation):
+            left = self._eval_expression(
+                expression.left,
+                env,
+                print_callback=print_callback,
+            )
+            right = self._eval_expression(
+                expression.right,
+                env,
+                print_callback=print_callback,
+            )
+            return self._eval_binary_operation(left, expression.operator, right)
         if isinstance(expression, Index):
-            target = self._eval_expression(expression.target, env)
-            index = self._eval_expression(expression.index, env)
-            if isinstance(target, list) and not isinstance(index, int):
-                msg = "list indexes must be integers"
-                raise TypeError(msg)
-            if isinstance(target, dict) and not isinstance(index, str):
-                msg = "dict indexes must be strings"
-                raise TypeError(msg)
-            return target[index]
+            target = self._eval_expression(
+                expression.target,
+                env,
+                print_callback=print_callback,
+            )
+            index = self._eval_expression(
+                expression.index,
+                env,
+                print_callback=print_callback,
+            )
+            return self._eval_index(target, index)
+        if isinstance(expression, Attribute):
+            target = self._eval_expression(
+                expression.target,
+                env,
+                print_callback=print_callback,
+            )
+            return self._resolve_member(target, expression.name)
         if isinstance(expression, Call):
-            if expression.name == "print":
-                return self._eval_print(expression.args, env)
-            if expression.name == "parallel":
-                return self._eval_parallel(expression.args, env)
-            if expression.name == "try":
-                return self._eval_try(expression.args, env)
-            func = self._eval_expression(Name(expression.name), env)
-            args = [self._eval_expression(arg, env) for arg in expression.args]
-            return func(*args)
+            return self._eval_call(expression, env, print_callback=print_callback)
         msg = f"Unsupported expression: {type(expression).__name__}"
         raise ValueError(msg)
 
-    def _eval_print(self, args: tuple[Expression, ...], env: dict[str, Any]) -> Any:
+    def _eval_call(
+        self,
+        expression: Call,
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if isinstance(expression.target, Name):
+            if expression.target.value == "print":
+                return self._eval_print(
+                    expression.args,
+                    env,
+                    print_callback=print_callback,
+                )
+            if expression.target.value == "parallel":
+                return self._eval_parallel(
+                    expression.args,
+                    env,
+                    print_callback=print_callback,
+                )
+            if expression.target.value == "try":
+                return self._eval_try(
+                    expression.args,
+                    env,
+                    print_callback=print_callback,
+                )
+        target = self._eval_expression(
+            expression.target,
+            env,
+            print_callback=print_callback,
+        )
+        args = tuple(
+            self._eval_expression(arg, env, print_callback=print_callback)
+            for arg in expression.args
+        )
+        if callable(target):
+            return target(*args)
+        handler = self._handler_for(target)
+        return handler.call(target, args)
+
+    def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
+        if isinstance(left, bool) or isinstance(right, bool):
+            msg = "binary operations require numeric operands"
+            raise TypeError(msg)
+        if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+            msg = "binary operations require numeric operands"
+            raise TypeError(msg)
+        if operator == "+":
+            return left + right
+        if operator == "-":
+            return left - right
+        msg = f"Unsupported binary operator: {operator}"
+        raise ValueError(msg)
+
+    def _eval_index(self, target: Any, index: Any) -> Any:
+        if isinstance(target, list):
+            if not isinstance(index, int):
+                msg = "list indexes must be integers"
+                raise TypeError(msg)
+            return target[index]
+        if isinstance(target, dict):
+            if not isinstance(index, str):
+                msg = "dict indexes must be strings"
+                raise TypeError(msg)
+            return target[index]
+        handler = self._handler_for(target)
+        return handler.get_item(target, index)
+
+    def _resolve_member(self, target: Any, name: str) -> Any:
+        handler = self._handler_for(target)
+        return handler.resolve_member(target, name)
+
+    def _handler_for(self, value: Any) -> ForeignObjectInterface:
+        for handler in self._foreign_interfaces:
+            if handler.supports(value):
+                return handler
+        msg = f"No foreign object handler for {type(value).__name__}"
+        raise TypeError(msg)
+
+    def _eval_print(
+        self,
+        args: tuple[Expression, ...],
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         if len(args) != 1:
             msg = "print expects exactly one argument"
             raise ValueError(msg)
-        value = self._eval_expression(args[0], env)
-        self._printed_lines.append(self._format_value(value))
+        value = self._eval_expression(args[0], env, print_callback=print_callback)
+        formatted = self._format_value(value)
+        self._printed_lines.append(formatted)
+        if print_callback is not None:
+            print_callback(formatted)
         return value
 
     def _eval_parallel(
-        self, args: tuple[Expression, ...], env: dict[str, Any]
+        self,
+        args: tuple[Expression, ...],
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
     ) -> list[Any]:
         snapshots = [dict(env) for _ in args]
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
-                executor.submit(self._eval_expression, arg, snapshot)
+                executor.submit(
+                    self._eval_expression,
+                    arg,
+                    snapshot,
+                    print_callback=print_callback,
+                )
                 for arg, snapshot in zip(args, snapshots, strict=False)
             ]
             return [future.result() for future in futures]
 
-    def _eval_try(self, args: tuple[Expression, ...], env: dict[str, Any]) -> Any:
+    def _eval_try(
+        self,
+        args: tuple[Expression, ...],
+        env: MutableMapping[str, Any],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
         if len(args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
             msg = "try expects exactly two arguments"
             raise ValueError(msg)
         try:
-            return self._eval_expression(args[0], env)
+            return self._eval_expression(args[0], env, print_callback=print_callback)
         except Exception:  # noqa: BLE001
-            return self._eval_expression(args[1], env)
+            return self._eval_expression(args[1], env, print_callback=print_callback)
 
     def _format_value(self, value: Any) -> str:
         if value is None:
@@ -585,5 +815,5 @@ class Interpreter:
     def _is_truthy(self, value: Any) -> bool:
         return bool(value)
 
-    def _is_truthy(self, value: Any) -> bool:
-        return bool(value)
+
+__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "Program"]

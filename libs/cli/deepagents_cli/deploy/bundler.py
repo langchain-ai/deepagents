@@ -9,13 +9,16 @@ Reads the canonical project layout:
     .env             # optional — environment variables
     mcp.json         # optional — HTTP/SSE MCP servers
     skills/          # optional — auto-seeded into skills namespace
-    user/            # optional — per-user memory templates (writable)
+    user/            # optional — per-user writable memory
+        AGENTS.md    # optional — seeded as empty if not provided
 ```
 
 ...and writes everything `langgraph deploy` needs to a build directory.
 
-AGENTS.md and skills are read-only at runtime.  User memory files
-(``user/``) are writable — the agent can update them per-user.
+AGENTS.md and skills are read-only at runtime.  When a ``user/``
+directory is present, a per-user ``AGENTS.md`` is seeded (from
+``user/AGENTS.md`` if provided, otherwise empty) and is writable
+at runtime.
 """
 
 from __future__ import annotations
@@ -103,14 +106,11 @@ def bundle(
 
     # 4. Render deploy_graph.py.
     has_user_memories = (project_root / USER_DIRNAME).is_dir()
-    user_mem_keys = list(seed.get("user_memories", {}))
-    user_memory_paths = [f"/memories/user{p}" for p in user_mem_keys]
     (build_dir / "deploy_graph.py").write_text(
         _render_deploy_graph(
             config,
             mcp_present=mcp_present,
             has_user_memories=has_user_memories,
-            user_memory_paths=user_memory_paths,
         ),
         encoding="utf-8",
     )
@@ -143,12 +143,13 @@ def _build_seed(
         {
             "memories":       { "/AGENTS.md": "..." },
             "skills":         { "/<skill>/SKILL.md": "...", ... },
-            "user_memories":  { "/prefs.md": "...", ... }
+            "user_memories":  { "/AGENTS.md": "..." }
         }
 
     ``memories`` and ``skills`` are read-only at runtime.
-    ``user_memories`` are writable — mounted at ``/memories/user/``,
-    namespaced per user_id.
+    ``user_memories`` contains a single writable ``AGENTS.md`` mounted at
+    ``/memories/user/``, namespaced per user_id.  If the project has a
+    ``user/`` directory (even if empty), an ``AGENTS.md`` is always seeded.
     """
     memories: dict[str, str] = {f"/{AGENTS_MD_FILENAME}": system_prompt}
     skills: dict[str, str] = {}
@@ -163,10 +164,13 @@ def _build_seed(
 
     user_dir = project_root / USER_DIRNAME
     if user_dir.is_dir():
-        for f in sorted(user_dir.rglob("*")):
-            if f.is_file() and not f.name.startswith("."):
-                rel = f.relative_to(user_dir).as_posix()
-                user_memories[f"/{rel}"] = f.read_text(encoding="utf-8")
+        user_agents_md = user_dir / AGENTS_MD_FILENAME
+        content = (
+            user_agents_md.read_text(encoding="utf-8")
+            if user_agents_md.is_file()
+            else ""
+        )
+        user_memories[f"/{AGENTS_MD_FILENAME}"] = content
 
     return {
         "memories": memories,
@@ -180,7 +184,6 @@ def _render_deploy_graph(
     *,
     mcp_present: bool,
     has_user_memories: bool = False,
-    user_memory_paths: list[str] | None = None,
 ) -> str:
     """Render the generated `deploy_graph.py`."""
     provider = config.sandbox.provider
@@ -206,7 +209,6 @@ def _render_deploy_graph(
         mcp_tools_load_call=mcp_tools_load_call,
         default_assistant_id=config.agent.name,
         has_user_memories=has_user_memories,
-        user_memory_paths=user_memory_paths or [],
     )
 
 

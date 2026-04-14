@@ -41,7 +41,7 @@ Deep Agents Deploy is built on [Deep Agents](https://github.com/langchain-ai/dee
 | **`model`** | The LLM to use. Any provider works — see [Supported Models](#supported-models). |
 | **`AGENTS.md`** | The system prompt, loaded at the start of each session. |
 | **`skills`** | [Agent Skills](https://agentskills.io/) for specialized knowledge and actions. Skills are synced into the sandbox so the agent can execute them at runtime. See [Skills docs](https://docs.langchain.com/oss/python/deepagents/skills). |
-| **`user/`** | Per-user memory templates. Files are seeded once per user (never overwritten) and writable at runtime. Preloaded into the agent's context via the memory middleware. |
+| **`user/`** | Per-user writable memory. If present, a single `AGENTS.md` is seeded per user (from `user/AGENTS.md` if provided, otherwise empty). Writable at runtime. Preloaded into the agent's context via the memory middleware. |
 | **`mcp.json`** | MCP tools (HTTP/SSE). See [MCP docs](https://docs.langchain.com/oss/python/langchain/mcp). |
 | **`sandbox`** | Optional execution environment. See [Sandbox providers](#sandbox-providers). |
 
@@ -107,14 +107,14 @@ my-agent/
 │   └── data-analysis/
 │       └── SKILL.md
 └── user/
-    └── preferences.md
+    └── AGENTS.md
 ```
 
 | File/directory | Purpose | Required |
 | --- | --- | --- |
 | `AGENTS.md` | [Memory](https://docs.langchain.com/oss/python/deepagents/memory) for the agent. Provides persistent context (project conventions, instructions, preferences) that is always loaded at startup. Read-only at runtime. | Yes |
 | `skills/` | Directory of [skill](https://docs.langchain.com/oss/python/deepagents/skills) definitions. Each subdirectory should contain a `SKILL.md` file. Read-only at runtime. | No |
-| `user/` | Per-user memory templates. Files are seeded once per user on first access and never overwritten, so user edits persist. Writable at runtime — the agent can update these files. Preloaded into the agent's context at the start of each session. | No |
+| `user/` | Per-user writable memory. When present, a single `AGENTS.md` is seeded per user (from `user/AGENTS.md` if provided, otherwise empty). Writable at runtime — the agent can update this file as it learns about the user. Preloaded into the agent's context at the start of each session. | No |
 | `mcp.json` | [MCP](https://modelcontextprotocol.io/) server configuration. Only `http` and `sse` transports are supported in deployed contexts. | No |
 | `.env` | Environment variables (API keys, secrets). Placed alongside `deepagents.toml` at the project root. | No |
 
@@ -150,7 +150,7 @@ model = "anthropic:claude-sonnet-4-6"
 Skills, user memories, MCP servers, and model dependencies are auto-detected from the project layout — you don't declare them in `deepagents.toml`:
 
 - **Skills** — the bundler recursively scans `skills/`, skipping hidden dotfiles, and bundles the rest.
-- **User memories** — if `user/` exists, files are bundled as per-user memory templates. At runtime, each user gets their own copy (seeded on first access, never overwritten). The agent can read and write these files.
+- **User memory** — if `user/` exists, a single `AGENTS.md` is bundled as per-user memory (from `user/AGENTS.md` if present, otherwise empty). At runtime, each user gets their own copy (seeded on first access, never overwritten). The agent can read and write this file.
 - **MCP servers** — if `mcp.json` exists, it is included in the deployment and [`langchain-mcp-adapters`](https://pypi.org/project/langchain-mcp-adapters/) is added as a dependency. Only HTTP/SSE transports are supported (stdio is rejected at bundle time).
 - **Model dependencies** — the `provider:` prefix in the `model` field determines the required `langchain-*` package (e.g., `anthropic` -> `langchain-anthropic`).
 - **Sandbox dependencies** — the `[sandbox].provider` value maps to its partner package (e.g., `daytona` -> `langchain-daytona`).
@@ -304,7 +304,7 @@ my-content-writer/
 │   ├── blog-post/SKILL.md
 │   └── social-media/SKILL.md
 └── user/
-    └── preferences.md      # writable — agent learns user preferences
+    └── AGENTS.md            # writable — agent learns user preferences
 ```
 
 A coding agent with a LangSmith sandbox for running code:
@@ -322,21 +322,23 @@ image = "python:3.12"
 
 ## User Memory
 
-User memory gives each user their own writable files that persist across conversations. Place template files in the `user/` directory at your project root:
+User memory gives each user their own writable `AGENTS.md` that persists across conversations. To enable it, create a `user/` directory at your project root:
 
 ```txt
 user/
-└── preferences.md
+└── AGENTS.md    # optional — seeded as empty if not provided
 ```
 
-At runtime, these files are mounted at `/memories/user/` and scoped per user via custom auth (`runtime.server_info.user.identity`). The first time a user interacts with the agent, their namespace is seeded with a copy of each template file. Subsequent interactions reuse the existing files — the agent's edits persist, and redeployments never overwrite user data.
+If the `user/` directory exists (even if empty), every user gets their own `AGENTS.md` at `/memories/user/AGENTS.md`. If you provide `user/AGENTS.md`, its contents are used as the initial template; otherwise an empty file is seeded.
+
+At runtime, user memory is scoped per user via custom auth (`runtime.server_info.user.identity`). The first time a user interacts with the agent, their namespace is seeded with the template. Subsequent interactions reuse the existing file — the agent's edits persist, and redeployments never overwrite user data.
 
 ### How it works
 
-1. **Bundle time** — the bundler scans `user/` and includes the files in the seed payload.
-2. **Runtime (first access)** — when a user_id is seen for the first time, the seed templates are written to the store under that user's namespace. Existing entries are never overwritten.
-3. **Preloaded** — user memory files are passed to the memory middleware, so the agent sees their contents in context at the start of every conversation.
-4. **Writable** — the agent can update user memory files via `edit_file`. AGENTS.md and skills are read-only.
+1. **Bundle time** — the bundler reads `user/AGENTS.md` (or uses an empty string) and includes it in the seed payload.
+2. **Runtime (first access)** — when a user_id is seen for the first time, the `AGENTS.md` template is written to the store under that user's namespace. Existing entries are never overwritten.
+3. **Preloaded** — the user `AGENTS.md` is passed to the memory middleware, so the agent sees its contents in context at the start of every conversation.
+4. **Writable** — the agent can update it via `edit_file`. The shared `AGENTS.md` and skills are read-only.
 
 ### Permissions
 
@@ -352,7 +354,7 @@ The `user_id` is resolved from custom auth via `runtime.user.identity`. The plat
 
 ## Gotchas
 
-- **AGENTS.md and skills are read-only at runtime.** Edit source files and redeploy to update them. User memory files (`/memories/user/`) are the exception — they are writable by the agent.
+- **AGENTS.md and skills are read-only at runtime.** Edit source files and redeploy to update them. The per-user `AGENTS.md` at `/memories/user/AGENTS.md` is the exception — it is writable by the agent.
 - **Full rebuild on deploy:** `deepagents deploy` creates a new revision on every invocation. Use `deepagents dev` for local iteration.
 - **Sandbox lifecycle:** Thread-scoped sandboxes are provisioned per thread and will be re-created if the server restarts. Use `scope = "assistant"` if you need sandbox state that persists across threads.
 - **MCP: HTTP/SSE only.** Stdio transports are rejected at bundle time.

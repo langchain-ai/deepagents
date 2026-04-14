@@ -203,9 +203,9 @@ async def _load_mcp_tools():
 #
 #   Mount              Namespace                                   Writable
 #   -----------------  ------------------------------------------  --------
-#   /memories/user/    (assistant_id, user_id)   per-file
-#   /memories/skills/  (assistant_id,)           per-file
-#   /memories/         (assistant_id,)           per-file  [AGENTS.md]
+#   /memories/user/    (assistant_id, user_id)   yes  [user AGENTS.md]
+#   /memories/skills/  (assistant_id,)           no
+#   /memories/         (assistant_id,)           no   [AGENTS.md]
 #   default            sandbox (per scope)       yes
 #
 # `make_graph` takes the `RunnableConfig` at factory time, pulls
@@ -539,10 +539,10 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
 
     backend_factory = _build_backend_factory(assistant_id)
 
-    # Preload AGENTS.md + user memory files into the agent's context.
+    # Preload AGENTS.md + user memory into the agent's context.
     memory_sources = [f"{{MEMORIES_PREFIX}}AGENTS.md"]
     if HAS_USER_MEMORIES and user_id:
-        memory_sources.extend({user_memory_paths!r})
+        memory_sources.append(f"{{USER_PREFIX}}AGENTS.md")
 
     # AGENTS.md and skills are read-only; user memories are writable.
     permissions = [

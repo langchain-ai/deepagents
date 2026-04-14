@@ -62,7 +62,7 @@ async def main():
     print("=== Thread 1: Setting preference ===")
     resp1 = await run_thread(
         client, assistant_id,
-        "I prefer concise, bullet-point style content. Please remember this preference by updating my preferences file.",
+        "I prefer concise, bullet-point style content. Please remember this preference.",
         user_id=USER_ID,
     )
     print(f"  Response (last 300 chars): ...{resp1[-300:] if resp1 else 'NONE'}\n")

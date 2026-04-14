@@ -91,32 +91,35 @@ class TestBuildSeed:
         seed = _build_seed(config, project, "# prompt")
         assert seed["user_memories"] == {}
 
-    def test_user_memories_empty_dict_when_empty_dir(self, tmp_path: Path) -> None:
+    def test_user_memories_seeds_empty_agents_md_when_empty_dir(
+        self,
+        tmp_path: Path,
+    ) -> None:
         project = _minimal_project(tmp_path)
         (project / USER_DIRNAME).mkdir()
         config = _minimal_config()
         seed = _build_seed(config, project, "# prompt")
-        assert seed["user_memories"] == {}
+        assert seed["user_memories"] == {"/AGENTS.md": ""}
 
-    def test_user_memories_populated_from_dir(self, tmp_path: Path) -> None:
+    def test_user_memories_reads_agents_md(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         user_dir = project / USER_DIRNAME
         user_dir.mkdir(parents=True)
-        content = "# Prefs\n"
-        (user_dir / "prefs.md").write_text(content, encoding="utf-8")
+        content = "# User Prefs\n"
+        (user_dir / "AGENTS.md").write_text(content, encoding="utf-8")
         config = _minimal_config()
         seed = _build_seed(config, project, "# prompt")
-        assert "/prefs.md" in seed["user_memories"]
-        assert seed["user_memories"]["/prefs.md"] == content
+        assert seed["user_memories"] == {"/AGENTS.md": content}
 
-    def test_user_memories_dotfiles_excluded(self, tmp_path: Path) -> None:
+    def test_user_memories_ignores_non_agents_md_files(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         user_dir = project / USER_DIRNAME
         user_dir.mkdir(parents=True)
-        (user_dir / ".hidden").write_text("secret", encoding="utf-8")
+        (user_dir / "AGENTS.md").write_text("# user mem", encoding="utf-8")
+        (user_dir / "other.md").write_text("ignored", encoding="utf-8")
         config = _minimal_config()
         seed = _build_seed(config, project, "# prompt")
-        assert seed["user_memories"] == {}
+        assert list(seed["user_memories"].keys()) == ["/AGENTS.md"]
 
 
 class TestRenderLanggraphJson:
@@ -223,26 +226,14 @@ class TestRenderDeployGraph:
             config,
             mcp_present=False,
             has_user_memories=True,
-            user_memory_paths=["/memories/user/prefs.md"],
         )
         compile(result, "<deploy_graph_user_mem>", "exec")
         assert "HAS_USER_MEMORIES = True" in result
         assert 'USER_PREFIX = "/memories/user/"' in result
         assert "_seed_user_memories_if_needed" in result
-        # User memory paths preloaded into memory sources
-        assert "/memories/user/prefs.md" in result
-
-    def test_user_memories_enabled_empty_dir(self) -> None:
-        """Empty user/ dir still enables user memory (no seed files)."""
-        config = _minimal_config()
-        result = _render_deploy_graph(
-            config,
-            mcp_present=False,
-            has_user_memories=True,
-            user_memory_paths=[],
-        )
-        compile(result, "<deploy_graph_user_mem_empty>", "exec")
-        assert "HAS_USER_MEMORIES = True" in result
+        # Single user AGENTS.md path preloaded into memory sources
+        assert "USER_PREFIX" in result
+        assert "AGENTS.md" in result
 
     def test_no_default_user_id_fallback(self) -> None:
         """User namespace factory raises instead of falling back to 'default'."""
@@ -251,7 +242,6 @@ class TestRenderDeployGraph:
             config,
             mcp_present=False,
             has_user_memories=True,
-            user_memory_paths=[],
         )
         # The user namespace factory should raise, not fall back
         fn = "_make_user_namespace_factory"
@@ -332,14 +322,14 @@ class TestPrintBundleSummary:
         seed = {
             "memories": {"/AGENTS.md": "x"},
             "skills": {},
-            "user_memories": {"/prefs.md": "content"},
+            "user_memories": {"/AGENTS.md": ""},
         }
         (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
         config = _minimal_config()
         print_bundle_summary(config, tmp_path)
         out = capsys.readouterr().out
         assert "User memory seed" in out
-        assert "/prefs.md" in out
+        assert "/AGENTS.md" in out
 
     def test_handles_missing_seed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

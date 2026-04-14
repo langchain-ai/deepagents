@@ -5,6 +5,8 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import dataclasses
+import json
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -1040,20 +1042,284 @@ class TestSubAgents:
             "Parent agent state should not contain structured_response key (it should be excluded per _EXCLUDED_STATE_KEYS)"
         )
 
-        # Verify the exact content of the ToolMessages
-        # When a subagent uses ToolStrategy for structured output, the default tool message
-        # content shows the structured response using the Pydantic model's string representation
+        # When a subagent produces a structured_response, the ToolMessage content is
+        # the JSON-serialized structured data (not the last message text).
         weather_tool_message = tool_messages_by_id["call_weather"]
-        expected_weather_content = "Returning structured response: city='Tokyo' temperature_celsius=22.5 humidity_percent=65"
-        assert weather_tool_message.content == expected_weather_content, (
-            f"Expected weather ToolMessage content:\n{expected_weather_content}\nGot:\n{weather_tool_message.content}"
+        weather_parsed = CityWeather.model_validate_json(weather_tool_message.content)
+        assert weather_parsed == CityWeather(city="Tokyo", temperature_celsius=22.5, humidity_percent=65), (
+            f"Expected JSON-serialized weather data, got: {weather_tool_message.content}"
         )
 
         population_tool_message = tool_messages_by_id["call_population"]
-        expected_population_content = "Returning structured response: city='Tokyo' population=14000000 metro_area_population=37400000"
-        assert population_tool_message.content == expected_population_content, (
-            f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
+        population_parsed = CityPopulation.model_validate_json(population_tool_message.content)
+        assert population_parsed == CityPopulation(city="Tokyo", population=14000000, metro_area_population=37400000), (
+            f"Expected JSON-serialized population data, got: {population_tool_message.content}"
         )
+
+    def test_structured_response_serialized_as_tool_message(self) -> None:
+        """Test that structured_response is JSON-serialized as ToolMessage content.
+
+        When a subagent produces a `structured_response`, the middleware should
+        JSON-serialize it as the ToolMessage content instead of extracting the
+        last message text.
+        """
+        structured_data = {
+            "findings": "Renewable energy adoption is accelerating",
+            "confidence": 0.92,
+            "sources": 3,
+        }
+
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Here are my findings about renewable energy.")],
+                "structured_response": structured_data,
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Analyze renewable energy trends",
+                                    "subagent_type": "analyzer",
+                                },
+                                "id": "call_structured",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="analyzer",
+                    description="An analysis agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Analyze renewable energy")]},
+            config={"configurable": {"thread_id": f"test-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        task_tool_message = tool_messages[0]
+        assert task_tool_message.content == json.dumps(structured_data)
+
+        parsed = json.loads(task_tool_message.content)
+        assert parsed == structured_data
+
+    def test_structured_response_dataclass_serialized_as_tool_message(self) -> None:
+        """Test that a dataclass structured_response is JSON-serialized correctly.
+
+        Dataclass instances don't have `model_dump_json` and aren't natively
+        JSON-serializable, so the middleware must convert them via
+        `dataclasses.asdict` before calling `json.dumps`.
+        """
+
+        @dataclasses.dataclass
+        class AnalysisResult:
+            findings: str
+            confidence: float
+            sources: int
+
+        structured_instance = AnalysisResult(
+            findings="Renewable energy adoption is accelerating",
+            confidence=0.92,
+            sources=3,
+        )
+
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Here are my findings.")],
+                "structured_response": structured_instance,
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Analyze trends",
+                                    "subagent_type": "analyzer",
+                                },
+                                "id": "call_dc",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="analyzer",
+                    description="An analysis agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Analyze")]},
+            config={"configurable": {"thread_id": f"test-dc-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        task_tool_message = tool_messages[0]
+
+        parsed = json.loads(task_tool_message.content)
+        assert parsed == {
+            "findings": "Renewable energy adoption is accelerating",
+            "confidence": 0.92,
+            "sources": 3,
+        }
+
+    def test_structured_response_pydantic_serialized_as_tool_message(self) -> None:
+        """Test that a Pydantic model structured_response uses model_dump_json."""
+
+        class AnalysisResult(BaseModel):
+            findings: str
+            confidence: float
+
+        structured_instance = AnalysisResult(
+            findings="Solar is growing fast",
+            confidence=0.95,
+        )
+
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Here are my findings.")],
+                "structured_response": structured_instance,
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Analyze trends",
+                                    "subagent_type": "analyzer",
+                                },
+                                "id": "call_pydantic",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="analyzer",
+                    description="An analysis agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Analyze")]},
+            config={"configurable": {"thread_id": f"test-pydantic-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        task_tool_message = tool_messages[0]
+
+        parsed = AnalysisResult.model_validate_json(task_tool_message.content)
+        assert parsed == AnalysisResult(findings="Solar is growing fast", confidence=0.95)
+
+    def test_fallback_to_last_message_without_structured_response(self) -> None:
+        """Test fallback to last message when no structured_response is present.
+
+        When a subagent does not produce a `structured_response`, the middleware
+        should fall back to extracting the last message text.
+        """
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Plain text result without structured response")],
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_plain",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="A worker agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Test")]},
+            config={"configurable": {"thread_id": f"test-no-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        task_tool_message = tool_messages[0]
+        assert task_tool_message.content == "Plain text result without structured response"
 
     def test_subagent_streaming_emits_messages_and_updates_from_subgraph(self) -> None:
         """Test end-to-end subagent streaming with `subgraphs=True`.

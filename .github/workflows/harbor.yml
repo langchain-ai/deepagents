@@ -1,4 +1,31 @@
+# Harbor evaluation workflow for Deep Agents
+#
+# Runs terminal-bench evaluations via Harbor with configurable sandbox
+# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# Models are selected via dropdown or comma-separated override.
+#
+# Required secrets (vary by sandbox + model provider):
+#   LANGSMITH_API_KEY          — experiment tracking (always required)
+#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   ANTHROPIC_API_KEY          — needed for Anthropic models
+#   OPENAI_API_KEY             — needed for OpenAI models
+#   GOOGLE_API_KEY             — needed for Google models
+#   XAI_API_KEY                — needed for xAI/Grok models
+#   GROQ_API_KEY               — needed for Groq-hosted models
+#   OLLAMA_API_KEY             — needed for Ollama Cloud models
+#   OLLAMA_HOST                — set to https://ollama.com for cloud inference
+#   NVIDIA_API_KEY             — needed for NVIDIA NIM models
+#   BASETEN_API_KEY            — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY         — needed for OpenRouter-hosted models
+#   DAYTONA_API_KEY            — needed for Daytona sandbox
+#   MODAL_TOKEN_ID             — needed for Modal sandbox
+#   MODAL_TOKEN_SECRET         — needed for Modal sandbox
+#   RUNLOOP_API_KEY            — needed for Runloop sandbox
+
 name: "📊 Evals - Harbor"
+run-name: >-
+  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }}
 
 on:
   workflow_dispatch:

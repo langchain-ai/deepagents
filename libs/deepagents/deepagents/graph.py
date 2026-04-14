@@ -6,6 +6,7 @@ middleware.
 """
 
 import logging
+import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -413,6 +414,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             minimum supported version (e.g., `langchain-openrouter`).
     """
     _model_spec: str | None = model if isinstance(model, str) else None
+
+    if model is None:
+        warnings.warn(
+            "Passing `model=None` to `create_deep_agent` is deprecated and "
+            "will be removed in a future release. The `model` parameter type "
+            "will change from `BaseChatModel | str | None` to "
+            "`BaseChatModel | str`. Please specify a model explicitly. "
+            "See https://docs.langchain.com/oss/python/deepagents/models",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     model = get_default_model() if model is None else resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)

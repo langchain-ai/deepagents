@@ -1,11 +1,14 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import dataclasses
+import json
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -89,6 +92,42 @@ class SubAgent(TypedDict):
 
     Rules are evaluated in declaration order; the first match wins.
     ``_PermissionMiddleware`` is appended last in the middleware stack.
+    """
+
+    response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
+    """Structured output response format for the subagent.
+
+    When specified, the subagent will produce a `structured_response` conforming to the
+    given schema. The structured response is JSON-serialized and returned as the
+    ToolMessage content to the parent agent, replacing the default last-message extraction.
+
+    Accepted formats (from `langchain.agents.structured_output`):
+
+    - `ToolStrategy(schema)`: Use tool calling to extract structured output from the model.
+    - `ProviderStrategy(schema)`: Use the model provider's native structured output mode.
+    - `AutoStrategy(schema)`: Automatically select the best strategy.
+    - A bare Python `type`: A Pydantic `BaseModel` subclass, `dataclass`, or `TypedDict`
+      class. Equivalent to `AutoStrategy(schema)`.
+    - `dict[str, Any]`: A JSON schema dictionary (e.g.,
+      `{"type": "object", "properties": {...}, "required": [...]}`).
+
+    Example:
+        ```python
+        from pydantic import BaseModel
+
+        class Findings(BaseModel):
+            findings: str
+            confidence: float
+
+        analyzer: SubAgent = {
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "system_prompt": "Analyze the data and return your findings.",
+            "model": "openai:gpt-4o",
+            "tools": [],
+            "response_format": Findings,
+        }
+        ```
     """
 
 
@@ -347,12 +386,23 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        structured = result.get("structured_response")
+        if structured is not None:
+            if hasattr(structured, "model_dump_json"):
+                content: str = structured.model_dump_json()
+            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+                content = json.dumps(dataclasses.asdict(structured))
+            else:
+                content = json.dumps(structured)
+        else:
+            # Strip trailing whitespace to prevent API errors with Anthropic
+            content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
             }
         )
 
@@ -526,6 +576,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
+                        response_format=spec.get("response_format"),
                     ),
                 }
             )

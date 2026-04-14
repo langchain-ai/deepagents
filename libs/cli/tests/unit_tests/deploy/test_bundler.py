@@ -220,7 +220,9 @@ class TestRenderDeployGraph:
     def test_user_memories_enabled(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_user_memories=True,
+            config,
+            mcp_present=False,
+            has_user_memories=True,
             user_memory_paths=["/memories/user/prefs.md"],
         )
         compile(result, "<deploy_graph_user_mem>", "exec")
@@ -234,21 +236,27 @@ class TestRenderDeployGraph:
         """Empty user/ dir still enables user memory (no seed files)."""
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_user_memories=True,
+            config,
+            mcp_present=False,
+            has_user_memories=True,
             user_memory_paths=[],
         )
         compile(result, "<deploy_graph_user_mem_empty>", "exec")
         assert "HAS_USER_MEMORIES = True" in result
 
-    def test_no_user_id_returns_none(self) -> None:
-        """_get_user_id returns None when user_id is not in configurable."""
+    def test_no_default_user_id_fallback(self) -> None:
+        """User namespace factory raises instead of falling back to 'default'."""
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_user_memories=True,
+            config,
+            mcp_present=False,
+            has_user_memories=True,
             user_memory_paths=[],
         )
-        # Verify _get_user_id returns None, not "default"
-        assert '"default"' not in result.split("_get_user_id")[1].split("\n\n")[0]
+        # The user namespace factory should raise, not fall back
+        fn = "_make_user_namespace_factory"
+        assert fn in result
+        assert '"default"' not in result.split(fn)[1].split("\n\n")[0]
 
     def test_agents_md_and_skills_denied_writes(self) -> None:
         config = _minimal_config()

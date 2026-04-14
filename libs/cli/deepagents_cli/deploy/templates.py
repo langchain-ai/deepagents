@@ -444,7 +444,7 @@ async def _seed_user_memories_if_needed(
 
 
 def _make_namespace_factory(assistant_id: str, *extra: str):
-    """Return a namespace factory closed over an assistant id + optional extra segments."""
+    """Return a namespace factory closed over an assistant id + extra."""
     ns = (assistant_id, *extra)
     def _factory(ctx):  # noqa: ARG001
         return ns

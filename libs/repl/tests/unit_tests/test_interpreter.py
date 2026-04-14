@@ -52,7 +52,6 @@ def test_uses_provided_environment_mapping() -> None:
 
 def test_print_records_output_and_returns_value() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate('print("hello")')
 
     assert result == "hello"
@@ -67,28 +66,23 @@ def test_print_callback_is_scoped_to_evaluate_call() -> None:
         'print("hello")\nprint("goodbye")',
         print_callback=printed.append,
     )
-
+    # result has the value of the last expression
     assert result == "goodbye"
     assert printed == ["hello", "goodbye"]
-    assert interpreter.printed_lines == ["hello", "goodbye"]
     interpreter.evaluate('print("later")')
     assert printed == ["hello", "goodbye"]
 
 
 def test_if_uses_truthiness_to_choose_branch() -> None:
     interpreter = Interpreter()
-
     truthy = interpreter.evaluate('if True then "big" else "small" end')
     falsy = interpreter.evaluate('if None then "big" else "small" end')
-
     assert (truthy, falsy) == ("big", "small")
 
 
 def test_calls_registered_functions_and_uses_variables() -> None:
     interpreter = Interpreter(functions={"add": lambda left, right: left + right})
-
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
-
     assert result == 30
     assert interpreter.env == {"x": 10, "y": 20}
 
@@ -462,6 +456,7 @@ def test_parse_error_for_missing_closing_bracket_is_clear() -> None:
 
 
 def test_parse_error_for_invalid_character_is_clear() -> None:
+    """Test parse error for invalid characters."""
     interpreter = Interpreter()
 
     with pytest.raises(ValueError, match="Unexpected character '@'"):

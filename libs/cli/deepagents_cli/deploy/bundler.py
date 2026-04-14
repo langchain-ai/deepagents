@@ -102,13 +102,14 @@ def bundle(
         logger.info("Copied %s → .env", env_src)
 
     # 4. Render deploy_graph.py.
+    has_user_memories = (project_root / USER_DIRNAME).is_dir()
     user_mem_keys = list(seed.get("user_memories", {}))
     user_memory_paths = [f"/memories/user{p}" for p in user_mem_keys]
     (build_dir / "deploy_graph.py").write_text(
         _render_deploy_graph(
             config,
             mcp_present=mcp_present,
-            has_user_memories=bool(user_mem_keys),
+            has_user_memories=has_user_memories,
             user_memory_paths=user_memory_paths,
         ),
         encoding="utf-8",

@@ -454,15 +454,23 @@ def _make_namespace_factory(assistant_id: str, *extra: str):
 def _make_user_namespace_factory(assistant_id: str):
     """Return a namespace factory that includes the user_id.
 
-    The user_id is read from ``configurable["user_id"]`` at call time
-    so each user gets an isolated memory namespace.
+    Prefers ``rt.server_info.user.identity`` (custom auth); falls back
+    to ``configurable["user_id"]`` for deployments without custom auth.
     """
-    def _factory(ctx):  # noqa: ARG001
-        from langgraph.config import get_config
-
-        cfg = get_config() or {{}}
-        user_id = (cfg.get("configurable") or {{}}).get("user_id", "default")
-        return (assistant_id, user_id)
+    def _factory(rt):
+        user = getattr(rt.server_info, "user", None) if rt.server_info else None
+        identity = getattr(user, "identity", None) if user else None
+        if not identity:
+            from langgraph.config import get_config
+            cfg = get_config() or {{}}
+            identity = (cfg.get("configurable") or {{}}).get("user_id")
+        if not identity:
+            raise ValueError(
+                "user_id is required when user memories are enabled. "
+                "Set it via custom auth (runtime.user.identity) or "
+                "configurable['user_id']."
+            )
+        return (assistant_id, str(identity))
     return _factory
 
 
@@ -502,29 +510,49 @@ def _build_backend_factory(assistant_id: str):
     return _factory
 
 
-def _get_user_id(config: RunnableConfig) -> str:
-    """Extract user_id from configurable, defaulting to 'default'."""
+def _get_user_id(config: RunnableConfig, server_runtime=None) -> str | None:
+    """Extract user_id, preferring runtime.user.identity over configurable.
+
+    With custom auth, ``server_runtime.user.identity`` is the canonical
+    source.  Without custom auth (or for local dev), callers can pass
+    ``user_id`` via ``config["configurable"]["user_id"]`` as a fallback.
+    Returns None if neither is available.
+    """
+    # Prefer runtime auth (authoritative)
+    if server_runtime is not None:
+        user = getattr(server_runtime, "user", None)
+        identity = getattr(user, "identity", None) if user else None
+        if identity:
+            return str(identity)
+    # Fall back to configurable
     configurable = ((config or {{}}).get("configurable") or {{}})
-    return str(configurable.get("user_id") or "default")
+    uid = configurable.get("user_id")
+    return str(uid) if uid else None
 
 
 async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     """Async graph factory.
 
-    Accepts the invocation's ``RunnableConfig`` so we can pull the
-    ``assistant_id`` out of ``configurable`` and scope all store reads
-    and writes under it. Seeds the memories + skills namespaces once per
-    (process, assistant_id), and user memories once per
-    (process, assistant_id, user_id).
+    Accepts the invocation's ``RunnableConfig`` for ``assistant_id`` and
+    the ``ServerRuntime`` for ``store`` and ``user.identity``.  Seeds
+    memories + skills once per (process, assistant_id), and user memories
+    once per (process, assistant_id, user_id).  Gracefully skips user
+    memory features when no user_id is available.
     """
     configurable = (config or {{}}).get("configurable", {{}}) or {{}}
     assistant_id = str(configurable.get("assistant_id") or {default_assistant_id!r})
 
     store = getattr(runtime, "store", None)
+    user_id = _get_user_id(config, runtime) if HAS_USER_MEMORIES else None
+    if HAS_USER_MEMORIES and not user_id:
+        logger.warning(
+            "User memories are enabled but no user_id found "
+            "(runtime.user.identity is empty). User memory features "
+            "will be skipped for this invocation."
+        )
     if store is not None:
         await _seed_store_if_needed(store, assistant_id)
-        if HAS_USER_MEMORIES:
-            user_id = _get_user_id(config)
+        if HAS_USER_MEMORIES and user_id:
             await _seed_user_memories_if_needed(store, assistant_id, user_id)
 
     tools: list = []
@@ -534,7 +562,7 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
 
     # Preload AGENTS.md + user memory files into the agent's context.
     memory_sources = [f"{{MEMORIES_PREFIX}}AGENTS.md"]
-    if HAS_USER_MEMORIES:
+    if HAS_USER_MEMORIES and user_id:
         memory_sources.extend({user_memory_paths!r})
 
     # AGENTS.md and skills are read-only; user memories are writable.

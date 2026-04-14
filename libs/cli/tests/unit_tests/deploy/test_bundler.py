@@ -91,6 +91,13 @@ class TestBuildSeed:
         seed = _build_seed(config, project, "# prompt")
         assert seed["user_memories"] == {}
 
+    def test_user_memories_empty_dict_when_empty_dir(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path)
+        (project / USER_DIRNAME).mkdir()
+        config = _minimal_config()
+        seed = _build_seed(config, project, "# prompt")
+        assert seed["user_memories"] == {}
+
     def test_user_memories_populated_from_dir(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         user_dir = project / USER_DIRNAME
@@ -223,6 +230,26 @@ class TestRenderDeployGraph:
         # User memory paths preloaded into memory sources
         assert "/memories/user/prefs.md" in result
 
+    def test_user_memories_enabled_empty_dir(self) -> None:
+        """Empty user/ dir still enables user memory (no seed files)."""
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_user_memories=True,
+            user_memory_paths=[],
+        )
+        compile(result, "<deploy_graph_user_mem_empty>", "exec")
+        assert "HAS_USER_MEMORIES = True" in result
+
+    def test_no_user_id_returns_none(self) -> None:
+        """_get_user_id returns None when user_id is not in configurable."""
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_user_memories=True,
+            user_memory_paths=[],
+        )
+        # Verify _get_user_id returns None, not "default"
+        assert '"default"' not in result.split("_get_user_id")[1].split("\n\n")[0]
+
     def test_agents_md_and_skills_denied_writes(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(config, mcp_present=False)
@@ -257,6 +284,15 @@ class TestBundle:
         bundle(config, project, build)
         assert (build / ".env").exists()
         assert (build / ".env").read_text(encoding="utf-8") == "KEY=val"
+
+    def test_empty_user_dir_enables_user_memories(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        (project / USER_DIRNAME).mkdir()
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
+        assert "HAS_USER_MEMORIES = True" in graph_py
 
     def test_unknown_provider_raises(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")

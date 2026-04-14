@@ -13,7 +13,14 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # StructuredTool evaluates this annotation at runtime
+)
 from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools.base import (
+    _is_injected_arg_type,
+    get_all_basemodel_annotations,
+)
 
 from langchain_repl._foreign_function_docs import render_foreign_function_section
 from langchain_repl.interpreter import Interpreter
@@ -144,42 +151,85 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         modified_request = self.modify_request(request)
         return await handler(modified_request)
 
+    def _get_runtime_arg_name(self, tool: BaseTool) -> str | None:
+        for name, type_ in get_all_basemodel_annotations(
+            tool.get_input_schema()
+        ).items():
+            if name == "runtime" and _is_injected_arg_type(type_):
+                return name
+        return None
+
     def _build_tool_payload(
-        self, tool: BaseTool, args: tuple[Any, ...], kwargs: dict[str, Any]
+        self,
+        tool: BaseTool,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        runtime: ToolRuntime | None = None,
     ) -> str | dict[str, Any]:
-        if kwargs:
-            return kwargs
-        if len(args) == 1 and isinstance(args[0], (str, dict)):
-            return args[0]
-
         input_schema = tool.get_input_schema()
-        fields = list(getattr(input_schema, "__annotations__", {}))
-        if len(args) == 1 and len(fields) == 1:
-            return {fields[0]: args[0]}
-        if len(args) == len(fields) and fields:
-            return dict(zip(fields, args, strict=False))
-        return {"args": list(args)}
+        schema_annotations = getattr(input_schema, "__annotations__", {})
+        fields = [
+            name
+            for name, type_ in schema_annotations.items()
+            if not _is_injected_arg_type(type_)
+        ]
+        runtime_arg_name = self._get_runtime_arg_name(tool)
 
-    def _wrap_tool_for_repl(self, tool: BaseTool) -> Callable[..., Any]:
+        if kwargs:
+            payload: str | dict[str, Any] = kwargs
+        elif (
+            len(args) == 1
+            and isinstance(args[0], (str, dict))
+            and runtime_arg_name is None
+        ):
+            payload = args[0]
+        elif len(args) == 1 and len(fields) == 1:
+            payload = {fields[0]: args[0]}
+        elif len(args) == len(fields) and fields:
+            payload = dict(zip(fields, args, strict=False))
+        else:
+            payload = {"args": list(args)}
+
+        if (
+            runtime is not None
+            and runtime_arg_name is not None
+            and isinstance(payload, dict)
+        ):
+            return {**payload, runtime_arg_name: runtime}
+        return payload
+
+    def _wrap_tool_for_repl(
+        self, tool: BaseTool, *, runtime: ToolRuntime | None = None
+    ) -> Callable[..., Any]:
         def tool_wrapper(*args: Any, **kwargs: Any) -> Any:
-            payload = self._build_tool_payload(tool, args, kwargs)
+            payload = self._build_tool_payload(tool, args, kwargs, runtime=runtime)
             return tool.invoke(payload)
 
         return tool_wrapper
 
-    def _build_external_functions(self) -> dict[str, Callable[..., Any]]:
-        external_functions: dict[str, Callable[..., Any]] = {}
+    def _build_external_functions(
+        self, *, runtime: ToolRuntime | None = None
+    ) -> dict[str, Callable[..., Any] | BaseTool]:
+        external_functions: dict[str, Callable[..., Any] | BaseTool] = {}
         for name, implementation in self._get_ptc_implementations().items():
             if isinstance(implementation, BaseTool):
-                external_functions[name] = self._wrap_tool_for_repl(implementation)
+                if self._get_runtime_arg_name(implementation) is not None:
+                    external_functions[name] = self._wrap_tool_for_repl(
+                        implementation,
+                        runtime=runtime,
+                    )
+                else:
+                    external_functions[name] = implementation
             else:
                 external_functions[name] = implementation
         return external_functions
 
-    def _run_interpreter(self, code: str) -> str:
+    def _run_interpreter(self, code: str, *, runtime: ToolRuntime | None = None) -> str:
         interpreter = Interpreter(
-            functions=self._build_external_functions(),
+            functions=self._build_external_functions(runtime=runtime),
             max_workers=self._max_workers,
+            runtime=runtime,
         )
         try:
             value = interpreter.evaluate(code)
@@ -194,13 +244,15 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _create_repl_tool(self) -> BaseTool:
         def _sync_repl(
             code: Annotated[str, "Code string to evaluate in the REPL."],
+            runtime: ToolRuntime,
         ) -> str:
-            return self._run_interpreter(code)
+            return self._run_interpreter(code, runtime=runtime)
 
         async def _async_repl(
             code: Annotated[str, "Code string to evaluate in the REPL."],
+            runtime: ToolRuntime,
         ) -> str:
-            return self._run_interpreter(code)
+            return self._run_interpreter(code, runtime=runtime)
 
         tool_description = REPL_TOOL_DESCRIPTION.format(
             external_functions_section=self._format_external_functions_section()

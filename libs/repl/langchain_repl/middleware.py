@@ -151,13 +151,29 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         modified_request = self.modify_request(request)
         return await handler(modified_request)
 
+    def _get_injected_arg_names(self, tool: BaseTool) -> set[str]:
+        return {
+            name
+            for name, type_ in get_all_basemodel_annotations(
+                tool.get_input_schema()
+            ).items()
+            if _is_injected_arg_type(type_)
+        }
+
     def _get_runtime_arg_name(self, tool: BaseTool) -> str | None:
-        for name, type_ in get_all_basemodel_annotations(
-            tool.get_input_schema()
-        ).items():
-            if name == "runtime" and _is_injected_arg_type(type_):
-                return name
+        if "runtime" in self._get_injected_arg_names(tool):
+            return "runtime"
         return None
+
+    def _filter_injected_kwargs(
+        self, tool: BaseTool, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        injected_arg_names = self._get_injected_arg_names(tool)
+        return {
+            name: value
+            for name, value in payload.items()
+            if name not in injected_arg_names
+        }
 
     def _build_tool_payload(
         self,
@@ -177,12 +193,10 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         runtime_arg_name = self._get_runtime_arg_name(tool)
 
         if kwargs:
-            payload: str | dict[str, Any] = kwargs
-        elif (
-            len(args) == 1
-            and isinstance(args[0], (str, dict))
-            and runtime_arg_name is None
-        ):
+            payload: str | dict[str, Any] = self._filter_injected_kwargs(tool, kwargs)
+        elif len(args) == 1 and isinstance(args[0], dict):
+            payload = self._filter_injected_kwargs(tool, args[0])
+        elif len(args) == 1 and isinstance(args[0], str) and runtime_arg_name is None:
             payload = args[0]
         elif len(args) == 1 and len(fields) == 1:
             payload = {fields[0]: args[0]}

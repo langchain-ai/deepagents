@@ -160,12 +160,33 @@ class ForeignObjectInterface(Protocol):
         """Invoke `value(*args)` for a supported foreign object."""
 
 
+def _get_injected_arg_names(tool: BaseTool) -> set[str]:
+    """Return injected parameter names for a tool input schema."""
+    return {
+        name
+        for name, type_ in get_all_basemodel_annotations(
+            tool.get_input_schema()
+        ).items()
+        if _is_injected_arg_type(type_)
+    }
+
+
 def _get_runtime_arg_name(tool: BaseTool) -> str | None:
     """Return the injected runtime parameter name for a tool, if any."""
-    for name, type_ in get_all_basemodel_annotations(tool.get_input_schema()).items():
-        if name == "runtime" and _is_injected_arg_type(type_):
-            return name
+    if "runtime" in _get_injected_arg_names(tool):
+        return "runtime"
     return None
+
+
+def _filter_injected_kwargs(
+    tool: BaseTool,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop model-controlled injected args from a tool payload."""
+    injected_arg_names = _get_injected_arg_names(tool)
+    return {
+        name: value for name, value in payload.items() if name not in injected_arg_names
+    }
 
 
 def _build_tool_payload(
@@ -184,8 +205,10 @@ def _build_tool_payload(
     ]
     runtime_arg_name = _get_runtime_arg_name(tool)
 
-    if len(args) == 1 and isinstance(args[0], (str, dict)) and runtime_arg_name is None:
-        payload: str | dict[str, Any] = args[0]
+    if len(args) == 1 and isinstance(args[0], dict):
+        payload = _filter_injected_kwargs(tool, args[0])
+    elif len(args) == 1 and isinstance(args[0], str) and runtime_arg_name is None:
+        payload = args[0]
     elif len(args) == 1 and len(fields) == 1:
         payload = {fields[0]: args[0]}
     elif len(args) == len(fields) and fields:

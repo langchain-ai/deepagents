@@ -72,6 +72,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 
+from langchain_core.messages import SystemMessage
+
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         *,
         backend: BACKEND_TYPES,
         sources: list[str],
+        add_cache_control: bool = False,
     ) -> None:
         """Initialize the memory middleware.
 
@@ -187,9 +190,13 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                      Display names are automatically derived from the paths.
 
                      Sources are loaded in order.
+            add_cache_control: Whether to tag the memory content block with
+                     ``cache_control: {"type": "ephemeral"}`` for Anthropic
+                     prompt caching.
         """
         self._backend = backend
         self.sources = sources
+        self._add_cache_control = add_cache_control
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -316,6 +323,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         agent_memory = self._format_agent_memory(contents)
 
         new_system_message = append_to_system_message(request.system_message, agent_memory)
+
+        if self._add_cache_control and new_system_message.content_blocks:
+            blocks = list(new_system_message.content_blocks)
+            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+            new_system_message = SystemMessage(content_blocks=blocks)
 
         return request.override(system_message=new_system_message)
 

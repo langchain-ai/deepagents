@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, MutableMapping
+    from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -533,7 +532,7 @@ class Interpreter:
     def _eval_program(
         self,
         program: Program,
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -545,7 +544,7 @@ class Interpreter:
     def _eval_block(
         self,
         statements: Iterable[Statement],
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -557,7 +556,7 @@ class Interpreter:
     def _eval_statement(
         self,
         statement: Statement,
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -608,10 +607,10 @@ class Interpreter:
         msg = f"Unsupported statement: {type(statement).__name__}"
         raise ValueError(msg)
 
-    def _eval_expression(
+    def _eval_expression(  # noqa: C901, PLR0911  # expression dispatch is centralized here
         self,
         expression: Expression,
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -673,7 +672,7 @@ class Interpreter:
     def _eval_call(
         self,
         expression: Call,
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -752,7 +751,7 @@ class Interpreter:
     def _eval_print(
         self,
         args: tuple[Expression, ...],
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
@@ -769,7 +768,7 @@ class Interpreter:
     def _eval_parallel(
         self,
         args: tuple[Expression, ...],
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> list[Any]:
@@ -789,7 +788,7 @@ class Interpreter:
     def _eval_try(
         self,
         args: tuple[Expression, ...],
-        env: dict[str, Any],
+        env: MutableMapping[str, Any],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:

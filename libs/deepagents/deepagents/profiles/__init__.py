@@ -11,7 +11,7 @@ internal consumers can import from `deepagents.profiles` directly.
 
 # Provider modules register their profiles as a side effect of import.
 # _openrouter registration fires via the `from` import below.
-from deepagents.profiles import _openai as _openai
+from deepagents.profiles import _openai as _openai, _openai_gpt54 as _openai_gpt54
 from deepagents.profiles._harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,

@@ -21,6 +21,7 @@ from deepagents.graph import (
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.profiles import _HARNESS_PROFILES, _get_harness_profile, _HarnessProfile, _register_harness_profile
+from deepagents.profiles._openai_gpt54 import _GPT54_SYSTEM_PROMPT_SUFFIX
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -380,6 +381,29 @@ class TestSystemPromptAssembly:
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+    def test_gpt54_suffix_appended_to_base_prompt(self) -> None:
+        """GPT-5.4 profile suffix is appended to BASE_AGENT_PROMPT via create_deep_agent."""
+        prompt = self._build_and_capture_system_prompt(
+            "openai",
+            _HarnessProfile(system_prompt_suffix=_GPT54_SYSTEM_PROMPT_SUFFIX),
+        )
+        assert isinstance(prompt, str)
+        assert prompt.startswith(BASE_AGENT_PROMPT)
+        assert "<tool_persistence_rules>" in prompt
+        assert "<verification_loop>" in prompt
+
+    def test_gpt54_suffix_combines_with_user_system_prompt(self) -> None:
+        """User system_prompt + BASE_AGENT_PROMPT + GPT-5.4 suffix all compose correctly."""
+        prompt = self._build_and_capture_system_prompt(
+            "openai",
+            _HarnessProfile(system_prompt_suffix=_GPT54_SYSTEM_PROMPT_SUFFIX),
+            system_prompt="You are a coding assistant.",
+        )
+        assert isinstance(prompt, str)
+        assert prompt.startswith("You are a coding assistant.")
+        assert BASE_AGENT_PROMPT in prompt
+        assert "<completeness_contract>" in prompt
 
 
 class TestToolExclusionMiddleware:

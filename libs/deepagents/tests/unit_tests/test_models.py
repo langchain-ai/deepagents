@@ -575,6 +575,30 @@ class TestBuiltInProfiles:
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
         assert profile == _HarnessProfile()
 
+    def test_gpt54_profile_has_system_prompt_suffix(self) -> None:
+        """GPT-5.4 registers a model-specific profile with a prompt suffix."""
+        profile = _get_harness_profile("openai:gpt-5.4")
+        assert profile.system_prompt_suffix is not None
+        assert "<tool_persistence_rules>" in profile.system_prompt_suffix
+        assert "<dependency_checks>" in profile.system_prompt_suffix
+        assert "<completeness_contract>" in profile.system_prompt_suffix
+        assert "<verification_loop>" in profile.system_prompt_suffix
+
+    def test_gpt54_profile_inherits_openai_responses_api(self) -> None:
+        """GPT-5.4 model profile merges with the provider-level OpenAI profile."""
+        profile = _get_harness_profile("openai:gpt-5.4")
+        assert profile.init_kwargs == {"use_responses_api": True}
+
+    def test_gpt54_profile_does_not_replace_base_system_prompt(self) -> None:
+        """GPT-5.4 uses a suffix, not a base replacement."""
+        profile = _get_harness_profile("openai:gpt-5.4")
+        assert profile.base_system_prompt is None
+
+    def test_gpt54_profile_does_not_affect_other_openai_models(self) -> None:
+        """Other OpenAI models should not get the GPT-5.4 suffix."""
+        profile = _get_harness_profile("openai:gpt-5")
+        assert profile.system_prompt_suffix is None
+
 
 class TestResolveModelWithProfiles:
     """Tests for resolve_model using the profile registry."""

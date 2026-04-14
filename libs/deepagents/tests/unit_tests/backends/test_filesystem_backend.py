@@ -208,6 +208,21 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert "chinese.txt" in result.error
 
 
+def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
+    """FilesystemBackend.read should return an error result, not raise, for non-UTF-8 text files."""
+    root = tmp_path
+    # Write a file with GBK-encoded bytes that are invalid UTF-8 (e.g. 0x87)
+    gbk_file = root / "chinese.txt"
+    gbk_file.write_bytes("中文内容".encode("gbk"))
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.read(str(gbk_file))
+
+    assert isinstance(result, ReadResult)
+    assert result.error is not None
+    assert "chinese.txt" in result.error
+
+
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
     root = tmp_path

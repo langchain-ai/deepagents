@@ -704,6 +704,12 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage .tool-args {
+        color: $text-muted;
+        margin-left: 3;
+        text-style: italic;
+    }
+
+    ToolCallMessage .tool-args {
         color: #6b7280;
         margin-left: 3;
     }

@@ -22,7 +22,7 @@ def assert_all_deepagent_qualities(agent):
 # Mock tools and middleware
 ###########################
 
-SAMPLE_MODEL = "claude-sonnet-4-20250514"
+SAMPLE_MODEL = "claude-sonnet-4-6"
 
 
 @tool(description="Use this tool to get premier league standings")

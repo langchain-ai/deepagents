@@ -411,6 +411,11 @@ def _create(
     Raises:
         SystemExit: If the skill name is invalid or the directory cannot be created.
     """
+    from deepagents_cli.config import Settings, console, get_glyphs
+
+    Raises:
+        SystemExit: If the skill name is invalid or the directory cannot be created.
+    """
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
@@ -530,6 +535,11 @@ def _info(
         project: If True, only search in project skills.
             If False, search in both user and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the skill is not found or not in a project directory.
+    """
+    from rich.markup import escape as escape_markup
 
     Raises:
         SystemExit: If the skill is not found or not in a project directory.
@@ -678,11 +688,6 @@ def _delete(
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         raise SystemExit(1)
-
-    # Deferred: skills.load imports the deepagents SDK. This module is
-    # imported at CLI startup for setup_skills_parser(), so a top-level
-    # import here would penalize every command (e.g. `--help`).
-    from deepagents_cli.skills.load import list_skills
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -1004,6 +1009,11 @@ def execute_skills_command(args: argparse.Namespace) -> None:
 
     Args:
         args: Parsed command line arguments with skills_command attribute
+
+    Raises:
+        SystemExit: If the agent name is invalid.
+    """
+    from deepagents_cli.config import console
 
     Raises:
         SystemExit: If the agent name is invalid.

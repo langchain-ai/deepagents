@@ -1027,6 +1027,12 @@ def create_cli_agent(
     agent_middleware.append(TokenStateMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
+    if enable_ask_user:
+        from deepagents_cli.ask_user import AskUserMiddleware
+
+    agent_middleware.append(TokenStateMiddleware())
+
+    # Add ask_user middleware (must be early so its tool is available)
     from deepagents_cli.ask_user import AskUserMiddleware
 
     agent_middleware.append(AskUserMiddleware())

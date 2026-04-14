@@ -14,6 +14,8 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.constants import CONF
+from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -25,6 +27,26 @@ from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
+    """Namespace factory: scope by assistant_id when running under LangGraph server."""
+    assistant_id = rt.server_info.assistant_id if rt.server_info else None
+    if assistant_id:
+        return (assistant_id, "filesystem")
+    return ("filesystem",)
+
+
+@contextmanager
+def _runtime_context(assistant_id: str | None = None):
+    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
+    runtime = Runtime(server_info=server_info)
+    token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 def make_memory_content(title: str, content: str) -> str:
@@ -613,7 +635,7 @@ def test_memory_middleware_with_store_backend_instance() -> None:
     store = InMemoryStore()
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=sources,
     )
 
@@ -627,7 +649,7 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -641,18 +663,16 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-123 can read its own memory
-    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    with _config_context(config_1):
-        result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert "/memory/AGENTS.md" in result_1["memory_contents"]
     assert "Context for assistant 1" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-456 cannot see assistant-123's memory (different namespace)
-    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with _config_context(config_2):
-        result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
     assert result_2 is not None
     assert len(result_2["memory_contents"]) == 0
 
@@ -665,8 +685,8 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-456 can read its own memory
-    with _config_context(config_2):
-        result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_3 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert "/memory/AGENTS.md" in result_3["memory_contents"]
@@ -674,8 +694,8 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert "Context for assistant 1" not in result_3["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-123 still only sees its own memory (no cross-contamination)
-    with _config_context(config_1):
-        result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_4 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert "/memory/AGENTS.md" in result_4["memory_contents"]
@@ -688,7 +708,7 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -701,18 +721,17 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
         create_store_memory_item(shared_content),
     )
 
-    # Test: empty config accesses default namespace
-    with _config_context({}):
+    # Test: runtime without server_info accesses default namespace
+    with _runtime_context(None):
         result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert "/memory/AGENTS.md" in result_1["memory_contents"]
     assert "Default namespace context" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
-    # Test: config with metadata but no assistant_id also uses default namespace
-    config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
-    with _config_context(config_with_other_metadata):
-        result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
+    # Test: runtime with server_info but empty assistant_id also uses default namespace
+    with _runtime_context(""):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert "/memory/AGENTS.md" in result_2["memory_contents"]

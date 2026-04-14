@@ -402,6 +402,32 @@ class TestCheckOptionalTools:
         assert missing == []
 
 
+        assert missing == ["tavily"]
+
+    def test_omits_tavily_when_key_present(self) -> None:
+        """Does not include `'tavily'` when TAVILY_API_KEY is set."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            missing = check_optional_tools()
+
+        assert "tavily" not in missing
+
+    def test_tavily_warning_suppressed_via_config(self, tmp_path: Path) -> None:
+        """Returns empty list when tavily warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["tavily"]\n')
+
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == []
+
+
 class TestFormatToolWarnings:
     """Tests for TUI and CLI warning formatters."""
 

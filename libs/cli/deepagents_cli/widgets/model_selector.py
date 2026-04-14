@@ -375,6 +375,46 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._filter_text:
             self._update_filtered_list()
 
+        # Focus the filter input immediately so the user can start typing
+        # while model data loads.
+        filter_input = self.query_one("#model-filter", Input)
+        filter_input.focus()
+
+        # Offload to thread because get_available_models does filesystem I/O
+        try:
+            all_models, default_spec, profiles = await asyncio.to_thread(
+                self._load_model_data, self._cli_profile_override
+            )
+        except Exception:
+            logger.exception("Failed to load model data for /model selector")
+            self._loaded = True
+            if self.is_running:
+                self.notify(
+                    "Could not load model list. "
+                    "Check provider packages and config.toml.",
+                    severity="error",
+                    timeout=10,
+                    markup=False,
+                )
+                await self._update_display()
+                self._update_footer()
+            return
+
+        # Screen may have been dismissed while the thread was running
+        if not self.is_running:
+            return
+
+        self._all_models = all_models
+        self._default_spec = default_spec
+        self._profiles = profiles
+        self._filtered_models = list(self._all_models)
+        self._selected_index = self._find_current_model_index()
+        self._loaded = True
+
+        # Re-apply any filter text the user typed while data was loading
+        if self._filter_text:
+            self._update_filtered_list()
+
         await self._update_display()
         self._update_footer()
 

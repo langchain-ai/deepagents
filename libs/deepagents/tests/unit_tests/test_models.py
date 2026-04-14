@@ -15,8 +15,21 @@ from deepagents._models import (
     _string_value,
     check_openrouter_version,
     get_model_identifier,
+    get_model_provider,
     model_matches_spec,
     resolve_model,
+)
+from deepagents.profiles import (
+    _HARNESS_PROFILES,
+    _OPENROUTER_APP_TITLE,
+    _OPENROUTER_APP_URL,
+    OPENROUTER_MIN_VERSION,
+    _get_harness_profile,
+    _HarnessProfile,
+    _merge_profiles,
+    _openrouter_attribution_kwargs,
+    _register_harness_profile,
+    check_openrouter_version,
 )
 
 
@@ -127,6 +140,30 @@ class TestGetModelIdentifier:
         assert get_model_identifier(model) == "real-name"
 
 
+class TestGetModelProvider:
+    """Tests for get_model_provider."""
+
+    def test_returns_provider_from_ls_params(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert get_model_provider(model) == "anthropic"
+
+    def test_returns_none_when_no_ls_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={})
+        assert get_model_provider(model) is None
+
+    def test_returns_none_when_ls_provider_empty(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": ""})
+        assert get_model_provider(model) is None
+
+    def test_returns_none_when_get_ls_params_raises(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
+        assert get_model_provider(model) is None
+
+
 class TestModelMatchesSpec:
     """Tests for model_matches_spec."""
 
@@ -156,32 +193,36 @@ class TestCheckOpenRouterVersion:
 
     def test_passes_when_not_installed(self) -> None:
         with patch(
-            "deepagents._models.pkg_version",
+            "deepagents.profiles._openrouter.pkg_version",
             side_effect=PackageNotFoundError("langchain-openrouter"),
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_sufficient(self) -> None:
         with patch(
-            "deepagents._models.pkg_version",
+            "deepagents.profiles._openrouter.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
             check_openrouter_version()  # should not raise
 
     def test_passes_when_version_above_minimum(self) -> None:
-        with patch("deepagents._models.pkg_version", return_value="99.0.0"):
+        with patch("deepagents.profiles._openrouter.pkg_version", return_value="99.0.0"):
             check_openrouter_version()  # should not raise
 
     def test_raises_when_version_too_old(self) -> None:
         with (
-            patch("deepagents._models.pkg_version", return_value="0.0.1"),
+            patch("deepagents.profiles._openrouter.pkg_version", return_value="0.0.1"),
             pytest.raises(ImportError, match="langchain-openrouter>="),
         ):
             check_openrouter_version()
 
+    def test_skips_check_for_invalid_version(self) -> None:
+        with patch("deepagents.profiles._openrouter.pkg_version", return_value="not-a-version"):
+            check_openrouter_version()  # should not raise
+
     def test_resolve_model_calls_check(self) -> None:
         with (
-            patch("deepagents._models.check_openrouter_version") as mock_check,
+            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -191,7 +232,7 @@ class TestCheckOpenRouterVersion:
 
     def test_resolve_model_skips_check_for_non_openrouter(self) -> None:
         with (
-            patch("deepagents._models.check_openrouter_version") as mock_check,
+            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -254,3 +295,331 @@ class TestStringValue:
 
     def test_non_string(self) -> None:
         assert _string_value({"key": 42}, "key") is None
+
+
+class TestHarnessProfile:
+    """Tests for the _HarnessProfile dataclass."""
+
+    def test_defaults_are_empty(self) -> None:
+        profile = _HarnessProfile()
+        assert profile.init_kwargs == {}
+        assert profile.pre_init is None
+        assert profile.init_kwargs_factory is None
+        assert profile.base_system_prompt is None
+        assert profile.system_prompt_suffix is None
+        assert profile.tool_description_overrides == {}
+        assert profile.excluded_tools == frozenset()
+        assert profile.extra_middleware == ()
+
+    def test_frozen(self) -> None:
+        profile = _HarnessProfile()
+        with pytest.raises(AttributeError):
+            profile.system_prompt_suffix = "nope"  # type: ignore[misc]
+
+
+class TestHarnessProfileRegistry:
+    """Tests for _register_harness_profile / _get_harness_profile."""
+
+    def test_register_and_retrieve_by_provider(self) -> None:
+        profile = _HarnessProfile(init_kwargs={"temperature": 0})
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile("test_provider", profile)
+            assert _get_harness_profile("test_provider:some-model") is profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_exact_model_match_merges_with_provider(self) -> None:
+        base_profile = _HarnessProfile(init_kwargs={"a": 1})
+        model_profile = _HarnessProfile(init_kwargs={"b": 2})
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile("test_prov", base_profile)
+            _register_harness_profile("test_prov:special-model", model_profile)
+            merged = _get_harness_profile("test_prov:special-model")
+            # Both provider and model kwargs are present
+            assert merged.init_kwargs == {"a": 1, "b": 2}
+            # Provider-only lookup still returns the base profile directly
+            assert _get_harness_profile("test_prov:other-model") is base_profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_returns_empty_default_for_unknown(self) -> None:
+        profile = _get_harness_profile("nonexistent:model")
+        assert profile == _HarnessProfile()
+
+    def test_bare_model_name_without_colon(self) -> None:
+        profile = _get_harness_profile("claude-sonnet-4-6")
+        assert profile == _HarnessProfile()
+
+
+class TestMergeProfiles:
+    """Tests for _merge_profiles layering behavior."""
+
+    def test_init_kwargs_merged(self) -> None:
+        base = _HarnessProfile(init_kwargs={"a": 1, "shared": "base"})
+        override = _HarnessProfile(init_kwargs={"b": 2, "shared": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.init_kwargs == {"a": 1, "b": 2, "shared": "override"}
+
+    def test_pre_init_chained(self) -> None:
+        calls: list[str] = []
+        base = _HarnessProfile(pre_init=lambda s: calls.append(f"base:{s}"))
+        override = _HarnessProfile(pre_init=lambda s: calls.append(f"override:{s}"))
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("spec")
+        assert calls == ["base:spec", "override:spec"]
+
+    def test_pre_init_base_only(self) -> None:
+        called = False
+
+        def base_fn(_s: str) -> None:
+            nonlocal called
+            called = True
+
+        base = _HarnessProfile(pre_init=base_fn)
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_pre_init_override_only(self) -> None:
+        called = False
+
+        def over_fn(_s: str) -> None:
+            nonlocal called
+            called = True
+
+        base = _HarnessProfile()
+        override = _HarnessProfile(pre_init=over_fn)
+        merged = _merge_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_init_kwargs_factory_chained(self) -> None:
+        base = _HarnessProfile(init_kwargs_factory=lambda: {"a": 1, "shared": "base"})
+        override = _HarnessProfile(init_kwargs_factory=lambda: {"b": 2, "shared": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.init_kwargs_factory is not None
+        assert merged.init_kwargs_factory() == {
+            "a": 1,
+            "b": 2,
+            "shared": "override",
+        }
+
+    def test_base_system_prompt_override_wins(self) -> None:
+        base = _HarnessProfile(base_system_prompt="base prompt")
+        override = _HarnessProfile(base_system_prompt="override prompt")
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "override prompt"
+
+    def test_base_system_prompt_inherits_from_base(self) -> None:
+        base = _HarnessProfile(base_system_prompt="base prompt")
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "base prompt"
+
+    def test_base_system_prompt_neither_set_produces_none(self) -> None:
+        merged = _merge_profiles(_HarnessProfile(), _HarnessProfile())
+        assert merged.base_system_prompt is None
+
+    def test_system_prompt_suffix_override_wins(self) -> None:
+        base = _HarnessProfile(system_prompt_suffix="base suffix")
+        override = _HarnessProfile(system_prompt_suffix="override suffix")
+        merged = _merge_profiles(base, override)
+        assert merged.system_prompt_suffix == "override suffix"
+
+    def test_system_prompt_suffix_inherits_from_base(self) -> None:
+        base = _HarnessProfile(system_prompt_suffix="base suffix")
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.system_prompt_suffix == "base suffix"
+
+    def test_base_system_prompt_and_suffix_both_merge(self) -> None:
+        base = _HarnessProfile(base_system_prompt="base prompt", system_prompt_suffix="base suffix")
+        override = _HarnessProfile(base_system_prompt="override prompt")
+        merged = _merge_profiles(base, override)
+        assert merged.base_system_prompt == "override prompt"
+        assert merged.system_prompt_suffix == "base suffix"
+
+    def test_tool_description_overrides_merged(self) -> None:
+        base = _HarnessProfile(tool_description_overrides={"t1": "base", "t2": "base"})
+        override = _HarnessProfile(tool_description_overrides={"t2": "override"})
+        merged = _merge_profiles(base, override)
+        assert merged.tool_description_overrides == {
+            "t1": "base",
+            "t2": "override",
+        }
+
+    def test_excluded_tools_union(self) -> None:
+        base = _HarnessProfile(excluded_tools=frozenset({"execute", "write_file"}))
+        override = _HarnessProfile(excluded_tools=frozenset({"execute", "task"}))
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"execute", "write_file", "task"})
+
+    def test_excluded_tools_base_only(self) -> None:
+        base = _HarnessProfile(excluded_tools=frozenset({"execute"}))
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"execute"})
+
+    def test_excluded_tools_override_only(self) -> None:
+        base = _HarnessProfile()
+        override = _HarnessProfile(excluded_tools=frozenset({"task"}))
+        merged = _merge_profiles(base, override)
+        assert merged.excluded_tools == frozenset({"task"})
+
+    def test_excluded_tools_both_empty(self) -> None:
+        merged = _merge_profiles(_HarnessProfile(), _HarnessProfile())
+        assert merged.excluded_tools == frozenset()
+
+    def test_extra_middleware_concatenated(self) -> None:
+        mw_a, mw_b = MagicMock(), MagicMock()
+        base = _HarnessProfile(extra_middleware=[mw_a])
+        override = _HarnessProfile(extra_middleware=[mw_b])
+        merged = _merge_profiles(base, override)
+        # Merged middleware is a factory since both sides had entries
+        assert callable(merged.extra_middleware)
+        result = merged.extra_middleware()
+        assert list(result) == [mw_a, mw_b]
+
+    def test_extra_middleware_callable_and_sequence(self) -> None:
+        mw_a, mw_b = MagicMock(), MagicMock()
+        base = _HarnessProfile(extra_middleware=lambda: [mw_a])
+        override = _HarnessProfile(extra_middleware=[mw_b])
+        merged = _merge_profiles(base, override)
+        assert callable(merged.extra_middleware)
+        result = merged.extra_middleware()
+        assert list(result) == [mw_a, mw_b]
+
+    def test_extra_middleware_inherits_from_base(self) -> None:
+        mw = MagicMock()
+        base = _HarnessProfile(extra_middleware=[mw])
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert list(merged.extra_middleware) == [mw]
+
+
+class TestProfileMergingEndToEnd:
+    """End-to-end tests: exact-model profiles inherit provider defaults."""
+
+    def test_openai_exact_model_inherits_responses_api(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "openai:o3-pro",
+                _HarnessProfile(system_prompt_suffix="think harder"),
+            )
+            profile = _get_harness_profile("openai:o3-pro")
+            assert profile.init_kwargs == {"use_responses_api": True}
+            assert profile.system_prompt_suffix == "think harder"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_anthropic_exact_model_inherits_provider_profile(self) -> None:
+        """Per-model Anthropic profile merges with the provider-level profile."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "anthropic:claude-sonnet-4-6-20250514",
+                _HarnessProfile(system_prompt_suffix="be concise"),
+            )
+            profile = _get_harness_profile("anthropic:claude-sonnet-4-6-20250514")
+            assert profile.system_prompt_suffix == "be concise"
+            # AnthropicPromptCachingMiddleware is applied unconditionally in
+            # graph.py, not via the profile, so extra_middleware should be empty.
+            assert profile.extra_middleware == ()
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_exact_model_override_wins_for_init_kwargs(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "openai:o3-pro",
+                _HarnessProfile(init_kwargs={"use_responses_api": False}),
+            )
+            profile = _get_harness_profile("openai:o3-pro")
+            assert profile.init_kwargs == {"use_responses_api": False}
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_no_base_profile_returns_exact_unchanged(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            model_profile = _HarnessProfile(init_kwargs={"x": 1})
+            _register_harness_profile("noprov:special", model_profile)
+            assert _get_harness_profile("noprov:special") is model_profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestBuiltInProfiles:
+    """Tests for the built-in provider profile registrations."""
+
+    def test_openai_profile_sets_responses_api(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5")
+        assert profile.init_kwargs == {"use_responses_api": True}
+
+    def test_openrouter_profile_has_pre_init_and_factory(self) -> None:
+        profile = _get_harness_profile("openrouter:anthropic/claude-sonnet-4-6")
+        assert profile.pre_init is not None
+        assert profile.init_kwargs_factory is not None
+
+    def test_anthropic_returns_default_profile(self) -> None:
+        """Anthropic has no registered profile; caching is unconditional in graph.py."""
+        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        assert profile == _HarnessProfile()
+
+
+class TestResolveModelWithProfiles:
+    """Tests for resolve_model using the profile registry."""
+
+    def test_openai_uses_profile_init_kwargs(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openai:gpt-5")
+
+        mock.assert_called_once_with("openai:gpt-5", use_responses_api=True)
+
+    def test_openrouter_runs_pre_init_and_factory(self) -> None:
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openrouter:anthropic/claude-sonnet-4-6")
+
+        mock_check.assert_called_once()
+        _, kwargs = mock.call_args
+        assert "app_url" in kwargs or "app_title" in kwargs
+
+    def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("some_provider:some-model")
+
+        mock.assert_called_once_with("some_provider:some-model")
+
+    def test_custom_profile_kwargs_forwarded(self) -> None:
+        profile = _HarnessProfile(init_kwargs={"custom_key": "custom_val"})
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile("customprov", profile)
+            with patch("deepagents._models.init_chat_model") as mock:
+                mock.return_value = MagicMock(spec=BaseChatModel)
+                resolve_model("customprov:my-model")
+
+            mock.assert_called_once_with("customprov:my-model", custom_key="custom_val")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)

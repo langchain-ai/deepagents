@@ -26,6 +26,33 @@ from deepagents_cli.project_utils import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
+# detection are deferred until first access of `settings` (via module
+# `__getattr__`).  This avoids disk I/O and path traversal during import for
+# callers that never touch `settings` (e.g. `deepagents --help`).
+# ---------------------------------------------------------------------------
+
+_bootstrap_done = False
+"""Whether `_ensure_bootstrap()` has executed."""
+
+_bootstrap_lock = threading.Lock()
+"""Guards `_ensure_bootstrap()` against concurrent access from the main thread
+and the prewarm worker thread."""
+
+_singleton_lock = threading.Lock()
+"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
+
+_bootstrap_start_path: Path | None = None
+"""Working directory captured at bootstrap time for dotenv and project discovery."""
+
+_original_langsmith_project: str | None = None
+"""Caller's `LANGSMITH_PROJECT` value before the CLI overrides it for agent traces.
+
+Captured inside `_ensure_bootstrap()` after dotenv loading but before the
+`LANGSMITH_PROJECT` override, so `.env`-only values are visible.
+"""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -531,6 +558,10 @@ COMMANDS = {
 # Maximum argument length for display
 MAX_ARG_LENGTH = 150
 
+Longer values are truncated with an ellipsis by `truncate_value`
+in `tool_display`.
+"""
+
 config: RunnableConfig = {
     "recursion_limit": 1000,
 }
@@ -855,6 +886,9 @@ class Settings:
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
     model_context_limit: int | None = None  # Max input tokens from model profile
+
+    model_unsupported_modalities: frozenset[str] = frozenset()
+    """Input modalities not indicated as supported by the model profile."""
 
     model_unsupported_modalities: frozenset[str] = frozenset()
     """Input modalities not indicated as supported by the model profile."""
@@ -1863,7 +1897,9 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents._models import check_openrouter_version  # noqa: PLC2701
+        from deepagents.profiles._openrouter import (
+            check_openrouter_version,  # noqa: PLC2701
+        )
 
         check_openrouter_version()
         _apply_openrouter_defaults(result)

@@ -82,6 +82,10 @@ Contains a `<key>` placeholder that callers replace with the warning key
 (e.g. `"ripgrep"`, `"tavily"`).
 """
 
+Contains a `<key>` placeholder that callers replace with the warning key
+(e.g. `"ripgrep"`, `"tavily"`).
+"""
+
 
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
@@ -223,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
     from deepagents_cli.ui import (
@@ -342,6 +347,11 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
         add_output_args=add_json_output_arg,
+    )
+
+    setup_deploy_parsers(
+        subparsers,
+        make_help_action=_make_help_action,
     )
 
     threads_parser = subparsers.add_parser(
@@ -694,8 +704,6 @@ async def run_textual_cli_async(
     # Persist the resolved model so [models].recent is always populated,
     # not only after an explicit /model switch.
     save_recent_model(f"{result.provider}:{result.model_name}")
-
-    from deepagents_cli.app import AppResult
 
     # Build kwargs for deferred server startup (runs inside the TUI).
     # Never pass auto_approve to the server — the interactive server must
@@ -1412,6 +1420,18 @@ def cli_main() -> None:
             from deepagents_cli.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command == "init":
+            from deepagents_cli.deploy import execute_init_command
+
+            execute_init_command(args)
+        elif args.command == "dev":
+            from deepagents_cli.deploy import execute_dev_command
+
+            execute_dev_command(args)
+        elif args.command == "deploy":
+            from deepagents_cli.deploy import execute_deploy_command
+
+            execute_deploy_command(args)
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

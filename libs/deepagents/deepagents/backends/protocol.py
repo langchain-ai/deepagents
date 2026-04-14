@@ -246,6 +246,19 @@ class EditResult:
         self.files_update = _normalize_files_update(files_update)
         self.occurrences = occurrences
 
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+        occurrences: int | None = None,
+    ) -> None:
+        """Initialize edit result."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
+        self.occurrences = occurrences
+
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024

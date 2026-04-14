@@ -1,6 +1,6 @@
-"""Integration tests for BaseSandbox file operations.
+"""Integration tests for `BaseSandbox` file operations.
 
-This module tests the core file operations implemented in BaseSandbox:
+This module tests the core file operations implemented in `BaseSandbox`:
 - write(): Create new files
 - read(): Read file contents with line numbers
 - edit(): String replacement in files
@@ -10,6 +10,11 @@ This module tests the core file operations implemented in BaseSandbox:
 
 All tests run on a single sandbox instance (class-scoped fixture)
 to avoid the overhead of spinning up multiple containers.
+
+TODO: These tests partially overlap with langchain-tests.SandboxIntegrationTests
+(basic write/read/edit/ls/grep/glob), but cover significantly more edge cases.
+Can be removed once the standard suite is expanded. Skipped in release
+pipeline — see release.yml.
 """
 
 from collections.abc import Iterator

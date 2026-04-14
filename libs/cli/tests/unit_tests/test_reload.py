@@ -14,6 +14,9 @@ from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
 
+# Capture before any monkeypatching replaces it on the module.
+_real_load_dotenv = _dotenv_module.load_dotenv
+
 _RELOAD_ENV_KEYS = (
     "OPENAI_API_KEY",
     "DEEPAGENTS_CLI_OPENAI_API_KEY",
@@ -162,6 +165,28 @@ class TestReloadFromEnvironment:
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
         monkeypatch.setattr("deepagents_cli.config.dotenv.load_dotenv", mock_load)
+
+        settings.reload_from_environment(start_path=tmp_path)
+
+        # Project .env loads first (before global) with override=False.
+        mock_load.assert_any_call(dotenv_path=env_file, override=False)
+
+    def test_loads_global_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reload should load project dotenv first, then global."""
+        settings = Settings.from_environment(start_path=tmp_path)
+
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("OPENAI_API_KEY=sk-global\n")
+        monkeypatch.setattr("deepagents_cli.config._GLOBAL_DOTENV_PATH", global_env)
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("ANTHROPIC_API_KEY=sk-project\n")
+
+        mock_load = MagicMock(return_value=True)
+        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
 
         settings.reload_from_environment(start_path=tmp_path)
 

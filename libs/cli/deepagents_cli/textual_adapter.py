@@ -45,6 +45,19 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
+
+    class _TokensUpdateCallback(Protocol):
+        """Callback signature for `_on_tokens_update`."""
+
+        def __call__(self, count: int, *, approximate: bool = False) -> None: ...
+
+    class _TokensShowCallback(Protocol):
+        """Callback signature for `_on_tokens_show`."""
+
+        def __call__(self, *, approximate: bool = False) -> None: ...
+
 
 from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli.ask_user import AskUserRequest
@@ -258,77 +271,6 @@ def _get_ask_user_adapter() -> TypeAdapter:
 
         _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
     return _ask_user_adapter_cache
-
-
-def _get_git_branch() -> str | None:
-    """Return the current git branch name, or None if not in a repo."""
-    import subprocess  # noqa: S404
-
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.debug("Could not determine cwd for git branch lookup", exc_info=True)
-        return None
-    if cwd in _git_branch_cache:
-        return _git_branch_cache[cwd]
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
-
-
-def _build_stream_config(
-    thread_id: str,
-    assistant_id: str | None,
-) -> dict[str, Any]:
-    """Build the LangGraph stream config dict.
-
-    The `thread_id` in `configurable` is automatically propagated as run
-    metadata by LangGraph, so it can be used for LangSmith filtering without
-    a separate metadata key. Includes the current working directory (`cwd`)
-    and git branch in metadata when available.
-
-    Args:
-        thread_id: The CLI session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
-
-    Returns:
-        Config dict with `configurable` and `metadata` keys.
-    """
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {"cwd": cwd} if cwd else {}
-    if assistant_id:
-        metadata.update(
-            {
-                "assistant_id": assistant_id,
-                "agent_name": assistant_id,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    return {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:

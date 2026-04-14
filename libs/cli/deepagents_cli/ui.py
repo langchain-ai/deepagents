@@ -89,6 +89,15 @@ def show_help() -> None:
         "  deepagents update                              Check for and install updates"
     )
     console.print()
+    console.print("[bold]Deploy (beta):[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  deepagents init [NAME]                  Scaffold a new deploy project"
+    )
+    console.print(
+        "  deepagents dev    --config deepagents.toml  Run a local dev server"
+    )
+    console.print("  deepagents deploy --config deepagents.toml  Bundle and deploy")
+    console.print()
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print(
@@ -155,6 +164,14 @@ def show_help() -> None:
     console.print(
         "  deepagents -n 'Fix tests' --shell-allow-list all           # Any command",
         style=COLORS["dim"],
+    )
+    console.print(
+        "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  deepagents --skill code-review -m 'review this patch'",
+        style=theme.MUTED,
     )
     console.print(
         "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",

@@ -32,8 +32,8 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):  # noqa: ARG
     mem_store = InMemoryStore()
     # route /memories/ to store
     be = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
 
     # write to default (state)
@@ -65,7 +65,7 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     root = tmp_path
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # put files in both
@@ -107,8 +107,8 @@ def test_composite_backend_store_to_store():
     mem_store = InMemoryStore()
 
     # Create two separate store backends (simulating different namespaces/stores)
-    default_store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    memories_store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    default_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    memories_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})
 
@@ -147,11 +147,11 @@ def test_composite_backend_multiple_routes():
 
     # State backend as default, multiple stores for different routes
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
         routes={
-            "/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/archive/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/cache/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
+            "/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/archive/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/cache/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         },
     )
 
@@ -213,8 +213,8 @@ def test_composite_backend_grep_path_isolation():
     mem_store = InMemoryStore()
 
     # Use StoreBackend as default, another StoreBackend for /memories/
-    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=state, routes={"/memories/": store_be})
 
@@ -254,7 +254,7 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -292,10 +292,10 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
 def test_composite_backend_ls_multiple_routes_nested():
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
         routes={
-            "/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/archive/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
+            "/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/archive/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         },
     )
 
@@ -360,7 +360,7 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/store/": store})
 
@@ -388,8 +388,8 @@ def test_composite_backend_intercept_large_tool_result(file_format):
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",), file_format=file_format),
-            routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("memories",))},
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
+            routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
         ),
         tool_token_limit_before_evict=1000,
     )
@@ -413,8 +413,8 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
 
     middleware = FilesystemMiddleware(
         backend=CompositeBackend(
-            default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",), file_format=file_format),
-            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)},
+            default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",), file_format=file_format),
+            routes={"/large_tool_results/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)},
         ),
         tool_token_limit_before_evict=1000,
     )
@@ -452,8 +452,8 @@ class MockSandboxBackend(SandboxBackendProtocol, StoreBackend):
 def test_composite_backend_execute_with_sandbox_default():
     """Test that CompositeBackend.execute() delegates to sandbox default backend."""
     mem_store = InMemoryStore()
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
 
@@ -468,8 +468,8 @@ def test_composite_backend_execute_with_sandbox_default():
 def test_composite_backend_execute_without_sandbox_default():
     """Test that CompositeBackend.execute() fails when default doesn't support execution."""
     mem_store = InMemoryStore()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))  # StoreBackend doesn't implement SandboxBackendProtocol
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))  # StoreBackend doesn't implement SandboxBackendProtocol
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store_be})
 
@@ -483,7 +483,7 @@ def test_composite_backend_supports_execution_check():
     mem_store = InMemoryStore()
 
     # CompositeBackend with sandbox default should pass isinstance check
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
     comp_with_sandbox = CompositeBackend(default=sandbox, routes={})
     # Note: CompositeBackend itself has execute() method, so isinstance will pass
     # but the actual support depends on the default backend
@@ -491,7 +491,7 @@ def test_composite_backend_supports_execution_check():
 
     # CompositeBackend with non-sandbox default should still have execute() method
     # but will raise NotImplementedError when called
-    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
     comp_without_sandbox = CompositeBackend(default=state, routes={})
     assert hasattr(comp_without_sandbox, "execute")
 
@@ -499,8 +499,8 @@ def test_composite_backend_supports_execution_check():
 def test_composite_backend_execute_with_routed_backends():
     """Test that execution doesn't interfere with file routing."""
     mem_store = InMemoryStore()
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
 
@@ -525,7 +525,7 @@ def test_composite_upload_routing(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Upload files to default path (filesystem)
@@ -561,7 +561,7 @@ def test_composite_download_routing(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Pre-populate filesystem backend
@@ -666,8 +666,8 @@ def test_composite_upload_download_multiple_routes(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store1 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    store2 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
 
@@ -717,7 +717,7 @@ def test_composite_grep_targeting_specific_route(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -750,7 +750,7 @@ def test_composite_grep_with_glob_filter(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -781,7 +781,7 @@ def test_composite_grep_with_glob_in_specific_route(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -811,7 +811,7 @@ def test_composite_grep_with_path_none(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -854,7 +854,7 @@ def test_composite_grep_nested_path_in_route(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -886,7 +886,7 @@ def test_composite_grep_empty_results(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -905,7 +905,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -974,8 +974,8 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store1 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    store2 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
 
@@ -1009,7 +1009,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
@@ -1028,7 +1028,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
             return "Backend error occurred"
 
     error_backend = ErrorBackend()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
@@ -1047,7 +1047,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
             return "Default backend error"
 
     error_default = ErrorDefaultBackend()
-    store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
 
@@ -1068,7 +1068,7 @@ def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -1084,8 +1084,8 @@ def test_composite_glob_targeting_specific_route() -> None:
     """Test glob when path matches a specific route."""
     mem_store = InMemoryStore()
 
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store_be})
 
@@ -1108,8 +1108,8 @@ def test_composite_glob_leading_slash_pattern() -> None:
     """Test glob with a leading-slash pattern from the root path."""
     mem_store = InMemoryStore()
 
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store_be})
 
@@ -1128,8 +1128,8 @@ def test_composite_glob_nested_path_in_route() -> None:
     """Test glob with nested path within route."""
     mem_store = InMemoryStore()
 
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/archive/": store_be})
 
@@ -1152,8 +1152,8 @@ def test_composite_glob_nested_path_in_route() -> None:
 def test_grep_path_stripping_matches_get_backend_and_key() -> None:
     """Verify grep strips route prefix the same way as _get_backend_and_key."""
     mem_store = InMemoryStore()
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
     comp = CompositeBackend(default=state, routes={"/memories/": store_be})
 
     comp.write("/memories/readme.md", "hello world")
@@ -1171,8 +1171,8 @@ def test_grep_path_stripping_matches_get_backend_and_key() -> None:
 def test_glob_path_stripping_matches_get_backend_and_key() -> None:
     """Verify glob strips route prefix the same way as _get_backend_and_key."""
     mem_store = InMemoryStore()
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
     comp = CompositeBackend(default=state, routes={"/memories/": store_be})
 
     comp.write("/memories/notes.txt", "content")
@@ -1185,8 +1185,8 @@ def test_glob_path_stripping_matches_get_backend_and_key() -> None:
 def test_get_backend_and_key_consistency() -> None:
     """Verify _get_backend_and_key produces correct stripped paths."""
     mem_store = InMemoryStore()
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
     comp = CompositeBackend(default=state, routes={"/memories/": store_be})
 
     # Exact route prefix
@@ -1212,9 +1212,9 @@ def test_get_backend_and_key_consistency() -> None:
 
 def test_route_for_path_edge_cases() -> None:
     mem_store = InMemoryStore()
-    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    mem = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    mem_private = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    mem = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_private = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     sorted_routes = [
         ("/memories/private/", mem_private),
@@ -1284,8 +1284,8 @@ def test_route_for_path_no_trailing_slash_boundary() -> None:
     Regression test for https://github.com/langchain-ai/deepagents/issues/1654.
     """
     mem_store = InMemoryStore()
-    default = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     sorted_routes = [("/abcd", store_be)]
 
@@ -1339,8 +1339,8 @@ def test_write_result_path_restored_to_full_routed_path():
     """CompositeBackend.write should return the full path, not the stripped key."""
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
 
     res = comp.write("/memories/site_context.md", "content")
@@ -1353,8 +1353,8 @@ def test_edit_result_path_restored_to_full_routed_path():
     """CompositeBackend.edit should return the full path, not the stripped key."""
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
     comp.write("/memories/notes.md", "hello world")
 

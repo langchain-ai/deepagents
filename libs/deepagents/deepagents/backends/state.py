@@ -315,11 +315,23 @@ class StateBackend(BackendProtocol):
         Returns:
             List of FileUploadResponse objects, one per input file
         """
-        msg = (
-            "StateBackend does not support upload_files yet. You can upload files "
-            "directly by passing them in invoke if you're storing files in the memory."
-        )
-        raise NotImplementedError(msg)
+        existing = self._read_files()
+        responses: list[FileUploadResponse] = []
+        update: dict[str, Any] = {}
+        for path, content in files:
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = base64.b64encode(content).decode("ascii")
+
+            prev = existing.get(path)
+            file_data = update_file_data(prev, text) if prev else create_file_data(text)
+            update[path] = {**file_data}
+            responses.append(FileUploadResponse(path=path, error=None))
+
+        if update:
+            self._send_files_update(update)
+        return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from state.

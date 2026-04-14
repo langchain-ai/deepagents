@@ -50,10 +50,28 @@ CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation i
 Do NOT assume variables, functions, imports, or helper objects from prior `repl` calls are available.
 
 - The REPL executes JavaScript with QuickJS.
+- Write ordinary JavaScript assignments like `const users = find_users_by_name(\"alice\")`.
+- Use standard property and index access like `users[0]` and `user.id`.
+- Use standard JavaScript control flow like `if (...) {{ ... }}`, loops, array methods, and object manipulation.
 - Use `print(...)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
 - There is no filesystem or network access unless equivalent foreign functions have been provided.
-- Use it for small computations, control flow, JSON manipulation, and calling externally registered foreign functions.
+- The REPL can only use built-in JavaScript features and the foreign functions listed below.
+- If the task needs multiple foreign function calls, prefer writing one complete JavaScript program instead of splitting the work across multiple `repl` invocations.
+- If one foreign function returns an ID or other value that can be passed directly into the next foreign function, trust it and chain the calls instead of stopping to double-check it.
+- If you want to inspect an intermediate value, print it inside the same REPL program; otherwise, try to fetch as much information as possible in one program.
+- If a listed foreign function is `async`, call it with `await` inside an async IIFE such as:
+  `(async () => {{
+    const city = get_city_for_location(1);
+    const weather = await fetch_weather(city);
+    print(weather);
+  }})()`
+- Example syntax only - this shows the JavaScript shape, not specific available foreign functions:
+  `const items = lookup_fn(\"value\");`
+  `const firstItem = items[0];`
+  `const itemId = firstItem.id;`
+  `print(detail_fn(itemId));`
+- Use the repl for small computations, collection manipulation, branching, loops, JSON/object reshaping, and calling externally registered foreign functions.
 {external_functions_section}
 """  # noqa: E501  # preserve prompt text formatting exactly for the model
 

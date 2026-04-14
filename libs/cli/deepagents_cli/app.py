@@ -308,6 +308,24 @@ class _ThreadHistoryPayload:
     messages: list[MessageData]
     """Converted message data ready for bulk loading."""
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeferredAction:
+    """An action deferred until the current busy state resolves."""
+
+    kind: DeferredActionKind
+    """Identity key for deduplication — one of `DeferredActionKind`."""
+
+    execute: Callable[[], Awaitable[None]]
+    """Async callable that performs the actual work."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ThreadHistoryPayload:
+    """Data returned by `_fetch_thread_history_data`."""
+
+    messages: list[MessageData]
+    """Converted message data ready for bulk loading."""
+
     context_tokens: int
     """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
 
@@ -786,6 +804,15 @@ class DeepAgentsApp(App):
             group="startup-import-prewarm",
         )
 
+        # Prewarm heavy imports in a thread while the first frame renders.
+        # The user can't type yet, so GIL contention is harmless.  By the
+        # time _post_paint_init fires its inline imports are dict lookups.
+        self.run_worker(
+            asyncio.to_thread(self._prewarm_deferred_imports),
+            exclusive=True,
+            group="startup-import-prewarm",
+        )
+
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
         # the subprocess is already done. _post_paint_init fires the heavier
@@ -1059,6 +1086,83 @@ class DeepAgentsApp(App):
         assistant_id = self._assistant_id or "agent"
         return discover_skills_and_roots(assistant_id)
 
+    async def _resolve_resume_thread(self) -> None:
+        """Resolve a `-r` resume intent into a concrete thread ID.
+
+        Consumes `self._resume_thread_intent` and resolves it into a concrete
+        thread ID. Mutates `self._lc_thread_id` and optionally
+        `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
+        thread on any DB error.
+        """
+        from deepagents_cli.sessions import (
+            find_similar_threads,
+            generate_thread_id,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        resume = self._resume_thread_intent
+        self._resume_thread_intent = None  # consumed
+
+        if not resume:
+            return
+
+        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
+        # the CLI entry point and pulls in argparse, rich, etc. at module level.
+        # Even a deferred import drags in the full dep tree for a single
+        # string constant.
+        default_agent = "agent"
+
+        try:
+            if resume == "__MOST_RECENT__":
+                agent_filter = (
+                    self._assistant_id if self._assistant_id != default_agent else None
+                )
+                thread_id = await get_most_recent(agent_filter)
+                if thread_id:
+                    agent_name = await get_thread_agent(thread_id)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+                    self._lc_thread_id = thread_id
+                else:
+                    self._lc_thread_id = generate_thread_id()
+                    if agent_filter:
+                        msg = f"No previous threads for '{agent_filter}', starting new."
+                    else:
+                        msg = "No previous threads, starting new."
+                    self.notify(msg, severity="warning", markup=False)
+            elif await thread_exists(resume):
+                self._lc_thread_id = resume
+                if self._assistant_id == default_agent:
+                    agent_name = await get_thread_agent(resume)
+                    if agent_name:
+                        self._assistant_id = agent_name
+                        if self._server_kwargs:
+                            self._server_kwargs["assistant_id"] = agent_name
+            else:
+                # Thread not found — notify + fall back to new thread
+                self._lc_thread_id = generate_thread_id()
+                similar = await find_similar_threads(resume)
+                hint = f"Thread '{resume}' not found."
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                self.notify(hint, severity="warning", timeout=6, markup=False)
+        except Exception:
+            logger.exception("Failed to resolve resume thread %r", resume)
+            self._lc_thread_id = generate_thread_id()
+            self.notify(
+                "Could not look up thread history. Starting new session.",
+                severity="warning",
+            )
+
+        # Update session state if ready (may still be initializing in a
+        # concurrent worker)
+        if self._session_state:
+            self._session_state.thread_id = self._lc_thread_id
+
     async def _start_server_background(self) -> None:
         """Background worker: start server + MCP preload concurrently."""
         from deepagents_cli.server_manager import start_server_and_get_agent
@@ -1264,13 +1368,85 @@ class DeepAgentsApp(App):
 
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}\n"
+                    f"Run: {cmd}\n\n"
                     f"Enable auto-updates: /auto-update",
                     severity="information",
                     timeout=15,
                 )
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
+
+    async def _show_whats_new(self) -> None:
+        """Show a 'what's new' banner on the first launch after an upgrade."""
+        try:
+            from deepagents_cli.update_check import should_show_whats_new
+
+            if not await asyncio.to_thread(should_show_whats_new):
+                return
+        except Exception:
+            logger.debug("What's new check failed", exc_info=True)
+            return
+
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
+
+            if await asyncio.to_thread(_is_editable_install):
+                heading = f"Now running v{cli_version}"
+            else:
+                heading = f"Updated to v{cli_version}"
+
+            await self._mount_message(
+                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
+            )
+        except Exception:
+            logger.debug("What's new banner display failed", exc_info=True)
+            return
+
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.update_check import mark_version_seen
+
+            await asyncio.to_thread(mark_version_seen, cli_version)
+        except Exception:
+            logger.warning("Failed to persist seen-version marker", exc_info=True)
+
+    async def _handle_update_command(self) -> None:
+        """Handle the `/update` slash command — check for and install updates."""
+        await self._mount_message(UserMessage("/update"))
+        try:
+            from deepagents_cli.config import _is_editable_install
+            from deepagents_cli.update_check import (
+                is_auto_update_enabled,
+                set_auto_update,
+            )
+
+            if await asyncio.to_thread(_is_editable_install):
+                self.notify(
+                    "Auto-updates are not available for editable installs.",
+                    severity="warning",
+                    timeout=5,
+                )
+                return
+
+            currently_enabled = await asyncio.to_thread(is_auto_update_enabled)
+            new_state = not currently_enabled
+            await asyncio.to_thread(set_auto_update, new_state)
+            label = "enabled" if new_state else "disabled"
+            self.notify(
+                f"Auto-updates {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
+        except Exception as exc:
+            logger.warning("/auto-update command failed", exc_info=True)
+            self.notify(
+                f"Auto-update toggle failed: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
 
     async def _handle_auto_update_toggle(self) -> None:
         """Handle the `/auto-update` slash command — persist toggle immediately."""
@@ -2865,6 +3041,8 @@ class DeepAgentsApp(App):
 
             await _persist_context_tokens(self._agent, config, result.tokens_after)
 
+            await _persist_context_tokens(self._agent, config, result.tokens_after)
+
         except Exception as exc:  # surface compaction errors to user
             logger.exception("Compaction failed")
             await self._mount_message(ErrorMessage(f"Compaction failed: {exc}"))
@@ -3103,6 +3281,18 @@ class DeepAgentsApp(App):
         # Ensure token display is restored (in case of early cancellation).
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
         self._show_tokens(approximate=self._tokens_approximate)
+
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation."
+                    )
+                )
 
         # Process next message from queue if any
         await self._process_next_from_queue()

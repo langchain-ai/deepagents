@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 
 import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.tools import tool
 
-from langchain_repl import Interpreter
+from langchain_repl import ForeignObjectInterface, Interpreter
 
 
 def test_evaluates_literals_and_stateful_assignments() -> None:
@@ -38,31 +41,74 @@ def test_state_persists_across_evaluations() -> None:
     assert interpreter.env == {"x": 10}
 
 
+def test_uses_provided_environment_mapping() -> None:
+    env = {"x": 10}
+    interpreter = Interpreter(env=env)
+
+    result = interpreter.evaluate("y = x\ny")
+
+    assert result == 10
+    assert interpreter.env == {"x": 10, "y": 10}
+    assert env == {"x": 10, "y": 10}
+
+
 def test_print_records_output_and_returns_value() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate('print("hello")')
 
     assert result == "hello"
     assert interpreter.printed_lines == ["hello"]
 
 
+def test_print_callback_is_scoped_to_evaluate_call() -> None:
+    interpreter = Interpreter()
+    printed: list[str] = []
+
+    result = interpreter.evaluate(
+        'print("hello")\nprint("goodbye")',
+        print_callback=printed.append,
+    )
+    # result has the value of the last expression
+    assert result == "goodbye"
+    assert printed == ["hello", "goodbye"]
+    interpreter.evaluate('print("later")')
+    assert printed == ["hello", "goodbye"]
+
+
 def test_if_uses_truthiness_to_choose_branch() -> None:
     interpreter = Interpreter()
-
     truthy = interpreter.evaluate('if True then "big" else "small" end')
     falsy = interpreter.evaluate('if None then "big" else "small" end')
-
     assert (truthy, falsy) == ("big", "small")
 
 
 def test_calls_registered_functions_and_uses_variables() -> None:
     interpreter = Interpreter(functions={"add": lambda left, right: left + right})
-
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
-
     assert result == 30
     assert interpreter.env == {"x": 10, "y": 20}
+
+
+@tool("get_user_id")
+def get_user_id(runtime: ToolRuntime) -> str:
+    """Return the configured user identifier from ToolRuntime."""
+    return str(runtime.config["configurable"]["user_id"])
+
+
+def test_tool_payload_ignores_model_supplied_runtime_dict() -> None:
+    runtime = ToolRuntime(
+        state={},
+        context=None,
+        config={"configurable": {"user_id": "trusted-user"}},
+        stream_writer=lambda _: None,
+        store=None,
+        tool_call_id="call_1",
+    )
+    interpreter = Interpreter(functions={"get_user_id": get_user_id}, runtime=runtime)
+
+    result = interpreter.evaluate('get_user_id({"runtime": "attacker"})')
+
+    assert result == "trusted-user"
 
 
 def test_parallel_calls_return_results_in_order() -> None:
@@ -97,6 +143,23 @@ def test_parallel_results_can_be_assigned() -> None:
     assert interpreter.env == {"results": [1, 2, 3]}
 
 
+def test_benchmark_simple_print_program() -> None:
+    """Sanity check."""
+    interpreter = Interpreter(functions={"echo": lambda value: value})
+    interpreter.evaluate("echo(42)")
+    tic = time.monotonic()
+    for _ in range(10):
+        interpreter = Interpreter(functions={"echo": lambda value: value})
+        interpreter.evaluate("echo(42)")
+    toc = time.monotonic()
+    elapsed = toc - tic
+    # in us not ms
+    elapsed_us = elapsed * 1e6
+    elapsed_per_run = elapsed_us / 10.0
+    # This is pretty slow with current CI runners
+    assert elapsed_per_run < 100
+
+
 def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
@@ -129,36 +192,21 @@ def test_parses_float_and_boolean_literals() -> None:
 
 def test_print_formats_none_and_booleans() -> None:
     interpreter = Interpreter()
-
     interpreter.evaluate("print(None)")
     interpreter.evaluate("print(True)")
     interpreter.evaluate("print(False)")
-
     assert interpreter.printed_lines == ["None", "True", "False"]
-
-
-def test_clear_output_resets_printed_lines() -> None:
-    interpreter = Interpreter()
-
-    interpreter.evaluate('print("hello")')
-    interpreter.clear_output()
-
-    assert interpreter.printed_lines == []
 
 
 def test_string_escapes_are_decoded() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate(r'"line\nindent\tquote:\""')
-
     assert result == 'line\nindent\tquote:"'
 
 
 def test_nested_list_and_dict_literals_work() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate('{"items": [1, [2, 3]], "meta": {"ok": True}}')
-
     assert result == {"items": [1, [2, 3]], "meta": {"ok": True}}
 
 
@@ -174,6 +222,13 @@ def test_calling_unknown_function_raises_name_error() -> None:
 
     with pytest.raises(NameError, match="Unknown name: missing_fn"):
         interpreter.evaluate("missing_fn(1, 2)")
+
+
+def test_binary_operations_require_numeric_operands() -> None:
+    interpreter = Interpreter()
+
+    with pytest.raises(TypeError, match="binary operations require numeric operands"):
+        interpreter.evaluate('"hello" + 1')
 
 
 def test_print_requires_exactly_one_argument() -> None:
@@ -390,19 +445,16 @@ def test_try_only_catches_primary_expression_errors() -> None:
 
 def test_try_returns_primary_value_when_no_error_occurs() -> None:
     interpreter = Interpreter()
-
     assert interpreter.evaluate('try("value", "fallback")') == "value"
 
 
 def test_parallel_accepts_no_arguments() -> None:
     interpreter = Interpreter()
-
     assert interpreter.evaluate("parallel()") == []
 
 
 def test_function_call_accepts_no_arguments() -> None:
     interpreter = Interpreter(functions={"greet": lambda: "hello"})
-
     assert interpreter.evaluate("greet()") == "hello"
 
 
@@ -428,7 +480,43 @@ def test_parse_error_for_missing_closing_bracket_is_clear() -> None:
 
 
 def test_parse_error_for_invalid_character_is_clear() -> None:
+    """Test parse error for invalid characters."""
     interpreter = Interpreter()
 
     with pytest.raises(ValueError, match="Unexpected character '@'"):
         interpreter.evaluate("@")
+
+
+class _MathForeignInterface(ForeignObjectInterface):
+    def supports(self, value: object) -> bool:
+        return value is math
+
+    def get_item(self, value: object, key: object) -> object:
+        msg = "unsupported foreign get_item"
+        raise TypeError(msg)
+
+    def resolve_member(self, value: object, name: str) -> object:
+        if value is math and name in {"sin", "cos"}:
+            return getattr(math, name)
+        msg = f"Unknown foreign member: {name}"
+        raise AttributeError(msg)
+
+    def call(self, value: object, args: tuple[object, ...]) -> object:
+        msg = "unsupported foreign call"
+        raise TypeError(msg)
+
+
+def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> None:
+    """Foreign object dispatch."""
+    interpreter = Interpreter(
+        foreign_interfaces=[_MathForeignInterface()],
+        env={"math": math},
+    )
+    assert interpreter.evaluate("math.sin(23)") == math.sin(23)
+
+
+def test_foreign_object_dispatcher_errors_without_handler() -> None:
+    """Test foreign function dispatcher errors without handler."""
+    interpreter = Interpreter(env={"math": math})
+    with pytest.raises(TypeError, match="No foreign object handler for module"):
+        interpreter.evaluate("math.sin(23)")

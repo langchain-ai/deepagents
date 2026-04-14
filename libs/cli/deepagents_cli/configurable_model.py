@@ -52,6 +52,13 @@ def _is_anthropic_model(model: object) -> bool:
             pass any model without an import-time dependency on a specific
             provider package.
 
+    Args:
+        model: A model instance to inspect.
+
+            Typed as `object` (rather than `BaseChatModel`) so the caller can
+            pass any model without an import-time dependency on a specific
+            provider package.
+
     Returns:
         `True` if the model is a `ChatAnthropic` instance.
     """

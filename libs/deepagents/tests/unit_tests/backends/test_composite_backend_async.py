@@ -44,8 +44,8 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     """Test async operations with composite backend routing."""
     mem_store = InMemoryStore()
     be = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
 
     # write to default (state)
@@ -78,7 +78,7 @@ async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # put files in both
@@ -120,8 +120,8 @@ async def test_composite_backend_store_to_store_async():
     mem_store = InMemoryStore()
 
     # Create two separate store backends
-    default_store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    memories_store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    default_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    memories_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})
 
@@ -159,11 +159,11 @@ async def test_composite_backend_multiple_routes_async():
     mem_store = InMemoryStore()
 
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
         routes={
-            "/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/archive/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/cache/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
+            "/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/archive/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/cache/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         },
     )
 
@@ -237,7 +237,7 @@ async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -276,10 +276,10 @@ async def test_composite_backend_als_multiple_routes_nested_async():
     """Test async ls with multiple routes and nested directories."""
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
         routes={
-            "/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
-            "/archive/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",)),
+            "/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
+            "/archive/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         },
     )
 
@@ -339,8 +339,8 @@ async def test_composite_backend_als_multiple_routes_nested_async():
 async def test_composite_backend_aexecute_with_sandbox_default_async():
     """Test async execute with sandbox default backend."""
     mem_store = InMemoryStore()
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
 
@@ -355,8 +355,8 @@ async def test_composite_backend_aexecute_with_sandbox_default_async():
 async def test_composite_backend_aexecute_forwards_timeout_async():
     """CompositeBackend should forward timeout to the default backend."""
     mem_store = InMemoryStore()
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
 
@@ -385,8 +385,8 @@ async def test_composite_backend_aexecute_forwards_timeout_async():
 async def test_composite_backend_aexecute_without_sandbox_default_async():
     """Test async execute fails when default doesn't support execution."""
     mem_store = InMemoryStore()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store_be})
 
@@ -398,8 +398,8 @@ async def test_composite_backend_aexecute_without_sandbox_default_async():
 async def test_composite_backend_aexecute_with_routed_backends_async():
     """Test async execution doesn't interfere with file routing."""
     mem_store = InMemoryStore()
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _ctx: ("default",))
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
 
@@ -424,7 +424,7 @@ async def test_composite_aupload_routing_async(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Upload files to default path (filesystem)
@@ -460,7 +460,7 @@ async def test_composite_adownload_routing_async(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
     # Pre-populate filesystem backend
@@ -558,8 +558,8 @@ async def test_composite_aupload_download_multiple_routes_async(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store1 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    store2 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
 
@@ -609,7 +609,7 @@ async def test_composite_agrep_targeting_specific_route_async(tmp_path: Path) ->
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -642,7 +642,7 @@ async def test_composite_agrep_with_glob_filter_async(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -673,7 +673,7 @@ async def test_composite_agrep_with_glob_in_specific_route_async(tmp_path: Path)
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -703,7 +703,7 @@ async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -746,7 +746,7 @@ async def test_composite_agrep_nested_path_in_route_async(tmp_path: Path) -> Non
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -778,7 +778,7 @@ async def test_composite_agrep_empty_results_async(tmp_path: Path) -> None:
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -797,7 +797,7 @@ async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) ->
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -866,8 +866,8 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store1 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    store2 = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store1 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    store2 = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
 
@@ -901,7 +901,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
@@ -920,7 +920,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
             return "Backend error occurred"
 
     error_backend = ErrorBackend()
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
 
@@ -939,7 +939,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
             return "Default backend error"
 
     error_default = ErrorDefaultBackend()
-    store_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
 
@@ -960,7 +960,7 @@ async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: 
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     mem_store = InMemoryStore()
 
-    store = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=fs, routes={"/memories/": store})
 
@@ -976,8 +976,8 @@ async def test_composite_aglob_targeting_specific_route_async() -> None:
     """Test async glob when path matches a specific route."""
     mem_store = InMemoryStore()
 
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store_be})
 
@@ -1000,8 +1000,8 @@ async def test_composite_aglob_nested_path_in_route_async() -> None:
     """Test async glob with nested path within route."""
     mem_store = InMemoryStore()
 
-    store_be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
-    state_backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/archive/": store_be})
 
@@ -1022,8 +1022,8 @@ async def test_awrite_result_path_restored_to_full_routed_path():
     """CompositeBackend.awrite should return the full path, not the stripped key."""
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
 
     res = await comp.awrite("/memories/site_context.md", "content")
@@ -1036,8 +1036,8 @@ async def test_aedit_result_path_restored_to_full_routed_path():
     """CompositeBackend.aedit should return the full path, not the stripped key."""
     mem_store = InMemoryStore()
     comp = CompositeBackend(
-        default=StoreBackend(store=mem_store, namespace=lambda _ctx: ("default",)),
-        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))},
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
     )
     await comp.awrite("/memories/notes.md", "hello world")
 

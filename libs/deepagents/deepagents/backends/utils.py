@@ -233,6 +233,41 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     return result
 
 
+def slice_read_response(
+    file_data: FileData,
+    offset: int,
+    limit: int,
+) -> str | ReadResult:
+    """Slice file data to the requested line range without formatting.
+
+    Returns raw text for the requested window. Line-number formatting
+    is applied downstream by the middleware layer.
+
+    Args:
+        file_data: FileData dict.
+        offset: Line offset (0-indexed).
+        limit: Maximum number of lines.
+
+    Returns:
+        Raw sliced content string on success, or `ReadResult` with
+        `error` set when the offset exceeds the file length.
+    """
+    content = file_data_to_string(file_data)
+
+    if not content or content.strip() == "":
+        return content
+
+    lines = content.splitlines()
+    start_idx = offset
+    end_idx = min(start_idx + limit, len(lines))
+
+    if start_idx >= len(lines):
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+
+    selected_lines = lines[start_idx:end_idx]
+    return "\n".join(selected_lines)
+
+
 def format_read_response(
     file_data: dict[str, Any],
     offset: int,

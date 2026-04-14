@@ -49,6 +49,7 @@ Use a **plain tool** when:
 
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.permissions import FilesystemPermission
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import (
@@ -60,6 +61,7 @@ from deepagents.middleware.summarization import (
 __all__ = [
     "CompiledSubAgent",
     "FilesystemMiddleware",
+    "FilesystemPermission",
     "MemoryMiddleware",
     "SkillsMiddleware",
     "SubAgent",

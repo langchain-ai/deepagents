@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -121,7 +121,9 @@ You should use the tool when:
 CAT_SUMMARIZATION_SYSTEM_PROMPT = """## Context Management Tool `compact_conversation`
 
 You have access to a `compact_conversation` tool that compresses your conversation history \
-into a structured summary, freeing context window space while preserving decision-critical information.
+into a structured summary. Compacting improves your reasoning quality by removing noise — \
+old tool outputs, failed attempts, and verbose intermediate results clutter your context \
+and degrade your decisions. It also frees context window space for the work ahead.
 
 **Proactively call this tool when:**
 - You have completed a subtask or logical phase of work
@@ -130,12 +132,12 @@ into a structured summary, freeing context window space while preserving decisio
 - Your context is getting large and you are about to start a new phase of work
 - You have gathered information and are ready to act on it (compress the research, keep the conclusions)
 
-**Do not wait** for the context to fill up. Compact early at natural milestones \
-so you always have room to work. Think of it as closing tabs you are done with, not \
-as emergency cleanup.
+**As a rule of thumb, call `compact_conversation` approximately every 15-20 tool calls**, \
+or whenever you hit one of the milestones above — whichever comes first. Think of it as \
+closing tabs you are done with, not as emergency cleanup.
 
 An automatic safety net will compress your context if it gets critically full, \
-but proactive compaction produces better summaries because you know what matters.
+but proactive compaction produces better summaries because you know what matters most.
 """
 
 
@@ -1365,6 +1367,14 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     state_schema = SummarizationState
 
+    # Fraction of the auto-summarization trigger at which manual compaction
+    # becomes eligible. "cat" uses a lower gate so the agent can compact
+    # earlier and more frequently (the whole point of proactive compaction).
+    _ELIGIBILITY_FRACTION: ClassVar[dict[SummarizationStrategy, float]] = {
+        "default": 0.5,
+        "cat": 0.25,
+    }
+
     def __init__(
         self,
         summarization: _DeepAgentsSummarizationMiddleware,
@@ -1386,6 +1396,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         self._summarization = summarization
         self._system_prompt = _get_system_prompt_for_strategy(strategy)
+        self._eligibility_fraction = self._ELIGIBILITY_FRACTION.get(strategy, 0.5)
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
     def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
@@ -1532,15 +1543,17 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """Check if manual compaction is currently allowed.
 
         This is an eligibility gate for `compact_conversation` tool calls, not a
-        background trigger. The conversation must be at or above about 50% of
-        the configured auto-summarization trigger:
+        background trigger. The conversation must be at or above a fraction of
+        the configured auto-summarization trigger. The fraction is set by
+        `_eligibility_fraction` (0.5 for ``"default"``, 0.25 for ``"cat"``).
 
-        - For `("tokens", N)`, eligibility starts at `0.5 * N`.
-        - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
+        - For `("tokens", N)`, eligibility starts at `frac * N`.
+        - For `("fraction", F)`, eligibility starts at `frac * F` of model max
             input tokens.
 
         Uses reported usage metadata when available.
         """
+        frac = self._eligibility_fraction
         lc = self._summarization._lc_helper
         trigger_conditions = lc._trigger_conditions
         if not trigger_conditions:
@@ -1548,7 +1561,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         for kind, value in trigger_conditions:
             if kind == "tokens":
-                threshold = int(value * 0.5)
+                threshold = int(value * frac)
                 if threshold <= 0:
                     threshold = 1
                 if lc._should_summarize_based_on_reported_tokens(messages, threshold):
@@ -1557,7 +1570,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 max_input_tokens = lc._get_profile_limits()
                 if max_input_tokens is None:
                     continue
-                threshold = int(max_input_tokens * value * 0.5)
+                threshold = int(max_input_tokens * value * frac)
                 if threshold <= 0:
                     threshold = 1
                 if lc._should_summarize_based_on_reported_tokens(messages, threshold):

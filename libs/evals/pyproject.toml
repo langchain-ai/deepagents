@@ -56,7 +56,7 @@ charts = [
 
 [dependency-groups]
 test = [
-    "pytest>=8.4.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",

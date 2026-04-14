@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+    from deepagents.middleware.summarization import SummarizationStrategy
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
@@ -870,6 +871,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    summarization_strategy: SummarizationStrategy = "default",
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -932,6 +934,11 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        summarization_strategy: Context management strategy.
+
+            ``"default"`` uses threshold-driven summarization with the original
+            prompts. ``"cat"`` uses proactive compaction prompts and structured
+            summaries inspired by the CAT paper.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1191,7 +1198,9 @@ def create_cli_agent(
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(
-        create_summarization_tool_middleware(model, composite_backend)
+        create_summarization_tool_middleware(
+            model, composite_backend, strategy=summarization_strategy
+        )
     )
 
     # Create the agent
@@ -1208,5 +1217,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
+        summarization_strategy=summarization_strategy,
     ).with_config(config)
     return agent, composite_backend

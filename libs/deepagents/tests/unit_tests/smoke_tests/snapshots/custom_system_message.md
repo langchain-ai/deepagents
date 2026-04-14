@@ -111,3 +111,12 @@ When NOT to use the task tool:
 
 Available subagent types:
 - general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.
+
+
+## Compact conversation Tool `compact_conversation`
+
+You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
+
+You should use the tool when:
+- The user asks to move on to a completely new task for which previous context is likely irrelevant.
+- You have finished extracting or synthesizing a result and previous working context is no longer needed.

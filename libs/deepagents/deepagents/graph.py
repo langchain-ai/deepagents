@@ -42,7 +42,11 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import SummarizationStrategy, create_summarization_middleware
+from deepagents.middleware.summarization import (
+    SummarizationStrategy,
+    SummarizationToolMiddleware,
+    create_summarization_middleware,
+)
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
@@ -246,6 +250,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
     - `execute`: run shell commands
     - `task`: call subagents
+    - `compact_conversation`: compress conversation history to free context space
 
     The `execute` tool allows running shell commands if the backend implements `SandboxBackendProtocol`.
     For non-sandbox backends, the `execute` tool will return an error message.
@@ -560,6 +565,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+
+    summ_middleware = create_summarization_middleware(model, backend, strategy=summarization_strategy)
     deepagent_middleware.extend(
         [
             FilesystemMiddleware(
@@ -576,7 +583,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
             ),
-            create_summarization_middleware(model, backend, strategy=summarization_strategy),
+            summ_middleware,
             PatchToolCallsMiddleware(),
         ]
     )
@@ -588,6 +595,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     if middleware:
         deepagent_middleware.extend(middleware)
+
+    # Add compact_conversation tool unless the caller already provided a
+    # SummarizationToolMiddleware (e.g. the CLI adds its own).
+    _has_tool_mw = any(isinstance(m, SummarizationToolMiddleware) for m in middleware)
+    if not _has_tool_mw:
+        deepagent_middleware.append(SummarizationToolMiddleware(summ_middleware, strategy=summarization_strategy))
     # Provider-specific middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.

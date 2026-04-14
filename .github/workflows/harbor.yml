@@ -399,7 +399,7 @@ jobs:
           task_name_flags=""
           resolved_tasks="$HARBOR_TASK_NAMES"
           if [ "$resolved_tasks" = "cat-experiment-22" ]; then
-            resolved_tasks="fix-ocaml-gc,fix-code-vulnerability,llm-inference-batching-scheduler,torch-pipeline-parallelism,torch-tensor-parallelism,mcmc-sampling-stan,train-fasttext,configure-git-webserver,install-windows-3.11,sam-cell-seg,make-doom-for-mips,make-mips-interpreter,protein-assembly,dna-assembly,bn-fit-modify,regex-chess,sparql-university,video-processing,feal-differential-cryptanalysis,feal-linear-cryptanalysis,model-extraction-relu-logits,gpt2-codegolf"
+            resolved_tasks="fix-ocaml-gc,fix-code-vulnerability,llm-inference-batching-scheduler,torch-pipeline-parallelism,mcmc-sampling-stan,train-fasttext,configure-git-webserver,install-windows-3.11,sam-cell-seg,make-doom-for-mips,make-mips-interpreter,protein-assembly,dna-assembly,bn-fit-modify,sparql-university,video-processing,feal-differential-cryptanalysis,feal-linear-cryptanalysis,model-extraction-relu-logits"
           fi
           if [ -n "$resolved_tasks" ]; then
             IFS=',' read -ra TASKS <<< "$resolved_tasks"

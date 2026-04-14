@@ -244,5 +244,16 @@
       }
     },
     "type": "function"
+  },
+  {
+    "function": {
+      "description": "Compact the conversation by summarizing older messages into a concise summary. Use this proactively when the conversation is getting long to free up context window space. This tool takes no arguments.",
+      "name": "compact_conversation",
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "type": "function"
   }
 ]

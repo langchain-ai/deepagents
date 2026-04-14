@@ -248,11 +248,12 @@ class DeepAgentsWrapper(BaseAgent):
                 assistant_id=environment.session_id,
                 sandbox=backend,
                 sandbox_type=None,
-                system_prompt=harbor_system_prompt,  # Use Harbor's custom prompt
-                auto_approve=True,  # Skip HITL in Harbor
+                system_prompt=harbor_system_prompt,
+                auto_approve=True,
                 enable_memory=False,
-                enable_skills=False,  # Disable CLI skills for now
-                enable_shell=False,  # Sandbox provides execution
+                enable_skills=False,
+                enable_shell=False,
+                summarization_strategy=self._summarization_strategy,
             )
         else:
             # Use SDK agent

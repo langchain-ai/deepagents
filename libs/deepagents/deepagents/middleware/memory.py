@@ -71,7 +71,6 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import ToolRuntime
-
 from langchain_core.messages import SystemMessage
 
 from deepagents.middleware._utils import append_to_system_message

@@ -454,21 +454,16 @@ def _make_namespace_factory(assistant_id: str, *extra: str):
 def _make_user_namespace_factory(assistant_id: str):
     """Return a namespace factory that includes the user_id.
 
-    Prefers ``rt.server_info.user.identity`` (custom auth); falls back
-    to ``configurable["user_id"]`` for deployments without custom auth.
+    Uses ``rt.server_info.user.identity`` from custom auth.  The platform
+    always injects user_id from auth, so no configurable fallback is needed.
     """
     def _factory(rt):
         user = getattr(rt.server_info, "user", None) if rt.server_info else None
         identity = getattr(user, "identity", None) if user else None
         if not identity:
-            from langgraph.config import get_config
-            cfg = get_config() or {{}}
-            identity = (cfg.get("configurable") or {{}}).get("user_id")
-        if not identity:
             raise ValueError(
                 "user_id is required when user memories are enabled. "
-                "Set it via custom auth (runtime.user.identity) or "
-                "configurable['user_id']."
+                "Set it via custom auth (runtime.user.identity)."
             )
         return (assistant_id, str(identity))
     return _factory
@@ -510,26 +505,6 @@ def _build_backend_factory(assistant_id: str):
     return _factory
 
 
-def _get_user_id(config: RunnableConfig, server_runtime=None) -> str | None:
-    """Extract user_id, preferring runtime.user.identity over configurable.
-
-    With custom auth, ``server_runtime.user.identity`` is the canonical
-    source.  Without custom auth (or for local dev), callers can pass
-    ``user_id`` via ``config["configurable"]["user_id"]`` as a fallback.
-    Returns None if neither is available.
-    """
-    # Prefer runtime auth (authoritative)
-    if server_runtime is not None:
-        user = getattr(server_runtime, "user", None)
-        identity = getattr(user, "identity", None) if user else None
-        if identity:
-            return str(identity)
-    # Fall back to configurable
-    configurable = ((config or {{}}).get("configurable") or {{}})
-    uid = configurable.get("user_id")
-    return str(uid) if uid else None
-
-
 async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     """Async graph factory.
 
@@ -543,7 +518,11 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     assistant_id = str(configurable.get("assistant_id") or {default_assistant_id!r})
 
     store = getattr(runtime, "store", None)
-    user_id = _get_user_id(config, runtime) if HAS_USER_MEMORIES else None
+    user_id = None
+    if HAS_USER_MEMORIES:
+        user = getattr(runtime, "user", None)
+        identity = getattr(user, "identity", None) if user else None
+        user_id = str(identity) if identity else None
     if HAS_USER_MEMORIES and not user_id:
         logger.warning(
             "User memories are enabled but no user_id found "

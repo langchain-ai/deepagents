@@ -329,7 +329,7 @@ user/
 └── preferences.md
 ```
 
-At runtime, these files are mounted at `/memories/user/` and scoped per user via the `user_id` in the invocation config. The first time a user interacts with the agent, their namespace is seeded with a copy of each template file. Subsequent interactions reuse the existing files — the agent's edits persist, and redeployments never overwrite user data.
+At runtime, these files are mounted at `/memories/user/` and scoped per user via custom auth (`runtime.server_info.user.identity`). The first time a user interacts with the agent, their namespace is seeded with a copy of each template file. Subsequent interactions reuse the existing files — the agent's edits persist, and redeployments never overwrite user data.
 
 ### How it works
 
@@ -346,20 +346,9 @@ At runtime, these files are mounted at `/memories/user/` and scoped per user via
 | `/memories/skills/**` | No | Shared (assistant-scoped) |
 | `/memories/user/**` | Yes | Per-user (user_id-scoped) |
 
-### Passing user_id
+### User identity
 
-Include `user_id` in the invocation's `configurable` dict:
-
-```python
-result = await client.runs.create(
-    thread_id=thread_id,
-    assistant_id="my-agent",
-    input={"messages": [{"role": "user", "content": "Hello"}]},
-    config={"configurable": {"user_id": "user-123"}},
-)
-```
-
-If `user_id` is omitted, it defaults to `"default"` — all users share the same memory namespace.
+The `user_id` is resolved from custom auth via `runtime.user.identity`. The platform injects the authenticated user's identity automatically — no need to pass it through `configurable`. If no authenticated user is present, user memory features are gracefully skipped for that invocation.
 
 ## Gotchas
 

@@ -575,6 +575,36 @@ class TestBuiltInProfiles:
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
         assert profile == _HarnessProfile()
 
+    def test_codex_profile_registered(self) -> None:
+        assert "openai:gpt-5.3-codex" in _HARNESS_PROFILES
+
+    def test_codex_profile_merges_with_openai_provider(self) -> None:
+        """Codex profile inherits use_responses_api from the OpenAI provider."""
+        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        assert profile.init_kwargs["use_responses_api"] is True
+        assert profile.init_kwargs["reasoning_effort"] == "medium"
+
+    def test_codex_profile_has_system_prompt_suffix(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        assert profile.system_prompt_suffix is not None
+        assert "autonomous" in profile.system_prompt_suffix.lower()
+        assert "parallel" in profile.system_prompt_suffix.lower()
+        assert "bias to action" in profile.system_prompt_suffix.lower()
+
+    def test_codex_profile_has_execute_tool_override(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        assert "execute" in profile.tool_description_overrides
+
+    def test_codex_profile_does_not_replace_base_system_prompt(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        assert profile.base_system_prompt is None
+
+    def test_other_openai_models_unaffected_by_codex_profile(self) -> None:
+        """Non-Codex OpenAI models get the provider profile, not the Codex one."""
+        profile = _get_harness_profile("openai:gpt-5")
+        assert profile.init_kwargs == {"use_responses_api": True}
+        assert profile.system_prompt_suffix is None
+
 
 class TestResolveModelWithProfiles:
     """Tests for resolve_model using the profile registry."""
@@ -585,6 +615,17 @@ class TestResolveModelWithProfiles:
             resolve_model("openai:gpt-5")
 
         mock.assert_called_once_with("openai:gpt-5", use_responses_api=True)
+
+    def test_codex_merges_provider_and_model_kwargs(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openai:gpt-5.3-codex")
+
+        mock.assert_called_once_with(
+            "openai:gpt-5.3-codex",
+            use_responses_api=True,
+            reasoning_effort="medium",
+        )
 
     def test_openrouter_runs_pre_init_and_factory(self) -> None:
         with (

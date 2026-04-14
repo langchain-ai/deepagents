@@ -9,9 +9,8 @@ Re-exports the profile dataclass, registry helpers, and provider modules so
 internal consumers can import from `deepagents.profiles` directly.
 """
 
-# Provider modules register their profiles as a side effect of import.
-# _openrouter registration fires via the `from` import below.
-from deepagents.profiles import _openai as _openai
+# Provider/model modules register their profiles as a side effect of import.
+from deepagents.profiles import _codex as _codex, _openai as _openai
 from deepagents.profiles._harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,

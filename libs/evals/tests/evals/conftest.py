@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from deepagents import __version__ as deepagents_version
+from deepagents._models import resolve_model
 from deepagents.graph import get_default_model
 
 pytest_plugins = ["tests.evals.pytest_reporter"]
@@ -187,19 +188,24 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 
 @pytest.fixture
 def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
-    kwargs: dict[str, Any] = {}
     provider = request.config.getoption("--openrouter-provider")
-    if provider:
-        if not model_name.startswith("openrouter:"):
-            msg = "--openrouter-provider requires an openrouter: model prefix"
-            raise ValueError(msg)
-        kwargs["openrouter_provider"] = {
-            "only": [provider],
-            "allow_fallbacks": False,
-        }
+    if provider and not model_name.startswith("openrouter:"):
+        msg = "--openrouter-provider requires an openrouter: model prefix"
+        raise ValueError(msg)
+
     if model_name.startswith("openrouter:"):
-        # OpenRouter SDK passes timeout=None to httpx, disabling its default
-        # 5s read timeout. This causes indefinite hangs on TCP stalls.
-        # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
-        kwargs["timeout"] = 120_000  # ms
-    return init_chat_model(model_name, **kwargs)
+        # OpenRouter needs extra kwargs (timeout, provider pinning) that
+        # resolve_model doesn't accept, so use init_chat_model directly.
+        # The OpenRouter harness profile (pre_init, init_kwargs_factory)
+        # is still applied via create_deep_agent's _harness_profile_for_model.
+        kwargs: dict[str, Any] = {"timeout": 120_000}  # ms — prevents TCP stall hangs
+        if provider:
+            kwargs["openrouter_provider"] = {
+                "only": [provider],
+                "allow_fallbacks": False,
+            }
+        return init_chat_model(model_name, **kwargs)
+
+    # resolve_model applies harness profile init_kwargs (e.g. reasoning_effort
+    # for Codex, use_responses_api for OpenAI) during model construction.
+    return resolve_model(model_name)

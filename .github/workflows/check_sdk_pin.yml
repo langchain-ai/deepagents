@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@v6
 
       - name: Compare SDK version to CLI pin
         id: check
@@ -47,7 +47,7 @@ jobs:
           echo "match=$( [ "$SDK_VERSION" = "$CLI_SDK_PIN" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
 
       - name: Manage PR comment
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@v8
         env:
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           CLI_PIN: ${{ steps.check.outputs.cli_pin }}

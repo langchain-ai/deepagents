@@ -58,14 +58,13 @@
     "docs": "documentation",
     "evals": "evals",
     "examples": "examples",
-    "harbor": "harbor",
+    "harbor": "evals",
     "infra": "infra",
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
     "langchain-repl": "repl",
     "langchain-runloop": "runloop",
-    "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
     "quickjs": "quickjs",
     "repl": "repl",
@@ -116,11 +115,6 @@
     {
       "label": "runloop",
       "prefix": "libs/partners/runloop/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "harbor",
-      "prefix": "libs/harbor/",
       "skipExcludedFiles": true
     },
     {

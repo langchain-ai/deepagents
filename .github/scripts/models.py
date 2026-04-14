@@ -54,6 +54,10 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "anthropic:claude-sonnet-4-20250514",
+        frozenset({"eval:set0", "eval:anthropic", "harbor:set0", "harbor:anthropic"}),
+    ),
+    Model(
         "anthropic:claude-sonnet-4-5-20250929",
         frozenset({"eval:set0", "eval:anthropic", "harbor:set0", "harbor:anthropic"}),
     ),
@@ -473,38 +477,29 @@ REGISTRY: tuple[Model, ...] = (
 #                            (i.e. the "all" preset).
 # ---------------------------------------------------------------------------
 _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
-    (
-        "Model groups",
-        [
-            ("set0", "set0"),
-            ("set1", "set1"),
-            ("set2", "set2"),
-            ("frontier", "frontier"),
-            ("fast", "fast"),
-            ("open", "open"),
-        ],
-    ),
-    (
-        "Provider groups",
-        [
-            ("anthropic", "anthropic"),
-            ("baseten", "baseten"),
-            ("fireworks", "fireworks"),
-            ("google_genai", "google_genai"),
-            ("groq", "groq"),
-            ("nvidia", "nvidia"),
-            ("ollama", "ollama"),
-            ("openai", "openai"),
-            ("openrouter", "openrouter"),
-            ("xai", "xai"),
-        ],
-    ),
-    (
-        None,
-        [
-            ("all", None),
-        ],
-    ),
+    ("Model groups", [
+        ("set0", "set0"),
+        ("set1", "set1"),
+        ("set2", "set2"),
+        ("frontier", "frontier"),
+        ("fast", "fast"),
+        ("open", "open"),
+    ]),
+    ("Provider groups", [
+        ("anthropic", "anthropic"),
+        ("baseten", "baseten"),
+        ("fireworks", "fireworks"),
+        ("google_genai", "google_genai"),
+        ("groq", "groq"),
+        ("nvidia", "nvidia"),
+        ("ollama", "ollama"),
+        ("openai", "openai"),
+        ("openrouter", "openrouter"),
+        ("xai", "xai"),
+    ]),
+    (None, [
+        ("all", None),
+    ]),
 ]
 
 
@@ -581,7 +576,9 @@ def main() -> None:
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
     matrix = {
-        "include": [{"model": m, "provider": m.split(":")[0]} for m in models],
+        "include": [
+            {"model": m, "provider": m.split(":")[0]} for m in models
+        ],
     }
 
     github_output = os.environ.get("GITHUB_OUTPUT")

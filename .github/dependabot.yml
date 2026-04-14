@@ -4,17 +4,11 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+      day: "monday"
     groups:
-      minor-and-patch:
+      github-actions:
         patterns: ["*"]
-        update-types:
-          - "minor"
-          - "patch"
-      major:
-        patterns: ["*"]
-        update-types:
-          - "major"
 
   - package-ecosystem: "uv"
     directories:
@@ -23,22 +17,12 @@ updates:
       - "/libs/harbor"
       - "/libs/acp"
       - "/libs/partners/daytona"
-      - "/libs/partners/modal"
-      - "/libs/partners/quickjs"
-      - "/libs/partners/runloop"
       - "/examples/content-builder-agent"
       - "/examples/deep_research"
-      - "/examples/nvidia_deep_agent"
       - "/examples/text-to-sql-agent"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+      day: "monday"
     groups:
-      minor-and-patch:
+      pip-dependencies:
         patterns: ["*"]
-        update-types:
-          - "minor"
-          - "patch"
-      major:
-        patterns: ["*"]
-        update-types:
-          - "major"

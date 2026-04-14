@@ -51,7 +51,7 @@ Common sections include:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -324,7 +324,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         new_system_message = append_to_system_message(request.system_message, agent_memory)
 
         if self._add_cache_control and new_system_message.content_blocks:
-            blocks = list(new_system_message.content_blocks)
+            blocks: list[Any] = list(new_system_message.content_blocks)
             blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
             new_system_message = SystemMessage(content_blocks=blocks)
 

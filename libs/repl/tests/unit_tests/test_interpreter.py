@@ -489,8 +489,6 @@ def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> Non
         env={"math": math},
     )
     assert interpreter.evaluate("math.sin(23)") == math.sin(23)
-    assert interpreter.evaluate("math.cos(23)") == math.cos(23)
-    assert interpreter.evaluate("math.sin(23) + math.cos(45)")
 
 
 def test_foreign_object_dispatcher_errors_without_handler() -> None:

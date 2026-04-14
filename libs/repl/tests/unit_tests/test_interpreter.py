@@ -5,6 +5,8 @@ import threading
 import time
 
 import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.tools import tool
 
 from langchain_repl import ForeignObjectInterface, Interpreter
 
@@ -85,6 +87,28 @@ def test_calls_registered_functions_and_uses_variables() -> None:
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
     assert result == 30
     assert interpreter.env == {"x": 10, "y": 20}
+
+
+@tool("get_user_id")
+def get_user_id(runtime: ToolRuntime) -> str:
+    """Return the configured user identifier from ToolRuntime."""
+    return str(runtime.config["configurable"]["user_id"])
+
+
+def test_tool_payload_ignores_model_supplied_runtime_dict() -> None:
+    runtime = ToolRuntime(
+        state={},
+        context=None,
+        config={"configurable": {"user_id": "trusted-user"}},
+        stream_writer=lambda _: None,
+        store=None,
+        tool_call_id="call_1",
+    )
+    interpreter = Interpreter(functions={"get_user_id": get_user_id}, runtime=runtime)
+
+    result = interpreter.evaluate('get_user_id({"runtime": "attacker"})')
+
+    assert result == "trusted-user"
 
 
 def test_parallel_calls_return_results_in_order() -> None:

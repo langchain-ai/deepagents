@@ -923,7 +923,7 @@ async def test_multi_question_incident_oncall_and_service_with_most_firing_alert
             final_text_contains("2", case_insensitive=False),
         )
         .expect(
-            agent_steps=8,
+            agent_steps=6,
             tool_call_requests=13,
             tool_calls=[
                 tool_call(name="get_incident_service", args_contains={"incident_id": 41029}),

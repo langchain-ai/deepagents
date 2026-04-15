@@ -1,7 +1,7 @@
 """Unified slash-command registry.
 
 Every slash command is declared once as a `SlashCommand` entry in `COMMANDS`.
-Bypass-tier frozensets and autocomplete tuples are derived automatically — no
+Bypass-tier frozensets and autocomplete entries are derived automatically — no
 other file should hard-code command metadata.
 """
 

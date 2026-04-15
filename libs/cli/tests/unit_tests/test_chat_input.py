@@ -2265,6 +2265,118 @@ class TestChatInputTypingBubble:
             assert app.chat_input_typing_count == 2
 
 
+class TestArgumentHints:
+    """Test inline argument-hint ghost text for slash commands."""
+
+    def test_rebuild_argument_hints_populates_lookup(self) -> None:
+        """Commands with hints produce a name → hint mapping."""
+        from deepagents_cli.command_registry import CommandEntry
+
+        commands = [
+            CommandEntry("/remember", "Update memory", "", "[context]"),
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/skill-creator", "Create skills", "", "[task]"),
+        ]
+        chat = ChatInput()
+        chat._rebuild_argument_hints(commands)
+        assert chat._argument_hints == {
+            "remember": "[context]",
+            "skill-creator": "[task]",
+        }
+
+    def test_rebuild_argument_hints_excludes_empty(self) -> None:
+        """Commands without hints are excluded from the lookup."""
+        from deepagents_cli.command_registry import CommandEntry
+
+        commands = [
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/quit", "Exit", "", ""),
+        ]
+        chat = ChatInput()
+        chat._rebuild_argument_hints(commands)
+        assert chat._argument_hints == {}
+
+    async def test_hint_shown_after_command_and_space(self) -> None:
+        """Ghost text appears when text is a known command + trailing space."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type "remember "
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat._text_area.suggestion == "[context]"
+
+    async def test_hint_cleared_when_args_typed(self) -> None:
+        """Ghost text disappears once the user starts typing arguments."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.suggestion == "[context]"
+
+            chat._text_area.insert("x")
+            await pilot.pause()
+            assert chat._text_area.suggestion == ""
+
+    async def test_hint_not_shown_in_normal_mode(self) -> None:
+        """Ghost text does not appear when not in command mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.suggestion == ""
+
+    async def test_hint_not_shown_for_unknown_command(self) -> None:
+        """Ghost text does not appear for commands without argument hints."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("help ")
+            await pilot.pause()
+
+            assert chat._text_area.suggestion == ""
+
+    async def test_pre_key_dismiss_hides_popup_on_space(self) -> None:
+        """Popup is hidden before TextArea processes the space character."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Trigger command mode with active suggestions
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("rem")
+            await pilot.pause()
+            assert chat._current_suggestions
+            assert popup.styles.display == "block"
+
+            # Type space — popup should dismiss
+            await pilot.press("space")
+            await pilot.pause()
+            assert popup.styles.display == "none"
+
+
 class TestScrollCursorVisibleDesync:
     """scroll_cursor_visible should not crash on cursor/document desync."""
 

@@ -689,6 +689,15 @@ class ChatTextArea(TextArea):
                     self.post_message(self.HistoryNext())
                 return
 
+        # Pre-dismiss: hide the completion popup BEFORE super() updates the
+        # text, so the popup disappear and the new character render in the
+        # same compositor frame.  Without this there is a visible 1-frame
+        # lag where the new text is visible but the popup hasn't hidden yet.
+        if self._completion_active and event.is_printable and event.character == " ":
+            parent = self.parent
+            if isinstance(parent, ChatInput):
+                parent._pre_key_completion_dismiss()
+
         await super()._on_key(event)
 
     def _delete_image_placeholder(self, *, backwards: bool) -> bool:
@@ -1039,6 +1048,15 @@ class ChatInput(Vertical):
                 "(widget not yet mounted)"
             )
 
+    def _pre_key_completion_dismiss(self) -> None:
+        """Eagerly hide the completion popup before TextArea processes a key.
+
+        Called from `ChatTextArea._on_key` so the popup disappears in the
+        same render frame as the new character, avoiding a 1-frame lag.
+        """
+        if self._current_suggestions:
+            self.clear_completion_suggestions()
+
     def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
         """Rebuild the command-name → argument-hint lookup.
 
@@ -1055,8 +1073,9 @@ class ChatInput(Vertical):
         """Show or clear inline ghost text for slash-command argument hints.
 
         Sets `TextArea.suggestion` when the input is a known slash command
-        with no args typed yet — either right after Tab completion
-        (``remember``) or after typing a trailing space (``remember ``).
+        followed by a trailing space with no args typed yet. Both spacebar
+        and Tab completion produce this state (Tab goes through
+        `replace_completion_range` which appends a trailing space).
         """
         if not self._text_area:
             return
@@ -1067,21 +1086,12 @@ class ChatInput(Vertical):
             return
 
         text = self._text_area.text
-        # Only trigger when no args have been typed yet
-        cmd_name = text.rstrip()
-        if " " in cmd_name:
-            # Args present — clear any stale hint
-            if self._text_area.suggestion:
-                self._text_area.suggestion = ""
-            return
-
-        hint = self._argument_hints.get(cmd_name, "")
-        if hint:
-            # Prefix with space when cursor is flush against command name
-            display = f" {hint}" if not text.endswith(" ") else hint
-            if self._text_area.suggestion != display:
-                self._text_area.suggestion = display
-            return
+        if text.endswith(" ") and " " not in text.rstrip():
+            hint = self._argument_hints.get(text.rstrip(), "")
+            if hint:
+                if self._text_area.suggestion != hint:
+                    self._text_area.suggestion = hint
+                return
 
         if self._text_area.suggestion:
             self._text_area.suggestion = ""
@@ -1142,6 +1152,10 @@ class ChatInput(Vertical):
                 # Note: the strip's text-change event will also call
                 # on_text_changed (idempotently) since _stripping_prefix only
                 # skips mode detection, not the completion block below.
+        # Set inline argument hint before the completion manager runs so
+        # the suggestion is ready in the same render pass that hides the popup.
+        self._update_argument_hint()
+
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
             if is_path_payload:
@@ -1149,10 +1163,6 @@ class ChatInput(Vertical):
             else:
                 vtext, vcursor = self._completion_text_and_cursor()
                 self._completion_manager.on_text_changed(vtext, vcursor)
-
-        # Show inline argument hint as ghost text when cursor is right after
-        # a completed slash command + space with no args typed yet.
-        self._update_argument_hint()
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()

@@ -19,6 +19,7 @@ from deepagents_cli.deploy.config import (
     DeployConfig,
     SandboxConfig,
     _parse_config,
+    _validate_auth_credentials,
     _validate_mcp_for_deploy,
     _validate_model_credentials,
     _validate_sandbox_credentials,
@@ -144,6 +145,19 @@ class TestDeployConfig:
         cfg = DeployConfig(agent=AgentConfig(name="x"))
         errors = cfg.validate(tmp_path)
         assert any("stdio" in e for e in errors)
+
+    def test_validate_auth_missing_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        cfg = DeployConfig(
+            agent=AgentConfig(name="x"),
+            auth=AuthConfig(provider="supabase"),
+        )
+        errors = cfg.validate(tmp_path)
+        assert any("SUPABASE_URL" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +348,41 @@ class TestValidateSandboxCredentials:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2-test")
         assert _validate_sandbox_credentials("langsmith") == []
+
+
+class TestValidateAuthCredentials:
+    def test_unknown_provider_skips(self) -> None:
+        assert _validate_auth_credentials("unknown") == []
+
+    def test_supabase_missing_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_URL" in errors[0]
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_missing_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_all_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "pk-test")
+        assert _validate_auth_credentials("supabase") == []
+
+    def test_clerk_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+        errors = _validate_auth_credentials("clerk")
+        assert len(errors) == 1
+        assert "CLERK_SECRET_KEY" in errors[0]
+
+    def test_clerk_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_xxx")
+        assert _validate_auth_credentials("clerk") == []
 
 
 # ---------------------------------------------------------------------------

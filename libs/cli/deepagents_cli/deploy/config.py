@@ -156,6 +156,10 @@ class DeployConfig:
         # Validate credentials for sandbox provider.
         errors.extend(_validate_sandbox_credentials(self.sandbox.provider))
 
+        # Validate credentials for auth provider.
+        if self.auth is not None:
+            errors.extend(_validate_auth_credentials(self.auth.provider))
+
         return errors
 
 
@@ -314,6 +318,11 @@ _SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
     # Modal falls back to default auth if env vars are not set.
 }
 
+_AUTH_PROVIDER_ENV: dict[str, list[str]] = {
+    "supabase": ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_DEFAULT_KEY"],
+    "clerk": ["CLERK_SECRET_KEY"],
+}
+
 
 def _validate_model_credentials(model: str) -> list[str]:
     """Check that the API key env var is set for the model provider."""
@@ -344,6 +353,22 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
         (
             f"Missing API key for sandbox provider '{provider}': "
             f"set one of {', '.join(required_vars)} in your .env file or environment."
+        ),
+    ]
+
+
+def _validate_auth_credentials(provider: str) -> list[str]:
+    """Check that all required env vars are set for the auth provider."""
+    required_vars = _AUTH_PROVIDER_ENV.get(provider)
+    if required_vars is None:
+        return []
+    missing = [v for v in required_vars if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Auth provider '{provider}' requires {' and '.join(missing)}. "
+            f"Add them to your .env file or environment."
         ),
     ]
 

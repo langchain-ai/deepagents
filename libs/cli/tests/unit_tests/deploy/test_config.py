@@ -390,6 +390,28 @@ class TestValidateAuthCredentials:
 # ---------------------------------------------------------------------------
 
 
+class TestStarterTemplates:
+    def test_starter_config_mentions_auth(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_config
+
+        result = generate_starter_config()
+        assert "[auth]" in result
+        assert "supabase" in result
+        assert "clerk" in result
+
+    def test_starter_env_mentions_auth_vars(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_env
+
+        result = generate_starter_env()
+        assert "SUPABASE_URL" in result
+        assert "CLERK_SECRET_KEY" in result
+
+
+# ---------------------------------------------------------------------------
+# Cross-module consistency
+# ---------------------------------------------------------------------------
+
+
 class TestCrossModuleConsistency:
     def test_sandbox_blocks_matches_valid_providers(self) -> None:
         """SANDBOX_BLOCKS keys in templates.py must match VALID_SANDBOX_PROVIDERS."""

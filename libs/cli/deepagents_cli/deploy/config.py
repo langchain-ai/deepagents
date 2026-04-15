@@ -398,6 +398,10 @@ model = "anthropic:claude-sonnet-4-6"
 # [sandbox]
 # provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
+
+# [auth] is optional. Add to enable user authentication.
+# [auth]
+# provider = "supabase"   # supabase | clerk
 """
 
 
@@ -423,6 +427,11 @@ ANTHROPIC_API_KEY=
 
 # LangSmith API key (required for deploy and sandbox)
 LANGSMITH_API_KEY=
+
+# Auth provider (optional, uncomment for [auth])
+# SUPABASE_URL=
+# SUPABASE_PUBLISHABLE_DEFAULT_KEY=
+# CLERK_SECRET_KEY=
 """
 
 

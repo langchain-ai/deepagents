@@ -249,6 +249,35 @@ def _parse_subagent_config(data: dict[str, Any], subagent_dir: Path) -> SubAgent
     return SubAgentConfig(agent=AgentConfig(**agent_kwargs))
 
 
+def validate_subagent_names(
+    async_subagents: list[AsyncSubAgentConfig],
+    sync_subagents: dict[str, SubAgentProject],
+) -> list[str]:
+    """Check that all subagent names are unique across sync and async.
+
+    Returns list of validation error strings. Empty if all names are unique.
+    """
+    errors: list[str] = []
+    seen: dict[str, str] = {}  # name -> source
+    for asa in async_subagents:
+        if asa.name in seen:
+            errors.append(
+                f"Duplicate subagent name '{asa.name}': declared in both "
+                f"{seen[asa.name]} and async_subagents"
+            )
+        else:
+            seen[asa.name] = "async_subagents"
+    for name in sync_subagents:
+        if name in seen:
+            errors.append(
+                f"Duplicate subagent name '{name}': declared in both "
+                f"{seen[name]} and subagents/"
+            )
+        else:
+            seen[name] = "subagents/"
+    return errors
+
+
 def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
     """Discover and load subagent projects from ``subagents/``.
 

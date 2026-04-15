@@ -120,7 +120,7 @@ def bundle(
 
     # 4b. Generate auth.py if [auth] is configured.
     auth_present = config.auth is not None
-    if auth_present:
+    if config.auth is not None:
         (build_dir / "auth.py").write_text(
             _render_auth_py(config.auth.provider),
             encoding="utf-8",

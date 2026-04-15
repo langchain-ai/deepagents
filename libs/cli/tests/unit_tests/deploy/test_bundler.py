@@ -19,11 +19,11 @@ from deepagents_cli.deploy.bundler import (
 from deepagents_cli.deploy.config import (
     _MODEL_PROVIDER_ENV,
     AGENTS_MD_FILENAME,
-    AuthConfig,
     MCP_FILENAME,
     SKILLS_DIRNAME,
     USER_DIRNAME,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
 )
@@ -355,7 +355,9 @@ class TestPrintBundleSummary:
 
 class TestRenderLanggraphJsonAuth:
     def test_without_auth(self) -> None:
-        result = json.loads(_render_langgraph_json(env_present=False, auth_present=False))
+        result = json.loads(
+            _render_langgraph_json(env_present=False, auth_present=False)
+        )
         assert "auth" not in result
 
     def test_with_auth(self) -> None:
@@ -375,7 +377,9 @@ class TestRenderPyprojectAuth:
         assert "pyjwt" in result
 
     def test_supabase_no_extra_dep(self) -> None:
-        config = _minimal_config(model="bare-model", auth=AuthConfig(provider="supabase"))
+        config = _minimal_config(
+            model="bare-model", auth=AuthConfig(provider="supabase")
+        )
         result = _render_pyproject(config, mcp_present=False)
         assert "pyjwt" not in result
 

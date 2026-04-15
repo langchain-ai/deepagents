@@ -9,5 +9,5 @@ provider = "none"
 [[async_subagents]]
 name = "content-writer"
 description = "Writes blog posts, landing pages, and marketing copy based on research findings"
-graph_id = "content-writer-agent"
-url = "https://my-langgraph-deployment.com"
+graph_id = "deepagents-deploy-content-writer"
+# url = "https://your-langgraph-deployment.com"  # Set to your deployment URL

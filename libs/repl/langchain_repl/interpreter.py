@@ -255,39 +255,153 @@ class _Tokenizer:
 
 
 class OpCode(str, Enum):
+    """Instruction set for the stack-based REPL VM.
+
+    Each opcode either pushes values onto the operand stack, consumes values from
+    it, mutates control flow via the program counter, or updates interpreter state
+    such as variable bindings and loop bookkeeping.
+    """
+
     LOAD_CONST = "LOAD_CONST"
+    """Push the instruction argument onto the operand stack.
+
+    Example: `42` compiles to `LOAD_CONST 42`.
+    """
+
     LOAD_NAME = "LOAD_NAME"
+    """Push the value of a named binding or registered function onto the stack.
+
+    Example: `x` compiles to `LOAD_NAME "x"`.
+    """
+
     STORE_NAME = "STORE_NAME"
+    """Store the top-of-stack value into the named environment binding.
+
+    Example: `x = 1` emits `LOAD_CONST 1` then `STORE_NAME "x"`.
+    """
+
     SET_LAST = "SET_LAST"
+    """Copy the top-of-stack value into `VMState.last_value` without popping it.
+
+    Example: expression statements like `x` end with `SET_LAST`.
+    """
+
     BUILD_LIST = "BUILD_LIST"
+    """Pop `arg` values, package them into a list, and push the new list.
+
+    Example: `[1, 2]` emits `LOAD_CONST 1`, `LOAD_CONST 2`, `BUILD_LIST 2`.
+    """
+
     BUILD_DICT = "BUILD_DICT"
+    """Pop `arg` key/value pairs, package them into a dict, and push the dict.
+
+    Example: `{"a": 1}` emits `LOAD_CONST "a"`, `LOAD_CONST 1`, `BUILD_DICT 1`.
+    """
+
     BINARY_OP = "BINARY_OP"
+    """Pop two operands, apply the binary operator in `arg`, and push the result.
+
+    Example: `x + 1` emits `LOAD_NAME "x"`, `LOAD_CONST 1`, `BINARY_OP "+"`.
+    """
+
     GET_INDEX = "GET_INDEX"
+    """Pop an index and target, resolve `target[index]`, and push the result.
+
+    Example: `items[0]` emits `LOAD_NAME "items"`, `LOAD_CONST 0`, `GET_INDEX`.
+    """
+
     GET_ATTR = "GET_ATTR"
+    """Pop a target, resolve the attribute named by `arg`, and push the result.
+
+    Example: `math.sin` emits `LOAD_NAME "math"`, `GET_ATTR "sin"`.
+    """
+
     CALL = "CALL"
+    """Pop a callable target plus `arg` arguments, invoke it, and push the result.
+
+    Example: `echo(1)` emits `LOAD_NAME "echo"`, `LOAD_CONST 1`, `CALL 1`.
+    """
+
     JUMP = "JUMP"
+    """Set the program counter to the absolute instruction index stored in `arg`.
+
+    Example: `if ... else ... end` uses `JUMP` to skip over the else branch after the then branch runs.
+    """
+
     JUMP_IF_FALSE = "JUMP_IF_FALSE"
+    """Pop a condition and jump to `arg` when the value is falsy.
+
+    Example: `if cond then ... else ... end` emits `JUMP_IF_FALSE <else_start>` after compiling `cond`.
+    """
+
     ITER_PREP = "ITER_PREP"
+    """Pop a list iterable and initialize loop state for the target name in `arg`.
+
+    Example: `for item in items do ... end` emits `LOAD_NAME "items"` then `ITER_PREP "item"`.
+    """
+
     ITER_NEXT = "ITER_NEXT"
+    """Advance the active loop or jump to `arg` when the iterable is exhausted.
+
+    Example: `for item in items do ... end` emits `ITER_NEXT <loop_end>` at the top of the loop body.
+    """
+
     RETURN_VALUE = "RETURN_VALUE"
+    """Finish execution and return `VMState.last_value`.
+
+    Example: every compiled program ends with `RETURN_VALUE`.
+    """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Instruction:
     opcode: OpCode
     arg: Any = None
 
 
-@dataclass
+@dataclass(slots=True)
 class ForLoopState:
+    """Mutable runtime state for one active `for` loop.
+
+    The VM keeps the loop variable name, the concrete list being iterated, and
+    the next element index to read.
+    """
+
     target_name: str
     items: list[Any]
     index: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class VMState:
-    instructions: tuple[Instruction, ...]
+    """Mutable execution state for one compiled REPL program.
+
+    Attributes:
+        instructions: The compiled instruction stream being executed.
+        env: Current variable bindings visible to the program.
+        pc: Program counter pointing at the next instruction to execute.
+        stack: Operand stack used by the VM for expression evaluation.
+        last_value: Value returned by the most recent statement-level result.
+        loop_stack: Stack of active `for` loops.
+
+    `loop_stack` exists because loops need state that cannot live on the operand
+    stack alone: the loop target name, the full iterable, and the current index.
+    It is a stack rather than a single slot so nested loops work correctly.
+
+    Example:
+        In:
+        `for item in [1, 2] do`
+        `    for inner in [10, 20] do`
+        `        print(item)`
+        `    end`
+        `end`
+
+        the outer and inner loops each need independent iteration state, so the
+        VM pushes one `ForLoopState` for the outer loop and another for the inner
+        loop.
+    """
+
+    instructions: Sequence[Instruction]
     env: MutableMapping[str, Any]
     pc: int = 0
     stack: list[Any] = field(default_factory=list)

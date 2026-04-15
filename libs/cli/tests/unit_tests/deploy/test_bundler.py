@@ -323,6 +323,49 @@ class TestBundle:
         with pytest.raises(ValueError, match="Unknown sandbox provider"):
             bundle(config, project, build)
 
+    def test_bundle_with_subagents(self, tmp_path: Path) -> None:
+        """Full bundle with sync and async subagents produces valid artifacts."""
+        project = _minimal_project(tmp_path / "project")
+        _add_subagent(
+            project,
+            "researcher",
+            description="Research agent",
+            skills={"search/SKILL.md": "# Search"},
+        )
+        _add_subagent(project, "coder", description="Coding agent")
+        build = tmp_path / "build"
+        config = DeployConfig(
+            agent=AgentConfig(name="test-agent"),
+            sandbox=SandboxConfig(),
+            async_subagents=[
+                AsyncSubAgentConfig(
+                    name="writer",
+                    description="Content writer",
+                    graph_id="writer-graph",
+                    url="https://example.com",
+                ),
+            ],
+        )
+        bundle(config, project, build)
+
+        # Verify seed has subagents.
+        seed = json.loads((build / "_seed.json").read_text(encoding="utf-8"))
+        assert "subagents" in seed
+        assert "researcher" in seed["subagents"]
+        assert "coder" in seed["subagents"]
+        assert seed["subagents"]["researcher"]["skills"]["/search/SKILL.md"] == "# Search"
+        assert "async_subagents" in seed
+        assert len(seed["async_subagents"]) == 1
+        assert seed["async_subagents"][0]["name"] == "writer"
+
+        # Verify generated deploy_graph.py is valid Python.
+        graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
+        compile(graph_py, "<deploy_graph_subagents>", "exec")
+        assert "SubAgent" in graph_py
+        assert "AsyncSubAgent" in graph_py
+        assert "_build_sync_subagents" in graph_py
+        assert "_build_async_subagents" in graph_py
+
 
 class TestPrintBundleSummary:
     def test_handles_valid_seed(

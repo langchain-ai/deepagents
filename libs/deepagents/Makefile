@@ -19,7 +19,8 @@ test: ## Run unit tests
 test tests:
 	uv run --group test pytest -n auto -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=deepagents \
-		--cov-report=term-missing
+		--cov-report=term-missing \
+		--benchmark-disable
 
 update-snapshots: ## Update smoke test snapshots
 	# update snapshots for smoke tests
@@ -34,7 +35,7 @@ coverage: ## Run unit tests with coverage
 
 integration_test: ## Run integration tests
 integration_test integration_tests:
-	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
+	uv run --group test pytest -n auto -vvv --timeout 30 --benchmark-disable $(TEST_FILE)
 
 
 test_watch: ## Run tests in watch mode

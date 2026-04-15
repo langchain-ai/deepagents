@@ -80,7 +80,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
     # Keep config and the global sessions DB fully test-local.
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.setenv("DEEPAGENTS_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("DEEPAGENTS_CLI_NO_UPDATE_CHECK", "1")
     monkeypatch.chdir(project_dir)
 
     _write_model_config(home_dir)
@@ -162,8 +162,10 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
             async with app.run_test() as pilot:
                 # Let startup history loading settle before asserting on the UI.
-                for _ in range(60):
-                    await pilot.pause()
+                # Use a 0.1 s delay per iteration (up to 12 s) so slow CI
+                # runners have enough time for the async I/O to complete.
+                for _ in range(120):
+                    await pilot.pause(0.1)
                     if app._message_store.total_count > 0:
                         break
 
@@ -178,8 +180,8 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
                 # `/compact` posts a success message after the async state write
                 # and archive offload finish.
-                for _ in range(60):
-                    await pilot.pause()
+                for _ in range(120):
+                    await pilot.pause(0.1)
                     if any(
                         "Conversation compacted." in str(widget._content)
                         for widget in app.query(AppMessage)

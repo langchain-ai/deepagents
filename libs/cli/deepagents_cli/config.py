@@ -32,8 +32,8 @@ _bootstrap_done = False
 """Whether `_ensure_bootstrap()` has executed."""
 
 _bootstrap_lock = threading.Lock()
-"""Guards `_ensure_bootstrap()` against concurrent access from the main
-thread and the prewarm worker thread."""
+"""Guards `_ensure_bootstrap()` against concurrent access from the main thread
+and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
@@ -70,25 +70,83 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-def _load_dotenv(*, start_path: Path | None = None, override: bool = False) -> bool:
-    """Load environment variables, optionally anchored to an explicit path.
+# Global user-level .env (~/.deepagents/.env); sentinel when Path.home() fails.
+try:
+    _GLOBAL_DOTENV_PATH = Path.home() / ".deepagents" / ".env"
+except RuntimeError:
+    _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
+
+
+def _load_dotenv(*, start_path: Path | None = None) -> bool:
+    """Load environment variables from project and global `.env` files.
+
+    Loads in order (first write wins, `override=False`):
+
+    1. Project/CWD `.env` — project-specific values
+    2. `~/.deepagents/.env` — global user defaults
+
+    Both layers use `override=False` (the python-dotenv default) so that
+    shell-exported variables always take precedence over dotenv files.
+    Because project loads first, the effective precedence is:
+
+    ```text
+    shell env (incl. inline `VAR=x`)  >  project `.env`  >  global `.env`
+    ```
+
+    !!! note
+
+        To scope credentials to the CLI without colliding with
+        identically-named shell exports, use the `DEEPAGENTS_CLI_` env-var
+        prefix (see `resolve_env_var` in `deepagents_cli.model_config`).
 
     Args:
-        start_path: Directory to use for `.env` discovery.
-        override: Whether loaded values should override existing env vars.
+        start_path: Directory to use for project `.env` discovery.
 
     Returns:
-        `True` when a dotenv file was loaded, `False` otherwise.
+        `True` when at least one dotenv file was loaded, `False` otherwise.
     """
     import dotenv
 
-    if start_path is None:
-        return dotenv.load_dotenv(override=override)
+    loaded = False
 
-    dotenv_path = _find_dotenv_from_start_path(start_path)
-    if dotenv_path is None:
-        return False
-    return dotenv.load_dotenv(dotenv_path=dotenv_path, override=override)
+    # 1. Project/CWD .env — loads first so project values are set before the
+    # global file, which can only fill in vars not already present.
+    dotenv_path: Path | str | None = None
+    try:
+        if start_path is None:
+            loaded = dotenv.load_dotenv(override=False) or loaded
+        else:
+            dotenv_path = _find_dotenv_from_start_path(start_path)
+            if dotenv_path is not None:
+                loaded = (
+                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=False)
+                    or loaded
+                )
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read project dotenv at %s; project env vars will not be loaded",
+            dotenv_path or start_path or "cwd",
+            exc_info=True,
+        )
+
+    # 2. Global (~/.deepagents/.env) — fills in any vars not already set by
+    # the shell or the project dotenv.
+    # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
+    # window where the file can vanish between stat and open.
+    try:
+        if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
+            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
+        ):
+            loaded = True
+            logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
+    except (OSError, ValueError):
+        logger.warning(
+            "Could not read global dotenv at %s; global defaults will not be applied",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+
+    return loaded
 
 
 def _ensure_bootstrap() -> None:
@@ -128,9 +186,42 @@ def _ensure_bootstrap() -> None:
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
             # time, so we override it here and preserve the user's original
             # value for shell commands.
-            deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+            from deepagents_cli._env_vars import LANGSMITH_PROJECT
+
+            deepagents_project = os.environ.get(LANGSMITH_PROJECT)
             if deepagents_project:
                 os.environ["LANGSMITH_PROJECT"] = deepagents_project
+
+            # Propagate prefixed LangSmith env vars to canonical names.
+            # The CLI resolves prefixed vars via resolve_env_var(), but the
+            # LangSmith SDK reads os.environ directly and has no knowledge
+            # of the DEEPAGENTS_CLI_ prefix. Setting canonical vars here
+            # bridges that gap.
+            from deepagents_cli.model_config import _ENV_PREFIX
+
+            for canonical in (
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "LANGSMITH_TRACING",
+                "LANGCHAIN_TRACING_V2",
+            ):
+                prefixed = f"{_ENV_PREFIX}{canonical}"
+                if prefixed not in os.environ:
+                    continue
+                prefixed_val = os.environ[prefixed]
+                if canonical not in os.environ:
+                    # Propagate (including empty string for explicit disable).
+                    os.environ[canonical] = prefixed_val
+                elif os.environ[canonical] != prefixed_val:
+                    os.environ[canonical] = prefixed_val
+                    logger.warning(
+                        "Both %s and %s are set with different values; "
+                        "using %s. Unset %s to silence this warning.",
+                        canonical,
+                        prefixed,
+                        prefixed,
+                        canonical,
+                    )
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
@@ -475,8 +566,10 @@ Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
 """
 
-config: RunnableConfig = {"recursion_limit": 1000}
-"""Default LangGraph runnable config with a high recursion limit.
+config: RunnableConfig = {
+    "recursion_limit": 1000,
+}
+"""Default LangGraph runnable config.
 
 Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
 hitting the default LangGraph ceiling.
@@ -543,6 +636,9 @@ def build_stream_config(
         version would be lost.
     * Including the SDK version here ensures it survives the merge.
 
+    Includes `ls_integration` metadata so LangSmith traces originating from the CLI
+    are distinguishable from bare SDK usage.
+
     Args:
         thread_id: The CLI session thread identifier.
         assistant_id: The agent/assistant identifier, if any.
@@ -567,7 +663,15 @@ def build_stream_config(
     with contextlib.suppress(importlib_metadata.PackageNotFoundError):
         versions["deepagents"] = importlib_metadata.version("deepagents")
 
-    metadata: dict[str, Any] = {"versions": versions}
+    metadata: dict[str, Any] = {
+        "versions": versions,
+        "ls_integration": "deepagents-cli",
+    }
+    from deepagents_cli._env_vars import USER_ID
+
+    user_id = os.environ.get(USER_ID)
+    if user_id:
+        metadata["user_id"] = user_id
     if cwd:
         metadata["cwd"] = cwd
     if assistant_id:
@@ -707,11 +811,11 @@ def _parse_extra_skills_dirs(
     in user-specified locations without being rejected by the path
     containment check.
 
-    The env var (`DEEPAGENTS_EXTRA_SKILLS_DIRS`, colon-separated) takes
+    The env var (`DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS`, colon-separated) takes
     precedence: when set, `config.toml` values are ignored.
 
     Args:
-        env_raw: Value of `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated), or
+        env_raw: Value of `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` (colon-separated), or
             `None` if unset.
         config_toml_dirs: List of path strings from
             `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
@@ -783,6 +887,9 @@ class Settings:
     model_context_limit: int | None = None
     """Maximum input token count from the model profile."""
 
+    model_unsupported_modalities: frozenset[str] = frozenset()
+    """Input modalities not indicated as supported by the model profile."""
+
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
 
@@ -798,7 +905,7 @@ class Settings:
     locations without being rejected by the containment check
     in `load_skill_content`.
 
-    Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` env var (colon-separated) or
+    Set via `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` env var (colon-separated) or
     `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
     """
 
@@ -812,23 +919,31 @@ class Settings:
         Returns:
             Settings instance with detected configuration
         """
-        # Detect API keys (normalize empty strings to None)
-        openai_key = os.environ.get("OPENAI_API_KEY") or None
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or None
-        google_key = os.environ.get("GOOGLE_API_KEY") or None
-        nvidia_key = os.environ.get("NVIDIA_API_KEY") or None
-        tavily_key = os.environ.get("TAVILY_API_KEY") or None
-        google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        # Detect API keys (normalize empty strings to None).
+        from deepagents_cli.model_config import resolve_env_var
+
+        openai_key = resolve_env_var("OPENAI_API_KEY")
+        anthropic_key = resolve_env_var("ANTHROPIC_API_KEY")
+        google_key = resolve_env_var("GOOGLE_API_KEY")
+        nvidia_key = resolve_env_var("NVIDIA_API_KEY")
+        tavily_key = resolve_env_var("TAVILY_API_KEY")
+        google_cloud_project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
-        # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
+        # DEEPAGENTS_CLI_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
         # When accessed via the module-level `settings` singleton,
         # _ensure_bootstrap() has already run and may have overridden
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
-        deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+        from deepagents_cli._env_vars import (
+            EXTRA_SKILLS_DIRS,
+            LANGSMITH_PROJECT,
+            SHELL_ALLOW_LIST,
+        )
+
+        deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
@@ -838,15 +953,15 @@ class Settings:
 
         # Parse shell command allow-list from environment
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
-        # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
-        shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+
+        shell_allow_list_str = os.environ.get(SHELL_ALLOW_LIST)
         shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
 
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
         # add new skill discovery locations.
         extra_skills_dirs = _parse_extra_skills_dirs(
-            os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+            os.environ.get(EXTRA_SKILLS_DIRS),
             _read_config_toml_skills_dirs(),
         )
 
@@ -876,13 +991,20 @@ class Settings:
         (`user_langchain_project`) are intentionally preserved -- they are
         not in `reloadable_fields` and are never touched by this method.
 
+        !!! note
+
+            `.env` files are loaded with `override=False`, so shell-exported
+            variables always take precedence.  To override a shell-exported key
+            from `.env`, use the `DEEPAGENTS_CLI_` prefix (e.g.
+            `DEEPAGENTS_CLI_OPENAI_API_KEY`).
+
         Args:
             start_path: Directory to start project detection from (defaults to cwd).
 
         Returns:
             A list of human-readable change descriptions.
         """
-        _load_dotenv(start_path=start_path, override=True)
+        _load_dotenv(start_path=start_path)
 
         api_key_fields = {
             "openai_api_key",
@@ -915,14 +1037,18 @@ class Settings:
 
         previous = {field: getattr(self, field) for field in reloadable_fields}
 
+        from deepagents_cli._env_vars import (
+            EXTRA_SKILLS_DIRS,
+            LANGSMITH_PROJECT,
+            SHELL_ALLOW_LIST,
+        )
+
         try:
-            shell_allow_list = parse_shell_allow_list(
-                os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
-            )
+            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
         except ValueError:
             logger.warning(
-                "Invalid DEEPAGENTS_SHELL_ALLOW_LIST during reload; "
-                "keeping previous value"
+                "Invalid %s during reload; keeping previous value",
+                SHELL_ALLOW_LIST,
             )
             shell_allow_list = previous["shell_allow_list"]
 
@@ -936,20 +1062,20 @@ class Settings:
             )
             project_root = previous["project_root"]
 
+        from deepagents_cli.model_config import resolve_env_var
+
         refreshed = {
-            "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
-            "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY") or None,
-            "google_api_key": os.environ.get("GOOGLE_API_KEY") or None,
-            "nvidia_api_key": os.environ.get("NVIDIA_API_KEY") or None,
-            "tavily_api_key": os.environ.get("TAVILY_API_KEY") or None,
-            "google_cloud_project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
-            "deepagents_langchain_project": os.environ.get(
-                "DEEPAGENTS_LANGSMITH_PROJECT"
-            ),
+            "openai_api_key": resolve_env_var("OPENAI_API_KEY"),
+            "anthropic_api_key": resolve_env_var("ANTHROPIC_API_KEY"),
+            "google_api_key": resolve_env_var("GOOGLE_API_KEY"),
+            "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
+            "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
+            "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": resolve_env_var(LANGSMITH_PROJECT),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": _parse_extra_skills_dirs(
-                os.environ.get("DEEPAGENTS_EXTRA_SKILLS_DIRS"),
+                os.environ.get(EXTRA_SKILLS_DIRS),
                 _read_config_toml_skills_dirs(),
             ),
         }
@@ -1255,7 +1381,7 @@ class Settings:
     def get_extra_skills_dirs(self) -> list[Path]:
         """Get user-configured extra skill directories.
 
-        Set via `DEEPAGENTS_EXTRA_SKILLS_DIRS` (colon-separated paths) or
+        Set via `DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS` (colon-separated paths) or
         `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
 
         Returns:
@@ -1484,17 +1610,19 @@ def get_langsmith_project_name() -> str | None:
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
     `settings.deepagents_langchain_project` (from
-    `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
+    `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
-    to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+    to match `DEEPAGENTS_CLI_LANGSMITH_PROJECT`), then `'deepagents-cli'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
-    langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+    from deepagents_cli.model_config import resolve_env_var
+
+    langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
         "LANGCHAIN_API_KEY"
     )
-    langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
+    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
         "LANGCHAIN_TRACING_V2"
     )
     if not (langsmith_key and langsmith_tracing):
@@ -1503,7 +1631,7 @@ def get_langsmith_project_name() -> str | None:
     return (
         _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
-        or "default"
+        or "deepagents-cli"
     )
 
 
@@ -1552,7 +1680,14 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     def _lookup_url() -> None:
         nonlocal result, lookup_error
         try:
-            project = Client().read_project(project_name=project_name)
+            from deepagents_cli.model_config import resolve_env_var
+
+            # Explicit api_key because Client() reads os.environ directly
+            # and doesn't know about the DEEPAGENTS_CLI_ prefix.
+            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
+                "LANGCHAIN_API_KEY"
+            )
+            project = Client(api_key=api_key).read_project(project_name=project_name)
             result = project.url or None
         except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
             lookup_error = exc
@@ -1732,9 +1867,10 @@ _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
     """Inject default OpenRouter attribution kwargs.
 
-    Sets `app_url` and `app_title` via `setdefault` so that user-supplied
-    values in config take precedence. These map to the `HTTP-Referer` and
-    `X-Title` headers that `ChatOpenRouter` sends for app attribution
+    Sets `app_url`, `app_title`, and `app_categories` via `setdefault` so
+    that user-supplied values in config take precedence. These map to the
+    `HTTP-Referer`, `X-Title`, and `X-OpenRouter-Categories` headers that
+    `ChatOpenRouter` sends for app attribution
     (see https://openrouter.ai/docs/app-attribution).
 
     Users can override either value provider-wide or per-model in
@@ -1784,14 +1920,26 @@ def _get_provider_kwargs(
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
+    from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
+
     api_key_env = config.get_api_key_env(provider)
+    if not api_key_env:
+        api_key_env = PROVIDER_API_KEY_ENV.get(provider)
+        if api_key_env:
+            logger.debug(
+                "No api_key_env in config.toml for '%s';"
+                " using hardcoded provider env var",
+                provider,
+            )
     if api_key_env:
-        api_key = os.environ.get(api_key_env)
+        api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents._models import check_openrouter_version  # noqa: PLC2701
+        from deepagents.profiles._openrouter import (
+            check_openrouter_version,  # noqa: PLC2701
+        )
 
         check_openrouter_version()
         _apply_openrouter_defaults(result)
@@ -1940,12 +2088,15 @@ class ModelResult:
         model_name: Resolved model name.
         provider: Resolved provider name.
         context_limit: Max input tokens from the model profile, or `None`.
+        unsupported_modalities: Input modalities not indicated as supported by
+            the model profile (e.g. `{"audio", "video"}`).
     """
 
     model: BaseChatModel
     model_name: str
     provider: str
     context_limit: int | None = None
+    unsupported_modalities: frozenset[str] = frozenset()
 
     def apply_to_settings(self) -> None:
         """Commit this result's metadata to global `settings`."""
@@ -1953,6 +2104,7 @@ class ModelResult:
         s.model_name = self.model_name
         s.model_provider = self.provider
         s.model_context_limit = self.context_limit
+        s.model_unsupported_modalities = self.unsupported_modalities
 
 
 def _apply_profile_overrides(
@@ -2045,7 +2197,14 @@ def create_model(
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
+    from deepagents_cli.model_config import (
+        IMPLICIT_AUTH_PROVIDERS,
+        ModelConfig,
+        ModelConfigError,
+        ModelSpec,
+        get_credential_env_var,
+        has_provider_credentials,
+    )
 
     if not model_spec:
         model_spec = _get_default_model_spec()
@@ -2074,6 +2233,20 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
+
+    # Early credential check — fail fast with an actionable message instead of
+    # letting the provider SDK raise an opaque auth error on first invocation.
+    # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
+    # because their env-var mapping is not a reliable indicator.
+    if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
+        cred_status = has_provider_credentials(provider)
+        if cred_status is False:
+            env_var = get_credential_env_var(provider) or f"<{provider} API key>"
+            msg = (
+                f"No credentials found for provider '{provider}'. "
+                f"Please set the {env_var} environment variable."
+            )
+            raise ModelConfigError(msg)
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
@@ -2116,17 +2289,30 @@ def create_model(
             raise_on_failure=True,
         )
 
-    # Extract context limit from model profile (if available)
+    # Extract context limit and modality support from model profile
     context_limit: int | None = None
+    unsupported_modalities: frozenset[str] = frozenset()
     profile = getattr(model, "profile", None)
-    if isinstance(profile, dict) and isinstance(profile.get("max_input_tokens"), int):
-        context_limit = profile["max_input_tokens"]
+    if isinstance(profile, dict):
+        if isinstance(profile.get("max_input_tokens"), int):
+            context_limit = profile["max_input_tokens"]
+
+        modality_keys = {
+            "image_inputs": "image",
+            "audio_inputs": "audio",
+            "video_inputs": "video",
+            "pdf_inputs": "pdf",
+        }
+        unsupported_modalities = frozenset(
+            label for key, label in modality_keys.items() if profile.get(key) is False
+        )
 
     return ModelResult(
         model=model,
         model_name=model_name,
         provider=resolved_provider,
         context_limit=context_limit,
+        unsupported_modalities=unsupported_modalities,
     )
 
 
@@ -2143,8 +2329,8 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     Note:
         This validation is best-effort. Models without profiles will pass with
-        a warning. Exits via sys.exit(1) if model profile explicitly indicates
-        tool_calling=False.
+        a warning. Calls `sys.exit(1)` if the model's profile explicitly
+        indicates `tool_calling=False`.
     """
     console = _get_console()
     profile = getattr(model, "profile", None)

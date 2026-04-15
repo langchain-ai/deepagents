@@ -56,6 +56,7 @@ def _make_model_result(
     model_name: str = "",
     provider: str = "",
     context_limit: int | None = None,
+    unsupported_modalities: frozenset[str] = frozenset(),
 ) -> SimpleNamespace:
     """Create a mock ModelResult with model metadata."""
     return SimpleNamespace(
@@ -63,6 +64,7 @@ def _make_model_result(
         model_name=model_name or model.model_name,
         provider=provider,
         context_limit=context_limit,
+        unsupported_modalities=unsupported_modalities,
     )
 
 
@@ -569,3 +571,39 @@ class TestModelIdentityPatch:
 
     def test_identity_no_model_name(self) -> None:
         assert build_model_identity_section(None) == ""
+
+    def test_modality_line_replaced_on_swap(self) -> None:
+        """Swapping replaces old modality warning with the new model's."""
+        prompt_with_modality = (
+            "Preamble.\n\n### Model Identity\n\n"
+            "You are running as model `deepseek-r1` (provider: deepseek).\n"
+            "Your context window is 64,000 tokens.\n"
+            "Audio, image, pdf, video input may not be available for this model.\n\n"
+            "### Skills Directory\n\nSkills here.\n"
+        )
+        override = _make_model("claude-sonnet-4-6")
+        result = _make_model_result(
+            override,
+            model_name="claude-sonnet-4-6",
+            provider="anthropic",
+            context_limit=200_000,
+            unsupported_modalities=frozenset(),
+        )
+        request = _make_request(
+            _make_model("deepseek-r1"),
+            context=CLIContext(model="anthropic:claude-sonnet-4-6"),
+            system_prompt=prompt_with_modality,
+        )
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=result):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        patched = captured[0].system_prompt
+        assert patched is not None
+        assert "`claude-sonnet-4-6`" in patched
+        assert "200,000 tokens" in patched
+        assert "may not be available" not in patched
+        assert "`deepseek-r1`" not in patched
+        assert "### Skills Directory" in patched

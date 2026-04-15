@@ -17,7 +17,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -27,15 +27,21 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import ToolMessage
     from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
+    from langgraph.types import Command
 
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.output import OutputFormat
 
+from langchain.agents.middleware.types import AgentMiddleware
+
 from deepagents_cli import theme
 from deepagents_cli.config import (
+    _ShellAllowAll,
     config,
     console,
     get_default_coding_instructions,
@@ -67,6 +73,120 @@ DEFAULT_AGENT_NAME = "agent"
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+
+class ShellAllowListMiddleware(AgentMiddleware):
+    """Validate shell commands against an allow-list without HITL interrupts.
+
+    When the agent invokes a shell tool (any tool in `SHELL_TOOL_NAMES`),
+    this middleware checks the command against the configured allow-list
+    **before execution**. Rejected commands are returned as error `ToolMessage`
+    objects — the graph never pauses, so LangSmith traces stay as a single
+    continuous run.
+
+    Use this middleware in non-interactive mode to avoid the
+    interrupt/resume cycle that fragments traces.
+    """
+
+    def __init__(self, allow_list: list[str]) -> None:
+        """Initialize with the shell allow-list to validate commands against.
+
+        Args:
+            allow_list: Allowed command names (e.g. `["ls", "cat", "grep"]`).
+                Must be a non-empty restrictive list — not `SHELL_ALLOW_ALL`.
+
+        Raises:
+            ValueError: If `allow_list` is empty.
+            TypeError: If `allow_list` is the `SHELL_ALLOW_ALL` sentinel.
+        """
+        from deepagents_cli.config import SHELL_ALLOW_ALL
+
+        super().__init__()
+        if not allow_list:
+            msg = "allow_list must not be empty; disable shell access instead"
+            raise ValueError(msg)
+        if isinstance(allow_list, type(SHELL_ALLOW_ALL)):
+            msg = (
+                "SHELL_ALLOW_ALL should not be used with "
+                "ShellAllowListMiddleware; use auto_approve=True instead"
+            )
+            raise TypeError(msg)
+        self._allow_list = list(allow_list)
+
+    def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
+        """Return an error tool message when a shell command is not allowed.
+
+        Args:
+            request: The tool call request being processed.
+
+        Returns:
+            An error `ToolMessage` when the shell command should be rejected,
+            otherwise `None`.
+        """
+        from langchain_core.messages import ToolMessage as LCToolMessage
+
+        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
+
+        tool_name = request.tool_call["name"]
+        if tool_name not in SHELL_TOOL_NAMES:
+            return None
+
+        args = request.tool_call.get("args") or {}
+        command = args.get("command", "")
+        if is_shell_command_allowed(command, self._allow_list):
+            logger.debug("Shell command allowed: %r", command)
+            return None
+
+        logger.warning("Shell command rejected by allow-list: %r", command)
+        allowed_str = ", ".join(self._allow_list)
+        return LCToolMessage(
+            content=(
+                f"Shell command rejected: `{command}` is not in the allow-list. "
+                f"Allowed commands: {allowed_str}. "
+                f"Please use an allowed command or try another approach."
+            ),
+            name=tool_name,
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Reject disallowed shell commands; pass everything else through.
+
+        Args:
+            request: The tool call request being processed.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The tool execution result, or an error `ToolMessage` for rejected
+            shell commands.
+        """
+        if (rejection := self._validate_tool_call(request)) is not None:
+            return rejection
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Reject disallowed shell commands; pass everything else through.
+
+        Args:
+            request: The tool call request being processed.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The tool execution result, or an error `ToolMessage` for rejected
+            shell commands.
+        """
+        if (rejection := self._validate_tool_call(request)) is not None:
+            return rejection
+        return await handler(request)
 
 
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
@@ -216,6 +336,7 @@ def reset_agent(
     agent_name: str,
     source_agent: str | None = None,
     *,
+    dry_run: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
     """Reset an agent to default or copy from another agent.
@@ -223,7 +344,11 @@ def reset_agent(
     Args:
         agent_name: Name of the agent to reset.
         source_agent: Copy AGENTS.md from this agent instead of default.
+        dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the source agent is not found.
     """
     agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
@@ -235,15 +360,35 @@ def reset_agent(
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no AGENTS.md"
+                "or has no AGENTS.md\n"
+                "  Available agents: deepagents agents list"
             )
-            return
+            raise SystemExit(1)
 
         source_content = source_md.read_text()
         action_desc = f"contents of agent '{source_agent}'"
     else:
         source_content = get_default_coding_instructions()
         action_desc = "default"
+
+    if dry_run:
+        if output_format == "json":
+            from deepagents_cli.output import write_json
+
+            write_json(
+                "reset",
+                {
+                    "agent": agent_name,
+                    "reset_to": source_agent or "default",
+                    "path": str(agent_dir),
+                    "dry_run": True,
+                },
+            )
+            return
+        exists = "remove and recreate" if agent_dir.exists() else "create"
+        console.print(f"Would {exists} {agent_dir} with {action_desc} prompt.")
+        console.print("No changes made.", style=theme.MUTED)
+        return
 
     if agent_dir.exists():
         shutil.rmtree(agent_dir)
@@ -285,6 +430,7 @@ def build_model_identity_section(
     name: str | None,
     provider: str | None = None,
     context_limit: int | None = None,
+    unsupported_modalities: frozenset[str] = frozenset(),
 ) -> str:
     """Build the `### Model Identity` section for the system prompt.
 
@@ -292,6 +438,8 @@ def build_model_identity_section(
         name: Model identifier (e.g. `claude-opus-4-6`).
         provider: Provider identifier (e.g. `anthropic`).
         context_limit: Max input tokens from the model profile.
+        unsupported_modalities: Input modalities not indicated as supported by
+            the model profile (e.g. `{"audio", "video"}`).
 
     Returns:
         The section text including the heading and trailing newline,
@@ -305,6 +453,18 @@ def build_model_identity_section(
     section += ".\n"
     if context_limit:
         section += f"Your context window is {context_limit:,} tokens.\n"
+    if unsupported_modalities:
+        items = sorted(unsupported_modalities)
+        if len(items) == 1:
+            joined = items[0]
+        elif len(items) == 2:  # noqa: PLR2004
+            joined = f"{items[0]} and {items[1]}"
+        else:
+            joined = ", ".join(items[:-1]) + f", and {items[-1]}"
+        section += (
+            f"{joined.capitalize()} input may not be available for this model. "
+            "Do not attempt to read or process these content types.\n"
+        )
     section += "\n"
     return section
 
@@ -320,7 +480,8 @@ def get_system_prompt(
 
     Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path, execution mode).
+    skills path, execution mode, and todo-list guidance for
+    interactive vs headless).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -360,6 +521,15 @@ def get_system_prompt(
             "- If the request is ambiguous, ask questions before acting.\n"
             "- If asked how to approach something, explain first, then act."
         )
+        todo_guidance = (
+            "6. When first creating a todo list for a task, ALWAYS ask the user if "
+            "the plan looks good before starting work\n"
+            '   - Create the todos, then ask: "Does this plan '
+            'look good?" or similar\n'
+            "   - Wait for the user's response before marking the first todo as "
+            "in_progress\n"
+            "7. Update todo status promptly as you complete each item"
+        )
     else:
         mode_description = (
             "non-interactive (headless) mode — there is no human operator "
@@ -382,11 +552,21 @@ def get_system_prompt(
             "`yes |` or `--no-input`/`--non-interactive` flags where "
             "available. Never run commands that block waiting for stdin."
         )
+        todo_guidance = (
+            "6. There is no human operator in this mode — do NOT ask the user to "
+            "approve your plan or wait for a reply.\n"
+            "   After you create todos for a multi-step task, mark the first item "
+            "`in_progress` immediately and start work.\n"
+            "   If the plan needs adjustment, revise the todo list yourself; do "
+            "not block on human confirmation.\n"
+            "7. Update todo status promptly as you complete each item"
+        )
 
     model_identity_section = build_model_identity_section(
         settings.model_name,
         provider=settings.model_provider,
         context_limit=settings.model_context_limit,
+        unsupported_modalities=settings.model_unsupported_modalities,
     )
 
     # Build working directory section (local vs sandbox)
@@ -400,7 +580,13 @@ def get_system_prompt(
             f"**Important:**\n"
             f"- The CLI is running locally on the user's machine, but you execute "
             f"code remotely\n"
-            f"- Use `{working_dir}` as your working directory for all operations\n\n"
+            f"- Use `{working_dir}` as your working directory for all operations\n"
+            f"- **You do NOT have access to the user's local filesystem.** Paths "
+            f"like `/Users/...`, `/home/<local-user>/...`, `C:\\...`, etc. do not "
+            f"exist in this sandbox. Never reference or attempt to read/write local "
+            f"paths — all files must be within the sandbox at `{working_dir}`\n"
+            f"- When delegating to subagents, ensure they also use sandbox paths "
+            f"(`{working_dir}/...`), not local paths\n\n"
         )
     else:
         if cwd is not None:
@@ -431,6 +617,7 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
@@ -672,6 +859,8 @@ def create_cli_agent(
     system_prompt: str | None = None,
     interactive: bool = True,
     auto_approve: bool = False,
+    interrupt_shell_only: bool = False,
+    shell_allow_list: list[str] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -711,6 +900,19 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
+        interrupt_shell_only: If `True`, all HITL interrupts are disabled;
+            shell commands are validated inline by `ShellAllowListMiddleware`
+            against the configured allow-list instead.
+
+            Used in non-interactive mode with a restrictive shell allow-list
+            to avoid splitting traces into multiple LangSmith runs.
+
+            Has no effect when `auto_approve` is `True` (interrupts are already
+            disabled) or when `shell_allow_list` is `SHELL_ALLOW_ALL`.
+        shell_allow_list: Explicit restrictive shell allow-list forwarded from
+            the CLI process. When provided (and `interrupt_shell_only` is
+            `True`), used directly instead of reading `settings.shell_allow_list`
+            (which may not be set in the server subprocess environment).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -775,6 +977,24 @@ def create_cli_agent(
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
+    restrictive_shell_allow_list: list[str] | None = None
+    if interrupt_shell_only and not auto_approve:
+        # Prefer the explicitly forwarded allow-list (set by the CLI process
+        # and passed through ServerConfig).  Fall back to settings only for
+        # direct callers (e.g. benchmarking frameworks) that don't go through
+        # the server subprocess path.
+        if shell_allow_list:
+            restrictive_shell_allow_list = list(shell_allow_list)
+        elif settings.shell_allow_list and not isinstance(
+            settings.shell_allow_list, _ShellAllowAll
+        ):
+            restrictive_shell_allow_list = list(settings.shell_allow_list)
+        else:
+            logger.warning(
+                "interrupt_shell_only=True but no restrictive shell allow-list "
+                "available; falling back to standard HITL interrupts"
+            )
+
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
@@ -793,11 +1013,40 @@ def create_cli_agent(
         }
         if subagent_meta["model"]:
             subagent["model"] = subagent_meta["model"]
+        if restrictive_shell_allow_list is not None:
+            subagent["middleware"] = [
+                ShellAllowListMiddleware(restrictive_shell_allow_list)
+            ]
         custom_subagents.append(subagent)
+
+    if restrictive_shell_allow_list is not None:
+        from deepagents.middleware.subagents import (
+            GENERAL_PURPOSE_SUBAGENT,
+            SubAgent as RuntimeSubAgent,
+        )
+
+        if not any(
+            subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
+            for subagent in custom_subagents
+        ):
+            general_purpose_subagent: RuntimeSubAgent = {
+                "name": GENERAL_PURPOSE_SUBAGENT["name"],
+                "description": GENERAL_PURPOSE_SUBAGENT["description"],
+                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
+            }
+            custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
     agent_middleware = []
     agent_middleware.append(ConfigurableModelMiddleware())
+
+    # Token state: adds _context_tokens to graph state (checkpointed, not
+    # passed to model).  Must be registered before any middleware that might
+    # read the channel.
+    from deepagents_cli.token_state import TokenStateMiddleware
+
+    agent_middleware.append(TokenStateMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:
@@ -884,6 +1133,12 @@ def create_cli_agent(
             LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
         )
 
+    # Add shell allow-list middleware when interrupt_shell_only is active.
+    shell_middleware_added = False
+    if restrictive_shell_allow_list is not None:
+        agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        shell_middleware_added = True
+
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
@@ -893,10 +1148,14 @@ def create_cli_agent(
             cwd=effective_cwd,
         )
 
-    # Configure interrupt_on based on auto_approve setting
+    # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
-    if auto_approve:  # noqa: SIM108  # if-else more readable for interrupt_on config
-        # No interrupts - all tools run automatically
+    if auto_approve or shell_middleware_added:  # noqa: SIM108  # if-else clearer than ternary for dual-path config
+        # No HITL interrupts — tools run automatically.
+        # When shell_middleware_added is True, shell validation is handled by
+        # ShellAllowListMiddleware (added above) which rejects disallowed
+        # commands inline as error ToolMessages, keeping the entire run in
+        # a single LangSmith trace.
         interrupt_on = {}
     else:
         # Full HITL for destructive operations

@@ -25,6 +25,48 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ENV_PREFIX = "DEEPAGENTS_CLI_"
+
+
+def resolve_env_var(name: str) -> str | None:
+    """Look up an env var with `DEEPAGENTS_CLI_` prefix override.
+
+    Checks `DEEPAGENTS_CLI_{name}` first, then falls back to `{name}`.
+
+    If the prefixed variable is *present* in the environment (even as an empty
+    string), the canonical variable is never consulted. This lets users
+    set `DEEPAGENTS_CLI_X=""` to shadow a canonically-set key -- the function
+    will return `None` (since empty strings are normalized to `None`),
+    effectively suppressing the canonical value.
+
+    If `name` already carries the prefix, the double-prefixed lookup is skipped
+    to avoid nonsensical `DEEPAGENTS_CLI_DEEPAGENTS_CLI_*` reads
+    (e.g., when the name comes from a user's `config.toml`).
+
+    Args:
+        name: The canonical environment variable name (e.g.
+            `ANTHROPIC_API_KEY`).
+
+    Returns:
+        The resolved value, or `None` when absent or empty.
+    """
+    if not name.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{name}"
+        if prefixed in os.environ:
+            val = os.environ[prefixed]
+            if not val and os.environ.get(name):
+                logger.debug(
+                    "%s is set but empty, blocking non-empty %s. "
+                    "Unset %s to use the canonical variable.",
+                    prefixed,
+                    name,
+                    prefixed,
+                )
+            if val:
+                logger.debug("Resolved %s from %s", name, prefixed)
+            return val or None
+    return os.environ.get(name) or None
+
 
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
@@ -213,6 +255,14 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+"""Providers that support implicit auth (e.g., ADC, local servers).
+
+These providers can authenticate without the env var listed in
+`PROVIDER_API_KEY_ENV`, so a missing env var should not be treated as a hard
+credential failure. Used by `create_model` to skip the early credential check.
 """
 
 
@@ -667,25 +717,36 @@ def get_model_profiles(
 def has_provider_credentials(provider: str) -> bool | None:
     """Check if credentials are available for a provider.
 
-    Resolution order:
+    Combines two credential sources to decide whether a provider's API key
+    is present *before* attempting model creation:
 
-    1. Config-file providers (`config.toml`) with `api_key_env` — takes
-        priority so user overrides are respected.
-    2. Config-file providers with `class_path` but no `api_key_env` —
-        assumed to manage their own auth (e.g., custom headers, JWT, mTLS).
-    3. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    4. For any other provider (e.g., third-party langchain provider
-        packages), credential status is unknown — the provider itself will
-        report auth failures at model-creation time.
+    1. **Config-file providers** (`config.toml` `[providers.<name>]`):
+        - If the section declares `api_key_env`, that env var is checked
+            via `resolve_env_var()` (which honors `DEEPAGENTS_CLI_` prefixes).
+
+            Returns `True`/`False` accordingly.
+        - If the section has `class_path` but no `api_key_env`, the provider is
+            assumed to manage its own auth (e.g., custom headers, JWT, mTLS) and
+            `True` is returned.
+        - If neither `api_key_env` nor `class_path` is set, falls through
+            to step 2.
+    2. **Hardcoded registry** (`PROVIDER_API_KEY_ENV`): a module-level dict
+        mapping 18 well-known provider names to their canonical env var
+        (e.g., `"anthropic"` → `"ANTHROPIC_API_KEY"`). The env var is checked
+        via `resolve_env_var()`.
+    3. **Unknown providers** not present in either source: returns `None` so
+        callers can decide whether to block or defer to the provider SDK's own
+        auth handling.
 
     Args:
-        provider: Provider name.
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
 
     Returns:
-        True if credentials are confirmed available or the provider is
-            expected to manage its own auth (e.g., `class_path` providers),
-            False if confirmed missing, or None if credential status cannot
-            be determined.
+        `True` if credentials are confirmed available or the provider is
+            expected to manage its own auth (e.g., `class_path` providers).
+        `False` if the required env var is known but not set.
+        `None` if credential status cannot be determined (provider not in
+            config or `PROVIDER_API_KEY_ENV`).
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
@@ -703,7 +764,7 @@ def has_provider_credentials(provider: str) -> bool | None:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -949,7 +1010,7 @@ class ModelConfig:
         env_var = provider.get("api_key_env")
         if not env_var:
             return None  # No key configured — can't verify
-        return bool(os.environ.get(env_var))
+        return bool(resolve_env_var(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:
         """Get custom base URL.
@@ -1237,7 +1298,14 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
         if "warnings" not in data:
             data["warnings"] = {}
-        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        suppress_list = data["warnings"].get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            suppress_list = []
         if key not in suppress_list:
             suppress_list.append(key)
         data["warnings"]["suppress"] = suppress_list
@@ -1253,6 +1321,61 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
+def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Remove a warning key from the suppression list in the config file.
+
+    Reads existing config (if any), removes `key` from `[warnings].suppress`,
+    and writes back using atomic temp-file rename. No-op if the key is not
+    present or the file does not exist.
+
+    Args:
+        key: Warning identifier to unsuppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return True  # nothing to remove
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        suppress_list = data.get("warnings", {}).get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            return True  # treat as nothing to remove
+        if key not in suppress_list:
+            return True  # already unsuppressed
+
+        suppress_list.remove(key)
+        data.setdefault("warnings", {})["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     return True
 

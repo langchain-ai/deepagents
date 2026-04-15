@@ -20,6 +20,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_tool_selection",
         "test_tool_usage_relational",
         "test_todos",
+        "test_tool_usage_incident_graph",
         "test_external_benchmarks",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
@@ -56,19 +57,24 @@ def test_unit_test_excluded_from_radar():
     assert "unit_test" not in EVAL_CATEGORIES
 
 
-def _is_eval_category_call(node: object) -> str | None:
-    """Return the category name if *node* is a ``pytest.mark.eval_category("name")`` call, else ``None``."""
+def _is_marker_call(node: object, marker_name: str) -> str | None:
+    """Return the marker value if *node* is a `pytest.mark.<marker_name>("value")` call, else `None`."""
     import ast
 
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "eval_category"
+        and node.func.attr == marker_name
         and node.args
         and isinstance(node.args[0], ast.Constant)
     ):
         return None
     return str(node.args[0].value)
+
+
+def _is_eval_category_call(node: object) -> str | None:
+    """Return the category name if *node* is a `pytest.mark.eval_category("name")` call, else `None`."""
+    return _is_marker_call(node, "eval_category")
 
 
 def test_expected_modules_match_filesystem():
@@ -113,6 +119,67 @@ def test_expected_modules_match_filesystem():
         f"Mismatch between eval test files on disk and EXPECTED_CATEGORY_MODULES.\n"
         f"  On disk:  {dict(discovered)}\n"
         f"  Expected: {expected}"
+    )
+
+
+def _has_eval_tier_marker(tree: object) -> bool:
+    """Return True if the AST tree has any `eval_tier` marker anywhere in the module.
+
+    Walks the entire AST to catch eval_tier in pytestmark lists, function
+    decorators, and helper functions like `_tiered_params`.
+    """
+    import ast
+
+    if not isinstance(tree, ast.Module):
+        return False
+
+    has_test_functions = any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_")
+        for node in ast.iter_child_nodes(tree)
+    )
+
+    # Files with no test functions (e.g. empty placeholder files) are fine.
+    if not has_test_functions:
+        return True
+
+    # Walk entire module — catches pytestmark, decorators, and helper functions.
+    # Check both constant-arg calls (via _is_marker_call) and dynamic-arg calls
+    # (e.g. conditional expressions in _tiered_params) by looking for any
+    # pytest.mark.eval_tier attribute access.
+    for node in ast.walk(tree):
+        if _is_marker_call(node, "eval_tier"):
+            return True
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "eval_tier"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "mark"
+        ):
+            return True
+    return False
+
+
+def test_all_eval_modules_have_eval_tier():
+    """Every eval test module must have at least one `eval_tier` marker.
+
+    Ensures new eval files cannot silently lack tier annotations, which would
+    cause them to be excluded when running `--eval-tier baseline`.
+    """
+    import ast
+    from pathlib import Path
+
+    evals_dir = Path(__file__).resolve().parent.parent / "evals"
+    missing: list[str] = []
+
+    for path in sorted(evals_dir.rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if not _has_eval_tier_marker(tree):
+            missing.append(str(path.relative_to(evals_dir)))
+
+    assert not missing, (
+        f"Eval test modules missing eval_tier marker: {missing}. "
+        f"Add @pytest.mark.eval_tier('baseline') or @pytest.mark.eval_tier('hillclimb') "
+        f"to each test function or module-level pytestmark."
     )
 
 

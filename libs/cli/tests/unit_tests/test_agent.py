@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
@@ -20,6 +21,7 @@ from deepagents_cli.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    build_model_identity_section,
     create_cli_agent,
     get_system_prompt,
     list_agents,
@@ -346,6 +348,57 @@ def test_format_fetch_url_description_with_hidden_unicode_in_url():
     assert "\u200b" not in description
 
 
+class TestBuildModelIdentitySection:
+    """Direct tests for build_model_identity_section."""
+
+    def test_empty_when_no_name(self) -> None:
+        assert build_model_identity_section(None) == ""
+
+    def test_basic_name_only(self) -> None:
+        result = build_model_identity_section("gpt-4o")
+        assert "You are running as model `gpt-4o`." in result
+        assert "may not be available" not in result
+
+    def test_unsupported_single(self) -> None:
+        result = build_model_identity_section(
+            "test-model", unsupported_modalities=frozenset({"audio"})
+        )
+        assert "Audio input may not be available for this model." in result
+        assert "Do not attempt to read or process" in result
+
+    def test_unsupported_two_uses_and(self) -> None:
+        result = build_model_identity_section(
+            "test-model",
+            unsupported_modalities=frozenset({"video", "audio"}),
+        )
+        assert "Audio and video input may not be available" in result
+
+    def test_unsupported_multiple_uses_oxford_comma(self) -> None:
+        result = build_model_identity_section(
+            "test-model",
+            unsupported_modalities=frozenset({"video", "audio", "image"}),
+        )
+        assert "Audio, image, and video input may not be available" in result
+
+    def test_unsupported_empty_frozenset_no_warning(self) -> None:
+        result = build_model_identity_section(
+            "test-model", unsupported_modalities=frozenset()
+        )
+        assert "may not be available" not in result
+
+    def test_all_fields(self) -> None:
+        result = build_model_identity_section(
+            "deepseek-r1",
+            provider="deepseek",
+            context_limit=64000,
+            unsupported_modalities=frozenset({"image", "pdf"}),
+        )
+        assert "deepseek-r1" in result
+        assert "(provider: deepseek)" in result
+        assert "64,000 tokens" in result
+        assert "Image and pdf input may not be available" in result
+
+
 class TestGetSystemPromptModelIdentity:
     """Tests for model identity section in get_system_prompt."""
 
@@ -354,6 +407,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = 200000
 
         with patch("deepagents_cli.agent.settings", mock_settings):
@@ -369,6 +423,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         mock_settings.model_name = None
         mock_settings.model_provider = "anthropic"
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = 200000
 
         with patch("deepagents_cli.agent.settings", mock_settings):
@@ -381,6 +436,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         mock_settings.model_name = "gpt-4"
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = 128000
 
         with patch("deepagents_cli.agent.settings", mock_settings):
@@ -396,6 +452,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         mock_settings.model_name = "gemini-3-pro"
         mock_settings.model_provider = "google"
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
 
         with patch("deepagents_cli.agent.settings", mock_settings):
@@ -411,6 +468,7 @@ class TestGetSystemPromptModelIdentity:
         mock_settings = Mock()
         mock_settings.model_name = "test-model"
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
 
         with patch("deepagents_cli.agent.settings", mock_settings):
@@ -420,6 +478,47 @@ class TestGetSystemPromptModelIdentity:
         assert "You are running as model `test-model`." in prompt
         assert "(provider:" not in prompt
         assert "context window" not in prompt
+
+    def test_includes_unsupported_modalities_warning(self) -> None:
+        """Test that unsupported modalities are surfaced in the prompt."""
+        mock_settings = Mock()
+        mock_settings.model_name = "deepseek-r1"
+        mock_settings.model_provider = "deepseek"
+        mock_settings.model_unsupported_modalities = frozenset(
+            {"image", "audio", "video", "pdf"}
+        )
+        mock_settings.model_context_limit = 64000
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Audio, image, pdf, and video input may not be available" in prompt
+
+    def test_single_unsupported_modality(self) -> None:
+        """Test warning with a single unsupported modality."""
+        mock_settings = Mock()
+        mock_settings.model_name = "test-model"
+        mock_settings.model_provider = "test"
+        mock_settings.model_unsupported_modalities = frozenset({"audio"})
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Audio input may not be available" in prompt
+
+    def test_no_modality_warning_when_all_supported(self) -> None:
+        """Test that no modality warning appears when all modalities supported."""
+        mock_settings = Mock()
+        mock_settings.model_name = "claude-opus-4-6"
+        mock_settings.model_provider = "anthropic"
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = 200000
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "may not be available" not in prompt
 
 
 class TestGetSystemPromptNonInteractive:
@@ -483,6 +582,29 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive CLI" in prompt
 
+    def test_interactive_todo_section_asks_user_before_starting(self) -> None:
+        """Interactive mode should require plan approval before first in_progress."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "Wait for the user's response before marking the first todo" in prompt
+
+    def test_non_interactive_todo_section_does_not_wait_for_user(self) -> None:
+        """Headless mode must not contradict 'no human' guidance in todo rules."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        wait_for_user = "Wait for the user's response before marking the first todo"
+        assert wait_for_user not in prompt
+        assert "do NOT ask the user to approve your plan" in prompt
+        assert "mark the first item `in_progress` immediately" in prompt
+
 
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""
@@ -499,6 +621,49 @@ class TestGetSystemPromptCwdOSError:
             prompt = get_system_prompt("test-agent")
 
         assert "Current Working Directory" in prompt
+
+
+class TestGetSystemPromptSandbox:
+    """Tests for sandbox-specific system prompt content."""
+
+    def test_sandbox_includes_no_local_filesystem_warning(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "do NOT have access to the user's local filesystem" in prompt
+
+    def test_sandbox_includes_working_dir_constraint(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "/workspace" in prompt
+        assert "remote Linux sandbox" in prompt
+
+    def test_sandbox_warns_about_subagent_paths(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="daytona")
+
+        assert "subagents" in prompt
+        assert "/home/daytona" in prompt
+
+    def test_local_mode_omits_sandbox_warnings(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "do NOT have access to the user's local filesystem" not in prompt
+        assert "remote Linux sandbox" not in prompt
 
 
 class TestGetSystemPromptPlaceholderValidation:
@@ -553,6 +718,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -605,6 +771,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -861,6 +1028,7 @@ class TestCreateCliAgentSkillsSources:
         # Needed by get_system_prompt() which formats model identity
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -936,6 +1104,7 @@ class TestCreateCliAgentMemorySources:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = tmp_path
 
@@ -1002,6 +1171,7 @@ class TestCreateCliAgentMemorySources:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -1088,6 +1258,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = None
@@ -1165,6 +1336,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = None
@@ -1230,6 +1402,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = None
@@ -1285,6 +1458,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -1341,6 +1515,7 @@ class TestMiddlewareStackConformance:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -1406,6 +1581,7 @@ class TestEnableAskUser:
         mock_settings.get_project_agents_dir.return_value = None
         mock_settings.model_name = None
         mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
 
@@ -1527,28 +1703,470 @@ class TestLoadAsyncSubagents:
         assert result == []
 
 
-class TestLsEntriesShim:
-    """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
+class TestShellAllowListMiddleware:
+    """Tests for inline shell command validation middleware."""
 
-    The PyPI SDK <0.5 returns a raw `list` from `ls`; >=0.5 returns
-    `LsResult` with `.entries`. Once the pin is bumped to >=0.5.0 the shim
-    should be deleted and callers inlined to `backend.ls(path).entries`.
-    """
+    def test_allows_approved_shell_command_sync(self) -> None:
+        """Approved shell commands pass through in synchronous contexts."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
 
-    def test_remove_ls_entries_shim_when_sdk_pin_is_bumped(self) -> None:
-        import tomllib
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "ls -la"},
+            "id": "tc-sync-1",
+        }
+        handler = Mock(return_value="output")
 
-        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
+        result = middleware.wrap_tool_call(request, handler)
+        handler.assert_called_once_with(request)
+        assert result == "output"
 
-        deps = data["project"]["dependencies"]
-        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
-        pinned_version = sdk_pin.split("==")[1]
-        major, minor = (int(x) for x in pinned_version.split(".")[:2])
+    def test_allows_non_shell_tools_sync(self) -> None:
+        """Non-shell tools pass through unconditionally in synchronous contexts."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
 
-        assert (major, minor) < (0, 5), (
-            f"SDK pin is now {pinned_version} (>=0.5.0). "
-            "Delete `_ls_entries()` from test_end_to_end.py and inline "
-            "`backend.ls(path).entries` at call sites."
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "write_file", "args": {}, "id": "tc-sync-ns"}
+        handler = Mock(return_value="ok")
+
+        result = middleware.wrap_tool_call(request, handler)
+        handler.assert_called_once_with(request)
+        assert result == "ok"
+
+    async def test_allows_non_shell_tools(self) -> None:
+        """Non-shell tools pass through unconditionally."""
+        from unittest.mock import AsyncMock
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "write_file", "args": {}, "id": "tc1"}
+        handler = AsyncMock(return_value="ok")
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_awaited_once_with(request)
+        assert result == "ok"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "command"),
+        [
+            pytest.param("execute", "ls -la", id="execute-tool"),
+            pytest.param("bash", "cat README.md", id="bash-tool"),
+        ],
+    )
+    async def test_allows_approved_shell_command(
+        self, tool_name: str, command: str
+    ) -> None:
+        """Shell commands in the allow-list pass through for all SHELL_TOOL_NAMES."""
+        from unittest.mock import AsyncMock
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
+        request = Mock()
+        request.tool_call = {
+            "name": tool_name,
+            "args": {"command": command},
+            "id": "tc2",
+        }
+        handler = AsyncMock(return_value="output")
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_awaited_once_with(request)
+        assert result == "output"
+
+    async def test_rejects_disallowed_shell_command(self) -> None:
+        """Shell commands not in the allow-list get rejected as error ToolMessage."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "rm -rf /"},
+            "id": "tc3",
+        }
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "rejected" in result.content
+        assert result.tool_call_id == "tc3"
+        assert result.name == "execute"
+
+    def test_rejects_disallowed_shell_command_sync(self) -> None:
+        """Disallowed shell commands are rejected in synchronous contexts."""
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
+        request = Mock()
+        request.tool_call = {
+            "name": "execute",
+            "args": {"command": "rm -rf /"},
+            "id": "tc-sync-2",
+        }
+        handler = Mock()
+
+        result = middleware.wrap_tool_call(request, handler)
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "tc-sync-2"
+
+    async def test_rejects_missing_command(self) -> None:
+        """Shell tool call with no command arg is rejected, not an exception."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": {}, "id": "tc4"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
+    async def test_rejects_empty_command_string(self) -> None:
+        """Shell tool call with empty command string is rejected."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": {"command": ""}, "id": "tc5"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
+    async def test_handles_none_args(self) -> None:
+        """Shell tool call with args=None is rejected, not an exception."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        middleware = ShellAllowListMiddleware(allow_list=["ls"])
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": None, "id": "tc6"}
+        handler = AsyncMock()
+
+        result = await middleware.awrap_tool_call(request, handler)
+        handler.assert_not_awaited()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+
+    def test_rejects_empty_allow_list(self) -> None:
+        """Constructor rejects empty allow-list."""
+        import pytest
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            ShellAllowListMiddleware(allow_list=[])
+
+    def test_rejects_shell_allow_all(self) -> None:
+        """Constructor rejects SHELL_ALLOW_ALL sentinel."""
+        import pytest
+
+        from deepagents_cli.agent import ShellAllowListMiddleware
+        from deepagents_cli.config import SHELL_ALLOW_ALL
+
+        with pytest.raises(TypeError, match="SHELL_ALLOW_ALL"):
+            ShellAllowListMiddleware(allow_list=SHELL_ALLOW_ALL)
+
+
+class TestCreateCliAgentShellMiddlewareWiring:
+    """Verify `create_cli_agent` wires `ShellAllowListMiddleware` correctly."""
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        """Create a settings mock suitable for `create_cli_agent` wiring tests."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
         )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+        return mock_settings
+
+    def test_interrupt_shell_only_adds_middleware_and_disables_interrupts(
+        self, tmp_path: Path
+    ) -> None:
+        """Middleware is added and `interrupt_on={}` with interrupt_shell_only."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        assert kwargs["interrupt_on"] == {}
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert ShellAllowListMiddleware in middleware_types
+
+    def test_interrupt_shell_only_skipped_when_auto_approve(
+        self, tmp_path: Path
+    ) -> None:
+        """When `auto_approve=True`, `interrupt_shell_only` has no effect."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                auto_approve=True,
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        assert kwargs["interrupt_on"] == {}
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert ShellAllowListMiddleware not in middleware_types
+
+    def test_interrupt_shell_only_adds_middleware_to_subagents(
+        self, tmp_path: Path
+    ) -> None:
+        """Restrictive shell mode must cover delegated subagents too."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        assert subagents is not None
+
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        assert "researcher" in subagents_by_name
+        assert "general-purpose" in subagents_by_name
+
+        for name in ("researcher", "general-purpose"):
+            middleware = subagents_by_name[name]["middleware"]
+            assert any(isinstance(mw, ShellAllowListMiddleware) for mw in middleware), (
+                f"Expected shell middleware on subagent {name!r}"
+            )
+
+    def test_no_duplicate_general_purpose_when_user_defined(
+        self, tmp_path: Path
+    ) -> None:
+        """User-defined general-purpose subagent is not duplicated."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "general-purpose",
+            "description": "User-defined general-purpose agent",
+            "system_prompt": "You are helpful.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        gp_subagents = [s for s in subagents if s["name"] == "general-purpose"]
+        assert len(gp_subagents) == 1, "Should not duplicate general-purpose subagent"
+        assert any(
+            isinstance(mw, ShellAllowListMiddleware)
+            for mw in gp_subagents[0]["middleware"]
+        )
+
+    def test_shell_allow_all_skips_subagent_middleware(self, tmp_path: Path) -> None:
+        """`SHELL_ALLOW_ALL` sentinel should not inject middleware on subagents."""
+        from deepagents_cli.agent import ShellAllowListMiddleware
+        from deepagents_cli.config import SHELL_ALLOW_ALL
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_settings.shell_allow_list = SHELL_ALLOW_ALL
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        for subagent in subagents:
+            middleware = subagent.get("middleware", [])
+            assert not any(
+                isinstance(mw, ShellAllowListMiddleware) for mw in middleware
+            ), f"Subagent {subagent['name']!r} should not have shell middleware"

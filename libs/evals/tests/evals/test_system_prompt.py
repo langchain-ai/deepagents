@@ -21,7 +21,8 @@ from tests.evals.utils import (
     run_agent,
 )
 
-pytestmark = [pytest.mark.eval_category("unit_test")]
+pytestmark = [pytest.mark.eval_category("unit_test"), pytest.mark.eval_tier("baseline")]
+"""Apply unit_test category and baseline tier to all tests in this module."""
 
 
 @pytest.mark.langsmith

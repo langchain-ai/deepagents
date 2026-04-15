@@ -32,8 +32,11 @@ from deepagents_cli.deploy.config import (
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    SUBAGENTS_DIRNAME,
     USER_DIRNAME,
     DeployConfig,
+    SubAgentProject,
+    load_subagents,
 )
 from deepagents_cli.deploy.templates import (
     DEPLOY_GRAPH_TEMPLATE,
@@ -131,8 +134,44 @@ def bundle(
     return build_dir
 
 
+def _build_subagent_seed(subagent: SubAgentProject) -> dict:
+    """Build the seed entry for a single sync subagent."""
+    sa_root = subagent.root
+    agent = subagent.config.agent
+
+    memories: dict[str, str] = {
+        f"/{AGENTS_MD_FILENAME}": (sa_root / AGENTS_MD_FILENAME).read_text(
+            encoding="utf-8"
+        ),
+    }
+
+    skills: dict[str, str] = {}
+    skills_dir = sa_root / SKILLS_DIRNAME
+    if skills_dir.is_dir():
+        for f in sorted(skills_dir.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                rel = f.relative_to(skills_dir).as_posix()
+                skills[f"/{rel}"] = f.read_text(encoding="utf-8")
+
+    mcp_path = sa_root / MCP_FILENAME
+    mcp = None
+    if mcp_path.is_file():
+        mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+
+    return {
+        "config": {
+            "name": agent.name,
+            "description": agent.description,
+            "model": agent.model,
+        },
+        "memories": memories,
+        "skills": skills,
+        "mcp": mcp,
+    }
+
+
 def _build_seed(
-    config: DeployConfig,  # noqa: ARG001
+    config: DeployConfig,
     project_root: Path,
     system_prompt: str,
 ) -> dict:
@@ -172,11 +211,33 @@ def _build_seed(
         )
         user_memories[f"/{AGENTS_MD_FILENAME}"] = content
 
-    return {
+    seed: dict = {
         "memories": memories,
         "skills": skills,
         "user_memories": user_memories,
     }
+
+    # Sync subagents.
+    sync_subagents = load_subagents(project_root)
+    if sync_subagents:
+        seed["subagents"] = {
+            name: _build_subagent_seed(sa)
+            for name, sa in sync_subagents.items()
+        }
+
+    # Async subagents.
+    if config.async_subagents:
+        seed["async_subagents"] = [
+            {
+                "name": asa.name,
+                "description": asa.description,
+                "graph_id": asa.graph_id,
+                "url": asa.url,
+            }
+            for asa in config.async_subagents
+        ]
+
+    return seed
 
 
 def _render_deploy_graph(

@@ -11,7 +11,10 @@ internal consumers can import from `deepagents.profiles` directly.
 
 # Provider modules register their profiles as a side effect of import.
 # _openrouter registration fires via the `from` import below.
-from deepagents.profiles import _openai as _openai
+from deepagents.profiles import _anthropic as _anthropic, _openai as _openai
+from deepagents.profiles._anthropic import (
+    _ANTHROPIC_SYSTEM_PROMPT_SUFFIX,
+)
 from deepagents.profiles._harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,
@@ -29,6 +32,7 @@ from deepagents.profiles._openrouter import (
 
 __all__ = [
     "OPENROUTER_MIN_VERSION",
+    "_ANTHROPIC_SYSTEM_PROMPT_SUFFIX",
     "_HARNESS_PROFILES",
     "_OPENROUTER_APP_TITLE",
     "_OPENROUTER_APP_URL",

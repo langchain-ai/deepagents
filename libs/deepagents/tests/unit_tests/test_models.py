@@ -15,6 +15,7 @@ from deepagents._models import (
     resolve_model,
 )
 from deepagents.profiles import (
+    _ANTHROPIC_SYSTEM_PROMPT_SUFFIX,
     _HARNESS_PROFILES,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
@@ -102,7 +103,8 @@ class TestResolveModel:
 
         mock.assert_called_once_with("openrouter:anthropic/claude-sonnet-4-6")
 
-    def test_non_openai_string(self) -> None:
+    def test_anthropic_string_passes_no_init_kwargs(self) -> None:
+        """Anthropic profile has no init_kwargs so resolve_model passes none."""
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
             result = resolve_model("anthropic:claude-sonnet-4-6")
@@ -517,8 +519,8 @@ class TestProfileMergingEndToEnd:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_anthropic_exact_model_inherits_provider_profile(self) -> None:
-        """Per-model Anthropic profile merges with the provider-level profile."""
+    def test_anthropic_exact_model_overrides_provider_suffix(self) -> None:
+        """Per-model Anthropic suffix wins over the provider-level suffix."""
         original = dict(_HARNESS_PROFILES)
         try:
             _register_harness_profile(
@@ -527,9 +529,22 @@ class TestProfileMergingEndToEnd:
             )
             profile = _get_harness_profile("anthropic:claude-sonnet-4-6-20250514")
             assert profile.system_prompt_suffix == "be concise"
-            # AnthropicPromptCachingMiddleware is applied unconditionally in
-            # graph.py, not via the profile, so extra_middleware should be empty.
             assert profile.extra_middleware == ()
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_anthropic_exact_model_inherits_provider_suffix(self) -> None:
+        """Per-model Anthropic profile without a suffix inherits the provider suffix."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "anthropic:claude-opus-4-6",
+                _HarnessProfile(init_kwargs={"temperature": 0}),
+            )
+            profile = _get_harness_profile("anthropic:claude-opus-4-6")
+            assert profile.system_prompt_suffix == _ANTHROPIC_SYSTEM_PROMPT_SUFFIX
+            assert profile.init_kwargs == {"temperature": 0}
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -570,10 +585,14 @@ class TestBuiltInProfiles:
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
-    def test_anthropic_returns_default_profile(self) -> None:
-        """Anthropic has no registered profile; caching is unconditional in graph.py."""
+    def test_anthropic_profile_has_system_prompt_suffix(self) -> None:
+        """Anthropic registers a provider-level prompt suffix for agentic quality."""
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+        assert profile.system_prompt_suffix == _ANTHROPIC_SYSTEM_PROMPT_SUFFIX
+        assert profile.init_kwargs == {}
+        assert profile.pre_init is None
+        assert profile.init_kwargs_factory is None
+        assert profile.extra_middleware == ()
 
 
 class TestResolveModelWithProfiles:

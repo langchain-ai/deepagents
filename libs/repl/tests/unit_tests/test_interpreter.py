@@ -283,7 +283,6 @@ def test_if_treats_zero_and_empty_string_as_falsy() -> None:
 
 def test_indexing_works_for_lists_and_dicts() -> None:
     interpreter = Interpreter()
-
     result = interpreter.evaluate("[10, 20, 30][1]")
     assert result == 20
     assert interpreter.evaluate('{"name": "Ada"}["name"]') == "Ada"
@@ -452,7 +451,6 @@ def test_compiler_emits_jump_opcodes_for_if_else() -> None:
 
 def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
     interpreter = Interpreter()
-
     instructions = interpreter.compile("for item in [1, 2] do\n    item\nend")
 
     assert [instruction.opcode for instruction in instructions] == [
@@ -530,6 +528,26 @@ class _MathForeignInterface(ForeignObjectInterface):
     def call(self, value: object, args: tuple[object, ...]) -> object:
         msg = "unsupported foreign call"
         raise TypeError(msg)
+
+
+def test_string_foreign_interface_supports_allowlisted_methods() -> None:
+    """Allow list of python objects."""
+    interpreter = Interpreter()
+    assert interpreter.evaluate('"hello world".title()') == "Hello World"
+    assert interpreter.evaluate('" hello ".strip()') == "hello"
+    assert interpreter.evaluate('"hello".upper()') == "HELLO"
+    assert interpreter.evaluate('"hello".replace("l", "x")') == "hexxo"
+    assert interpreter.evaluate('"a,b".split(",")') == ["a", "b"]
+    assert interpreter.evaluate('"a".join(["x", "y"])') == "xay"
+    assert interpreter.evaluate('"hello".startswith("he")') is True
+
+
+def test_string_foreign_interface_rejects_non_allowlisted_methods() -> None:
+    """Reject things that are not allowed."""
+    interpreter = Interpreter()
+
+    with pytest.raises(AttributeError, match="Unknown foreign member: format"):
+        interpreter.evaluate('"hello {}".format("world")')
 
 
 def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> None:

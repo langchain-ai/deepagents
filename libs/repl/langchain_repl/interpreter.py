@@ -561,6 +561,51 @@ class _ProgramCompiler:
         return True
 
 
+class _StringForeignInterface:
+    _ALLOWED_MEMBERS = {
+        "capitalize",
+        "endswith",
+        "isalnum",
+        "isalpha",
+        "isdigit",
+        "join",
+        "lower",
+        "lstrip",
+        "replace",
+        "rstrip",
+        "split",
+        "splitlines",
+        "startswith",
+        "strip",
+        "title",
+        "upper",
+    }
+
+    def supports(self, value: Any) -> bool:
+        return type(value) == str
+
+    def get_item(self, value: Any, key: Any) -> Any:
+        if not isinstance(value, str):
+            msg = "unsupported foreign get_item"
+            raise TypeError(msg)
+        if not isinstance(key, int):
+            msg = "string indexes must be integers"
+            raise TypeError(msg)
+        return value[key]
+
+    def resolve_member(self, value: Any, name: str) -> Any:
+        if not isinstance(value, str) or name not in self._ALLOWED_MEMBERS:
+            msg = f"Unknown foreign member: {name}"
+            raise AttributeError(msg)
+        return getattr(value, name)
+
+    def call(self, value: Any, args: tuple[Any, ...]) -> Any:
+        if not callable(value):
+            msg = "unsupported foreign call"
+            raise TypeError(msg)
+        return value(*args)
+
+
 class Interpreter:
     def __init__(
         self,
@@ -573,7 +618,10 @@ class Interpreter:
     ) -> None:
         self._functions = dict(functions or {})
         self._bindings = dict(bindings or {})
-        self._foreign_interfaces = tuple(foreign_interfaces)
+        self._foreign_interfaces = (
+            _StringForeignInterface(),
+            *tuple(foreign_interfaces),
+        )
         self._globals: MutableMapping[str, Any] = globals if globals is not None else {}
         self._printed_lines: list[str] = []
         self._runtime = runtime

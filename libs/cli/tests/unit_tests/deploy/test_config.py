@@ -12,8 +12,10 @@ from deepagents_cli.deploy.config import (
     DEFAULT_CONFIG_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    VALID_AUTH_PROVIDERS,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
     _parse_config,
@@ -84,6 +86,26 @@ class TestSandboxConfig:
         cfg = SandboxConfig()
         with pytest.raises(AttributeError):
             cfg.provider = "modal"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# AuthConfig
+# ---------------------------------------------------------------------------
+
+
+class TestAuthConfig:
+    def test_valid_construction(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        assert cfg.provider == "supabase"
+
+    def test_clerk_provider(self) -> None:
+        cfg = AuthConfig(provider="clerk")
+        assert cfg.provider == "clerk"
+
+    def test_frozen(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        with pytest.raises(AttributeError):
+            cfg.provider = "clerk"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +199,31 @@ class TestParseConfig:
         cfg = _parse_config({"agent": {"name": "x"}})
         assert cfg.agent.model == AgentConfig(name="x").model
         assert cfg.sandbox == SandboxConfig()
+
+    def test_auth_section_parsed(self) -> None:
+        data = {"agent": {"name": "bot"}, "auth": {"provider": "supabase"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is not None
+        assert cfg.auth.provider == "supabase"
+
+    def test_auth_section_optional(self) -> None:
+        data = {"agent": {"name": "bot"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is None
+
+    def test_auth_missing_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"provider.*required"):
+            _parse_config({"agent": {"name": "x"}, "auth": {}})
+
+    def test_auth_invalid_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown auth provider"):
+            _parse_config({"agent": {"name": "x"}, "auth": {"provider": "firebase"}})
+
+    def test_auth_unknown_key_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown key.*\[auth\]"):
+            _parse_config(
+                {"agent": {"name": "x"}, "auth": {"provider": "supabase", "extra": 1}}
+            )
 
 
 # ---------------------------------------------------------------------------

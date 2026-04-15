@@ -36,6 +36,12 @@ VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
 
 VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
+AuthProvider = Literal["supabase", "clerk"]
+"""Valid auth provider identifiers."""
+
+VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
+"""Valid auth providers for deploy."""
+
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
 # Canonical filenames inside the project root.
@@ -81,11 +87,23 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class AuthConfig:
+    """`[auth]` section — authentication provider settings.
+
+    The whole section is optional. When omitted, the deployed agent has
+    no authentication and all requests are anonymous.
+    """
+
+    provider: AuthProvider
+
+
+@dataclass(frozen=True)
 class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
     agent: AgentConfig
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    auth: AuthConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -186,9 +204,10 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
+_ALLOWED_AUTH_KEYS = frozenset({"provider"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -237,7 +256,32 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     }
     sandbox = SandboxConfig(**sandbox_kwargs)
 
-    return DeployConfig(agent=agent, sandbox=sandbox)
+    auth: AuthConfig | None = None
+    auth_data = data.get("auth")
+    if auth_data is not None:
+        unknown_auth = set(auth_data.keys()) - _ALLOWED_AUTH_KEYS
+        if unknown_auth:
+            msg = (
+                f"Unknown key(s) in [auth]: {sorted(unknown_auth)}. "
+                f"Allowed: {sorted(_ALLOWED_AUTH_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        if "provider" not in auth_data:
+            msg = "[auth].provider is required in deepagents.toml"
+            raise ValueError(msg)
+
+        auth_provider = auth_data["provider"]
+        if auth_provider not in VALID_AUTH_PROVIDERS:
+            msg = (
+                f"Unknown auth provider: {auth_provider}. "
+                f"Valid: {', '.join(sorted(VALID_AUTH_PROVIDERS))}"
+            )
+            raise ValueError(msg)
+
+        auth = AuthConfig(provider=auth_provider)
+
+    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {

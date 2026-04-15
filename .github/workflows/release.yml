@@ -7,7 +7,7 @@
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "⚠️ Manual Package Release"
-run-name: "release(${{ inputs.package }}):${{ inputs.version && format(' {0}', inputs.version) || '' }}"
+run-name: "release(${{ inputs.package-override || inputs.package }}):${{ inputs.version && format(' {0}', inputs.version) || '' }}"
 on:
   workflow_call:
     inputs:
@@ -25,7 +25,7 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release (⚠️ Use release-please by default; manual dispatch is exception-only for recovery/hotfix scenarios — see .github/RELEASING.md)"
+        description: "Package to release (⚠️ release-please by default; manual is exception-only — see .github/RELEASING.md) (ignored when override is set)"
         options:
           - deepagents
           - deepagents-cli
@@ -37,6 +37,11 @@ on:
           - langchain-repl
           - langchain-runloop
         default: deepagents
+      package-override:
+        required: false
+        type: string
+        default: ""
+        description: "Override: custom package name (takes precedence over dropdown)"
       version:
         required: false
         type: string
@@ -71,9 +76,17 @@ jobs:
     steps:
       - name: Parse package input
         id: parse
+        env:
+          PACKAGE_OVERRIDE: ${{ inputs.package-override }}
+          PACKAGE_INPUT: ${{ inputs.package }}
         run: |
-          PACKAGE="${{ inputs.package }}"
-          echo "package=$PACKAGE" >> $GITHUB_OUTPUT
+          # Override takes precedence over dropdown (workflow_dispatch only; unused by workflow_call)
+          if [ -n "$PACKAGE_OVERRIDE" ]; then
+            PACKAGE="$PACKAGE_OVERRIDE"
+          else
+            PACKAGE="$PACKAGE_INPUT"
+          fi
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
 
           # Map package name to working directory
           case "$PACKAGE" in

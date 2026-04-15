@@ -143,22 +143,6 @@ def test_parallel_results_can_be_assigned() -> None:
     assert interpreter.env == {"results": [1, 2, 3]}
 
 
-def test_benchmark_simple_print_program() -> None:
-    """Sanity check."""
-    interpreter = Interpreter(functions={"echo": lambda value: value})
-    interpreter.evaluate("echo(42)")
-    tic = time.monotonic()
-    for _ in range(10):
-        interpreter = Interpreter(functions={"echo": lambda value: value})
-        interpreter.evaluate("echo(42)")
-    toc = time.monotonic()
-    elapsed = toc - tic
-    # in us not ms
-    elapsed_us = elapsed * 1e6
-    elapsed_per_run = elapsed_us / 10.0
-    # This is pretty slow with current CI runners
-    assert elapsed_per_run < 100
-
 
 def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})

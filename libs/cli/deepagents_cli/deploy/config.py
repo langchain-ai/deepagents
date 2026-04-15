@@ -43,6 +43,7 @@ AGENTS_MD_FILENAME = "AGENTS.md"
 SKILLS_DIRNAME = "skills"
 USER_DIRNAME = "user"
 MCP_FILENAME = "mcp.json"
+SUBAGENTS_DIRNAME = "subagents"
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,21 @@ class AsyncSubAgentConfig:
     graph_id: str
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SubAgentConfig:
+    """Parsed from a subagent's deepagents.toml."""
+
+    agent: AgentConfig
+
+
+@dataclass(frozen=True)
+class SubAgentProject:
+    """A discovered subagent directory with its parsed config."""
+
+    config: SubAgentConfig
+    root: Path
 
 
 @dataclass(frozen=True)
@@ -175,6 +191,134 @@ def _validate_mcp_for_deploy(mcp_path: Path) -> list[str]:
             )
 
     return errors
+
+
+_ALLOWED_SUBAGENT_SECTIONS = frozenset({"agent"})
+
+
+def _parse_subagent_config(data: dict[str, Any], subagent_dir: Path) -> SubAgentConfig:
+    """Parse a subagent's deepagents.toml into a `SubAgentConfig`.
+
+    Raises:
+        ValueError: If the config has disallowed sections, missing required
+            fields, or unknown keys.
+    """
+    # Reject disallowed sections.
+    unknown = set(data.keys()) - _ALLOWED_SUBAGENT_SECTIONS
+    if unknown:
+        disallowed = sorted(unknown)
+        msg = (
+            f"Section(s) {disallowed} not allowed in subagent config "
+            f"({subagent_dir}). Only {sorted(_ALLOWED_SUBAGENT_SECTIONS)} "
+            f"is permitted."
+        )
+        raise ValueError(msg)
+
+    agent_data = data.get("agent", {})
+
+    # Reject unknown agent keys.
+    unknown_agent = set(agent_data.keys()) - _ALLOWED_AGENT_KEYS
+    if unknown_agent:
+        msg = (
+            f"Unknown key(s) in [agent]: {sorted(unknown_agent)}. "
+            f"Allowed: {sorted(_ALLOWED_AGENT_KEYS)}"
+        )
+        raise ValueError(msg)
+
+    # Require name.
+    if "name" not in agent_data:
+        msg = f"[agent].name is required in subagent deepagents.toml ({subagent_dir})"
+        raise ValueError(msg)
+
+    # Require description (non-empty).
+    desc = agent_data.get("description", "")
+    if not isinstance(desc, str) or not desc.strip():
+        msg = (
+            f"[agent].description is required (non-empty) in subagent "
+            f"deepagents.toml ({subagent_dir})"
+        )
+        raise ValueError(msg)
+
+    agent_kwargs: dict[str, Any] = {
+        "name": agent_data["name"],
+        "description": desc,
+    }
+    if "model" in agent_data:
+        agent_kwargs["model"] = agent_data["model"]
+
+    return SubAgentConfig(agent=AgentConfig(**agent_kwargs))
+
+
+def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
+    """Discover and load subagent projects from ``subagents/``.
+
+    Returns a dict keyed by subagent name. If the ``subagents/`` directory
+    does not exist or is empty, returns an empty dict.
+
+    Raises:
+        ValueError: On any structural or config validation error.
+    """
+    subagents_dir = project_root / SUBAGENTS_DIRNAME
+    if not subagents_dir.is_dir():
+        return {}
+
+    result: dict[str, SubAgentProject] = {}
+
+    for entry in sorted(subagents_dir.iterdir()):
+        # Skip dotfiles and non-directories.
+        if entry.name.startswith(".") or not entry.is_dir():
+            continue
+
+        # Reject nested subagents/.
+        if (entry / SUBAGENTS_DIRNAME).exists():
+            msg = (
+                f"Nested subagents/ not allowed inside subagent "
+                f"directory '{entry.name}'"
+            )
+            raise ValueError(msg)
+
+        # Require deepagents.toml.
+        toml_path = entry / DEFAULT_CONFIG_FILENAME
+        if not toml_path.is_file():
+            msg = (
+                f"deepagents.toml is required in subagent "
+                f"directory '{entry.name}'"
+            )
+            raise ValueError(msg)
+
+        # Require AGENTS.md.
+        agents_md = entry / AGENTS_MD_FILENAME
+        if not agents_md.is_file():
+            msg = (
+                f"AGENTS.md is required in subagent "
+                f"directory '{entry.name}'"
+            )
+            raise ValueError(msg)
+
+        # Parse the subagent config.
+        try:
+            with toml_path.open("rb") as f:
+                data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            msg = f"Syntax error in {toml_path}: {exc}"
+            raise ValueError(msg) from exc
+
+        config = _parse_subagent_config(data, entry)
+
+        # Validate MCP if present.
+        mcp_path = entry / MCP_FILENAME
+        if mcp_path.is_file():
+            errors = _validate_mcp_for_deploy(mcp_path)
+            if errors:
+                msg = (
+                    f"MCP validation errors in subagent '{entry.name}': "
+                    + "; ".join(errors)
+                )
+                raise ValueError(msg)
+
+        result[config.agent.name] = SubAgentProject(config=config, root=entry)
+
+    return result
 
 
 def load_config(config_path: Path) -> DeployConfig:

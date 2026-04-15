@@ -36,6 +36,8 @@ from deepagents_cli.deploy.config import (
     DeployConfig,
 )
 from deepagents_cli.deploy.templates import (
+    AUTH_BLOCKS,
+    AUTH_ON_HANDLER,
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
@@ -116,9 +118,18 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
+    # 4b. Generate auth.py if [auth] is configured.
+    auth_present = config.auth is not None
+    if auth_present:
+        (build_dir / "auth.py").write_text(
+            _render_auth_py(config.auth.provider),
+            encoding="utf-8",
+        )
+        logger.info("Generated auth.py (%s)", config.auth.provider)
+
     # 5. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
-        _render_langgraph_json(env_present=env_present),
+        _render_langgraph_json(env_present=env_present, auth_present=auth_present),
         encoding="utf-8",
     )
 
@@ -212,8 +223,17 @@ def _render_deploy_graph(
     )
 
 
-def _render_langgraph_json(*, env_present: bool) -> str:
-    """Render `langgraph.json` — adds `"env": ".env"` when a `.env` was copied."""
+def _render_auth_py(provider: str) -> str:
+    """Render the generated `auth.py` for the given auth provider."""
+    if provider not in AUTH_BLOCKS:
+        msg = f"Unknown auth provider {provider!r}. Valid: {sorted(AUTH_BLOCKS)}"
+        raise ValueError(msg)
+    auth_block, _ = AUTH_BLOCKS[provider]
+    return auth_block + AUTH_ON_HANDLER
+
+
+def _render_langgraph_json(*, env_present: bool, auth_present: bool = False) -> str:
+    """Render `langgraph.json` — adds `"env"` and `"auth"` when applicable."""
     data: dict = {
         "dependencies": ["."],
         "graphs": {"agent": "./deploy_graph.py:make_graph"},
@@ -221,6 +241,8 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     }
     if env_present:
         data["env"] = ".env"
+    if auth_present:
+        data["auth"] = {"path": "./auth.py:auth"}
     return json.dumps(data, indent=2) + "\n"
 
 
@@ -248,6 +270,11 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
     if partner_pkg:
         deps.append(partner_pkg)
 
+    if config.auth is not None:
+        _, auth_pkg = AUTH_BLOCKS.get(config.auth.provider, (None, None))
+        if auth_pkg:
+            deps.append(auth_pkg)
+
     extra_deps_lines = "".join(f'    "{dep}",\n' for dep in deps)
 
     return PYPROJECT_TEMPLATE.format(
@@ -272,6 +299,8 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")
+    if config.auth is not None:
+        print(f"  Auth: {config.auth.provider}")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

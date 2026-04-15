@@ -143,7 +143,6 @@ def test_parallel_results_can_be_assigned() -> None:
     assert interpreter.env == {"results": [1, 2, 3]}
 
 
-
 def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 

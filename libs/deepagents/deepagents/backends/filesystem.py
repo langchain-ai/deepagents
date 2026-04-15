@@ -495,7 +495,7 @@ class FilesystemBackend(BackendProtocol):
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
-        cmd.extend(["--", pattern, str(base_full)])
+        cmd.extend(["--", pattern, "."])
 
         try:
             proc = subprocess.run(  # noqa: S603
@@ -504,6 +504,7 @@ class FilesystemBackend(BackendProtocol):
                 text=True,
                 timeout=30,
                 check=False,
+                cwd=str(base_full),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
@@ -520,7 +521,7 @@ class FilesystemBackend(BackendProtocol):
             ftext = pdata.get("path", {}).get("text")
             if not ftext:
                 continue
-            p = Path(ftext)
+            p = (base_full / ftext).resolve()
             if self.virtual_mode:
                 try:
                     virt = self._to_virtual_path(p)

@@ -550,6 +550,31 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+@pytest.mark.skipif(
+    not any((Path(d) / "rg").exists() for d in ("/usr/bin", "/usr/local/bin", "/opt/homebrew/bin")),
+    reason="ripgrep not installed",
+)
+def test_grep_glob_with_directory_component(tmp_path: Path) -> None:
+    """Test that --glob patterns with directory components match correctly.
+
+    ripgrep's --glob matches against paths relative to the process cwd, not
+    the search root. When the search root is an absolute path and cwd differs,
+    globs like ``subdir/*.md`` silently match nothing. This test ensures the
+    fix (searching ``.`` with ``cwd=base_full``) works.
+    """
+    sub = tmp_path / "docs"
+    sub.mkdir()
+    (sub / "guide.md").write_text("hello world")
+    (sub / "notes.txt").write_text("hello world")
+    (tmp_path / "root.md").write_text("hello world")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep("hello", path="/", glob="docs/*.md")
+    assert result.matches is not None
+    assert len(result.matches) == 1
+    assert result.matches[0]["path"] == "/docs/guide.md"
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 

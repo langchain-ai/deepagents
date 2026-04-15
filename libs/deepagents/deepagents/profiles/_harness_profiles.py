@@ -89,6 +89,22 @@ class _HarnessProfile:
         overrides minimal and verify against the current tool names.
     """
 
+    tool_aliases: dict[str, str] = field(default_factory=dict)
+    """Per-tool name aliases, mapping canonical name to model-facing name.
+
+    Applied by `_ToolAliasingMiddleware` which renames tools in the model
+    request and reverts tool-call names in the response, keeping all other
+    middleware and tool routing on canonical names.
+
+    Only alias tools whose argument schemas are compatible — aliasing a name
+    without matching args will confuse the model.
+
+    !!! warning
+
+        Keys are matched by canonical tool name string. Stale keys silently
+        become no-ops (same caveat as `tool_description_overrides`).
+    """
+
     excluded_tools: frozenset[str] = frozenset()
     """Tool names to remove from the tool set for this provider/model.
 
@@ -278,6 +294,7 @@ def _merge_profiles(base: _HarnessProfile, override: _HarnessProfile) -> _Harnes
             **base.tool_description_overrides,
             **override.tool_description_overrides,
         },
+        tool_aliases={**base.tool_aliases, **override.tool_aliases},
         excluded_tools=base.excluded_tools | override.excluded_tools,
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
     )

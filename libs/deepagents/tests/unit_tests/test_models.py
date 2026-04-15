@@ -303,6 +303,7 @@ class TestHarnessProfile:
         assert profile.base_system_prompt is None
         assert profile.system_prompt_suffix is None
         assert profile.tool_description_overrides == {}
+        assert profile.tool_aliases == {}
         assert profile.excluded_tools == frozenset()
         assert profile.extra_middleware == ()
 
@@ -450,6 +451,21 @@ class TestMergeProfiles:
             "t1": "base",
             "t2": "override",
         }
+
+    def test_tool_aliases_merged(self) -> None:
+        base = _HarnessProfile(tool_aliases={"execute": "run", "ls": "list_dir"})
+        override = _HarnessProfile(tool_aliases={"execute": "shell_command"})
+        merged = _merge_profiles(base, override)
+        assert merged.tool_aliases == {
+            "execute": "shell_command",
+            "ls": "list_dir",
+        }
+
+    def test_tool_aliases_inherits_from_base(self) -> None:
+        base = _HarnessProfile(tool_aliases={"execute": "shell_command"})
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.tool_aliases == {"execute": "shell_command"}
 
     def test_excluded_tools_union(self) -> None:
         base = _HarnessProfile(excluded_tools=frozenset({"execute", "write_file"}))
@@ -603,6 +619,14 @@ class TestBuiltInProfiles:
     def test_codex_profile_does_not_replace_base_system_prompt(self, spec: str) -> None:
         profile = _get_harness_profile(spec)
         assert profile.base_system_prompt is None
+
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_has_tool_aliases(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
+        assert "execute" in profile.tool_aliases
+        assert profile.tool_aliases["execute"] == "shell_command"
+        assert "ls" in profile.tool_aliases
+        assert profile.tool_aliases["ls"] == "list_dir"
 
     def test_other_openai_models_unaffected_by_codex_profile(self) -> None:
         """Non-Codex OpenAI models get the provider profile, not the Codex one."""

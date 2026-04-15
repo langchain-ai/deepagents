@@ -48,17 +48,24 @@ without seeing a prior result.
 Mark each as done, blocked (with a one-sentence reason), or cancelled. Do not \
 finish with pending items."""
 
+_CODEX_TOOL_ALIASES: dict[str, str] = {
+    "execute": "shell_command",
+    "ls": "list_dir",
+}
+
 _CODEX_TOOL_DESCRIPTION_OVERRIDES: dict[str, str] = {
     "execute": (
         "Runs a shell command and returns its output. "
         "Use for git operations, build commands, tests, and other terminal tasks. "
-        "Prefer dedicated tools (read_file, grep, glob, ls) over shell equivalents."
+        "Prefer dedicated tools (read_file, grep, glob, list_dir) over "
+        "shell_command equivalents."
     ),
 }
 
 _CODEX_PROFILE = _HarnessProfile(
     init_kwargs={"reasoning_effort": "medium"},
     system_prompt_suffix=_CODEX_SYSTEM_PROMPT_SUFFIX,
+    tool_aliases=_CODEX_TOOL_ALIASES,
     tool_description_overrides=_CODEX_TOOL_DESCRIPTION_OVERRIDES,
 )
 

@@ -234,7 +234,6 @@ the session JWT locally. Scopes resources per authenticated user.
 
 import os
 
-import httpx
 import jwt as pyjwt
 from jwt import PyJWKClient
 from langgraph_sdk import Auth
@@ -246,7 +245,10 @@ CLERK_SECRET_KEY = os.environ["CLERK_SECRET_KEY"]
 
 _jwks_client = PyJWKClient(
     "https://api.clerk.com/v1/jwks",
-    headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+    headers={
+        "Authorization": f"Bearer {CLERK_SECRET_KEY}",
+        "User-Agent": "deepagents-deploy/1.0",
+    },
 )
 
 

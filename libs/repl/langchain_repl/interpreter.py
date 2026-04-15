@@ -6,8 +6,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from langchain_core.tools import BaseTool
+from langchain_core.tools.base import (
+    _is_injected_arg_type,
+    get_all_basemodel_annotations,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+
+    from langchain.tools import ToolRuntime
 
 
 @dataclass(frozen=True)
@@ -150,6 +158,71 @@ class ForeignObjectInterface(Protocol):
 
     def call(self, value: Any, args: tuple[Any, ...]) -> Any:
         """Invoke `value(*args)` for a supported foreign object."""
+
+
+def _get_injected_arg_names(tool: BaseTool) -> set[str]:
+    """Return injected parameter names for a tool input schema."""
+    return {
+        name
+        for name, type_ in get_all_basemodel_annotations(
+            tool.get_input_schema()
+        ).items()
+        if _is_injected_arg_type(type_)
+    }
+
+
+def _get_runtime_arg_name(tool: BaseTool) -> str | None:
+    """Return the injected runtime parameter name for a tool, if any."""
+    if "runtime" in _get_injected_arg_names(tool):
+        return "runtime"
+    return None
+
+
+def _filter_injected_kwargs(
+    tool: BaseTool,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop model-controlled injected args from a tool payload."""
+    injected_arg_names = _get_injected_arg_names(tool)
+    return {
+        name: value for name, value in payload.items() if name not in injected_arg_names
+    }
+
+
+def _build_tool_payload(
+    tool: BaseTool,
+    args: tuple[Any, ...],
+    *,
+    runtime: ToolRuntime | None = None,
+) -> str | dict[str, Any]:
+    """Convert REPL call arguments into a LangChain tool payload."""
+    input_schema = tool.get_input_schema()
+    schema_annotations = getattr(input_schema, "__annotations__", {})
+    fields = [
+        name
+        for name, type_ in schema_annotations.items()
+        if not _is_injected_arg_type(type_)
+    ]
+    runtime_arg_name = _get_runtime_arg_name(tool)
+
+    if len(args) == 1 and isinstance(args[0], dict):
+        payload = _filter_injected_kwargs(tool, args[0])
+    elif len(args) == 1 and isinstance(args[0], str) and runtime_arg_name is None:
+        payload = args[0]
+    elif len(args) == 1 and len(fields) == 1:
+        payload = {fields[0]: args[0]}
+    elif len(args) == len(fields) and fields:
+        payload = dict(zip(fields, args, strict=False))
+    else:
+        payload = {"args": list(args)}
+
+    if (
+        runtime is not None
+        and runtime_arg_name is not None
+        and isinstance(payload, dict)
+    ):
+        return {**payload, runtime_arg_name: runtime}
+    return payload
 
 
 class _Tokenizer:
@@ -495,10 +568,11 @@ class Interpreter:
     def __init__(
         self,
         *,
-        functions: Mapping[str, Callable[..., Any]] | None = None,
+        functions: Mapping[str, Callable[..., Any] | BaseTool] | None = None,
         env: MutableMapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
         max_workers: int | None = None,
+        runtime: ToolRuntime | None = None,
     ) -> None:
         """Initialize the interpreter with optional foreign functions."""
         self._functions = dict(functions or {})
@@ -506,6 +580,7 @@ class Interpreter:
         self._env: MutableMapping[str, Any] = env if env is not None else {}
         self._printed_lines: list[str] = []
         self._max_workers = max_workers
+        self._runtime = runtime
 
     @property
     def env(self) -> dict[str, Any]:
@@ -707,6 +782,9 @@ class Interpreter:
             self._eval_expression(arg, env, print_callback=print_callback)
             for arg in expression.args
         )
+        if isinstance(target, BaseTool):
+            payload = _build_tool_payload(target, args, runtime=self._runtime)
+            return target.invoke(payload)
         if callable(target):
             return target(*args)
         handler = self._handler_for(target)

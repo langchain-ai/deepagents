@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.38](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.37...deepagents-cli==0.0.38) (2026-04-15)
+
+
+### Features
+
+* **cli:** user scoped memory ([#2708](https://github.com/langchain-ai/deepagents/issues/2708)) ([23bfca6](https://github.com/langchain-ai/deepagents/commit/23bfca6e46e6f3e4fba6657d858ddd5a0b06626f))
+
+
+### Bug Fixes
+
+* **deepagents:** remove old integration tests ([#2728](https://github.com/langchain-ai/deepagents/issues/2728)) ([6653197](https://github.com/langchain-ai/deepagents/commit/6653197b6cbec6dd1ca23d9f90bc1439ca26e6e5))
+
+
+### Performance Improvements
+
+* **cli:** `O(1)` message lookups in `MessageStore` ([#2350](https://github.com/langchain-ai/deepagents/issues/2350)) ([d39fd5d](https://github.com/langchain-ai/deepagents/commit/d39fd5d3651fd87d1eea8c02cbef2c2f62449e67))
+
 ## [0.0.37](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.36...deepagents-cli==0.0.37) (2026-04-10)
 
 ### Features

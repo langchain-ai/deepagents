@@ -396,7 +396,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.2"
+version = "0.5.3"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -464,7 +464,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", specifier = ">=0.8.0" },
+    { name = "agent-client-protocol", specifier = ">=0.8.0,<0.9.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]

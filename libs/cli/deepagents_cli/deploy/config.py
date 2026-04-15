@@ -309,19 +309,13 @@ def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
         # Require deepagents.toml.
         toml_path = entry / DEFAULT_CONFIG_FILENAME
         if not toml_path.is_file():
-            msg = (
-                f"deepagents.toml is required in subagent "
-                f"directory '{entry.name}'"
-            )
+            msg = f"deepagents.toml is required in subagent directory '{entry.name}'"
             raise ValueError(msg)
 
         # Require AGENTS.md.
         agents_md = entry / AGENTS_MD_FILENAME
         if not agents_md.is_file():
-            msg = (
-                f"AGENTS.md is required in subagent "
-                f"directory '{entry.name}'"
-            )
+            msg = f"AGENTS.md is required in subagent directory '{entry.name}'"
             raise ValueError(msg)
 
         # Parse the subagent config.
@@ -339,9 +333,8 @@ def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
         if mcp_path.is_file():
             errors = _validate_mcp_for_deploy(mcp_path)
             if errors:
-                msg = (
-                    f"MCP validation errors in subagent '{entry.name}': "
-                    + "; ".join(errors)
+                msg = f"MCP validation errors in subagent '{entry.name}': " + "; ".join(
+                    errors
                 )
                 raise ValueError(msg)
 
@@ -374,7 +367,9 @@ def load_config(config_path: Path) -> DeployConfig:
 
 _ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "async_subagents"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
-_ALLOWED_ASYNC_SUBAGENT_KEYS = frozenset({"name", "description", "graph_id", "url", "headers"})
+_ALLOWED_ASYNC_SUBAGENT_KEYS = frozenset(
+    {"name", "description", "graph_id", "url", "headers"}
+)
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 
 

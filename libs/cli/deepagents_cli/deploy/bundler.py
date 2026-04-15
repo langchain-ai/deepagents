@@ -27,12 +27,12 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 from deepagents_cli.deploy.config import (
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
-    SUBAGENTS_DIRNAME,
     USER_DIRNAME,
     DeployConfig,
     SubAgentProject,
@@ -244,8 +244,7 @@ def _build_seed(
     sync_subagents = load_subagents(project_root)
     if sync_subagents:
         seed["subagents"] = {
-            name: _build_subagent_seed(sa)
-            for name, sa in sync_subagents.items()
+            name: _build_subagent_seed(sa) for name, sa in sync_subagents.items()
         }
 
     # Async subagents.
@@ -288,7 +287,8 @@ def _render_deploy_graph(
     if has_sync_subagents:
         sync_subagents_block = SYNC_SUBAGENTS_TEMPLATE
         sync_subagents_load_call = (
-            "all_subagents.extend(await _build_sync_subagents(seed, store, assistant_id))"
+            "all_subagents.extend("
+            "await _build_sync_subagents(seed, store, assistant_id))"
         )
     else:
         sync_subagents_block = ""
@@ -296,9 +296,7 @@ def _render_deploy_graph(
 
     if has_async_subagents:
         async_subagents_block = ASYNC_SUBAGENTS_TEMPLATE
-        async_subagents_load_call = (
-            "all_subagents.extend(_build_async_subagents(seed))"
-        )
+        async_subagents_load_call = "all_subagents.extend(_build_async_subagents(seed))"
     else:
         async_subagents_block = ""
         async_subagents_load_call = "pass  # no async subagents"
@@ -379,7 +377,7 @@ def _render_pyproject(
 def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     """Print a human-readable summary of what was bundled."""
     seed_path = build_dir / "_seed.json"
-    seed: dict[str, dict[str, str]] = {"memories": {}, "skills": {}}
+    seed: dict[str, Any] = {"memories": {}, "skills": {}}
     if seed_path.exists():
         try:
             seed = json.loads(seed_path.read_text(encoding="utf-8"))

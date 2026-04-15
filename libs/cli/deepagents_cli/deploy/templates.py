@@ -197,6 +197,115 @@ async def _load_mcp_tools():
 
 
 # ---------------------------------------------------------------------------
+# Sync subagents loader (only emitted when sync subagents are present)
+# ---------------------------------------------------------------------------
+
+SYNC_SUBAGENTS_TEMPLATE = '''\
+from deepagents.middleware.subagents import SubAgent
+
+
+async def _build_sync_subagents(seed, store, assistant_id):
+    """Build SubAgent dicts from seed data and seed their memories/skills."""
+    subagents_data = seed.get("subagents", {})
+    if not subagents_data:
+        return []
+
+    subagents = []
+    for name, data in subagents_data.items():
+        sa: SubAgent = {
+            "name": data["config"]["name"],
+            "description": data["config"]["description"],
+            "system_prompt": data["memories"]["/AGENTS.md"],
+        }
+        if data["config"].get("model"):
+            sa["model"] = data["config"]["model"]
+
+        # Seed subagent memories and skills into store under subagent namespace.
+        sa_ns = (assistant_id, "subagents", name)
+        if store is not None:
+            for path, content in data.get("memories", {}).items():
+                if await store.aget(sa_ns, path) is None:
+                    await store.aput(
+                        sa_ns,
+                        path,
+                        {"content": content, "encoding": "utf-8"},
+                    )
+            for path, content in data.get("skills", {}).items():
+                if await store.aget(sa_ns, path) is None:
+                    await store.aput(
+                        sa_ns,
+                        path,
+                        {"content": content, "encoding": "utf-8"},
+                    )
+
+        if data.get("skills"):
+            sa_skills_prefix = f"/memories/subagents/{name}/skills/"
+            sa["skills"] = [sa_skills_prefix]
+
+        if data.get("mcp"):
+            sa["tools"] = await _load_subagent_mcp_tools(data["mcp"])
+
+        subagents.append(sa)
+    return subagents
+
+
+async def _load_subagent_mcp_tools(mcp_config):
+    """Load MCP tools for a subagent from its mcp config."""
+    servers = mcp_config.get("mcpServers", {})
+    connections = {}
+    for sname, cfg in servers.items():
+        transport = cfg.get("type", cfg.get("transport", "stdio"))
+        if transport in ("http", "sse"):
+            conn = {"transport": transport, "url": cfg["url"]}
+            if "headers" in cfg:
+                conn["headers"] = cfg["headers"]
+            connections[sname] = conn
+
+    if not connections:
+        return []
+
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        client = MultiServerMCPClient(connections)
+        return await client.get_tools()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load subagent MCP tools: %s", exc)
+        return []
+'''
+
+
+# ---------------------------------------------------------------------------
+# Async subagents loader (only emitted when async subagents are present)
+# ---------------------------------------------------------------------------
+
+ASYNC_SUBAGENTS_TEMPLATE = '''\
+from deepagents.middleware.async_subagents import AsyncSubAgent
+
+
+def _build_async_subagents(seed):
+    """Build AsyncSubAgent dicts from seed data."""
+    async_data = seed.get("async_subagents", [])
+    if not async_data:
+        return []
+
+    subagents = []
+    for entry in async_data:
+        asa: AsyncSubAgent = {
+            "name": entry["name"],
+            "description": entry["description"],
+            "graph_id": entry["graph_id"],
+        }
+        if entry.get("url"):
+            asa["url"] = entry["url"]
+        if entry.get("headers"):
+            asa["headers"] = entry["headers"]
+        subagents.append(asa)
+    return subagents
+'''
+
+
+# ---------------------------------------------------------------------------
 # deploy_graph.py — the generated server entry point
 #
 # Store layout (CompositeBackend with sandbox default + routed stores):
@@ -442,6 +551,10 @@ async def _seed_user_memories_if_needed(
 
 {mcp_tools_block}
 
+{sync_subagents_block}
+
+{async_subagents_block}
+
 
 def _make_namespace_factory(assistant_id: str, *extra: str):
     """Return a namespace factory closed over an assistant id + extra."""
@@ -498,6 +611,14 @@ def _build_backend_factory(assistant_id: str):
                 namespace=_make_user_namespace_factory(assistant_id),
             )
 
+        # Add subagent store routes for seeded sync subagents.
+        seed = _load_seed()
+        for sa_name in seed.get("subagents", {{}}):
+            sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
+            routes[sa_prefix] = StoreBackend(
+                namespace=_make_namespace_factory(assistant_id, "subagents", sa_name),
+            )
+
         return CompositeBackend(
             default=sandbox_backend,
             routes=routes,
@@ -537,6 +658,11 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     tools: list = []
     {mcp_tools_load_call}
 
+    seed = _load_seed()
+    all_subagents: list = []
+    {sync_subagents_load_call}
+    {async_subagents_load_call}
+
     backend_factory = _build_backend_factory(assistant_id)
 
     # Preload AGENTS.md + user memory into the agent's context.
@@ -558,6 +684,7 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
         memory=memory_sources,
         skills=[SKILLS_PREFIX],
         tools=tools,
+        subagents=all_subagents or None,
         backend=backend_factory,
         permissions=permissions,
         middleware=[

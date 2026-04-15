@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -29,12 +30,6 @@ from deepagents_cli.deploy.config import (
     load_subagents,
     validate_subagent_names,
 )
-
-from pathlib import Path
-
-if TYPE_CHECKING:
-    pass
-
 
 # ---------------------------------------------------------------------------
 # AgentConfig
@@ -101,9 +96,7 @@ class TestAsyncSubAgentConfig:
         assert cfg.headers == {"Authorization": "Bearer tok"}
 
     def test_frozen(self) -> None:
-        cfg = AsyncSubAgentConfig(
-            name="x", description="d", graph_id="g"
-        )
+        cfg = AsyncSubAgentConfig(name="x", description="d", graph_id="g")
         with pytest.raises(AttributeError):
             cfg.name = "y"  # type: ignore[misc]
 
@@ -483,7 +476,8 @@ class TestLoadSubagents:
         sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
         sub_dir.mkdir(parents=True)
         (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
-            '[agent]\nname = "bad"\ndescription = "d"\n\n[sandbox]\nprovider = "none"\n',
+            '[agent]\nname = "bad"\ndescription = "d"\n\n'
+            '[sandbox]\nprovider = "none"\n',
             encoding="utf-8",
         )
         (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")

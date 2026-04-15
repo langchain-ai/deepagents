@@ -353,7 +353,9 @@ class TestBundle:
         assert "subagents" in seed
         assert "researcher" in seed["subagents"]
         assert "coder" in seed["subagents"]
-        assert seed["subagents"]["researcher"]["skills"]["/search/SKILL.md"] == "# Search"
+        assert (
+            seed["subagents"]["researcher"]["skills"]["/search/SKILL.md"] == "# Search"
+        )
         assert "async_subagents" in seed
         assert len(seed["async_subagents"]) == 1
         assert seed["async_subagents"][0]["name"] == "writer"
@@ -420,7 +422,11 @@ class TestPrintBundleSummary:
             "skills": {},
             "subagents": {
                 "researcher": {
-                    "config": {"name": "researcher", "description": "Research agent", "model": "anthropic:claude-sonnet-4-6"},
+                    "config": {
+                        "name": "researcher",
+                        "description": "Research agent",
+                        "model": "anthropic:claude-sonnet-4-6",
+                    },
                     "memories": {"/AGENTS.md": "y"},
                     "skills": {"/search/SKILL.md": "z"},
                     "mcp": None,
@@ -441,7 +447,12 @@ class TestPrintBundleSummary:
             "memories": {"/AGENTS.md": "x"},
             "skills": {},
             "async_subagents": [
-                {"name": "writer", "description": "Content writer", "graph_id": "g", "url": ""},
+                {
+                    "name": "writer",
+                    "description": "Content writer",
+                    "graph_id": "g",
+                    "url": "",
+                },
             ],
         }
         (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
@@ -572,7 +583,9 @@ class TestRenderDeployGraphSubagents:
     def test_subagent_imports_when_sync(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_sync_subagents=True,
+            config,
+            mcp_present=False,
+            has_sync_subagents=True,
         )
         compile(result, "<deploy_graph_sync_sa>", "exec")
         assert "from deepagents.middleware.subagents import SubAgent" in result
@@ -581,10 +594,14 @@ class TestRenderDeployGraphSubagents:
     def test_subagent_imports_when_async(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_async_subagents=True,
+            config,
+            mcp_present=False,
+            has_async_subagents=True,
         )
         compile(result, "<deploy_graph_async_sa>", "exec")
-        assert "from deepagents.middleware.async_subagents import AsyncSubAgent" in result
+        assert (
+            "from deepagents.middleware.async_subagents import AsyncSubAgent" in result
+        )
         assert "_build_async_subagents" in result
 
     def test_no_subagent_imports_when_none(self) -> None:
@@ -596,7 +613,10 @@ class TestRenderDeployGraphSubagents:
     def test_subagents_passed_to_create_deep_agent(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_sync_subagents=True, has_async_subagents=True,
+            config,
+            mcp_present=False,
+            has_sync_subagents=True,
+            has_async_subagents=True,
         )
         compile(result, "<deploy_graph_both_sa>", "exec")
         assert "subagents=" in result
@@ -604,7 +624,9 @@ class TestRenderDeployGraphSubagents:
     def test_subagent_seeding(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(
-            config, mcp_present=False, has_sync_subagents=True,
+            config,
+            mcp_present=False,
+            has_sync_subagents=True,
         )
         assert "_build_sync_subagents" in result
         assert '"subagents"' in result

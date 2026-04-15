@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.tools import BaseTool
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Token:
     """A lexical token produced by the tokenizer."""
 
@@ -127,37 +127,38 @@ class _Tokenizer:
 
     def tokenize(self) -> list[Token]:
         tokens: list[Token] = []
+        append_token = tokens.append
         while self._index < self._length:
             char = self._source[self._index]
             if char in " \t\r":
                 self._advance()
                 continue
             if char == "\n":
-                tokens.append(Token("NEWLINE", "\n", self._line, self._column))
+                append_token(Token("NEWLINE", "\n", self._line, self._column))
                 self._advance()
                 continue
             if char == "#":
                 self._skip_comment()
                 continue
             if char in "()+-[]{}:,.=":
-                tokens.append(Token(char, char, self._line, self._column))
+                append_token(Token(char, char, self._line, self._column))
                 self._advance()
                 continue
             if char == '"':
-                tokens.append(self._read_string())
+                append_token(self._read_string())
                 continue
             if char.isdigit() or (char == "-" and self._peek().isdigit()):
-                tokens.append(self._read_number())
+                append_token(self._read_number())
                 continue
             if char.isalpha() or char == "_":
-                tokens.append(self._read_name())
+                append_token(self._read_name())
                 continue
             msg = (
                 f"Unexpected character {char!r} at line {self._line}, "
                 f"column {self._column}"
             )
             raise ParseError(msg)
-        tokens.append(Token("EOF", None, self._line, self._column))
+        append_token(Token("EOF", None, self._line, self._column))
         return tokens
 
     def _advance(self) -> str:
@@ -184,6 +185,7 @@ class _Tokenizer:
         column = self._column
         self._advance()
         chars: list[str] = []
+        append_char = chars.append
         while self._index < self._length:
             char = self._advance()
             if char == '"':
@@ -191,10 +193,9 @@ class _Tokenizer:
             if char == "\\":
                 if self._index >= self._length:
                     break
-                escaped = self._advance()
-                chars.append(self._decode_escape(escaped))
+                append_char(self._decode_escape(self._advance()))
                 continue
-            chars.append(char)
+            append_char(char)
         msg = f"Unterminated string at line {line}, column {column}"
         raise ParseError(msg)
 
@@ -213,14 +214,15 @@ class _Tokenizer:
         column = self._column
         chars = [self._advance()]
         has_dot = False
+        append_char = chars.append
         while self._index < self._length:
             char = self._source[self._index]
             if char.isdigit():
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             if char == "." and not has_dot:
                 has_dot = True
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             break
         text = "".join(chars)
@@ -231,10 +233,11 @@ class _Tokenizer:
         line = self._line
         column = self._column
         chars = [self._advance()]
+        append_char = chars.append
         while self._index < self._length:
             char = self._source[self._index]
             if char.isalnum() or char == "_":
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             break
         text = "".join(chars)
@@ -254,103 +257,22 @@ class _Tokenizer:
         return Token(kind, text, line, column)
 
 
-class OpCode(str, Enum):
-    """Instruction set for the stack-based REPL VM.
-
-    Each opcode either pushes values onto the operand stack, consumes values from
-    it, mutates control flow via the program counter, or updates interpreter state
-    such as variable bindings and loop bookkeeping.
-    """
-
-    LOAD_CONST = "LOAD_CONST"
-    """Push the instruction argument onto the operand stack.
-
-    Example: `42` compiles to `LOAD_CONST 42`.
-    """
-
-    LOAD_NAME = "LOAD_NAME"
-    """Push the value of a named binding or registered function onto the stack.
-
-    Example: `x` compiles to `LOAD_NAME "x"`.
-    """
-
-    STORE_NAME = "STORE_NAME"
-    """Store the top-of-stack value into the named environment binding.
-
-    Example: `x = 1` emits `LOAD_CONST 1` then `STORE_NAME "x"`.
-    """
-
-    SET_LAST = "SET_LAST"
-    """Copy the top-of-stack value into `VMState.last_value` without popping it.
-
-    Example: expression statements like `x` end with `SET_LAST`.
-    """
-
-    BUILD_LIST = "BUILD_LIST"
-    """Pop `arg` values, package them into a list, and push the new list.
-
-    Example: `[1, 2]` emits `LOAD_CONST 1`, `LOAD_CONST 2`, `BUILD_LIST 2`.
-    """
-
-    BUILD_DICT = "BUILD_DICT"
-    """Pop `arg` key/value pairs, package them into a dict, and push the dict.
-
-    Example: `{"a": 1}` emits `LOAD_CONST "a"`, `LOAD_CONST 1`, `BUILD_DICT 1`.
-    """
-
-    BINARY_OP = "BINARY_OP"
-    """Pop two operands, apply the binary operator in `arg`, and push the result.
-
-    Example: `x + 1` emits `LOAD_NAME "x"`, `LOAD_CONST 1`, `BINARY_OP "+"`.
-    """
-
-    GET_INDEX = "GET_INDEX"
-    """Pop an index and target, resolve `target[index]`, and push the result.
-
-    Example: `items[0]` emits `LOAD_NAME "items"`, `LOAD_CONST 0`, `GET_INDEX`.
-    """
-
-    GET_ATTR = "GET_ATTR"
-    """Pop a target, resolve the attribute named by `arg`, and push the result.
-
-    Example: `math.sin` emits `LOAD_NAME "math"`, `GET_ATTR "sin"`.
-    """
-
-    CALL = "CALL"
-    """Pop a callable target plus `arg` arguments, invoke it, and push the result.
-
-    Example: `echo(1)` emits `LOAD_NAME "echo"`, `LOAD_CONST 1`, `CALL 1`.
-    """
-
-    JUMP = "JUMP"
-    """Set the program counter to the absolute instruction index stored in `arg`.
-
-    Example: `if ... else ... end` uses `JUMP` to skip over the else branch after the then branch runs.
-    """
-
-    JUMP_IF_FALSE = "JUMP_IF_FALSE"
-    """Pop a condition and jump to `arg` when the value is falsy.
-
-    Example: `if cond then ... else ... end` emits `JUMP_IF_FALSE <else_start>` after compiling `cond`.
-    """
-
-    ITER_PREP = "ITER_PREP"
-    """Pop a list iterable and initialize loop state for the target name in `arg`.
-
-    Example: `for item in items do ... end` emits `LOAD_NAME "items"` then `ITER_PREP "item"`.
-    """
-
-    ITER_NEXT = "ITER_NEXT"
-    """Advance the active loop or jump to `arg` when the iterable is exhausted.
-
-    Example: `for item in items do ... end` emits `ITER_NEXT <loop_end>` at the top of the loop body.
-    """
-
-    RETURN_VALUE = "RETURN_VALUE"
-    """Finish execution and return `VMState.last_value`.
-
-    Example: every compiled program ends with `RETURN_VALUE`.
-    """
+class OpCode(IntEnum):
+    LOAD_CONST = 0
+    LOAD_NAME = 1
+    STORE_NAME = 2
+    SET_LAST = 3
+    BUILD_LIST = 4
+    BUILD_DICT = 5
+    BINARY_OP = 6
+    GET_INDEX = 7
+    GET_ATTR = 8
+    CALL = 9
+    JUMP = 10
+    JUMP_IF_FALSE = 11
+    ITER_PREP = 12
+    ITER_NEXT = 13
+    RETURN_VALUE = 14
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,7 +300,7 @@ class VMState:
 
     Attributes:
         instructions: The compiled instruction stream being executed.
-        env: Current variable bindings visible to the program.
+        globals: Current mutable bindings visible to the program.
         pc: Program counter pointing at the next instruction to execute.
         stack: Operand stack used by the VM for expression evaluation.
         last_value: Value returned by the most recent statement-level result.
@@ -402,7 +324,7 @@ class VMState:
     """
 
     instructions: Sequence[Instruction]
-    env: MutableMapping[str, Any]
+    globals: MutableMapping[str, Any]
     pc: int = 0
     stack: list[Any] = field(default_factory=list)
     last_value: Any = None
@@ -644,14 +566,16 @@ class Interpreter:
         self,
         *,
         functions: Mapping[str, Callable[..., Any] | BaseTool] | None = None,
-        env: MutableMapping[str, Any] | None = None,
+        globals: MutableMapping[str, Any] | None = None,
+        bindings: Mapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
         max_workers: int | None = None,
         runtime: ToolRuntime | None = None,
     ) -> None:
         self._functions = dict(functions or {})
+        self._bindings = dict(bindings or {})
         self._foreign_interfaces = tuple(foreign_interfaces)
-        self._env: MutableMapping[str, Any] = env if env is not None else {}
+        self._globals: MutableMapping[str, Any] = globals if globals is not None else {}
         self._printed_lines: list[str] = []
         self._max_workers = max_workers
         self._runtime = runtime
@@ -659,7 +583,15 @@ class Interpreter:
 
     @property
     def env(self) -> dict[str, Any]:
-        return dict(self._env)
+        return dict(self._globals)
+
+    @property
+    def globals(self) -> dict[str, Any]:
+        return dict(self._globals)
+
+    @property
+    def bindings(self) -> dict[str, Any]:
+        return dict(self._bindings)
 
     @property
     def printed_lines(self) -> list[str]:
@@ -672,168 +604,244 @@ class Interpreter:
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
         instructions = self.compile(source)
-        state = self._new_state(instructions, self._env)
+        state = self._new_state(instructions, self._globals)
         value = self._run_vm_sync(state, print_callback=print_callback)
-        self._env = state.env
+        self._globals = state.globals
         return value
 
     async def aevaluate(
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
         instructions = self.compile(source)
-        state = self._new_state(instructions, self._env)
+        state = self._new_state(instructions, self._globals)
         value = await self._run_vm_async(state, print_callback=print_callback)
-        self._env = state.env
+        self._globals = state.globals
         return value
 
     def _new_state(
-        self, instructions: tuple[Instruction, ...], env: MutableMapping[str, Any]
+        self, instructions: tuple[Instruction, ...], globals: MutableMapping[str, Any]
     ) -> VMState:
-        return VMState(instructions=instructions, env=env)
+        return VMState(instructions=instructions, globals=globals)
 
     def _run_vm_sync(
         self, state: VMState, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        while state.pc < len(state.instructions):
-            instruction = state.instructions[state.pc]
+        instructions = state.instructions
+        stack = state.stack
+        globals = state.globals
+        loop_stack = state.loop_stack
+        load_name = self._load_name
+        eval_binary_operation = self._eval_binary_operation
+        eval_index = self._eval_index
+        resolve_member = self._resolve_member
+        call_sync = self._call_sync
+        store_name = self._store_name
+
+        while state.pc < len(instructions):
+            instruction = instructions[state.pc]
+            opcode = instruction.opcode
+            arg = instruction.arg
             state.pc += 1
-            result = self._step_sync(state, instruction, print_callback=print_callback)
-            if result is not _NO_RESULT:
-                return result
+
+            if opcode == OpCode.LOAD_CONST:
+                stack.append(arg)
+                continue
+            if opcode == OpCode.LOAD_NAME:
+                stack.append(load_name(globals, arg))
+                continue
+            if opcode == OpCode.STORE_NAME:
+                store_name(globals, arg, stack[-1])
+                continue
+            if opcode == OpCode.SET_LAST:
+                state.last_value = stack[-1] if stack else None
+                continue
+            if opcode == OpCode.BUILD_LIST:
+                count = int(arg)
+                items = stack[-count:] if count else []
+                if count:
+                    del stack[-count:]
+                stack.append(list(items))
+                continue
+            if opcode == OpCode.BUILD_DICT:
+                count = int(arg)
+                item_count = 2 * count
+                items = stack[-item_count:] if count else []
+                if count:
+                    del stack[-item_count:]
+                built: dict[str, Any] = {}
+                for index in range(0, len(items), 2):
+                    built[str(items[index])] = items[index + 1]
+                stack.append(built)
+                continue
+            if opcode == OpCode.BINARY_OP:
+                right = stack.pop()
+                left = stack.pop()
+                stack.append(eval_binary_operation(left, arg, right))
+                continue
+            if opcode == OpCode.GET_INDEX:
+                index = stack.pop()
+                target = stack.pop()
+                stack.append(eval_index(target, index))
+                continue
+            if opcode == OpCode.GET_ATTR:
+                target = stack.pop()
+                stack.append(resolve_member(target, arg))
+                continue
+            if opcode == OpCode.CALL:
+                arg_count = int(arg)
+                target_index = len(stack) - arg_count - 1
+                target = stack[target_index]
+                args = tuple(stack[target_index + 1 :])
+                del stack[target_index:]
+                stack.append(call_sync(target, args, print_callback=print_callback))
+                continue
+            if opcode == OpCode.JUMP:
+                state.pc = int(arg)
+                continue
+            if opcode == OpCode.JUMP_IF_FALSE:
+                if not stack.pop():
+                    state.pc = int(arg)
+                continue
+            if opcode == OpCode.ITER_PREP:
+                iterable = stack.pop()
+                if not isinstance(iterable, list):
+                    msg = "for loops require a list iterable"
+                    raise TypeError(msg)
+                loop_stack.append(ForLoopState(arg, iterable))
+                continue
+            if opcode == OpCode.ITER_NEXT:
+                loop_state = loop_stack[-1]
+                if loop_state.index >= len(loop_state.items):
+                    loop_stack.pop()
+                    state.pc = int(arg)
+                    continue
+                globals[loop_state.target_name] = loop_state.items[loop_state.index]
+                loop_state.index += 1
+                continue
+            if opcode == OpCode.RETURN_VALUE:
+                return state.last_value
+            msg = f"Unsupported opcode: {opcode}"
+            raise ValueError(msg)
         return state.last_value
 
     async def _run_vm_async(
         self, state: VMState, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        while state.pc < len(state.instructions):
-            instruction = state.instructions[state.pc]
+        instructions = state.instructions
+        stack = state.stack
+        globals = state.globals
+        loop_stack = state.loop_stack
+        load_name = self._load_name
+        eval_binary_operation = self._eval_binary_operation
+        eval_index = self._eval_index
+        resolve_member = self._resolve_member
+        call_async = self._call_async
+        store_name = self._store_name
+
+        while state.pc < len(instructions):
+            instruction = instructions[state.pc]
+            opcode = instruction.opcode
+            arg = instruction.arg
             state.pc += 1
-            result = await self._step_async(
-                state, instruction, print_callback=print_callback
-            )
-            if result is not _NO_RESULT:
-                return result
+
+            if opcode == OpCode.LOAD_CONST:
+                stack.append(arg)
+                continue
+            if opcode == OpCode.LOAD_NAME:
+                stack.append(load_name(globals, arg))
+                continue
+            if opcode == OpCode.STORE_NAME:
+                store_name(globals, arg, stack[-1])
+                continue
+            if opcode == OpCode.SET_LAST:
+                state.last_value = stack[-1] if stack else None
+                continue
+            if opcode == OpCode.BUILD_LIST:
+                count = int(arg)
+                items = stack[-count:] if count else []
+                if count:
+                    del stack[-count:]
+                stack.append(list(items))
+                continue
+            if opcode == OpCode.BUILD_DICT:
+                count = int(arg)
+                item_count = 2 * count
+                items = stack[-item_count:] if count else []
+                if count:
+                    del stack[-item_count:]
+                built: dict[str, Any] = {}
+                for index in range(0, len(items), 2):
+                    built[str(items[index])] = items[index + 1]
+                stack.append(built)
+                continue
+            if opcode == OpCode.BINARY_OP:
+                right = stack.pop()
+                left = stack.pop()
+                stack.append(eval_binary_operation(left, arg, right))
+                continue
+            if opcode == OpCode.GET_INDEX:
+                index = stack.pop()
+                target = stack.pop()
+                stack.append(eval_index(target, index))
+                continue
+            if opcode == OpCode.GET_ATTR:
+                target = stack.pop()
+                stack.append(resolve_member(target, arg))
+                continue
+            if opcode == OpCode.CALL:
+                arg_count = int(arg)
+                target_index = len(stack) - arg_count - 1
+                target = stack[target_index]
+                args = tuple(stack[target_index + 1 :])
+                del stack[target_index:]
+                stack.append(await call_async(target, args, print_callback=print_callback))
+                continue
+            if opcode == OpCode.JUMP:
+                state.pc = int(arg)
+                continue
+            if opcode == OpCode.JUMP_IF_FALSE:
+                if not stack.pop():
+                    state.pc = int(arg)
+                continue
+            if opcode == OpCode.ITER_PREP:
+                iterable = stack.pop()
+                if not isinstance(iterable, list):
+                    msg = "for loops require a list iterable"
+                    raise TypeError(msg)
+                loop_stack.append(ForLoopState(arg, iterable))
+                continue
+            if opcode == OpCode.ITER_NEXT:
+                loop_state = loop_stack[-1]
+                if loop_state.index >= len(loop_state.items):
+                    loop_stack.pop()
+                    state.pc = int(arg)
+                    continue
+                globals[loop_state.target_name] = loop_state.items[loop_state.index]
+                loop_state.index += 1
+                continue
+            if opcode == OpCode.RETURN_VALUE:
+                return state.last_value
+            msg = f"Unsupported opcode: {opcode}"
+            raise ValueError(msg)
         return state.last_value
 
-    def _step_sync(
-        self,
-        state: VMState,
-        instruction: Instruction,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if instruction.opcode is OpCode.LOAD_CONST:
-            state.stack.append(instruction.arg)
-            return _NO_RESULT
-        if instruction.opcode is OpCode.LOAD_NAME:
-            state.stack.append(self._load_name(state.env, instruction.arg))
-            return _NO_RESULT
-        if instruction.opcode is OpCode.STORE_NAME:
-            value = state.stack[-1]
-            state.env[instruction.arg] = value
-            return _NO_RESULT
-        if instruction.opcode is OpCode.SET_LAST:
-            state.last_value = state.stack[-1] if state.stack else None
-            return _NO_RESULT
-        if instruction.opcode is OpCode.BUILD_LIST:
-            count = int(instruction.arg)
-            items = state.stack[-count:] if count else []
-            if count:
-                del state.stack[-count:]
-            state.stack.append(list(items))
-            return _NO_RESULT
-        if instruction.opcode is OpCode.BUILD_DICT:
-            count = int(instruction.arg)
-            items = state.stack[-(2 * count) :] if count else []
-            if count:
-                del state.stack[-(2 * count) :]
-            built: dict[str, Any] = {}
-            for index in range(0, len(items), 2):
-                built[str(items[index])] = items[index + 1]
-            state.stack.append(built)
-            return _NO_RESULT
-        if instruction.opcode is OpCode.BINARY_OP:
-            right = state.stack.pop()
-            left = state.stack.pop()
-            state.stack.append(
-                self._eval_binary_operation(left, instruction.arg, right)
-            )
-            return _NO_RESULT
-        if instruction.opcode is OpCode.GET_INDEX:
-            index = state.stack.pop()
-            target = state.stack.pop()
-            state.stack.append(self._eval_index(target, index))
-            return _NO_RESULT
-        if instruction.opcode is OpCode.GET_ATTR:
-            target = state.stack.pop()
-            state.stack.append(self._resolve_member(target, instruction.arg))
-            return _NO_RESULT
-        if instruction.opcode is OpCode.CALL:
-            arg_count = int(instruction.arg)
-            target_index = len(state.stack) - arg_count - 1
-            target = state.stack[target_index]
-            args = tuple(state.stack[target_index + 1 :])
-            del state.stack[target_index:]
-            state.stack.append(
-                self._call_sync(target, args, print_callback=print_callback)
-            )
-            return _NO_RESULT
-        if instruction.opcode is OpCode.JUMP:
-            state.pc = int(instruction.arg)
-            return _NO_RESULT
-        if instruction.opcode is OpCode.JUMP_IF_FALSE:
-            value = state.stack.pop()
-            if not self._is_truthy(value):
-                state.pc = int(instruction.arg)
-            return _NO_RESULT
-        if instruction.opcode is OpCode.ITER_PREP:
-            iterable = state.stack.pop()
-            if not isinstance(iterable, list):
-                msg = "for loops require a list iterable"
-                raise TypeError(msg)
-            state.loop_stack.append(ForLoopState(instruction.arg, iterable))
-            return _NO_RESULT
-        if instruction.opcode is OpCode.ITER_NEXT:
-            loop_state = state.loop_stack[-1]
-            if loop_state.index >= len(loop_state.items):
-                state.loop_stack.pop()
-                state.pc = int(instruction.arg)
-                return _NO_RESULT
-            item = loop_state.items[loop_state.index]
-            loop_state.index += 1
-            state.env[loop_state.target_name] = item
-            return _NO_RESULT
-        if instruction.opcode is OpCode.RETURN_VALUE:
-            return state.last_value
-        msg = f"Unsupported opcode: {instruction.opcode}"
-        raise ValueError(msg)
-
-    async def _step_async(
-        self,
-        state: VMState,
-        instruction: Instruction,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if instruction.opcode is not OpCode.CALL:
-            return self._step_sync(state, instruction, print_callback=print_callback)
-        arg_count = int(instruction.arg)
-        target_index = len(state.stack) - arg_count - 1
-        target = state.stack[target_index]
-        args = tuple(state.stack[target_index + 1 :])
-        del state.stack[target_index:]
-        state.stack.append(
-            await self._call_async(target, args, print_callback=print_callback)
-        )
-        return _NO_RESULT
-
-    def _load_name(self, env: MutableMapping[str, Any], name: str) -> Any:
-        if name in env:
-            return env[name]
+    def _load_name(self, globals: MutableMapping[str, Any], name: str) -> Any:
+        if name in globals:
+            return globals[name]
+        if name in self._bindings:
+            return self._bindings[name]
         if name in self._functions:
             return self._functions[name]
         msg = f"Unknown name: {name}"
         raise NameError(msg)
+
+    def _store_name(
+        self, globals: MutableMapping[str, Any], name: str, value: Any
+    ) -> None:
+        if name in self._bindings:
+            msg = f"Cannot assign to read-only binding: {name}"
+            raise NameError(msg)
+        globals[name] = value
 
     def _call_sync(
         self,
@@ -928,21 +936,28 @@ class Interpreter:
                 msg = "dict indexes must be strings"
                 raise TypeError(msg)
             return target[index]
-        if self._has_handler(target):
-            return self._handler_for(target).get_item(target, index)
+        handler = self._maybe_handler_for(target)
+        if handler is not None:
+            return handler.get_item(target, index)
         msg = f"'{type(target).__name__}' object is not subscriptable"
         raise TypeError(msg)
 
     def _resolve_member(self, target: Any, name: str) -> Any:
         return self._handler_for(target).resolve_member(target, name)
 
-    def _has_handler(self, value: Any) -> bool:
-        return any(handler.supports(value) for handler in self._foreign_interfaces)
-
-    def _handler_for(self, value: Any) -> ForeignObjectInterface:
+    def _maybe_handler_for(self, value: Any) -> ForeignObjectInterface | None:
         for handler in self._foreign_interfaces:
             if handler.supports(value):
                 return handler
+        return None
+
+    def _has_handler(self, value: Any) -> bool:
+        return self._maybe_handler_for(value) is not None
+
+    def _handler_for(self, value: Any) -> ForeignObjectInterface:
+        handler = self._maybe_handler_for(value)
+        if handler is not None:
+            return handler
         msg = f"No foreign object handler for {type(value).__name__}"
         raise TypeError(msg)
 
@@ -964,4 +979,4 @@ _PARALLEL_SENTINEL = object()
 _NO_RESULT = object()
 
 
-__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError"]
+__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "OpCode"]

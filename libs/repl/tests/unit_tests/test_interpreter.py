@@ -42,15 +42,29 @@ def test_state_persists_across_evaluations() -> None:
     assert interpreter.env == {"x": 10}
 
 
-def test_uses_provided_environment_mapping() -> None:
-    env = {"x": 10}
-    interpreter = Interpreter(env=env)
+def test_uses_provided_globals_mapping() -> None:
+    globals_dict = {"x": 10}
+    interpreter = Interpreter(globals=globals_dict)
 
     result = interpreter.evaluate("y = x\ny")
 
     assert result == 10
     assert interpreter.env == {"x": 10, "y": 10}
-    assert env == {"x": 10, "y": 10}
+    assert interpreter.globals == {"x": 10, "y": 10}
+    assert globals_dict == {"x": 10, "y": 10}
+
+
+def test_bindings_are_read_only_and_used_for_name_resolution() -> None:
+    interpreter = Interpreter(bindings={"x": 10, "math": math})
+
+    result = interpreter.evaluate("y = x\ny")
+
+    assert result == 10
+    assert interpreter.globals == {"y": 10}
+    assert interpreter.bindings == {"x": 10, "math": math}
+
+    with pytest.raises(NameError, match="Cannot assign to read-only binding: math"):
+        interpreter.evaluate('math = "foo"')
 
 
 def test_print_records_output_and_returns_value() -> None:
@@ -545,13 +559,13 @@ def test_foreign_object_dispatcher_supports_explicit_math_module_access() -> Non
     """Foreign object dispatch."""
     interpreter = Interpreter(
         foreign_interfaces=[_MathForeignInterface()],
-        env={"math": math},
+        bindings={"math": math},
     )
     assert interpreter.evaluate("math.sin(23)") == math.sin(23)
 
 
 def test_foreign_object_dispatcher_errors_without_handler() -> None:
     """Test foreign function dispatcher errors without handler."""
-    interpreter = Interpreter(env={"math": math})
+    interpreter = Interpreter(bindings={"math": math})
     with pytest.raises(TypeError, match="No foreign object handler for module"):
         interpreter.evaluate("math.sin(23)")

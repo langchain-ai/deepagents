@@ -14,6 +14,7 @@ from deepagents_cli.deploy.config import (
     SKILLS_DIRNAME,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
+    AsyncSubAgentConfig,
     DeployConfig,
     SandboxConfig,
     _parse_config,
@@ -51,8 +52,51 @@ class TestAgentConfig:
         with pytest.raises(ValueError, match="non-empty"):
             AgentConfig(name="   ")
 
+    def test_description_default(self) -> None:
+        cfg = AgentConfig(name="my-agent")
+        assert cfg.description == ""
+
+    def test_description_custom(self) -> None:
+        cfg = AgentConfig(name="my-agent", description="A helpful bot")
+        assert cfg.description == "A helpful bot"
+
     def test_frozen(self) -> None:
         cfg = AgentConfig(name="x")
+        with pytest.raises(AttributeError):
+            cfg.name = "y"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# AsyncSubAgentConfig
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncSubAgentConfig:
+    def test_valid_construction(self) -> None:
+        cfg = AsyncSubAgentConfig(
+            name="researcher", description="Does research", graph_id="researcher"
+        )
+        assert cfg.name == "researcher"
+        assert cfg.description == "Does research"
+        assert cfg.graph_id == "researcher"
+        assert cfg.url == ""
+        assert cfg.headers == {}
+
+    def test_with_url_and_headers(self) -> None:
+        cfg = AsyncSubAgentConfig(
+            name="researcher",
+            description="Does research",
+            graph_id="researcher",
+            url="https://example.com",
+            headers={"Authorization": "Bearer tok"},
+        )
+        assert cfg.url == "https://example.com"
+        assert cfg.headers == {"Authorization": "Bearer tok"}
+
+    def test_frozen(self) -> None:
+        cfg = AsyncSubAgentConfig(
+            name="x", description="d", graph_id="g"
+        )
         with pytest.raises(AttributeError):
             cfg.name = "y"  # type: ignore[misc]
 
@@ -171,6 +215,65 @@ class TestParseConfig:
                     "sandbox": {"provider": "none", "typo": "val"},
                 }
             )
+
+    def test_description_parsed(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot", "description": "A bot"}})
+        assert cfg.agent.description == "A bot"
+
+    def test_description_optional(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot"}})
+        assert cfg.agent.description == ""
+
+    def test_async_subagents_parsed(self) -> None:
+        data: dict[str, Any] = {
+            "agent": {"name": "bot"},
+            "async_subagents": [
+                {
+                    "name": "researcher",
+                    "description": "Does research",
+                    "graph_id": "researcher",
+                    "url": "https://example.com",
+                    "headers": {"Authorization": "Bearer tok"},
+                },
+            ],
+        }
+        cfg = _parse_config(data)
+        assert len(cfg.async_subagents) == 1
+        sub = cfg.async_subagents[0]
+        assert sub.name == "researcher"
+        assert sub.description == "Does research"
+        assert sub.graph_id == "researcher"
+        assert sub.url == "https://example.com"
+        assert sub.headers == {"Authorization": "Bearer tok"}
+
+    def test_async_subagents_defaults_empty(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot"}})
+        assert cfg.async_subagents == []
+
+    def test_async_subagents_missing_required_field(self) -> None:
+        data: dict[str, Any] = {
+            "agent": {"name": "bot"},
+            "async_subagents": [
+                {"name": "researcher", "description": "Does research"},
+            ],
+        }
+        with pytest.raises(ValueError, match="graph_id"):
+            _parse_config(data)
+
+    def test_async_subagents_unknown_key(self) -> None:
+        data: dict[str, Any] = {
+            "agent": {"name": "bot"},
+            "async_subagents": [
+                {
+                    "name": "researcher",
+                    "description": "Does research",
+                    "graph_id": "researcher",
+                    "bogus": "value",
+                },
+            ],
+        }
+        with pytest.raises(ValueError, match="Unknown key"):
+            _parse_config(data)
 
     def test_defaults_come_from_dataclass(self) -> None:
         """Ensure _parse_config without optional keys uses dataclass defaults."""

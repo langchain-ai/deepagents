@@ -50,12 +50,24 @@ class AgentConfig:
     """`[agent]` section — core agent identity."""
 
     name: str
+    description: str = ""
     model: str = "anthropic:claude-sonnet-4-6"
 
     def __post_init__(self) -> None:  # noqa: D105 — simple guard, not a public API
         if not self.name.strip():
             msg = "AgentConfig.name must be non-empty"
             raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class AsyncSubAgentConfig:
+    """A reference to an async sub-agent declared in `[[async_subagents]]`."""
+
+    name: str
+    description: str
+    graph_id: str
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,6 +98,7 @@ class DeployConfig:
 
     agent: AgentConfig
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    async_subagents: list[AsyncSubAgentConfig] = field(default_factory=list)
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -186,8 +199,9 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
-_ALLOWED_AGENT_KEYS = frozenset({"name", "model"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "async_subagents"})
+_ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
+_ALLOWED_ASYNC_SUBAGENT_KEYS = frozenset({"name", "description", "graph_id", "url", "headers"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 
 
@@ -219,6 +233,8 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
     # Only pass keys present in TOML; dataclass defaults handle the rest.
     agent_kwargs: dict[str, Any] = {"name": agent_data["name"]}
+    if "description" in agent_data:
+        agent_kwargs["description"] = agent_data["description"]
     if "model" in agent_data:
         agent_kwargs["model"] = agent_data["model"]
     agent = AgentConfig(**agent_kwargs)
@@ -237,7 +253,37 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     }
     sandbox = SandboxConfig(**sandbox_kwargs)
 
-    return DeployConfig(agent=agent, sandbox=sandbox)
+    # Parse [[async_subagents]] entries.
+    raw_subagents = data.get("async_subagents", [])
+    async_subagents: list[AsyncSubAgentConfig] = []
+    for i, entry in enumerate(raw_subagents):
+        unknown_sub = set(entry.keys()) - _ALLOWED_ASYNC_SUBAGENT_KEYS
+        if unknown_sub:
+            msg = (
+                f"Unknown key(s) in [[async_subagents]][{i}]: {sorted(unknown_sub)}. "
+                f"Allowed: {sorted(_ALLOWED_ASYNC_SUBAGENT_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        missing = {"name", "description", "graph_id"} - set(entry.keys())
+        if missing:
+            msg = (
+                f"Missing required field(s) in [[async_subagents]][{i}]: "
+                f"{sorted(missing)}"
+            )
+            raise ValueError(msg)
+
+        async_subagents.append(
+            AsyncSubAgentConfig(
+                name=entry["name"],
+                description=entry["description"],
+                graph_id=entry["graph_id"],
+                url=entry.get("url", ""),
+                headers=entry.get("headers", {}),
+            )
+        )
+
+    return DeployConfig(agent=agent, sandbox=sandbox, async_subagents=async_subagents)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {

@@ -29,115 +29,6 @@ class Token:
     column: int
 
 
-class Statement:
-    """Base class for parsed statements."""
-
-
-class Expression:
-    """Base class for parsed expressions."""
-
-
-@dataclass(frozen=True)
-class Program:
-    """A parsed REPL program."""
-
-    statements: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class Assign(Statement):
-    """An assignment statement."""
-
-    name: str
-    value: Expression
-
-
-@dataclass(frozen=True)
-class IfStatement(Statement):
-    """A conditional statement."""
-
-    condition: Expression
-    then_body: tuple[Statement, ...]
-    else_body: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class ForStatement(Statement):
-    """A for-loop statement."""
-
-    name: str
-    iterable: Expression
-    body: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class ExpressionStatement(Statement):
-    """A statement that evaluates an expression."""
-
-    expression: Expression
-
-
-@dataclass(frozen=True)
-class Name(Expression):
-    """A name reference expression."""
-
-    value: str
-
-
-@dataclass(frozen=True)
-class Literal(Expression):
-    """A literal value expression."""
-
-    value: Any
-
-
-@dataclass(frozen=True)
-class ListLiteral(Expression):
-    """A list literal expression."""
-
-    items: tuple[Expression, ...]
-
-
-@dataclass(frozen=True)
-class DictLiteral(Expression):
-    """A dict literal expression."""
-
-    items: tuple[tuple[str, Expression], ...]
-
-
-@dataclass(frozen=True)
-class BinaryOperation(Expression):
-    """A binary operation expression."""
-
-    left: Expression
-    operator: str
-    right: Expression
-
-
-@dataclass(frozen=True)
-class Attribute(Expression):
-    """An attribute access expression."""
-
-    target: Expression
-    name: str
-
-
-@dataclass(frozen=True)
-class Call(Expression):
-    """A function or callable invocation expression."""
-
-    target: Expression
-    args: tuple[Expression, ...]
-
-
-@dataclass(frozen=True)
-class Index(Expression):
-    """An indexing expression."""
-
-    target: Expression
-    index: Expression
-
-
 class ParseError(ValueError):
     """Raised when REPL source cannot be parsed."""
 
@@ -660,13 +551,13 @@ class Interpreter:
     def printed_lines(self) -> list[str]:
         return list(self._printed_lines)
 
-    def parse(self, source: str) -> tuple[Instruction, ...]:
+    def compile(self, source: str) -> tuple[Instruction, ...]:
         return self._compiler(_Tokenizer(source).tokenize()).compile()
 
     def evaluate(
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        instructions = self.parse(source)
+        instructions = self.compile(source)
         state = self._new_state(instructions, self._env)
         value = self._run_vm_sync(state, print_callback=print_callback)
         self._env = state.env
@@ -675,7 +566,7 @@ class Interpreter:
     async def aevaluate(
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        instructions = self.parse(source)
+        instructions = self.compile(source)
         state = self._new_state(instructions, self._env)
         value = await self._run_vm_async(state, print_callback=print_callback)
         self._env = state.env

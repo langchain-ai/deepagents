@@ -420,17 +420,17 @@ def test_function_call_accepts_no_arguments() -> None:
     assert interpreter.evaluate("greet()") == "hello"
 
 
-def test_parse_method_returns_instruction_sequence() -> None:
+def test_compile_method_returns_instruction_sequence() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter.parse("x = 1\nx")
+    instructions = interpreter.compile("x = 1\nx")
     assert len(instructions) == 6
 
 
 def test_compiler_emits_load_store_and_return_opcodes() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter.parse("x = 1\nx")
+    instructions = interpreter.compile("x = 1\nx")
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -445,7 +445,7 @@ def test_compiler_emits_load_store_and_return_opcodes() -> None:
 def test_compiler_emits_jump_opcodes_for_if_else() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter.parse('if True then\n    "yes"\nelse\n    "no"\nend')
+    instructions = interpreter.compile('if True then\n    "yes"\nelse\n    "no"\nend')
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -462,7 +462,7 @@ def test_compiler_emits_jump_opcodes_for_if_else() -> None:
 def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter.parse("for item in [1, 2] do\n    item\nend")
+    instructions = interpreter.compile("for item in [1, 2] do\n    item\nend")
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -480,7 +480,7 @@ def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
 def test_compiler_emits_call_getattr_getindex_and_build_dict_opcodes() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter.parse('math.sin({"items": [10, 20]}["items"][0])')
+    instructions = interpreter.compile('math.sin({"items": [10, 20]}["items"][0])')
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_NAME,

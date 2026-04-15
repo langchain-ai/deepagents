@@ -14,7 +14,7 @@ from langchain_core.tools.base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+    from collections.abc import Callable, Mapping, MutableMapping, Sequence
 
     from langchain.tools import ToolRuntime
 
@@ -363,163 +363,241 @@ class _Tokenizer:
         return Token(kind, text, line, column)
 
 
-class _Parser:
+class OpCode(str, Enum):
+    LOAD_CONST = "LOAD_CONST"
+    LOAD_NAME = "LOAD_NAME"
+    STORE_NAME = "STORE_NAME"
+    SET_LAST = "SET_LAST"
+    BUILD_LIST = "BUILD_LIST"
+    BUILD_DICT = "BUILD_DICT"
+    BINARY_OP = "BINARY_OP"
+    GET_INDEX = "GET_INDEX"
+    GET_ATTR = "GET_ATTR"
+    CALL = "CALL"
+    JUMP = "JUMP"
+    JUMP_IF_FALSE = "JUMP_IF_FALSE"
+    ITER_PREP = "ITER_PREP"
+    ITER_NEXT = "ITER_NEXT"
+    RETURN_VALUE = "RETURN_VALUE"
+
+
+@dataclass(frozen=True)
+class Instruction:
+    opcode: OpCode
+    arg: Any = None
+
+
+@dataclass
+class ForLoopState:
+    target_name: str
+    items: list[Any]
+    index: int = 0
+
+
+@dataclass
+class VMState:
+    instructions: tuple[Instruction, ...]
+    env: MutableMapping[str, Any]
+    pc: int = 0
+    stack: list[Any] = field(default_factory=list)
+    last_value: Any = None
+    loop_stack: list[ForLoopState] = field(default_factory=list)
+
+
+class _ProgramCompiler:
     def __init__(self, tokens: list[Token]) -> None:
         self._tokens = tokens
         self._index = 0
+        self._instructions: list[Instruction] = []
 
-    def parse(self) -> Program:
-        statements = self._parse_block(stop_kinds={"EOF"})
+    def compile(self) -> tuple[Instruction, ...]:
+        self._compile_block(stop_kinds={"EOF"})
         self._expect("EOF")
-        return Program(tuple(statements))
+        self._emit(OpCode.RETURN_VALUE)
+        return tuple(self._instructions)
 
-    def _parse_block(self, *, stop_kinds: set[str]) -> list[Statement]:
-        statements: list[Statement] = []
+    def _compile_block(self, *, stop_kinds: set[str]) -> None:
         self._skip_newlines()
         while self._current().kind not in stop_kinds:
-            statements.append(self._parse_statement())
+            self._compile_statement()
             self._skip_newlines()
-        return statements
 
-    def _parse_statement(self) -> Statement:
+    def _compile_statement(self) -> None:
         token = self._current()
         if token.kind == "IF":
-            return self._parse_if()
+            self._compile_if()
+            return
         if token.kind == "FOR":
-            return self._parse_for()
+            self._compile_for()
+            return
         if token.kind == "NAME" and self._peek().kind == "=":
-            name = self._advance().value
+            name = str(self._advance().value)
             self._expect("=")
-            return Assign(name=name, value=self._parse_expression())
-        return ExpressionStatement(self._parse_expression())
+            self._compile_expression()
+            self._emit(OpCode.STORE_NAME, name)
+            self._emit(OpCode.SET_LAST)
+            return
+        self._compile_expression()
+        self._emit(OpCode.SET_LAST)
 
-    def _parse_if(self) -> IfStatement:
+    def _compile_if(self) -> None:
         self._expect("IF")
-        condition = self._parse_expression()
+        self._compile_expression()
+        jump_if_false_index = self._emit(OpCode.JUMP_IF_FALSE, None)
         self._expect("THEN")
         self._consume_statement_separator()
-        then_body = tuple(self._parse_block(stop_kinds={"ELSE", "END"}))
-        else_body: tuple[Statement, ...] = ()
+        self._compile_block(stop_kinds={"ELSE", "END"})
+        jump_end_index = self._emit(OpCode.JUMP, None)
+        else_start = len(self._instructions)
         if self._match("ELSE"):
             self._consume_statement_separator()
-            else_body = tuple(self._parse_block(stop_kinds={"END"}))
+            self._compile_block(stop_kinds={"END"})
+        end_index = len(self._instructions)
+        self._patch(jump_if_false_index, else_start)
+        self._patch(jump_end_index, end_index)
         self._expect("END")
-        return IfStatement(
-            condition=condition, then_body=then_body, else_body=else_body
-        )
 
-    def _parse_for(self) -> ForStatement:
+    def _compile_for(self) -> None:
         self._expect("FOR")
-        name = self._expect("NAME").value
+        name = str(self._expect("NAME").value)
         self._expect("IN")
-        iterable = self._parse_expression()
+        self._compile_expression()
+        self._emit(OpCode.ITER_PREP, name)
         self._expect("DO")
         self._consume_statement_separator()
-        body = tuple(self._parse_block(stop_kinds={"END"}))
+        loop_start = len(self._instructions)
+        iter_next_index = self._emit(OpCode.ITER_NEXT, None)
+        self._compile_block(stop_kinds={"END"})
+        self._emit(OpCode.JUMP, loop_start)
+        self._patch(iter_next_index, len(self._instructions))
         self._expect("END")
-        return ForStatement(name=name, iterable=iterable, body=body)
 
-    def _parse_expression(self) -> Expression:
-        expr = self._parse_postfix()
+    def _compile_expression(self) -> None:
+        self._compile_postfix()
         while True:
             if self._match("+"):
-                expr = BinaryOperation(
-                    left=expr, operator="+", right=self._parse_postfix()
-                )
+                self._compile_postfix()
+                self._emit(OpCode.BINARY_OP, "+")
                 continue
             if self._match("-"):
-                expr = BinaryOperation(
-                    left=expr, operator="-", right=self._parse_postfix()
-                )
+                self._compile_postfix()
+                self._emit(OpCode.BINARY_OP, "-")
                 continue
             break
-        return expr
 
-    def _parse_postfix(self) -> Expression:
-        expr = self._parse_primary()
+    def _compile_postfix(self) -> None:
+        self._compile_primary()
         while True:
             if self._match("["):
-                index = self._parse_expression()
+                self._compile_expression()
                 self._expect("]")
-                expr = Index(target=expr, index=index)
+                self._emit(OpCode.GET_INDEX)
                 continue
             if self._match("."):
-                expr = Attribute(target=expr, name=self._expect("NAME").value)
+                self._emit(OpCode.GET_ATTR, str(self._expect("NAME").value))
                 continue
             if self._match("("):
-                expr = Call(target=expr, args=tuple(self._parse_arguments()))
+                arg_count = self._compile_arguments()
+                self._emit(OpCode.CALL, arg_count)
                 continue
             break
-        return expr
 
-    def _parse_primary(self) -> Expression:  # noqa: PLR0911
+    def _compile_primary(self) -> None:  # noqa: PLR0911
         token = self._current()
         if token.kind == "NAME":
-            return Name(self._advance().value)
+            value = str(self._advance().value)
+            if value == "print":
+                self._emit(OpCode.LOAD_CONST, _PRINT_SENTINEL)
+            elif value == "parallel":
+                self._emit(OpCode.LOAD_CONST, _PARALLEL_SENTINEL)
+            else:
+                self._emit(OpCode.LOAD_NAME, value)
+            return
         if token.kind == "NUMBER":
-            return Literal(self._advance().value)
+            self._emit(OpCode.LOAD_CONST, self._advance().value)
+            return
         if token.kind == "STRING":
-            return Literal(self._advance().value)
+            self._emit(OpCode.LOAD_CONST, self._advance().value)
+            return
         if token.kind == "TRUE":
             self._advance()
-            return Literal(True)
+            self._emit(OpCode.LOAD_CONST, True)
+            return
         if token.kind == "FALSE":
             self._advance()
-            return Literal(False)
+            self._emit(OpCode.LOAD_CONST, False)
+            return
         if token.kind == "NONE":
             self._advance()
-            return Literal(None)
+            self._emit(OpCode.LOAD_CONST, None)
+            return
         if token.kind == "[":
-            return self._parse_list()
+            self._compile_list()
+            return
         if token.kind == "{":
-            return self._parse_dict()
+            self._compile_dict()
+            return
         if token.kind == "(":
             self._advance()
-            expr = self._parse_expression()
+            self._compile_expression()
             self._expect(")")
-            return expr
+            return
         msg = (
             f"Unexpected token {token.kind} at line {token.line}, column {token.column}"
         )
         raise ParseError(msg)
 
-    def _parse_arguments(self) -> list[Expression]:
-        args: list[Expression] = []
+    def _compile_arguments(self) -> int:
+        count = 0
         self._skip_newlines()
         if self._match(")"):
-            return args
+            return count
         while True:
-            args.append(self._parse_expression())
+            self._compile_expression()
+            count += 1
             self._skip_newlines()
             if self._match(")"):
-                return args
+                return count
             self._expect(",")
             self._skip_newlines()
 
-    def _parse_list(self) -> ListLiteral:
+    def _compile_list(self) -> None:
         self._expect("[")
-        items: list[Expression] = []
+        count = 0
         if self._match("]"):
-            return ListLiteral(tuple(items))
+            self._emit(OpCode.BUILD_LIST, 0)
+            return
         while True:
-            items.append(self._parse_expression())
+            self._compile_expression()
+            count += 1
             if self._match("]"):
-                return ListLiteral(tuple(items))
+                self._emit(OpCode.BUILD_LIST, count)
+                return
             self._expect(",")
 
-    def _parse_dict(self) -> DictLiteral:
+    def _compile_dict(self) -> None:
         self._expect("{")
-        items: list[tuple[str, Expression]] = []
+        count = 0
         if self._match("}"):
-            return DictLiteral(tuple(items))
+            self._emit(OpCode.BUILD_DICT, 0)
+            return
         while True:
             key = self._expect("STRING").value
+            self._emit(OpCode.LOAD_CONST, key)
             self._expect(":")
-            value = self._parse_expression()
-            items.append((key, value))
+            self._compile_expression()
+            count += 1
             if self._match("}"):
-                return DictLiteral(tuple(items))
+                self._emit(OpCode.BUILD_DICT, count)
+                return
             self._expect(",")
+
+    def _emit(self, opcode: OpCode, arg: Any = None) -> int:
+        self._instructions.append(Instruction(opcode, arg))
+        return len(self._instructions) - 1
+
+    def _patch(self, index: int, arg: Any) -> None:
+        self._instructions[index] = Instruction(self._instructions[index].opcode, arg)
 
     def _consume_statement_separator(self) -> None:
         if self._match("NEWLINE"):
@@ -556,157 +634,6 @@ class _Parser:
         return True
 
 
-class OpCode(str, Enum):
-    LOAD_CONST = "LOAD_CONST"
-    LOAD_NAME = "LOAD_NAME"
-    STORE_NAME = "STORE_NAME"
-    SET_LAST = "SET_LAST"
-    BUILD_LIST = "BUILD_LIST"
-    BUILD_DICT = "BUILD_DICT"
-    BINARY_OP = "BINARY_OP"
-    GET_INDEX = "GET_INDEX"
-    GET_ATTR = "GET_ATTR"
-    CALL = "CALL"
-    TRY_CALL = "TRY_CALL"
-    JUMP = "JUMP"
-    JUMP_IF_FALSE = "JUMP_IF_FALSE"
-    ITER_PREP = "ITER_PREP"
-    ITER_NEXT = "ITER_NEXT"
-    RETURN_VALUE = "RETURN_VALUE"
-
-
-@dataclass(frozen=True)
-class Instruction:
-    opcode: OpCode
-    arg: Any = None
-
-
-@dataclass
-class ForLoopState:
-    target_name: str
-    items: list[Any]
-    index: int = 0
-
-
-@dataclass
-class VMState:
-    instructions: tuple[Instruction, ...]
-    env: MutableMapping[str, Any]
-    pc: int = 0
-    stack: list[Any] = field(default_factory=list)
-    last_value: Any = None
-    loop_stack: list[ForLoopState] = field(default_factory=list)
-
-
-class _Compiler:
-    def compile_program(self, program: Program) -> tuple[Instruction, ...]:
-        instructions: list[Instruction] = []
-        for statement in program.statements:
-            self._compile_statement(statement, instructions)
-        instructions.append(Instruction(OpCode.RETURN_VALUE))
-        return tuple(instructions)
-
-    def _compile_block(
-        self, statements: Iterable[Statement], instructions: list[Instruction]
-    ) -> None:
-        for statement in statements:
-            self._compile_statement(statement, instructions)
-
-    def _compile_statement(
-        self, statement: Statement, instructions: list[Instruction]
-    ) -> None:
-        if isinstance(statement, Assign):
-            self._compile_expression(statement.value, instructions)
-            instructions.append(Instruction(OpCode.STORE_NAME, statement.name))
-            instructions.append(Instruction(OpCode.SET_LAST))
-            return
-        if isinstance(statement, ExpressionStatement):
-            self._compile_expression(statement.expression, instructions)
-            instructions.append(Instruction(OpCode.SET_LAST))
-            return
-        if isinstance(statement, IfStatement):
-            self._compile_expression(statement.condition, instructions)
-            jump_if_false_index = len(instructions)
-            instructions.append(Instruction(OpCode.JUMP_IF_FALSE, None))
-            self._compile_block(statement.then_body, instructions)
-            jump_end_index = len(instructions)
-            instructions.append(Instruction(OpCode.JUMP, None))
-            else_start = len(instructions)
-            self._compile_block(statement.else_body, instructions)
-            end_index = len(instructions)
-            instructions[jump_if_false_index] = Instruction(
-                OpCode.JUMP_IF_FALSE, else_start
-            )
-            instructions[jump_end_index] = Instruction(OpCode.JUMP, end_index)
-            return
-        if isinstance(statement, ForStatement):
-            self._compile_expression(statement.iterable, instructions)
-            instructions.append(Instruction(OpCode.ITER_PREP, statement.name))
-            loop_start = len(instructions)
-            iter_next_index = len(instructions)
-            instructions.append(Instruction(OpCode.ITER_NEXT, None))
-            self._compile_block(statement.body, instructions)
-            instructions.append(Instruction(OpCode.JUMP, loop_start))
-            loop_end = len(instructions)
-            instructions[iter_next_index] = Instruction(OpCode.ITER_NEXT, loop_end)
-            return
-        msg = f"Unsupported statement: {type(statement).__name__}"
-        raise ValueError(msg)
-
-    def _compile_expression(
-        self, expression: Expression, instructions: list[Instruction]
-    ) -> None:
-        if isinstance(expression, Literal):
-            instructions.append(Instruction(OpCode.LOAD_CONST, expression.value))
-            return
-        if isinstance(expression, Name):
-            if expression.value == "print":
-                instructions.append(Instruction(OpCode.LOAD_CONST, _PRINT_SENTINEL))
-            elif expression.value == "parallel":
-                instructions.append(Instruction(OpCode.LOAD_CONST, _PARALLEL_SENTINEL))
-            elif expression.value == "try":
-                instructions.append(Instruction(OpCode.LOAD_CONST, _TRY_SENTINEL))
-            else:
-                instructions.append(Instruction(OpCode.LOAD_NAME, expression.value))
-            return
-        if isinstance(expression, ListLiteral):
-            for item in expression.items:
-                self._compile_expression(item, instructions)
-            instructions.append(Instruction(OpCode.BUILD_LIST, len(expression.items)))
-            return
-        if isinstance(expression, DictLiteral):
-            for key, value in expression.items:
-                instructions.append(Instruction(OpCode.LOAD_CONST, key))
-                self._compile_expression(value, instructions)
-            instructions.append(Instruction(OpCode.BUILD_DICT, len(expression.items)))
-            return
-        if isinstance(expression, BinaryOperation):
-            self._compile_expression(expression.left, instructions)
-            self._compile_expression(expression.right, instructions)
-            instructions.append(Instruction(OpCode.BINARY_OP, expression.operator))
-            return
-        if isinstance(expression, Index):
-            self._compile_expression(expression.target, instructions)
-            self._compile_expression(expression.index, instructions)
-            instructions.append(Instruction(OpCode.GET_INDEX))
-            return
-        if isinstance(expression, Attribute):
-            self._compile_expression(expression.target, instructions)
-            instructions.append(Instruction(OpCode.GET_ATTR, expression.name))
-            return
-        if isinstance(expression, Call):
-            if isinstance(expression.target, Name) and expression.target.value == "try":
-                instructions.append(Instruction(OpCode.TRY_CALL, expression))
-                return
-            self._compile_expression(expression.target, instructions)
-            for arg in expression.args:
-                self._compile_expression(arg, instructions)
-            instructions.append(Instruction(OpCode.CALL, len(expression.args)))
-            return
-        msg = f"Unsupported expression: {type(expression).__name__}"
-        raise ValueError(msg)
-
-
 class Interpreter:
     def __init__(
         self,
@@ -723,7 +650,7 @@ class Interpreter:
         self._printed_lines: list[str] = []
         self._max_workers = max_workers
         self._runtime = runtime
-        self._compiler = _Compiler()
+        self._compiler = _ProgramCompiler
 
     @property
     def env(self) -> dict[str, Any]:
@@ -733,45 +660,31 @@ class Interpreter:
     def printed_lines(self) -> list[str]:
         return list(self._printed_lines)
 
-    def parse(self, source: str) -> Program:
-        return _Parser(_Tokenizer(source).tokenize()).parse()
+    def parse(self, source: str) -> tuple[Instruction, ...]:
+        return self._compiler(_Tokenizer(source).tokenize()).compile()
 
     def evaluate(
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        return self.evaluate_program(self.parse(source), print_callback=print_callback)
-
-    async def aevaluate(
-        self, source: str, *, print_callback: Callable[[str], None] | None = None
-    ) -> Any:
-        return await self.aevaluate_program(
-            self.parse(source), print_callback=print_callback
-        )
-
-    def evaluate_program(
-        self,
-        program: Program,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        state = self._new_state(program, self._env)
+        instructions = self.parse(source)
+        state = self._new_state(instructions, self._env)
         value = self._run_vm_sync(state, print_callback=print_callback)
         self._env = state.env
         return value
 
-    async def aevaluate_program(
-        self,
-        program: Program,
-        *,
-        print_callback: Callable[[str], None] | None = None,
+    async def aevaluate(
+        self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
-        state = self._new_state(program, self._env)
+        instructions = self.parse(source)
+        state = self._new_state(instructions, self._env)
         value = await self._run_vm_async(state, print_callback=print_callback)
         self._env = state.env
         return value
 
-    def _new_state(self, program: Program, env: MutableMapping[str, Any]) -> VMState:
-        return VMState(instructions=self._compiler.compile_program(program), env=env)
+    def _new_state(
+        self, instructions: tuple[Instruction, ...], env: MutableMapping[str, Any]
+    ) -> VMState:
+        return VMState(instructions=instructions, env=env)
 
     def _run_vm_sync(
         self, state: VMState, *, print_callback: Callable[[str], None] | None = None
@@ -860,11 +773,6 @@ class Interpreter:
                 self._call_sync(target, args, print_callback=print_callback)
             )
             return _NO_RESULT
-        if instruction.opcode is OpCode.TRY_CALL:
-            state.stack.append(
-                self._eval_try_call_sync(instruction.arg, print_callback=print_callback)
-            )
-            return _NO_RESULT
         if instruction.opcode is OpCode.JUMP:
             state.pc = int(instruction.arg)
             return _NO_RESULT
@@ -902,13 +810,6 @@ class Interpreter:
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        if instruction.opcode is OpCode.TRY_CALL:
-            state.stack.append(
-                await self._eval_try_call_async(
-                    instruction.arg, print_callback=print_callback
-                )
-            )
-            return _NO_RESULT
         if instruction.opcode is not OpCode.CALL:
             return self._step_sync(state, instruction, print_callback=print_callback)
         arg_count = int(instruction.arg)
@@ -940,8 +841,6 @@ class Interpreter:
             return self._eval_print(args, print_callback=print_callback)
         if target is _PARALLEL_SENTINEL:
             return self._eval_parallel_sync(args)
-        if target is _TRY_SENTINEL:
-            return self._eval_try(args)
         if isinstance(target, BaseTool):
             return target.invoke(
                 _build_tool_payload(target, args, runtime=self._runtime)
@@ -965,8 +864,6 @@ class Interpreter:
             return self._eval_print(args, print_callback=print_callback)
         if target is _PARALLEL_SENTINEL:
             return await self._eval_parallel_async(args)
-        if target is _TRY_SENTINEL:
-            return self._eval_try(args)
         if isinstance(target, BaseTool):
             payload = _build_tool_payload(target, args, runtime=self._runtime)
             if getattr(target, "coroutine", None) is not None:
@@ -1000,52 +897,6 @@ class Interpreter:
 
     async def _eval_parallel_async(self, args: tuple[Any, ...]) -> list[Any]:
         return list(args)
-
-    def _eval_try(self, args: tuple[Any, ...]) -> Any:
-        if len(args) != 2:
-            msg = "try expects exactly two arguments"
-            raise ValueError(msg)
-        return args[0]
-
-    def _eval_try_call_sync(
-        self,
-        expression: Call,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(expression.args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
-            msg = "try expects exactly two arguments"
-            raise ValueError(msg)
-        try:
-            return self.evaluate_program(
-                Program((ExpressionStatement(expression.args[0]),)),
-                print_callback=print_callback,
-            )
-        except Exception:  # noqa: BLE001
-            return self.evaluate_program(
-                Program((ExpressionStatement(expression.args[1]),)),
-                print_callback=print_callback,
-            )
-
-    async def _eval_try_call_async(
-        self,
-        expression: Call,
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(expression.args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
-            msg = "try expects exactly two arguments"
-            raise ValueError(msg)
-        try:
-            return await self.aevaluate_program(
-                Program((ExpressionStatement(expression.args[0]),)),
-                print_callback=print_callback,
-            )
-        except Exception:  # noqa: BLE001
-            return await self.aevaluate_program(
-                Program((ExpressionStatement(expression.args[1]),)),
-                print_callback=print_callback,
-            )
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
         if isinstance(left, bool) or isinstance(right, bool):
@@ -1105,8 +956,7 @@ class Interpreter:
 
 _PRINT_SENTINEL = object()
 _PARALLEL_SENTINEL = object()
-_TRY_SENTINEL = object()
 _NO_RESULT = object()
 
 
-__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "Program"]
+__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError"]

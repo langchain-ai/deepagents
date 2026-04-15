@@ -35,7 +35,7 @@ CRITICAL: The REPL does NOT retain state between calls. Each `repl` invocation i
 Do NOT assume variables, functions, or helper values from prior `repl` calls are available.
 
 Capabilities and limitations:
-- The language supports assignment, `if ... then ... else ... end`, `for ... in ... do ... end`, indexing, function calls, `parallel(...)`, and `try(...)`.
+- The language supports assignment, `if ... then ... else ... end`, `for ... in ... do ... end`, indexing, function calls, and `parallel(...)`.
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
 - Values include strings, `None`, `True`, `False`, integers, floats, lists, and dicts.
@@ -59,7 +59,6 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
 - Use `parallel(expr1, expr2)` only for independent expressions that can run concurrently.
-- Use `try(expr, fallback)` when a failed lookup or function call should fall back to another value.
 - The REPL can only use the language features above and the foreign functions listed below.
 - If the task needs multiple foreign function calls, prefer writing one complete REPL program instead of splitting the work across multiple `repl` invocations.
 - If one foreign function returns an ID or other value that can be passed directly into the next foreign function, trust it and chain the calls instead of stopping to double-check it.

@@ -225,9 +225,9 @@ def test_print_requires_exactly_one_argument() -> None:
 def test_parallel_expressions_use_isolated_variable_snapshots() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
-    result = interpreter.evaluate("x = 10\nparallel(try(x[0], 20), x, echo(x))")
+    result = interpreter.evaluate("x = 10\nparallel(x, echo(x), [x, x + 1])")
 
-    assert result == [20, 10, 10]
+    assert result == [10, 10, [10, 11]]
     assert interpreter.env == {"x": 10}
 
 
@@ -326,14 +326,6 @@ def test_for_loop_requires_list_iterable() -> None:
         interpreter.evaluate('for item in {"a": 1} do\nprint(item)\nend')
 
 
-def test_try_returns_fallback_on_error() -> None:
-    interpreter = Interpreter(
-        functions={"fail": lambda: (_ for _ in ()).throw(RuntimeError("boom"))}
-    )
-
-    assert interpreter.evaluate('try(fail(), "fallback")') == "fallback"
-
-
 def test_comments_and_blank_lines_are_ignored() -> None:
     interpreter = Interpreter()
 
@@ -418,20 +410,6 @@ def test_for_loop_over_empty_list_returns_none() -> None:
     assert interpreter.env == {}
 
 
-def test_try_only_catches_primary_expression_errors() -> None:
-    interpreter = Interpreter(
-        functions={"fail": lambda: (_ for _ in ()).throw(RuntimeError("boom"))}
-    )
-
-    with pytest.raises(NameError, match="Unknown name: missing"):
-        interpreter.evaluate("try(fail(), missing)")
-
-
-def test_try_returns_primary_value_when_no_error_occurs() -> None:
-    interpreter = Interpreter()
-    assert interpreter.evaluate('try("value", "fallback")') == "value"
-
-
 def test_parallel_accepts_no_arguments() -> None:
     interpreter = Interpreter()
     assert interpreter.evaluate("parallel()") == []
@@ -442,17 +420,17 @@ def test_function_call_accepts_no_arguments() -> None:
     assert interpreter.evaluate("greet()") == "hello"
 
 
-def test_parse_method_returns_program_object() -> None:
+def test_parse_method_returns_instruction_sequence() -> None:
     interpreter = Interpreter()
 
-    program = interpreter.parse("x = 1\nx")
-    assert len(program.statements) == 2
+    instructions = interpreter.parse("x = 1\nx")
+    assert len(instructions) == 6
 
 
 def test_compiler_emits_load_store_and_return_opcodes() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter._compiler.compile_program(interpreter.parse("x = 1\nx"))
+    instructions = interpreter.parse("x = 1\nx")
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -467,9 +445,7 @@ def test_compiler_emits_load_store_and_return_opcodes() -> None:
 def test_compiler_emits_jump_opcodes_for_if_else() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter._compiler.compile_program(
-        interpreter.parse('if True then\n    "yes"\nelse\n    "no"\nend')
-    )
+    instructions = interpreter.parse('if True then\n    "yes"\nelse\n    "no"\nend')
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -486,9 +462,7 @@ def test_compiler_emits_jump_opcodes_for_if_else() -> None:
 def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter._compiler.compile_program(
-        interpreter.parse("for item in [1, 2] do\n    item\nend")
-    )
+    instructions = interpreter.parse("for item in [1, 2] do\n    item\nend")
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_CONST,
@@ -503,26 +477,10 @@ def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
     ]
 
 
-def test_compiler_emits_try_call_opcode() -> None:
-    interpreter = Interpreter()
-
-    instructions = interpreter._compiler.compile_program(
-        interpreter.parse('try(fail(), "fallback")')
-    )
-
-    assert [instruction.opcode for instruction in instructions] == [
-        OpCode.TRY_CALL,
-        OpCode.SET_LAST,
-        OpCode.RETURN_VALUE,
-    ]
-
-
 def test_compiler_emits_call_getattr_getindex_and_build_dict_opcodes() -> None:
     interpreter = Interpreter()
 
-    instructions = interpreter._compiler.compile_program(
-        interpreter.parse('math.sin({"items": [10, 20]}["items"][0])')
-    )
+    instructions = interpreter.parse('math.sin({"items": [10, 20]}["items"][0])')
 
     assert [instruction.opcode for instruction in instructions] == [
         OpCode.LOAD_NAME,

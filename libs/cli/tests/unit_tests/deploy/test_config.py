@@ -396,3 +396,9 @@ class TestCrossModuleConsistency:
         from deepagents_cli.deploy.templates import SANDBOX_BLOCKS
 
         assert frozenset(SANDBOX_BLOCKS.keys()) == VALID_SANDBOX_PROVIDERS
+
+    def test_auth_blocks_matches_valid_providers(self) -> None:
+        """AUTH_BLOCKS keys in templates.py must match VALID_AUTH_PROVIDERS."""
+        from deepagents_cli.deploy.templates import AUTH_BLOCKS
+
+        assert frozenset(AUTH_BLOCKS.keys()) == VALID_AUTH_PROVIDERS

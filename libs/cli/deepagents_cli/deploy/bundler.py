@@ -39,10 +39,12 @@ from deepagents_cli.deploy.config import (
     load_subagents,
 )
 from deepagents_cli.deploy.templates import (
+    ASYNC_SUBAGENTS_TEMPLATE,
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
     SANDBOX_BLOCKS,
+    SYNC_SUBAGENTS_TEMPLATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,26 +109,32 @@ def bundle(
         shutil.copy2(env_src, build_dir / ".env")
         logger.info("Copied %s → .env", env_src)
 
-    # 4. Render deploy_graph.py.
+    # 4. Load subagents (needed for both deploy_graph.py and pyproject.toml).
+    sync_subagents = load_subagents(project_root)
+
+    # 5. Render deploy_graph.py.
     has_user_memories = (project_root / USER_DIRNAME).is_dir()
+    has_sync_subagents = bool(sync_subagents)
+    has_async_subagents = bool(config.async_subagents)
     (build_dir / "deploy_graph.py").write_text(
         _render_deploy_graph(
             config,
             mcp_present=mcp_present,
             has_user_memories=has_user_memories,
+            has_sync_subagents=has_sync_subagents,
+            has_async_subagents=has_async_subagents,
         ),
         encoding="utf-8",
     )
     logger.info("Generated deploy_graph.py")
 
-    # 5. Render langgraph.json.
+    # 6. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
         _render_langgraph_json(env_present=env_present),
         encoding="utf-8",
     )
 
-    # 6. Render pyproject.toml.
-    sync_subagents = load_subagents(project_root)
+    # 7. Render pyproject.toml.
     subagent_model_providers: list[str] = []
     has_subagent_mcp = False
     for sa in sync_subagents.values():
@@ -260,6 +268,8 @@ def _render_deploy_graph(
     *,
     mcp_present: bool,
     has_user_memories: bool = False,
+    has_sync_subagents: bool = False,
+    has_async_subagents: bool = False,
 ) -> str:
     """Render the generated `deploy_graph.py`."""
     provider = config.sandbox.provider
@@ -275,6 +285,24 @@ def _render_deploy_graph(
         mcp_tools_block = ""
         mcp_tools_load_call = "pass  # no MCP servers configured"
 
+    if has_sync_subagents:
+        sync_subagents_block = SYNC_SUBAGENTS_TEMPLATE
+        sync_subagents_load_call = (
+            "all_subagents.extend(await _build_sync_subagents(seed, store, assistant_id))"
+        )
+    else:
+        sync_subagents_block = ""
+        sync_subagents_load_call = "pass  # no sync subagents"
+
+    if has_async_subagents:
+        async_subagents_block = ASYNC_SUBAGENTS_TEMPLATE
+        async_subagents_load_call = (
+            "all_subagents.extend(_build_async_subagents(seed))"
+        )
+    else:
+        async_subagents_block = ""
+        async_subagents_load_call = "pass  # no async subagents"
+
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
         sandbox_template=config.sandbox.template,
@@ -285,6 +313,10 @@ def _render_deploy_graph(
         mcp_tools_load_call=mcp_tools_load_call,
         default_assistant_id=config.agent.name,
         has_user_memories=has_user_memories,
+        sync_subagents_block=sync_subagents_block,
+        async_subagents_block=async_subagents_block,
+        sync_subagents_load_call=sync_subagents_load_call,
+        async_subagents_load_call=async_subagents_load_call,
     )
 
 
@@ -381,6 +413,23 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     if (build_dir / "_mcp.json").exists():
         print("\n  MCP config: _mcp.json")
+
+    # Subagent summary.
+    sync_subagents = seed.get("subagents", {})
+    async_subagents_data = seed.get("async_subagents", [])
+    if sync_subagents or async_subagents_data:
+        parts = []
+        if sync_subagents:
+            parts.append(f"{len(sync_subagents)} sync")
+        if async_subagents_data:
+            parts.append(f"{len(async_subagents_data)} async")
+        print(f"\n  Subagents ({', '.join(parts)}):")
+        for name, sa_data in sync_subagents.items():
+            desc = sa_data.get("config", {}).get("description", "")
+            print(f"    {name} (sync) \u2014 {desc}")
+        for asa in async_subagents_data:
+            desc = asa.get("description", "")
+            print(f"    {asa['name']} (async) \u2014 {desc}")
 
     print(f"\n  Sandbox: {config.sandbox.provider}")
     print(f"\n  Build directory: {build_dir}")

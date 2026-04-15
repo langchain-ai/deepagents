@@ -369,6 +369,45 @@ class TestPrintBundleSummary:
         out = capsys.readouterr().out
         assert "test-agent" in out
 
+    def test_sync_subagent_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        seed = {
+            "memories": {"/AGENTS.md": "x"},
+            "skills": {},
+            "subagents": {
+                "researcher": {
+                    "config": {"name": "researcher", "description": "Research agent", "model": "anthropic:claude-sonnet-4-6"},
+                    "memories": {"/AGENTS.md": "y"},
+                    "skills": {"/search/SKILL.md": "z"},
+                    "mcp": None,
+                },
+            },
+        }
+        (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
+        config = _minimal_config()
+        print_bundle_summary(config, tmp_path)
+        out = capsys.readouterr().out
+        assert "Subagents (1 sync" in out
+        assert "researcher" in out
+
+    def test_async_subagent_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        seed = {
+            "memories": {"/AGENTS.md": "x"},
+            "skills": {},
+            "async_subagents": [
+                {"name": "writer", "description": "Content writer", "graph_id": "g", "url": ""},
+            ],
+        }
+        (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
+        config = _minimal_config()
+        print_bundle_summary(config, tmp_path)
+        out = capsys.readouterr().out
+        assert "1 async" in out
+        assert "writer" in out
+
 
 def _add_subagent(
     project: Path,
@@ -484,3 +523,45 @@ class TestBuildSeedSubagents:
         assert "alpha" in seed["subagents"]
         assert "beta" in seed["subagents"]
         assert len(seed["subagents"]) == 2
+
+
+class TestRenderDeployGraphSubagents:
+    def test_subagent_imports_when_sync(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_sync_subagents=True,
+        )
+        compile(result, "<deploy_graph_sync_sa>", "exec")
+        assert "from deepagents.middleware.subagents import SubAgent" in result
+        assert "_build_sync_subagents" in result
+
+    def test_subagent_imports_when_async(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_async_subagents=True,
+        )
+        compile(result, "<deploy_graph_async_sa>", "exec")
+        assert "from deepagents.middleware.async_subagents import AsyncSubAgent" in result
+        assert "_build_async_subagents" in result
+
+    def test_no_subagent_imports_when_none(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "SubAgent" not in result
+        assert "AsyncSubAgent" not in result
+
+    def test_subagents_passed_to_create_deep_agent(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_sync_subagents=True, has_async_subagents=True,
+        )
+        compile(result, "<deploy_graph_both_sa>", "exec")
+        assert "subagents=" in result
+
+    def test_subagent_seeding(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config, mcp_present=False, has_sync_subagents=True,
+        )
+        assert "_build_sync_subagents" in result
+        assert '"subagents"' in result

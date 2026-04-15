@@ -569,7 +569,6 @@ class Interpreter:
         globals: MutableMapping[str, Any] | None = None,
         bindings: Mapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
-        max_workers: int | None = None,
         runtime: ToolRuntime | None = None,
     ) -> None:
         self._functions = dict(functions or {})
@@ -577,7 +576,6 @@ class Interpreter:
         self._foreign_interfaces = tuple(foreign_interfaces)
         self._globals: MutableMapping[str, Any] = globals if globals is not None else {}
         self._printed_lines: list[str] = []
-        self._max_workers = max_workers
         self._runtime = runtime
         self._compiler = _ProgramCompiler
 
@@ -951,9 +949,6 @@ class Interpreter:
                 return handler
         return None
 
-    def _has_handler(self, value: Any) -> bool:
-        return self._maybe_handler_for(value) is not None
-
     def _handler_for(self, value: Any) -> ForeignObjectInterface:
         handler = self._maybe_handler_for(value)
         if handler is not None:
@@ -970,13 +965,9 @@ class Interpreter:
             return "False"
         return str(value)
 
-    def _is_truthy(self, value: Any) -> bool:
-        return bool(value)
-
 
 _PRINT_SENTINEL = object()
 _PARALLEL_SENTINEL = object()
-_NO_RESULT = object()
 
 
 __all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "OpCode"]

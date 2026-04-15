@@ -256,29 +256,6 @@ def test_parallel_propagates_function_errors() -> None:
         interpreter.evaluate("parallel(fail(), 1)")
 
 
-def test_parallel_respects_configured_max_workers() -> None:
-    active = 0
-    max_active = 0
-    lock = threading.Lock()
-
-    def block(value: int) -> int:
-        nonlocal active, max_active
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-        time.sleep(0.05)
-        with lock:
-            active -= 1
-        return value
-
-    interpreter = Interpreter(functions={"block": block}, max_workers=1)
-
-    result = interpreter.evaluate("parallel(block(1), block(2), block(3))")
-
-    assert result == [1, 2, 3]
-    assert max_active == 1
-
-
 def test_if_treats_zero_and_empty_string_as_falsy() -> None:
     interpreter = Interpreter()
 

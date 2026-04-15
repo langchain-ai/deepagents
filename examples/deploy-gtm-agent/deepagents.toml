@@ -1,5 +1,5 @@
 [agent]
-name = "gtm-agent"
+name = "deepagents-deploy-gtm-agent"
 description = "Go-to-market strategy agent that coordinates research and content creation"
 model = "anthropic:claude-sonnet-4-6"
 
@@ -10,4 +10,4 @@ provider = "none"
 name = "content-writer"
 description = "Writes blog posts, landing pages, and marketing copy based on research findings"
 graph_id = "deepagents-deploy-content-writer"
-# url = "https://your-langgraph-deployment.com"  # Set to your deployment URL
+url = "https://deepagents-deploy-content-w-6909480a63d7575eb597d5a1b3c6e61e.us.langgraph.app"

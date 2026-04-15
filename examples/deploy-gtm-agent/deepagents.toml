@@ -1,0 +1,13 @@
+[agent]
+name = "gtm-agent"
+description = "Go-to-market strategy agent that coordinates research and content creation"
+model = "anthropic:claude-sonnet-4-6"
+
+[sandbox]
+provider = "none"
+
+[[async_subagents]]
+name = "content-writer"
+description = "Writes blog posts, landing pages, and marketing copy based on research findings"
+graph_id = "content-writer-agent"
+url = "https://my-langgraph-deployment.com"

@@ -1,0 +1,4 @@
+[agent]
+name = "market-researcher"
+description = "Researches market trends, competitors, and target audiences to inform GTM strategy"
+model = "anthropic:claude-sonnet-4-6"

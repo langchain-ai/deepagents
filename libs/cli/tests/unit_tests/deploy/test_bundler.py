@@ -176,6 +176,24 @@ class TestRenderPyproject:
         result = _render_pyproject(config, mcp_present=False)
         assert _MODEL_PROVIDER_DEPS[provider] in result
 
+    def test_subagent_model_dep_inferred(self) -> None:
+        config = _minimal_config()
+        result = _render_pyproject(
+            config,
+            mcp_present=False,
+            subagent_model_providers=["openai"],
+        )
+        assert "langchain-openai" in result
+
+    def test_subagent_mcp_adds_dep(self) -> None:
+        config = _minimal_config()
+        result = _render_pyproject(
+            config,
+            mcp_present=False,
+            has_subagent_mcp=True,
+        )
+        assert "langchain-mcp-adapters" in result
+
 
 class TestRenderDeployGraph:
     def test_output_is_valid_python(self) -> None:

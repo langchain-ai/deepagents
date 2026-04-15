@@ -126,8 +126,23 @@ def bundle(
     )
 
     # 6. Render pyproject.toml.
+    sync_subagents = load_subagents(project_root)
+    subagent_model_providers: list[str] = []
+    has_subagent_mcp = False
+    for sa in sync_subagents.values():
+        model = sa.config.agent.model
+        if ":" in model:
+            subagent_model_providers.append(model.split(":", 1)[0])
+        if (sa.root / MCP_FILENAME).is_file():
+            has_subagent_mcp = True
+
     (build_dir / "pyproject.toml").write_text(
-        _render_pyproject(config, mcp_present=mcp_present),
+        _render_pyproject(
+            config,
+            mcp_present=mcp_present,
+            subagent_model_providers=subagent_model_providers,
+            has_subagent_mcp=has_subagent_mcp,
+        ),
         encoding="utf-8",
     )
 
@@ -285,7 +300,13 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
-def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
+def _render_pyproject(
+    config: DeployConfig,
+    *,
+    mcp_present: bool,
+    subagent_model_providers: list[str] | None = None,
+    has_subagent_mcp: bool = False,
+) -> str:
     """Render the deployment package's `pyproject.toml`.
 
     Deps are inferred — the user never writes them. We add:
@@ -302,7 +323,13 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
     if provider_prefix and provider_prefix in _MODEL_PROVIDER_DEPS:
         deps.append(_MODEL_PROVIDER_DEPS[provider_prefix])
 
-    if mcp_present:
+    # Add deps for subagent model providers.
+    for sp in subagent_model_providers or []:
+        dep = _MODEL_PROVIDER_DEPS.get(sp)
+        if dep and dep not in deps:
+            deps.append(dep)
+
+    if mcp_present or has_subagent_mcp:
         deps.append("langchain-mcp-adapters")
 
     _, partner_pkg = SANDBOX_BLOCKS.get(config.sandbox.provider, (None, None))

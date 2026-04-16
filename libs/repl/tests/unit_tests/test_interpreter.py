@@ -140,7 +140,7 @@ def test_parallel_calls_return_results_in_order() -> None:
     interpreter = Interpreter(functions={"slow_add": slow_add})
 
     result = interpreter.evaluate(
-        "parallel(slow_add(1, 2), slow_add(10, 20), slow_add(100, 200))"
+        "parallel([task(slow_add(1, 2)), task(slow_add(10, 20)), task(slow_add(100, 200))])"
     )
 
     assert result == [3, 30, 300]
@@ -151,7 +151,7 @@ def test_parallel_results_can_be_assigned() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
     result = interpreter.evaluate(
-        "results = parallel(echo(1), echo(2), echo(3))\nresults"
+        "results = parallel([task(echo(1)), task(echo(2)), task(echo(3))])\nresults"
     )
 
     assert result == [1, 2, 3]
@@ -162,7 +162,7 @@ def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
     result = interpreter.evaluate(
-        "results = parallel(\n    echo(1),\n    echo(2),\n    echo(3)\n)\nresults"
+        "results = parallel([\n    task(echo(1)),\n    task(echo(2)),\n    task(echo(3))\n])\nresults"
     )
 
     assert result == [1, 2, 3]
@@ -239,9 +239,11 @@ def test_print_requires_exactly_one_argument() -> None:
 def test_parallel_expressions_use_isolated_variable_snapshots() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
-    result = interpreter.evaluate("x = 10\nparallel(x, echo(x), [x, x + 1])")
+    result = interpreter.evaluate(
+        "x = 10\nparallel([task(echo(x)), task(echo(x + 1))])"
+    )
 
-    assert result == [10, 10, [10, 11]]
+    assert result == [10, 11]
     assert interpreter.env == {"x": 10}
 
 
@@ -253,7 +255,32 @@ def test_parallel_propagates_function_errors() -> None:
     interpreter = Interpreter(functions={"fail": fail})
 
     with pytest.raises(RuntimeError, match="boom"):
-        interpreter.evaluate("parallel(fail(), 1)")
+        interpreter.evaluate("parallel([task(fail())])")
+
+
+def test_parallel_respects_max_concurrency() -> None:
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def block(value: int) -> int:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return value
+
+    interpreter = Interpreter(functions={"block": block}, max_concurrency=1)
+
+    result = interpreter.evaluate(
+        "parallel([task(block(1)), task(block(2)), task(block(3))])"
+    )
+
+    assert result == [1, 2, 3]
+    assert max_active == 1
 
 
 def test_if_treats_zero_and_empty_string_as_falsy() -> None:
@@ -402,7 +429,7 @@ def test_for_loop_over_empty_list_returns_none() -> None:
 
 def test_parallel_accepts_no_arguments() -> None:
     interpreter = Interpreter()
-    assert interpreter.evaluate("parallel()") == []
+    assert interpreter.evaluate("parallel([])") == []
 
 
 def test_function_call_accepts_no_arguments() -> None:

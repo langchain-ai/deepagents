@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -52,8 +53,15 @@ class ForeignObjectInterface(Protocol):
         """Invoke `value(*args)` for a supported foreign object."""
 
 
+@dataclass(frozen=True, slots=True)
+class Task:
+    """Deferred callable execution specification for `parallel`."""
+
+    target: Any
+    args: tuple[Any, ...]
+
+
 def _get_injected_arg_names(tool: BaseTool) -> set[str]:
-    """Return injected parameter names for a tool input schema."""
     return {
         name
         for name, type_ in get_all_basemodel_annotations(
@@ -64,7 +72,6 @@ def _get_injected_arg_names(tool: BaseTool) -> set[str]:
 
 
 def _get_runtime_arg_name(tool: BaseTool) -> str | None:
-    """Return the injected runtime parameter name for a tool, if any."""
     if "runtime" in _get_injected_arg_names(tool):
         return "runtime"
     return None
@@ -74,7 +81,6 @@ def _filter_injected_kwargs(
     tool: BaseTool,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Drop model-controlled injected args from a tool payload."""
     injected_arg_names = _get_injected_arg_names(tool)
     return {
         name: value for name, value in payload.items() if name not in injected_arg_names
@@ -87,7 +93,6 @@ def _build_tool_payload(
     *,
     runtime: ToolRuntime | None = None,
 ) -> str | dict[str, Any]:
-    """Convert REPL call arguments into a LangChain tool payload."""
     input_schema = tool.get_input_schema()
     schema_annotations = getattr(input_schema, "__annotations__", {})
     fields = [
@@ -273,6 +278,7 @@ class OpCode(IntEnum):
     ITER_PREP = 12
     ITER_NEXT = 13
     RETURN_VALUE = 14
+    BUILD_TASK = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,12 +289,6 @@ class Instruction:
 
 @dataclass(slots=True)
 class ForLoopState:
-    """Mutable runtime state for one active `for` loop.
-
-    The VM keeps the loop variable name, the concrete list being iterated, and
-    the next element index to read.
-    """
-
     target_name: str
     items: list[Any]
     index: int = 0
@@ -296,33 +296,6 @@ class ForLoopState:
 
 @dataclass(slots=True)
 class VMState:
-    """Mutable execution state for one compiled REPL program.
-
-    Attributes:
-        instructions: The compiled instruction stream being executed.
-        globals: Current mutable bindings visible to the program.
-        pc: Program counter pointing at the next instruction to execute.
-        stack: Operand stack used by the VM for expression evaluation.
-        last_value: Value returned by the most recent statement-level result.
-        loop_stack: Stack of active `for` loops.
-
-    `loop_stack` exists because loops need state that cannot live on the operand
-    stack alone: the loop target name, the full iterable, and the current index.
-    It is a stack rather than a single slot so nested loops work correctly.
-
-    Example:
-        In:
-        `for item in [1, 2] do`
-        `    for inner in [10, 20] do`
-        `        print(item)`
-        `    end`
-        `end`
-
-        the outer and inner loops each need independent iteration state, so the
-        VM pushes one `ForLoopState` for the outer loop and another for the inner
-        loop.
-    """
-
     instructions: Sequence[Instruction]
     globals: MutableMapping[str, Any]
     pc: int = 0
@@ -416,7 +389,9 @@ class _ProgramCompiler:
         self._compile_primary()
         while True:
             if self._match("["):
+                self._skip_newlines()
                 self._compile_expression()
+                self._skip_newlines()
                 self._expect("]")
                 self._emit(OpCode.GET_INDEX)
                 continue
@@ -437,6 +412,9 @@ class _ProgramCompiler:
                 self._emit(OpCode.LOAD_CONST, _PRINT_SENTINEL)
             elif value == "parallel":
                 self._emit(OpCode.LOAD_CONST, _PARALLEL_SENTINEL)
+            elif value == "task":
+                self._expect("(")
+                self._compile_task_invocation()
             else:
                 self._emit(OpCode.LOAD_NAME, value)
             return
@@ -474,6 +452,22 @@ class _ProgramCompiler:
         )
         raise ParseError(msg)
 
+    def _compile_task_invocation(self) -> None:
+        self._compile_task_target()
+        self._expect("(")
+        arg_count = self._compile_arguments()
+        self._emit(OpCode.BUILD_TASK, arg_count)
+        self._expect(")")
+
+    def _compile_task_target(self) -> None:
+        token = self._current()
+        if token.kind != "NAME":
+            msg = "task expects exactly one callable invocation"
+            raise ParseError(msg)
+        self._emit(OpCode.LOAD_NAME, str(self._advance().value))
+        while self._match("."):
+            self._emit(OpCode.GET_ATTR, str(self._expect("NAME").value))
+
     def _compile_arguments(self) -> int:
         count = 0
         self._skip_newlines()
@@ -491,20 +485,24 @@ class _ProgramCompiler:
     def _compile_list(self) -> None:
         self._expect("[")
         count = 0
+        self._skip_newlines()
         if self._match("]"):
             self._emit(OpCode.BUILD_LIST, 0)
             return
         while True:
             self._compile_expression()
             count += 1
+            self._skip_newlines()
             if self._match("]"):
                 self._emit(OpCode.BUILD_LIST, count)
                 return
             self._expect(",")
+            self._skip_newlines()
 
     def _compile_dict(self) -> None:
         self._expect("{")
         count = 0
+        self._skip_newlines()
         if self._match("}"):
             self._emit(OpCode.BUILD_DICT, 0)
             return
@@ -514,10 +512,12 @@ class _ProgramCompiler:
             self._expect(":")
             self._compile_expression()
             count += 1
+            self._skip_newlines()
             if self._match("}"):
                 self._emit(OpCode.BUILD_DICT, count)
                 return
             self._expect(",")
+            self._skip_newlines()
 
     def _emit(self, opcode: OpCode, arg: Any = None) -> int:
         self._instructions.append(Instruction(opcode, arg))
@@ -582,27 +582,21 @@ class _StringForeignInterface:
     }
 
     def supports(self, value: Any) -> bool:
-        return type(value) == str
+        return type(value) is str
 
     def get_item(self, value: Any, key: Any) -> Any:
-        if not isinstance(value, str):
-            msg = "unsupported foreign get_item"
-            raise TypeError(msg)
         if not isinstance(key, int):
             msg = "string indexes must be integers"
             raise TypeError(msg)
         return value[key]
 
     def resolve_member(self, value: Any, name: str) -> Any:
-        if not isinstance(value, str) or name not in self._ALLOWED_MEMBERS:
+        if name not in self._ALLOWED_MEMBERS:
             msg = f"Unknown foreign member: {name}"
             raise AttributeError(msg)
         return getattr(value, name)
 
     def call(self, value: Any, args: tuple[Any, ...]) -> Any:
-        if not callable(value):
-            msg = "unsupported foreign call"
-            raise TypeError(msg)
         return value(*args)
 
 
@@ -615,6 +609,8 @@ class Interpreter:
         bindings: Mapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
         runtime: ToolRuntime | None = None,
+        max_concurrency: int | None = None,
+        max_workers: int | None = None,
     ) -> None:
         self._functions = dict(functions or {})
         self._bindings = dict(bindings or {})
@@ -625,6 +621,7 @@ class Interpreter:
         self._globals: MutableMapping[str, Any] = globals if globals is not None else {}
         self._printed_lines: list[str] = []
         self._runtime = runtime
+        self._max_concurrency = max_concurrency
         self._compiler = _ProgramCompiler
 
     @property
@@ -682,6 +679,8 @@ class Interpreter:
         resolve_member = self._resolve_member
         call_sync = self._call_sync
         store_name = self._store_name
+        build_task = self._build_task
+        run_parallel_sync = self._run_parallel_sync
 
         while state.pc < len(instructions):
             instruction = instructions[state.pc]
@@ -739,7 +738,13 @@ class Interpreter:
                 target = stack[target_index]
                 args = tuple(stack[target_index + 1 :])
                 del stack[target_index:]
-                stack.append(call_sync(target, args, print_callback=print_callback))
+                if target is _PARALLEL_SENTINEL:
+                    stack.append(run_parallel_sync(args, print_callback=print_callback))
+                else:
+                    stack.append(call_sync(target, args, print_callback=print_callback))
+                continue
+            if opcode == OpCode.BUILD_TASK:
+                stack.append(build_task(stack, int(arg)))
                 continue
             if opcode == OpCode.JUMP:
                 state.pc = int(arg)
@@ -783,6 +788,8 @@ class Interpreter:
         resolve_member = self._resolve_member
         call_async = self._call_async
         store_name = self._store_name
+        build_task = self._build_task
+        run_parallel_async = self._run_parallel_async
 
         while state.pc < len(instructions):
             instruction = instructions[state.pc]
@@ -840,7 +847,17 @@ class Interpreter:
                 target = stack[target_index]
                 args = tuple(stack[target_index + 1 :])
                 del stack[target_index:]
-                stack.append(await call_async(target, args, print_callback=print_callback))
+                if target is _PARALLEL_SENTINEL:
+                    stack.append(
+                        await run_parallel_async(args, print_callback=print_callback)
+                    )
+                else:
+                    stack.append(
+                        await call_async(target, args, print_callback=print_callback)
+                    )
+                continue
+            if opcode == OpCode.BUILD_TASK:
+                stack.append(build_task(stack, int(arg)))
                 continue
             if opcode == OpCode.JUMP:
                 state.pc = int(arg)
@@ -871,6 +888,71 @@ class Interpreter:
             raise ValueError(msg)
         return state.last_value
 
+    def _build_task(self, stack: list[Any], arg_count: int) -> Task:
+        target_index = len(stack) - arg_count - 1
+        target = stack[target_index]
+        args = tuple(stack[target_index + 1 :])
+        del stack[target_index:]
+        if target is _PRINT_SENTINEL or target is _PARALLEL_SENTINEL:
+            msg = "task expects exactly one callable invocation"
+            raise ValueError(msg)
+        return Task(target=target, args=args)
+
+    def _run_parallel_sync(
+        self,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        if len(args) != 1 or not isinstance(args[0], list):
+            msg = "parallel expects a single list of tasks"
+            raise ValueError(msg)
+        tasks = args[0]
+        if any(not isinstance(task, Task) for task in tasks):
+            msg = "parallel expects a list of tasks"
+            raise TypeError(msg)
+        if not tasks:
+            return []
+        max_workers = self._max_concurrency or len(tasks)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._call_sync,
+                    task.target,
+                    task.args,
+                    print_callback=print_callback,
+                )
+                for task in tasks
+            ]
+            return [future.result() for future in futures]
+
+    async def _run_parallel_async(
+        self,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        if len(args) != 1 or not isinstance(args[0], list):
+            msg = "parallel expects a single list of tasks"
+            raise ValueError(msg)
+        tasks = args[0]
+        if any(not isinstance(task, Task) for task in tasks):
+            msg = "parallel expects a list of tasks"
+            raise TypeError(msg)
+        if not tasks:
+            return []
+        semaphore = asyncio.Semaphore(self._max_concurrency or len(tasks))
+
+        async def _run_one(task: Task) -> Any:
+            async with semaphore:
+                return await self._call_async(
+                    task.target,
+                    task.args,
+                    print_callback=print_callback,
+                )
+
+        return list(await asyncio.gather(*[_run_one(task) for task in tasks]))
+
     def _load_name(self, globals: MutableMapping[str, Any], name: str) -> Any:
         if name in globals:
             return globals[name]
@@ -898,8 +980,6 @@ class Interpreter:
     ) -> Any:
         if target is _PRINT_SENTINEL:
             return self._eval_print(args, print_callback=print_callback)
-        if target is _PARALLEL_SENTINEL:
-            return self._eval_parallel_sync(args)
         if isinstance(target, BaseTool):
             return target.invoke(
                 _build_tool_payload(target, args, runtime=self._runtime)
@@ -921,8 +1001,6 @@ class Interpreter:
     ) -> Any:
         if target is _PRINT_SENTINEL:
             return self._eval_print(args, print_callback=print_callback)
-        if target is _PARALLEL_SENTINEL:
-            return await self._eval_parallel_async(args)
         if isinstance(target, BaseTool):
             payload = _build_tool_payload(target, args, runtime=self._runtime)
             if getattr(target, "coroutine", None) is not None:
@@ -950,12 +1028,6 @@ class Interpreter:
         if print_callback is not None:
             print_callback(formatted)
         return value
-
-    def _eval_parallel_sync(self, args: tuple[Any, ...]) -> list[Any]:
-        return list(args)
-
-    async def _eval_parallel_async(self, args: tuple[Any, ...]) -> list[Any]:
-        return list(args)
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
         if isinstance(left, bool) or isinstance(right, bool):
@@ -1018,4 +1090,4 @@ _PRINT_SENTINEL = object()
 _PARALLEL_SENTINEL = object()
 
 
-__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "OpCode"]
+__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError"]

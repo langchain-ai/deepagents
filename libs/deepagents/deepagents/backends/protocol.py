@@ -290,7 +290,7 @@ class DeleteResult:
 
     Attributes:
         error: Error message on failure, None on success.
-        path: Absolute path of deleted file, None on failure.
+        path: Absolute path of the deleted file, None on failure.
     """
 
     error: str | None = None

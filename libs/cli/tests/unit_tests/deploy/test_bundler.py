@@ -21,6 +21,7 @@ from deepagents_cli.deploy.config import (
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    USER_DIRNAME,
     AgentConfig,
     DeployConfig,
     SandboxConfig,
@@ -83,6 +84,42 @@ class TestBuildSeed:
         config = _minimal_config()
         seed = _build_seed(config, project, "# prompt")
         assert seed["skills"] == {}
+
+    def test_user_memories_empty_when_no_dir(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path)
+        config = _minimal_config()
+        seed = _build_seed(config, project, "# prompt")
+        assert seed["user_memories"] == {}
+
+    def test_user_memories_seeds_empty_agents_md_when_empty_dir(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _minimal_project(tmp_path)
+        (project / USER_DIRNAME).mkdir()
+        config = _minimal_config()
+        seed = _build_seed(config, project, "# prompt")
+        assert seed["user_memories"] == {"/AGENTS.md": ""}
+
+    def test_user_memories_reads_agents_md(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path)
+        user_dir = project / USER_DIRNAME
+        user_dir.mkdir(parents=True)
+        content = "# User Prefs\n"
+        (user_dir / "AGENTS.md").write_text(content, encoding="utf-8")
+        config = _minimal_config()
+        seed = _build_seed(config, project, "# prompt")
+        assert seed["user_memories"] == {"/AGENTS.md": content}
+
+    def test_user_memories_ignores_non_agents_md_files(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path)
+        user_dir = project / USER_DIRNAME
+        user_dir.mkdir(parents=True)
+        (user_dir / "AGENTS.md").write_text("# user mem", encoding="utf-8")
+        (user_dir / "other.md").write_text("ignored", encoding="utf-8")
+        config = _minimal_config()
+        seed = _build_seed(config, project, "# prompt")
+        assert list(seed["user_memories"].keys()) == ["/AGENTS.md"]
 
 
 class TestRenderLanggraphJson:
@@ -173,6 +210,50 @@ class TestRenderDeployGraph:
             result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
+    def test_skills_prefix_under_memories(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert 'SKILLS_PREFIX = "/memories/skills/"' in result
+
+    def test_user_memories_disabled_by_default(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "HAS_USER_MEMORIES = False" in result
+
+    def test_user_memories_enabled(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config,
+            mcp_present=False,
+            has_user_memories=True,
+        )
+        compile(result, "<deploy_graph_user_mem>", "exec")
+        assert "HAS_USER_MEMORIES = True" in result
+        assert 'USER_PREFIX = "/memories/user/"' in result
+        assert "_seed_user_memories_if_needed" in result
+        # Single user AGENTS.md path preloaded into memory sources
+        assert "USER_PREFIX" in result
+        assert "AGENTS.md" in result
+
+    def test_no_default_user_id_fallback(self) -> None:
+        """User namespace factory raises instead of falling back to 'default'."""
+        config = _minimal_config()
+        result = _render_deploy_graph(
+            config,
+            mcp_present=False,
+            has_user_memories=True,
+        )
+        # The user namespace factory should raise, not fall back
+        fn = "_make_user_namespace_factory"
+        assert fn in result
+        assert '"default"' not in result.split(fn)[1].split("\n\n")[0]
+
+    def test_agents_md_and_skills_denied_writes(self) -> None:
+        config = _minimal_config()
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "AGENTS.md" in result
+        assert 'mode="deny"' in result
+
 
 class TestBundle:
     def test_produces_expected_files(self, tmp_path: Path) -> None:
@@ -202,6 +283,15 @@ class TestBundle:
         assert (build / ".env").exists()
         assert (build / ".env").read_text(encoding="utf-8") == "KEY=val"
 
+    def test_empty_user_dir_enables_user_memories(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        (project / USER_DIRNAME).mkdir()
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
+        assert "HAS_USER_MEMORIES = True" in graph_py
+
     def test_unknown_provider_raises(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")
         build = tmp_path / "build"
@@ -218,13 +308,28 @@ class TestPrintBundleSummary:
     def test_handles_valid_seed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        seed = {"memories": {"/AGENTS.md": "x"}, "skills": {}}
+        seed = {"memories": {"/AGENTS.md": "x"}, "skills": {}, "user_memories": {}}
         (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
         config = _minimal_config()
         print_bundle_summary(config, tmp_path)
         out = capsys.readouterr().out
         assert "test-agent" in out
         assert "1 file(s)" in out
+
+    def test_user_memory_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        seed = {
+            "memories": {"/AGENTS.md": "x"},
+            "skills": {},
+            "user_memories": {"/AGENTS.md": ""},
+        }
+        (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
+        config = _minimal_config()
+        print_bundle_summary(config, tmp_path)
+        out = capsys.readouterr().out
+        assert "User memory seed" in out
+        assert "/AGENTS.md" in out
 
     def test_handles_missing_seed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

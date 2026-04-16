@@ -25,7 +25,7 @@ dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
     # LangSmith for observability
-    "langsmith>=0.4.0",
+    "langsmith>=0.7.31",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=0.64.0",
@@ -56,7 +56,7 @@ charts = [
 
 [dependency-groups]
 test = [
-    "pytest>=8.4.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",

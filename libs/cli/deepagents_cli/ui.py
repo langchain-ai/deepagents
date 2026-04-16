@@ -125,6 +125,9 @@ def show_help() -> None:
     console.print(
         "  --update                   Check for and install updates, then exit"
     )
+    console.print(
+        "  --auto-update              Toggle automatic updates on or off, then exit"
+    )
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show deepagents CLI and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")

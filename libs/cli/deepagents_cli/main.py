@@ -657,6 +657,11 @@ def parse_args() -> argparse.Namespace:
         help="Check for and install updates, then exit",
     )
     parser.add_argument(
+        "--auto-update",
+        action="store_true",
+        help="Toggle automatic updates on or off, then exit",
+    )
+    parser.add_argument(
         "--acp",
         action="store_true",
         help="Run as an ACP server over stdio instead of launching the Textual UI",
@@ -1426,6 +1431,35 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        # Handle --auto-update flag (headless toggle, no session)
+        if args.auto_update:
+            try:
+                from deepagents_cli.config import _is_editable_install
+                from deepagents_cli.update_check import (
+                    is_auto_update_enabled,
+                    set_auto_update,
+                )
+
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "Auto-updates are not available for editable installs."
+                    )
+                    sys.exit(1)
+
+                currently_enabled = is_auto_update_enabled()
+                new_state = not currently_enabled
+                set_auto_update(new_state)
+                label = "enabled" if new_state else "disabled"
+                console.print(f"Auto-updates {label}.")
+            except Exception:
+                logger.warning("--auto-update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates."
+                )
+                sys.exit(1)
+            sys.exit(0)
+
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
             from deepagents_cli.model_config import clear_default_model
@@ -1721,12 +1755,8 @@ def cli_main() -> None:
                         cmd_hint.append(upgrade_command(), style="cyan")
                         console.print(cmd_hint)
                         if not is_auto_update_enabled():
-                            auto_hint = Text("Tip: use ", style="dim")
-                            auto_hint.append("/auto-update", style="cyan")
-                            auto_hint.append(
-                                " in the CLI to enable auto-updates",
-                                style="dim",
-                            )
+                            auto_hint = Text("Enable auto-updates: ", style="dim")
+                            auto_hint.append("deepagents --auto-update", style="cyan")
                             console.print(auto_hint)
                         mark_update_notified(latest)
             except Exception:

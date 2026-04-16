@@ -98,7 +98,10 @@ client.on("auth_failure", (msg) => {
   console.error(`Auth failure: ${msg}`);
 });
 
-client.on("message", async (msg) => {
+// Use message_create (fires for both sent and received messages) so that
+// self-chat messages (fromMe=true) are captured.  The "message" event only
+// fires for received messages, which misses self-chat in self-only mode.
+client.on("message_create", async (msg) => {
   // Skip status broadcasts
   if (msg.from === "status@broadcast") return;
 

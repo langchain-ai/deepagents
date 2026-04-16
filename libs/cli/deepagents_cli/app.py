@@ -1439,7 +1439,7 @@ class DeepAgentsApp(App):
             )
 
             available, latest = await asyncio.to_thread(is_update_available)
-            if not available:
+            if not available or latest is None:
                 return
 
             self._update_available = (True, latest)
@@ -1447,7 +1447,7 @@ class DeepAgentsApp(App):
             logger.debug("Background update check failed", exc_info=True)
             return
 
-        # Phase 2: auto-update or notify (failures surfaced to user)
+        # Phase 2: auto-update or notify
         try:
             from deepagents_cli._version import __version__ as cli_version
 
@@ -1475,6 +1475,14 @@ class DeepAgentsApp(App):
                         markup=False,
                     )
             else:
+                from deepagents_cli.update_check import (
+                    mark_update_notified,
+                    should_notify_update,
+                )
+
+                if not await asyncio.to_thread(should_notify_update, latest):
+                    return
+
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
@@ -1484,13 +1492,15 @@ class DeepAgentsApp(App):
                     timeout=15,
                     markup=False,
                 )
+                await asyncio.to_thread(mark_update_notified, latest)
         except Exception:
-            logger.warning("Auto-update failed unexpectedly", exc_info=True)
-            self.notify(
-                "Update failed unexpectedly.",
-                severity="warning",
-                timeout=10,
-            )
+            logger.warning("Update check/notify failed unexpectedly", exc_info=True)
+            if is_auto_update_enabled():
+                self.notify(
+                    "Auto-update failed unexpectedly.",
+                    severity="warning",
+                    timeout=10,
+                )
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""

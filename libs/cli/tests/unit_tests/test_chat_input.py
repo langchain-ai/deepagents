@@ -2328,6 +2328,49 @@ class TestArgumentHints:
             await pilot.pause()
             assert chat._text_area.suggestion == ""
 
+    async def test_hint_cleared_when_command_mode_exits_via_submit(self) -> None:
+        """Submitting a command clears ghost text when mode resets to normal."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.suggestion == "[context]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.suggestion == ""
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/remember"
+
+    async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
+        """Backspace mode exit clears ghost text without needing a text edit."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.suggestion == "[context]"
+
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.suggestion == ""
+
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""
         app = _ChatInputTestApp()

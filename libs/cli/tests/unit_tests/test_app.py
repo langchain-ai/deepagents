@@ -1973,6 +1973,63 @@ class TestShellCommandInterrupt:
             mock_worker.cancel.assert_called_once()
 
 
+class TestAppArgumentHints:
+    """Full-app regressions for slash-command argument hints."""
+
+    async def test_hint_clears_after_command_submission(self) -> None:
+        """Submitting a slash command clears the inline argument hint."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.suggestion == "[context]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+            assert chat._text_area.suggestion == ""
+
+    async def test_hint_clears_after_backspace_mode_exit(self) -> None:
+        """Backspace mode exit clears the hint in the mounted app."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.suggestion == "[context]"
+
+            for _ in "remember ":
+                await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.suggestion == ""
+
+
 class TestInterruptApprovalPriority:
     """Tests for escape interrupt priority when HITL approval is pending."""
 

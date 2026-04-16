@@ -1733,6 +1733,10 @@ class ChatInput(Vertical):
         callers which also schedule deferred work (e.g. the completion popup)
         can coalesce both visual changes into a single refresh.
         """
+        # Keep inline argument hints in sync for mode-only transitions
+        # (for example, exiting command mode via Escape or backspace).
+        self._update_argument_hint()
+
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":
             logger.warning(

@@ -39,7 +39,7 @@ Capabilities and limitations:
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
 - Values include strings, `None`, `True`, `False`, integers, floats, lists, and dicts.
-- `parallel(...)` evaluates independent expressions concurrently using isolated snapshots of the current bindings.
+- `parallel([task(call1(...)), task(call2(...))])` evaluates independent callable invocations concurrently using isolated snapshots of the current bindings.
 - There is no filesystem or network access unless you expose Python callables as foreign functions.
 {external_functions_section}
 """  # noqa: E501
@@ -58,7 +58,7 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
 - Use `for item in items do ... end` for loops.
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
-- Use `parallel(expr1, expr2)` only for independent expressions that can run concurrently.
+- Use `parallel([task(call1(...)), task(call2(...))])` only for independent callable invocations that can run concurrently.
 - The REPL can only use the language features above and the foreign functions listed below.
 - If the task needs multiple foreign function calls, prefer writing one complete REPL program instead of splitting the work across multiple `repl` invocations.
 - If one foreign function returns an ID or other value that can be passed directly into the next foreign function, trust it and chain the calls instead of stopping to double-check it.
@@ -67,7 +67,7 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
   `items = lookup_fn("value")`
   `first_item = items[0]`
   `item_id = first_item["id"]`
-  `print(parallel(detail_fn(item_id), status_fn(item_id)))`
+  `print(parallel([task(detail_fn(item_id)), task(status_fn(item_id))]))`
 - Use the repl for small computations, collection manipulation, branching, loops, and calling externally registered foreign functions.
 {external_functions_section}
 """  # noqa: E501

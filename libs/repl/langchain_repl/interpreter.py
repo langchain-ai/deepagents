@@ -620,7 +620,7 @@ class Interpreter:
         self._state: MutableMapping[str, Any] = state if state is not None else {}
         self._printed_lines: list[str] = []
         self._runtime = runtime
-        self._max_concurrency = max_concurrency or 8
+        self._max_concurrency = max_concurrency or 10
         self._compiler = _ProgramCompiler
 
     @property
@@ -940,7 +940,7 @@ class Interpreter:
             raise TypeError(msg)
         if not tasks:
             return []
-        semaphore = asyncio.Semaphore(self._max_concurrency or len(tasks))
+        semaphore = asyncio.Semaphore(self._max_concurrency)
 
         async def _run_one(task: Task) -> Any:
             async with semaphore:

@@ -108,11 +108,8 @@ client.on("message_create", async (msg) => {
   if (SELF_ONLY) {
     // Self-only mode: only process messages from our own number
     if (!msg.fromMe) return;
-    // Skip messages we sent via the bridge (bot replies) to avoid loops
-    if (sentMessageIds.has(msg.id._serialized)) {
-      sentMessageIds.delete(msg.id._serialized);
-      return;
-    }
+    // Skip bot replies by checking for the bot header prefix
+    if ((msg.body || "").startsWith("*deepagents bot*")) return;
   } else {
     // Normal mode: skip all self-sent messages
     if (msg.fromMe) return;

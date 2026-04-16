@@ -544,7 +544,9 @@ class WhatsAppAdapter:
 
         import aiohttp
 
-        formatted = format_message(content)
+        # Prepend bot header so users can distinguish bot replies,
+        # and so the bridge can filter them out in self-only mode.
+        formatted = format_message(f"**deepagents bot**\n{content}")
         chunks = truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
         last_id = None

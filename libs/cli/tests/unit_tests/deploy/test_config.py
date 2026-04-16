@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -16,7 +15,6 @@ from deepagents_cli.deploy.config import (
     SUBAGENTS_DIRNAME,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
-    AsyncSubAgentConfig,
     DeployConfig,
     SandboxConfig,
     SubAgentConfig,
@@ -28,8 +26,10 @@ from deepagents_cli.deploy.config import (
     find_config,
     load_config,
     load_subagents,
-    validate_subagent_names,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # AgentConfig
@@ -64,39 +64,6 @@ class TestAgentConfig:
 
     def test_frozen(self) -> None:
         cfg = AgentConfig(name="x")
-        with pytest.raises(AttributeError):
-            cfg.name = "y"  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# AsyncSubAgentConfig
-# ---------------------------------------------------------------------------
-
-
-class TestAsyncSubAgentConfig:
-    def test_valid_construction(self) -> None:
-        cfg = AsyncSubAgentConfig(
-            name="researcher", description="Does research", graph_id="researcher"
-        )
-        assert cfg.name == "researcher"
-        assert cfg.description == "Does research"
-        assert cfg.graph_id == "researcher"
-        assert cfg.url == ""
-        assert cfg.headers == {}
-
-    def test_with_url_and_headers(self) -> None:
-        cfg = AsyncSubAgentConfig(
-            name="researcher",
-            description="Does research",
-            graph_id="researcher",
-            url="https://example.com",
-            headers={"Authorization": "Bearer tok"},
-        )
-        assert cfg.url == "https://example.com"
-        assert cfg.headers == {"Authorization": "Bearer tok"}
-
-    def test_frozen(self) -> None:
-        cfg = AsyncSubAgentConfig(name="x", description="d", graph_id="g")
         with pytest.raises(AttributeError):
             cfg.name = "y"  # type: ignore[misc]
 
@@ -224,55 +191,12 @@ class TestParseConfig:
         cfg = _parse_config({"agent": {"name": "bot"}})
         assert cfg.agent.description == ""
 
-    def test_async_subagents_parsed(self) -> None:
+    def test_async_subagents_section_raises(self) -> None:
         data: dict[str, Any] = {
             "agent": {"name": "bot"},
-            "async_subagents": [
-                {
-                    "name": "researcher",
-                    "description": "Does research",
-                    "graph_id": "researcher",
-                    "url": "https://example.com",
-                    "headers": {"Authorization": "Bearer tok"},
-                },
-            ],
+            "async_subagents": [{"name": "x", "description": "d", "graph_id": "g"}],
         }
-        cfg = _parse_config(data)
-        assert len(cfg.async_subagents) == 1
-        sub = cfg.async_subagents[0]
-        assert sub.name == "researcher"
-        assert sub.description == "Does research"
-        assert sub.graph_id == "researcher"
-        assert sub.url == "https://example.com"
-        assert sub.headers == {"Authorization": "Bearer tok"}
-
-    def test_async_subagents_defaults_empty(self) -> None:
-        cfg = _parse_config({"agent": {"name": "bot"}})
-        assert cfg.async_subagents == []
-
-    def test_async_subagents_missing_required_field(self) -> None:
-        data: dict[str, Any] = {
-            "agent": {"name": "bot"},
-            "async_subagents": [
-                {"name": "researcher", "description": "Does research"},
-            ],
-        }
-        with pytest.raises(ValueError, match="graph_id"):
-            _parse_config(data)
-
-    def test_async_subagents_unknown_key(self) -> None:
-        data: dict[str, Any] = {
-            "agent": {"name": "bot"},
-            "async_subagents": [
-                {
-                    "name": "researcher",
-                    "description": "Does research",
-                    "graph_id": "researcher",
-                    "bogus": "value",
-                },
-            ],
-        }
-        with pytest.raises(ValueError, match="Unknown key"):
+        with pytest.raises(ValueError, match="Unknown section"):
             _parse_config(data)
 
     def test_defaults_come_from_dataclass(self) -> None:
@@ -523,50 +447,3 @@ class TestCrossModuleConsistency:
         from deepagents_cli.deploy.templates import SANDBOX_BLOCKS
 
         assert frozenset(SANDBOX_BLOCKS.keys()) == VALID_SANDBOX_PROVIDERS
-
-
-# ---------------------------------------------------------------------------
-# validate_subagent_names
-# ---------------------------------------------------------------------------
-
-
-class TestValidateSubagentNames:
-    def test_no_conflict(self) -> None:
-        """One async 'a' and one sync 'b' → no errors."""
-        async_subs = [AsyncSubAgentConfig(name="a", description="d", graph_id="g")]
-        sync_subs = {
-            "b": SubAgentProject(
-                config=SubAgentConfig(agent=AgentConfig(name="b", description="d")),
-                root=Path("/fake"),
-            )
-        }
-        errors = validate_subagent_names(async_subs, sync_subs)
-        assert errors == []
-
-    def test_duplicate_across_sync_and_async(self) -> None:
-        """Both async and sync have 'researcher' → 1 error containing 'researcher'."""
-        async_subs = [
-            AsyncSubAgentConfig(name="researcher", description="d", graph_id="g")
-        ]
-        sync_subs = {
-            "researcher": SubAgentProject(
-                config=SubAgentConfig(
-                    agent=AgentConfig(name="researcher", description="d")
-                ),
-                root=Path("/fake"),
-            )
-        }
-        errors = validate_subagent_names(async_subs, sync_subs)
-        assert len(errors) == 1
-        assert "researcher" in errors[0]
-
-    def test_duplicate_async_names(self) -> None:
-        """Two async entries both named 'r' → 1 error containing 'r'."""
-        async_subs = [
-            AsyncSubAgentConfig(name="r", description="d", graph_id="g1"),
-            AsyncSubAgentConfig(name="r", description="d2", graph_id="g2"),
-        ]
-        sync_subs: dict[str, SubAgentProject] = {}
-        errors = validate_subagent_names(async_subs, sync_subs)
-        assert len(errors) == 1
-        assert "r" in errors[0]

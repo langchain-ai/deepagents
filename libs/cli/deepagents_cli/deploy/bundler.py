@@ -81,7 +81,7 @@ def bundle(
     system_prompt = agents_md_path.read_text(encoding="utf-8")
 
     # 2. Build and write the seed payload: memory (AGENTS.md) + skills/.
-    seed = _build_seed(config, project_root, system_prompt)
+    seed = _build_seed(project_root, system_prompt)
     (build_dir / "_seed.json").write_text(
         json.dumps(seed, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -191,7 +191,6 @@ def _build_subagent_seed(subagent: SubAgentProject) -> dict:
 
 
 def _build_seed(
-    config: DeployConfig,
     project_root: Path,
     system_prompt: str,
 ) -> dict:

@@ -44,6 +44,7 @@ Deep Agents Deploy is built on [Deep Agents](https://github.com/langchain-ai/dee
 | **`user/`** | Per-user writable memory. If present, a single `AGENTS.md` is seeded per user (from `user/AGENTS.md` if provided, otherwise empty). Writable at runtime. Preloaded into the agent's context via the memory middleware. |
 | **`mcp.json`** | MCP tools (HTTP/SSE). See [MCP docs](https://docs.langchain.com/oss/python/langchain/mcp). |
 | **`sandbox`** | Optional execution environment. See [Sandbox providers](#sandbox-providers). |
+| **`subagents/`** | Sync subagents — specialized agents the main agent can delegate to. Each subdirectory is a self-contained agent project. See [Subagents](#subagents). |
 
 ## Install
 
@@ -106,6 +107,13 @@ my-agent/
 │   │   └── SKILL.md
 │   └── data-analysis/
 │       └── SKILL.md
+├── subagents/
+│   └── researcher/
+│       ├── deepagents.toml
+│       ├── AGENTS.md
+│       └── skills/
+│           └── web-search/
+│               └── SKILL.md
 └── user/
     └── AGENTS.md
 ```
@@ -114,6 +122,7 @@ my-agent/
 | --- | --- | --- |
 | `AGENTS.md` | [Memory](https://docs.langchain.com/oss/python/deepagents/memory) for the agent. Provides persistent context (project conventions, instructions, preferences) that is always loaded at startup. Read-only at runtime. | Yes |
 | `skills/` | Directory of [skill](https://docs.langchain.com/oss/python/deepagents/skills) definitions. Each subdirectory should contain a `SKILL.md` file. Read-only at runtime. | No |
+| `subagents/` | Sync subagents the main agent can delegate tasks to. Each subdirectory is a self-contained agent project with its own `deepagents.toml` and `AGENTS.md`. See [Subagents](#subagents). | No |
 | `user/` | Per-user writable memory. When present, a single `AGENTS.md` is seeded per user (from `user/AGENTS.md` if provided, otherwise empty). Writable at runtime — the agent can update this file as it learns about the user. Preloaded into the agent's context at the start of each session. | No |
 | `mcp.json` | [MCP](https://modelcontextprotocol.io/) server configuration. Only `http` and `sse` transports are supported in deployed contexts. | No |
 | `.env` | Environment variables (API keys, secrets). Placed alongside `deepagents.toml` at the project root. | No |
@@ -147,9 +156,10 @@ model = "anthropic:claude-sonnet-4-6"
 > [!NOTE]
 > The `name` field is the only required value in the entire configuration file. Everything else has defaults.
 
-Skills, user memories, MCP servers, and model dependencies are auto-detected from the project layout — you don't declare them in `deepagents.toml`:
+Skills, subagents, user memories, MCP servers, and model dependencies are auto-detected from the project layout — you don't declare them in `deepagents.toml`:
 
 - **Skills** — the bundler recursively scans `skills/`, skipping hidden dotfiles, and bundles the rest.
+- **Subagents** — if a `subagents/` directory exists, each subdirectory is loaded as a sync subagent. Each must contain a `deepagents.toml` (with `[agent].name` and `[agent].description`) and an `AGENTS.md`. See [Subagents](#subagents).
 - **User memory** — if `user/` exists, a single `AGENTS.md` is bundled as per-user memory (from `user/AGENTS.md` if present, otherwise empty). At runtime, each user gets their own copy (seeded on first access, never overwritten). The agent can read and write this file.
 - **MCP servers** — if `mcp.json` exists, it is included in the deployment and [`langchain-mcp-adapters`](https://pypi.org/project/langchain-mcp-adapters/) is added as a dependency. Only HTTP/SSE transports are supported (stdio is rejected at bundle time).
 - **Model dependencies** — the `provider:` prefix in the `model` field determines the required `langchain-*` package (e.g., `anthropic` -> `langchain-anthropic`).
@@ -320,6 +330,65 @@ template = "coding-agent"
 image = "python:3.12"
 ```
 
+## Subagents
+
+Subagents are specialized agents the main agent can delegate tasks to. Each subagent is a self-contained project inside the `subagents/` directory, with its own system prompt, skills, and optionally a different model.
+
+### Directory structure
+
+```txt
+my-agent/
+├── deepagents.toml
+├── AGENTS.md
+└── subagents/
+    └── researcher/
+        ├── deepagents.toml   # required — name, description, optional model
+        ├── AGENTS.md         # required — subagent system prompt
+        ├── skills/           # optional — subagent-specific skills
+        │   └── web-search/
+        │       └── SKILL.md
+        └── mcp.json          # optional — HTTP/SSE MCP tools
+```
+
+### Subagent `deepagents.toml`
+
+Each subagent's config only supports the `[agent]` section:
+
+```toml
+[agent]
+name = "researcher"
+description = "Researches topics and summarizes findings."  # shown to the main agent
+model = "anthropic:claude-sonnet-4-6"                       # optional — inherits parent model if omitted
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | Yes | Unique identifier. Must be unique across all subagents. |
+| `description` | Yes | Shown to the main agent so it knows when to delegate. |
+| `model` | No | Overrides the parent model for this subagent. |
+
+### Inheritance
+
+| Property | Default behavior |
+| --- | --- |
+| Model | Inherits parent's model if not set |
+| Tools | Inherits parent's tools if not set |
+| Skills | Not inherited — declare explicitly in the subagent's `skills/` directory |
+
+### Memory isolation
+
+Each subagent's memory and skills are stored in a dedicated namespace (`/memories/subagents/<name>/`) that is isolated from the parent and from sibling subagents. Filesystem permissions are set so that subagents can only read and write their own namespace — they cannot access the parent's `AGENTS.md`, parent skills, or another subagent's files.
+
+| Path | Accessible to parent | Accessible to subagent |
+| --- | --- | --- |
+| `/memories/AGENTS.md` | Read | No |
+| `/memories/skills/**` | Read | No |
+| `/memories/subagents/<name>/**` | Read | Read + Write |
+| `/memories/user/**` | Read + Write | No |
+
+> [!NOTE]
+> Nested `subagents/` directories inside a subagent are not supported.
+
 ## User Memory
 
 User memory gives each user their own writable `AGENTS.md` that persists across conversations. To enable it, create a `user/` directory at your project root:
@@ -347,6 +416,7 @@ At runtime, user memory is scoped per user via custom auth (`runtime.server_info
 | `/memories/AGENTS.md` | No | Shared (assistant-scoped) |
 | `/memories/skills/**` | No | Shared (assistant-scoped) |
 | `/memories/user/**` | Yes | Per-user (user_id-scoped) |
+| `/memories/subagents/<name>/**` | Yes (by subagent only) | Per-subagent (isolated) |
 
 ### User identity
 

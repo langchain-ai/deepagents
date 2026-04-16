@@ -24,7 +24,6 @@ from deepagents_cli.deploy.config import (
     SUBAGENTS_DIRNAME,
     USER_DIRNAME,
     AgentConfig,
-    AsyncSubAgentConfig,
     DeployConfig,
     SandboxConfig,
 )
@@ -57,15 +56,13 @@ def _minimal_config(
 class TestBuildSeed:
     def test_memories_contain_agents_md(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "/AGENTS.md" in seed["memories"]
         assert seed["memories"]["/AGENTS.md"] == "# prompt"
 
     def test_skills_empty_when_no_dir(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert seed["skills"] == {}
 
     def test_skills_populated_from_dir(self, tmp_path: Path) -> None:
@@ -73,8 +70,7 @@ class TestBuildSeed:
         skills = project / SKILLS_DIRNAME / "review"
         skills.mkdir(parents=True)
         (skills / "SKILL.md").write_text("skill content", encoding="utf-8")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "/review/SKILL.md" in seed["skills"]
         assert seed["skills"]["/review/SKILL.md"] == "skill content"
 
@@ -83,14 +79,12 @@ class TestBuildSeed:
         skills = project / SKILLS_DIRNAME
         skills.mkdir()
         (skills / ".hidden").write_text("secret", encoding="utf-8")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert seed["skills"] == {}
 
     def test_user_memories_empty_when_no_dir(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert seed["user_memories"] == {}
 
     def test_user_memories_seeds_empty_agents_md_when_empty_dir(
@@ -99,8 +93,7 @@ class TestBuildSeed:
     ) -> None:
         project = _minimal_project(tmp_path)
         (project / USER_DIRNAME).mkdir()
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert seed["user_memories"] == {"/AGENTS.md": ""}
 
     def test_user_memories_reads_agents_md(self, tmp_path: Path) -> None:
@@ -109,8 +102,7 @@ class TestBuildSeed:
         user_dir.mkdir(parents=True)
         content = "# User Prefs\n"
         (user_dir / "AGENTS.md").write_text(content, encoding="utf-8")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert seed["user_memories"] == {"/AGENTS.md": content}
 
     def test_user_memories_ignores_non_agents_md_files(self, tmp_path: Path) -> None:
@@ -119,8 +111,7 @@ class TestBuildSeed:
         user_dir.mkdir(parents=True)
         (user_dir / "AGENTS.md").write_text("# user mem", encoding="utf-8")
         (user_dir / "other.md").write_text("ignored", encoding="utf-8")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert list(seed["user_memories"].keys()) == ["/AGENTS.md"]
 
 
@@ -324,7 +315,7 @@ class TestBundle:
             bundle(config, project, build)
 
     def test_bundle_with_subagents(self, tmp_path: Path) -> None:
-        """Full bundle with sync and async subagents produces valid artifacts."""
+        """Full bundle with sync subagents produces valid artifacts."""
         project = _minimal_project(tmp_path / "project")
         _add_subagent(
             project,
@@ -334,18 +325,7 @@ class TestBundle:
         )
         _add_subagent(project, "coder", description="Coding agent")
         build = tmp_path / "build"
-        config = DeployConfig(
-            agent=AgentConfig(name="test-agent"),
-            sandbox=SandboxConfig(),
-            async_subagents=[
-                AsyncSubAgentConfig(
-                    name="writer",
-                    description="Content writer",
-                    graph_id="writer-graph",
-                    url="https://example.com",
-                ),
-            ],
-        )
+        config = _minimal_config()
         bundle(config, project, build)
 
         # Verify seed has subagents.
@@ -356,17 +336,13 @@ class TestBundle:
         assert (
             seed["subagents"]["researcher"]["skills"]["/search/SKILL.md"] == "# Search"
         )
-        assert "async_subagents" in seed
-        assert len(seed["async_subagents"]) == 1
-        assert seed["async_subagents"][0]["name"] == "writer"
+        assert "async_subagents" not in seed
 
         # Verify generated deploy_graph.py is valid Python.
         graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
         compile(graph_py, "<deploy_graph_subagents>", "exec")
         assert "SubAgent" in graph_py
-        assert "AsyncSubAgent" in graph_py
         assert "_build_sync_subagents" in graph_py
-        assert "_build_async_subagents" in graph_py
 
 
 class TestPrintBundleSummary:
@@ -437,30 +413,8 @@ class TestPrintBundleSummary:
         config = _minimal_config()
         print_bundle_summary(config, tmp_path)
         out = capsys.readouterr().out
-        assert "Subagents (1 sync" in out
+        assert "Subagents (1)" in out
         assert "researcher" in out
-
-    def test_async_subagent_summary(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        seed = {
-            "memories": {"/AGENTS.md": "x"},
-            "skills": {},
-            "async_subagents": [
-                {
-                    "name": "writer",
-                    "description": "Content writer",
-                    "graph_id": "g",
-                    "url": "",
-                },
-            ],
-        }
-        (tmp_path / "_seed.json").write_text(json.dumps(seed), encoding="utf-8")
-        config = _minimal_config()
-        print_bundle_summary(config, tmp_path)
-        out = capsys.readouterr().out
-        assert "1 async" in out
-        assert "writer" in out
 
 
 def _add_subagent(
@@ -491,15 +445,13 @@ class TestBuildSeedSubagents:
     def test_no_subagents_key_when_none(self, tmp_path: Path) -> None:
         """No subagents dir means no 'subagents' key in seed."""
         project = _minimal_project(tmp_path)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "subagents" not in seed
 
     def test_sync_subagent_included(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         _add_subagent(project, "helper", description="A helper")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "subagents" in seed
         assert "helper" in seed["subagents"]
         sa = seed["subagents"]["helper"]
@@ -516,8 +468,7 @@ class TestBuildSeedSubagents:
             description="A coder",
             skills={"review/SKILL.md": "review skill"},
         )
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         sa = seed["subagents"]["coder"]
         assert "/review/SKILL.md" in sa["skills"]
         assert sa["skills"]["/review/SKILL.md"] == "review skill"
@@ -526,54 +477,27 @@ class TestBuildSeedSubagents:
         project = _minimal_project(tmp_path)
         mcp_data = {"mcpServers": {"s": {"type": "http", "url": "http://x"}}}
         _add_subagent(project, "mcp-agent", description="MCP agent", mcp=mcp_data)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         sa = seed["subagents"]["mcp-agent"]
         assert sa["mcp"] == mcp_data
 
     def test_sync_subagent_no_mcp(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         _add_subagent(project, "plain", description="Plain agent")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         sa = seed["subagents"]["plain"]
         assert sa["mcp"] is None
 
-    def test_async_subagents_included(self, tmp_path: Path) -> None:
+    def test_no_async_subagents_key(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
-        config = DeployConfig(
-            agent=AgentConfig(name="test-agent"),
-            sandbox=SandboxConfig(),
-            async_subagents=[
-                AsyncSubAgentConfig(
-                    name="writer",
-                    description="Content writer",
-                    graph_id="writer-graph",
-                    url="https://example.com",
-                ),
-            ],
-        )
-        seed = _build_seed(config, project, "# prompt")
-        assert "async_subagents" in seed
-        assert len(seed["async_subagents"]) == 1
-        asa = seed["async_subagents"][0]
-        assert asa["name"] == "writer"
-        assert asa["description"] == "Content writer"
-        assert asa["graph_id"] == "writer-graph"
-        assert asa["url"] == "https://example.com"
-
-    def test_no_async_subagents_key_when_none(self, tmp_path: Path) -> None:
-        project = _minimal_project(tmp_path)
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "async_subagents" not in seed
 
     def test_multiple_sync_subagents(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)
         _add_subagent(project, "alpha", description="Alpha agent")
         _add_subagent(project, "beta", description="Beta agent")
-        config = _minimal_config()
-        seed = _build_seed(config, project, "# prompt")
+        seed = _build_seed(project, "# prompt")
         assert "alpha" in seed["subagents"]
         assert "beta" in seed["subagents"]
         assert len(seed["subagents"]) == 2
@@ -591,24 +515,10 @@ class TestRenderDeployGraphSubagents:
         assert "from deepagents.middleware.subagents import SubAgent" in result
         assert "_build_sync_subagents" in result
 
-    def test_subagent_imports_when_async(self) -> None:
-        config = _minimal_config()
-        result = _render_deploy_graph(
-            config,
-            mcp_present=False,
-            has_async_subagents=True,
-        )
-        compile(result, "<deploy_graph_async_sa>", "exec")
-        assert (
-            "from deepagents.middleware.async_subagents import AsyncSubAgent" in result
-        )
-        assert "_build_async_subagents" in result
-
     def test_no_subagent_imports_when_none(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(config, mcp_present=False)
         assert "SubAgent" not in result
-        assert "AsyncSubAgent" not in result
 
     def test_subagents_passed_to_create_deep_agent(self) -> None:
         config = _minimal_config()
@@ -616,9 +526,8 @@ class TestRenderDeployGraphSubagents:
             config,
             mcp_present=False,
             has_sync_subagents=True,
-            has_async_subagents=True,
         )
-        compile(result, "<deploy_graph_both_sa>", "exec")
+        compile(result, "<deploy_graph_sync_sa>", "exec")
         assert "subagents=" in result
 
     def test_subagent_seeding(self) -> None:

@@ -10,10 +10,11 @@ Positioning: should be placed late in the middleware stack (after
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
 from deepagents.middleware._tool_exclusion import _tool_name
 
@@ -85,23 +86,62 @@ def _rewrite_ai_message_tool_calls(
     )
 
 
+def _rewrite_message_list(
+    messages: list[BaseMessage],
+    aliases: dict[str, str],
+) -> tuple[list[BaseMessage], bool]:
+    """Rewrite tool-call names in a list of messages.
+
+    Returns the (possibly new) list and whether any change was made.
+    """
+    changed = False
+    result: list[BaseMessage] = []
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            rewritten = _rewrite_ai_message_tool_calls(msg, aliases)
+            if rewritten is not msg:
+                changed = True
+            result.append(rewritten)
+        else:
+            result.append(msg)
+    return result, changed
+
+
 def _rewrite_response_tool_names(
     response: object,  # ModelResponse | AIMessage | ExtendedModelResponse
     aliases: dict[str, str],
 ) -> object:
     """Rewrite tool-call names in a model response using *aliases*.
 
-    Handles ``AIMessage`` directly and ``ExtendedModelResponse`` (which wraps
-    an ``AIMessage`` in its ``.message`` attribute).  Other response types are
-    returned unchanged.
+    Handles:
+    - ``AIMessage`` directly (bare message).
+    - ``ModelResponse`` (has ``.result: list[BaseMessage]``).
+    - ``ExtendedModelResponse`` (wraps a ``ModelResponse`` in
+      ``.model_response``).
+
+    Other response types are returned unchanged.
     """
     if isinstance(response, AIMessage):
         return _rewrite_ai_message_tool_calls(response, aliases)
-    msg = getattr(response, "message", None)
-    if isinstance(msg, AIMessage):
-        rewritten = _rewrite_ai_message_tool_calls(msg, aliases)
-        if rewritten is not msg:
-            return response.model_copy(update={"message": rewritten})
+
+    # ModelResponse: dataclass with .result list
+    result_msgs = getattr(response, "result", None)
+    if isinstance(result_msgs, list):
+        new_msgs, changed = _rewrite_message_list(result_msgs, aliases)
+        if changed:
+            return replace(response, result=new_msgs)
+        return response
+
+    # ExtendedModelResponse: wraps a ModelResponse in .model_response
+    inner = getattr(response, "model_response", None)
+    if inner is not None:
+        inner_msgs = getattr(inner, "result", None)
+        if isinstance(inner_msgs, list):
+            new_msgs, changed = _rewrite_message_list(inner_msgs, aliases)
+            if changed:
+                return replace(response, model_response=replace(inner, result=new_msgs))
+        return response
+
     return response
 
 

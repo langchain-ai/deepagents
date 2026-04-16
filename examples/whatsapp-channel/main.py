@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from deepagents_cli.tools import fetch_url, http_request, web_search
+from tools import fetch_url, http_request, web_search
 from whatsapp_adapter import MessageEvent, WhatsAppAdapter
 
 load_dotenv()

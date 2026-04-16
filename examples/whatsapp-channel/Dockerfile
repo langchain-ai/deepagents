@@ -36,10 +36,9 @@ WORKDIR /app
 COPY examples/whatsapp-channel/bridge/package.json examples/whatsapp-channel/bridge/package-lock.json* bridge/
 RUN cd bridge && npm install --omit=dev
 
-# Install local libs from the monorepo (not published to PyPI at these versions)
+# Install deepagents from the local monorepo (version may not be on PyPI yet)
 COPY libs/deepagents /tmp/libs/deepagents
-COPY libs/cli /tmp/libs/cli
-RUN pip install --no-cache-dir /tmp/libs/deepagents /tmp/libs/cli && rm -rf /tmp/libs
+RUN pip install --no-cache-dir /tmp/libs/deepagents && rm -rf /tmp/libs
 
 # Install remaining Python deps
 COPY examples/whatsapp-channel/pyproject.toml .

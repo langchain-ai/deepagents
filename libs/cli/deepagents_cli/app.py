@@ -2773,6 +2773,15 @@ class DeepAgentsApp(App):
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
+            if not await self._has_conversation_messages():
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to remember yet. Start a conversation first,"
+                        " then use /remember to capture learnings."
+                    )
+                )
+                return
             args = command.strip()[len("/remember") :].strip()
             rewritten = f"/skill:remember {args}" if args else "/skill:remember"
             await self._handle_skill_command(rewritten)
@@ -3052,6 +3061,35 @@ class DeepAgentsApp(App):
 
         skill_name, args = parse_skill_command(command)
         await self._invoke_skill(skill_name, args, command=command)
+
+    async def _has_conversation_messages(self) -> bool:
+        """Check whether the current thread has at least one human message.
+
+        Returns:
+            `True` if the conversation contains a `HumanMessage`, `False`
+            otherwise. On transient errors (network, corrupt state) returns
+            `True` so that `/remember` is not blocked with a misleading
+            "nothing to remember" message.
+        """
+        if not self._agent:
+            return False
+        try:
+            from langchain_core.messages import HumanMessage
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": self._lc_thread_id},
+            }
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return False
+            messages = state.values.get("messages", [])
+            return any(isinstance(m, HumanMessage) for m in messages)
+        except Exception:
+            logger.warning(
+                "Failed to check conversation messages; allowing /remember to proceed",
+                exc_info=True,
+            )
+            return True
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.

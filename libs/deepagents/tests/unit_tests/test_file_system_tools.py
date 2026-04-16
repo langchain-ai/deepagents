@@ -599,3 +599,21 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def test_delete_file_not_registered_by_default() -> None:
+    """delete_file should not be in the tool list unless opted in."""
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    mw = FilesystemMiddleware()
+    tool_names = {t.name for t in mw.tools}
+    assert "delete_file" not in tool_names
+
+
+def test_delete_file_registered_when_opted_in() -> None:
+    """delete_file should appear when passed via additional_tools."""
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    mw = FilesystemMiddleware(additional_tools={"delete_file"})
+    tool_names = {t.name for t in mw.tools}
+    assert "delete_file" in tool_names

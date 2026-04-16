@@ -837,4 +837,3 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
 BACKEND_TYPES = BackendProtocol | BackendFactory
-

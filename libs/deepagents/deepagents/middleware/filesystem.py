@@ -588,6 +588,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     state_schema = FilesystemState
 
+    OPT_IN_TOOLS: frozenset[str] = frozenset({"delete_file"})
+    """Tool names that are not registered by default.
+
+    Pass these names via the ``additional_tools`` parameter to enable them.
+    """
+
     def __init__(
         self,
         *,
@@ -597,6 +603,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        additional_tools: frozenset[str] | set[str] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -613,6 +620,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            additional_tools: Opt-in tool names to register beyond the default set.
+
+                Tools listed in `OPT_IN_TOOLS` (currently ``{"delete_file"}``)
+                are not registered by default. Pass their names here to enable
+                them. Unrecognized names are silently ignored.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
@@ -634,17 +646,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._additional_tools: frozenset[str] = frozenset(additional_tools or ())
 
         self.tools = [
             self._create_ls_tool(),
             self._create_read_file_tool(),
             self._create_write_file_tool(),
-            self._create_delete_file_tool(),
             self._create_edit_file_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
             self._create_execute_tool(),
         ]
+
+        if "delete_file" in self._additional_tools:
+            self.tools.append(self._create_delete_file_tool())
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.

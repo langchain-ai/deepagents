@@ -94,6 +94,7 @@ jobs:
             deepagents
             deepagents-cli
             deps
+            deps-dev
             evals
             examples
             harbor

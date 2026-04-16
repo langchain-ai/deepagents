@@ -9,6 +9,7 @@ from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.widgets.autocomplete import (
     MAX_SUGGESTIONS,
     CompletionController,
+    CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
@@ -340,6 +341,31 @@ class TestSlashCommandController:
         controller.reset()
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
+
+    def test_space_key_applies_selected_completion(self, controller, mock_view) -> None:
+        """Pressing space with active suggestions applies the completion."""
+        controller.on_text_changed("/hel", 4)
+        mock_view.render_completion_suggestions.assert_called()
+
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/hel", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once()
+        # First positional arg is start=0, second is cursor_index=4,
+        # third is the completed command name.
+        args = mock_view.replace_completion_range.call_args[0]
+        assert args[0] == 0
+        assert args[1] == 4
+        assert args[2] == "/help"
+
+    def test_space_key_ignored_without_suggestions(self, controller) -> None:
+        """Space returns IGNORED when there are no active suggestions."""
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/zzz", 4)
+        assert result == CompletionResult.IGNORED
 
 
 class TestScoreCommand:

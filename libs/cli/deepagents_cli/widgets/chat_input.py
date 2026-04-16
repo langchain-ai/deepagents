@@ -476,10 +476,22 @@ class ChatTextArea(TextArea):
         absolute_y = scroll_y + y
         # Private Textual API (verified against textual 3.x); revisit on
         # major Textual upgrades.
-        offset_map = self.wrapped_document._offset_to_line_info
+        try:
+            offset_map = self.wrapped_document._offset_to_line_info
+        except AttributeError:
+            logger.warning(
+                "WrappedDocument._offset_to_line_info not found; "
+                "argument hint rendering disabled (Textual API change?)"
+            )
+            return None
         if absolute_y < 0 or absolute_y >= len(offset_map):
             return None
-        return offset_map[absolute_y]
+        entry = offset_map[absolute_y]
+        expected_length = 2  # (line_index, section_offset)
+        if not isinstance(entry, tuple) or len(entry) != expected_length:
+            logger.warning("Unexpected offset_map entry: %r", entry)
+            return None
+        return entry
 
     def _is_argument_hint_section(self, line_index: int, section_offset: int) -> bool:
         """Return whether a wrapped section owns the end-of-line hint."""
@@ -941,6 +953,10 @@ class _CompletionViewAdapter:
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
         """Map completion indices to text-area indices before replacing text."""
+        # The completion controller returns the full command name (e.g.
+        # "/remember") in completion space, but the TextArea only contains
+        # text after the virtual mode prefix (e.g. "/" in command mode).
+        # Strip the prefix to avoid double-insertion.
         prefix = MODE_PREFIXES.get(self._chat_input.mode, "")
         if prefix and replacement.startswith(prefix):
             replacement = replacement[len(prefix) :]

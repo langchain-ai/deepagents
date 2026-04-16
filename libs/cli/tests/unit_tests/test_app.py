@@ -3316,6 +3316,28 @@ class TestHasConversationMessages:
 
             assert await app._has_conversation_messages() is True
 
+    async def test_returns_true_on_aget_state_exception(self) -> None:
+        """Should return True on transient errors so /remember is not blocked."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(side_effect=RuntimeError("connection lost"))
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_false_when_state_values_is_none(self) -> None:
+        """Should return False when state.values is None."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = None
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
 
 class TestRememberRequiresMessages:
     """Ensure /remember early-returns when no conversation exists."""

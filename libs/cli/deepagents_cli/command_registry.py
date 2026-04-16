@@ -56,6 +56,20 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     """Alternative names (e.g. `("/q",)` for `/quit`)."""
 
+    def to_entry(self) -> CommandEntry:
+        """Project this command into a `CommandEntry` for autocomplete.
+
+        Returns:
+            A `CommandEntry` carrying only the fields the autocomplete
+                layer needs.
+        """
+        return CommandEntry(
+            name=self.name,
+            description=self.description,
+            hidden_keywords=self.hidden_keywords,
+            argument_hint=self.argument_hint,
+        )
+
 
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
@@ -253,15 +267,7 @@ class CommandEntry(NamedTuple):
     """Placeholder text shown when the command accepts arguments (e.g. `[context]`)."""
 
 
-SLASH_COMMANDS: list[CommandEntry] = [
-    CommandEntry(
-        name=cmd.name,
-        description=cmd.description,
-        hidden_keywords=cmd.hidden_keywords,
-        argument_hint=cmd.argument_hint,
-    )
-    for cmd in COMMANDS
-]
+SLASH_COMMANDS: list[CommandEntry] = [cmd.to_entry() for cmd in COMMANDS]
 """Autocomplete entries derived from `COMMANDS` for `SlashCommandController`."""
 
 

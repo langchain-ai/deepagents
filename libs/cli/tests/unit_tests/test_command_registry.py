@@ -108,6 +108,11 @@ class TestSlashCommands:
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
 
+    def test_to_entry_matches_slash_commands(self) -> None:
+        """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
+        for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
+            assert cmd.to_entry() == entry
+
 
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.

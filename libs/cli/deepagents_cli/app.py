@@ -3057,7 +3057,9 @@ class DeepAgentsApp(App):
 
         Returns:
             `True` if the conversation contains a `HumanMessage`, `False`
-            otherwise (including when the agent or state is unavailable).
+            otherwise. On transient errors (network, corrupt state) returns
+            `True` so that `/remember` is not blocked with a misleading
+            "nothing to remember" message.
         """
         if not self._agent:
             return False
@@ -3073,8 +3075,11 @@ class DeepAgentsApp(App):
             messages = state.values.get("messages", [])
             return any(isinstance(m, HumanMessage) for m in messages)
         except Exception:
-            logger.debug("Failed to check conversation messages", exc_info=True)
-            return False
+            logger.warning(
+                "Failed to check conversation messages; allowing /remember to proceed",
+                exc_info=True,
+            )
+            return True
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.

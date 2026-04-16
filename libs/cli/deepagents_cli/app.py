@@ -1447,7 +1447,7 @@ class DeepAgentsApp(App):
             logger.debug("Background update check failed", exc_info=True)
             return
 
-        # Phase 2: auto-update or notify (failures surfaced to user)
+        # Phase 2: auto-update or notify
         try:
             from deepagents_cli._version import __version__ as cli_version
 
@@ -1495,6 +1495,12 @@ class DeepAgentsApp(App):
                 await asyncio.to_thread(mark_update_notified, latest)
         except Exception:
             logger.warning("Update check/notify failed unexpectedly", exc_info=True)
+            if is_auto_update_enabled():
+                self.notify(
+                    "Auto-update failed unexpectedly.",
+                    severity="warning",
+                    timeout=10,
+                )
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""

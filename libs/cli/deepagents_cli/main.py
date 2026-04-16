@@ -1431,7 +1431,8 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
-        # Handle --auto-update flag (headless toggle, no session)
+        # Handle --auto-update flag (headless toggle: reads current state
+        # and inverts it, no session)
         if args.auto_update:
             try:
                 from deepagents_cli.config import _is_editable_install
@@ -1452,6 +1453,13 @@ def cli_main() -> None:
                 set_auto_update(new_state)
                 label = "enabled" if new_state else "disabled"
                 console.print(f"Auto-updates {label}.")
+            except OSError:
+                logger.warning("--auto-update failed: filesystem error", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
             except Exception:
                 logger.warning("--auto-update failed", exc_info=True)
                 console.print(

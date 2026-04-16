@@ -1,7 +1,8 @@
 """Update lifecycle for `deepagents-cli`.
 
 Handles version checking against PyPI (with caching), install-method detection,
-auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
+auto-upgrade execution, config-driven opt-in/out, notification throttling, and
+"what's new" tracking.
 
 Most public entry points absorb errors and return sentinel values.
 `set_auto_update` raises on write failures so callers can surface
@@ -191,7 +192,7 @@ def _read_update_state() -> dict[str, object]:
 
 
 def _write_update_state(patch: dict[str, object]) -> None:
-    """Merge *patch* into the shared update state file.
+    """Merge *patch* into the shared update state file (shallow, top-level only).
 
     Args:
         patch: Keys to merge into the existing state.
@@ -489,7 +490,8 @@ def _read_update_config() -> dict[str, bool]:
 
 def get_seen_version() -> str | None:
     """Return the last version the user saw the "what's new" banner for."""
-    return _read_update_state().get("seen_version")  # type: ignore[return-value]
+    value = _read_update_state().get("seen_version")
+    return value if isinstance(value, str) else None
 
 
 def mark_version_seen(version: str) -> None:

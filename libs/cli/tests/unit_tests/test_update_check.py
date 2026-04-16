@@ -15,9 +15,11 @@ from deepagents_cli.update_check import (
     _latest_from_releases,
     _parse_version,
     get_latest_version,
+    get_seen_version,
     is_auto_update_enabled,
     is_update_available,
     mark_update_notified,
+    mark_version_seen,
     set_auto_update,
     should_notify_update,
 )
@@ -620,10 +622,89 @@ class TestMarkUpdateNotified:
 
     def test_preserves_seen_version(self, state_file) -> None:
         """Marking notification preserves existing seen_version data."""
-        from deepagents_cli.update_check import mark_version_seen
-
         mark_version_seen("1.0.0")
         mark_update_notified("2.0.0")
         data = json.loads(state_file.read_text())
         assert data["seen_version"] == "1.0.0"
         assert data["notified_version"] == "2.0.0"
+
+
+class TestGetSeenVersion:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary directory."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_no_file_returns_none(self, state_file) -> None:  # noqa: ARG002
+        """No state file -> None."""
+        assert get_seen_version() is None
+
+    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
+        """Mark then get returns the same version."""
+        mark_version_seen("1.0.0")
+        assert get_seen_version() == "1.0.0"
+
+    def test_corrupt_json_returns_none(self, state_file) -> None:
+        """Corrupt state file -> None."""
+        state_file.write_text("not json")
+        assert get_seen_version() is None
+
+    def test_non_string_value_returns_none(self, state_file) -> None:
+        """Non-string seen_version -> None (type guard)."""
+        state_file.write_text(json.dumps({"seen_version": 123}))
+        assert get_seen_version() is None
+
+    def test_preserves_notification_keys(self, state_file) -> None:  # noqa: ARG002
+        """Marking seen preserves existing notification data."""
+        mark_update_notified("2.0.0")
+        mark_version_seen("1.0.0")
+        assert get_seen_version() == "1.0.0"
+        assert should_notify_update("2.0.0") is False
+
+
+class TestShouldShowWhatsNew:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary directory."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_first_run_returns_false_and_marks(self, state_file) -> None:
+        """First run: returns False and writes current version as seen."""
+        from deepagents_cli.update_check import should_show_whats_new
+
+        with patch("deepagents_cli.update_check.__version__", "1.0.0"):
+            assert should_show_whats_new() is False
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert data["seen_version"] == "1.0.0"
+
+    def test_same_version_returns_false(self, state_file) -> None:  # noqa: ARG002
+        """Current version == seen version -> False."""
+        from deepagents_cli.update_check import should_show_whats_new
+
+        mark_version_seen("1.0.0")
+        with patch("deepagents_cli.update_check.__version__", "1.0.0"):
+            assert should_show_whats_new() is False
+
+    def test_newer_version_returns_true(self, state_file) -> None:  # noqa: ARG002
+        """Current version > seen version -> True."""
+        from deepagents_cli.update_check import should_show_whats_new
+
+        mark_version_seen("1.0.0")
+        with patch("deepagents_cli.update_check.__version__", "2.0.0"):
+            assert should_show_whats_new() is True
+
+    def test_coexists_with_notification_state(self, state_file) -> None:  # noqa: ARG002
+        """What's-new and notification state don't interfere."""
+        from deepagents_cli.update_check import should_show_whats_new
+
+        mark_update_notified("2.0.0")
+        mark_version_seen("1.0.0")
+        with patch("deepagents_cli.update_check.__version__", "2.0.0"):
+            assert should_show_whats_new() is True
+        # Notification throttle still works
+        assert should_notify_update("2.0.0") is False

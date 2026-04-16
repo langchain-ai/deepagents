@@ -2,10 +2,8 @@ FROM node:20-slim AS node
 
 FROM python:3.12-slim
 
-# Copy Node.js from the official image
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=node /usr/local/bin/npx /usr/local/bin/npx
+# Copy Node.js runtime from the official image (includes npm/npx and all lib modules)
+COPY --from=node /usr/local/bin/ /usr/local/bin/
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 # Install Chromium and system deps for whatsapp-web.js

@@ -691,8 +691,8 @@ class ChatTextArea(TextArea):
 
         # Pre-dismiss: hide the completion popup BEFORE super() updates the
         # text, so the popup disappear and the new character render in the
-        # same compositor frame.  Without this there is a visible 1-frame
-        # lag where the new text is visible but the popup hasn't hidden yet.
+        # same compositor frame. Without this there is a visible frame lag where
+        # the new text is visible but the popup hasn't hidden yet.
         if self._completion_active and event.is_printable and event.character == " ":
             parent = self.parent
             if isinstance(parent, ChatInput):
@@ -976,7 +976,7 @@ class ChatInput(Vertical):
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
 
-        # command name (without /) → argument hint for inline ghost text
+        # Command name (without /) → argument hint for inline ghost text
         self._argument_hints: dict[str, str] = {}
 
         # Set up history manager
@@ -1049,16 +1049,16 @@ class ChatInput(Vertical):
             )
 
     def _pre_key_completion_dismiss(self) -> None:
-        """Eagerly hide the completion popup before TextArea processes a key.
+        """Eagerly hide the completion popup before `TextArea` processes a key.
 
-        Called from `ChatTextArea._on_key` so the popup disappears in the
-        same render frame as the new character, avoiding a 1-frame lag.
+        Called from `ChatTextArea._on_key` so the popup disappears in the same
+        render frame as the new character, avoiding a frame lag.
         """
         if self._current_suggestions:
             self.clear_completion_suggestions()
 
     def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
-        """Rebuild the command-name → argument-hint lookup.
+        """Rebuild the command-name -> argument-hint lookup.
 
         Args:
             commands: Current list of `CommandEntry` instances.

@@ -42,16 +42,16 @@ def test_state_persists_across_evaluations() -> None:
     assert interpreter.env == {"x": 10}
 
 
-def test_uses_provided_globals_mapping() -> None:
-    globals_dict = {"x": 10}
-    interpreter = Interpreter(globals=globals_dict)
+def test_uses_provided_state_mapping() -> None:
+    state_dict = {"x": 10}
+    interpreter = Interpreter(state=state_dict)
 
     result = interpreter.evaluate("y = x\ny")
 
     assert result == 10
     assert interpreter.env == {"x": 10, "y": 10}
-    assert interpreter.globals == {"x": 10, "y": 10}
-    assert globals_dict == {"x": 10, "y": 10}
+    assert interpreter.state == {"x": 10, "y": 10}
+    assert state_dict == {"x": 10, "y": 10}
 
 
 def test_bindings_are_read_only_and_used_for_name_resolution() -> None:
@@ -60,7 +60,7 @@ def test_bindings_are_read_only_and_used_for_name_resolution() -> None:
     result = interpreter.evaluate("y = x\ny")
 
     assert result == 10
-    assert interpreter.globals == {"y": 10}
+    assert interpreter.state == {"y": 10}
     assert interpreter.bindings == {"x": 10, "math": math}
 
     with pytest.raises(NameError, match="Cannot assign to read-only binding: math"):

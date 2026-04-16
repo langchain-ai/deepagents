@@ -297,7 +297,7 @@ class ForLoopState:
 @dataclass(slots=True)
 class VMState:
     instructions: Sequence[Instruction]
-    globals: MutableMapping[str, Any]
+    state: MutableMapping[str, Any]
     pc: int = 0
     stack: list[Any] = field(default_factory=list)
     last_value: Any = None
@@ -605,12 +605,11 @@ class Interpreter:
         self,
         *,
         functions: Mapping[str, Callable[..., Any] | BaseTool] | None = None,
-        globals: MutableMapping[str, Any] | None = None,
+        state: MutableMapping[str, Any] | None = None,
         bindings: Mapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
         runtime: ToolRuntime | None = None,
         max_concurrency: int | None = None,
-        max_workers: int | None = None,
     ) -> None:
         self._functions = dict(functions or {})
         self._bindings = dict(bindings or {})
@@ -618,19 +617,19 @@ class Interpreter:
             _StringForeignInterface(),
             *tuple(foreign_interfaces),
         )
-        self._globals: MutableMapping[str, Any] = globals if globals is not None else {}
+        self._state: MutableMapping[str, Any] = state if state is not None else {}
         self._printed_lines: list[str] = []
         self._runtime = runtime
-        self._max_concurrency = max_concurrency
+        self._max_concurrency = max_concurrency or 8
         self._compiler = _ProgramCompiler
 
     @property
     def env(self) -> dict[str, Any]:
-        return dict(self._globals)
+        return dict(self._state)
 
     @property
-    def globals(self) -> dict[str, Any]:
-        return dict(self._globals)
+    def state(self) -> dict[str, Any]:
+        return dict(self._state)
 
     @property
     def bindings(self) -> dict[str, Any]:
@@ -647,31 +646,31 @@ class Interpreter:
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
         instructions = self.compile(source)
-        state = self._new_state(instructions, self._globals)
-        value = self._run_vm_sync(state, print_callback=print_callback)
-        self._globals = state.globals
+        vm_state = self._new_state(instructions, self._state)
+        value = self._run_vm_sync(vm_state, print_callback=print_callback)
+        self._state = vm_state.state
         return value
 
     async def aevaluate(
         self, source: str, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
         instructions = self.compile(source)
-        state = self._new_state(instructions, self._globals)
-        value = await self._run_vm_async(state, print_callback=print_callback)
-        self._globals = state.globals
+        vm_state = self._new_state(instructions, self._state)
+        value = await self._run_vm_async(vm_state, print_callback=print_callback)
+        self._state = vm_state.state
         return value
 
     def _new_state(
-        self, instructions: tuple[Instruction, ...], globals: MutableMapping[str, Any]
+        self, instructions: tuple[Instruction, ...], state: MutableMapping[str, Any]
     ) -> VMState:
-        return VMState(instructions=instructions, globals=globals)
+        return VMState(instructions=instructions, state=state)
 
     def _run_vm_sync(
         self, state: VMState, *, print_callback: Callable[[str], None] | None = None
     ) -> Any:
         instructions = state.instructions
         stack = state.stack
-        globals = state.globals
+        scope = state.state
         loop_stack = state.loop_stack
         load_name = self._load_name
         eval_binary_operation = self._eval_binary_operation
@@ -692,10 +691,10 @@ class Interpreter:
                 stack.append(arg)
                 continue
             if opcode == OpCode.LOAD_NAME:
-                stack.append(load_name(globals, arg))
+                stack.append(load_name(scope, arg))
                 continue
             if opcode == OpCode.STORE_NAME:
-                store_name(globals, arg, stack[-1])
+                store_name(scope, arg, stack[-1])
                 continue
             if opcode == OpCode.SET_LAST:
                 state.last_value = stack[-1] if stack else None
@@ -766,7 +765,7 @@ class Interpreter:
                     loop_stack.pop()
                     state.pc = int(arg)
                     continue
-                globals[loop_state.target_name] = loop_state.items[loop_state.index]
+                scope[loop_state.target_name] = loop_state.items[loop_state.index]
                 loop_state.index += 1
                 continue
             if opcode == OpCode.RETURN_VALUE:
@@ -780,7 +779,7 @@ class Interpreter:
     ) -> Any:
         instructions = state.instructions
         stack = state.stack
-        globals = state.globals
+        scope = state.state
         loop_stack = state.loop_stack
         load_name = self._load_name
         eval_binary_operation = self._eval_binary_operation
@@ -801,10 +800,10 @@ class Interpreter:
                 stack.append(arg)
                 continue
             if opcode == OpCode.LOAD_NAME:
-                stack.append(load_name(globals, arg))
+                stack.append(load_name(scope, arg))
                 continue
             if opcode == OpCode.STORE_NAME:
-                store_name(globals, arg, stack[-1])
+                store_name(scope, arg, stack[-1])
                 continue
             if opcode == OpCode.SET_LAST:
                 state.last_value = stack[-1] if stack else None
@@ -879,7 +878,7 @@ class Interpreter:
                     loop_stack.pop()
                     state.pc = int(arg)
                     continue
-                globals[loop_state.target_name] = loop_state.items[loop_state.index]
+                scope[loop_state.target_name] = loop_state.items[loop_state.index]
                 loop_state.index += 1
                 continue
             if opcode == OpCode.RETURN_VALUE:
@@ -913,8 +912,8 @@ class Interpreter:
             raise TypeError(msg)
         if not tasks:
             return []
-        max_workers = self._max_concurrency or len(tasks)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        max_concurrency = self._max_concurrency or len(tasks)
+        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
             futures = [
                 executor.submit(
                     self._call_sync,
@@ -953,9 +952,9 @@ class Interpreter:
 
         return list(await asyncio.gather(*[_run_one(task) for task in tasks]))
 
-    def _load_name(self, globals: MutableMapping[str, Any], name: str) -> Any:
-        if name in globals:
-            return globals[name]
+    def _load_name(self, state: MutableMapping[str, Any], name: str) -> Any:
+        if name in state:
+            return state[name]
         if name in self._bindings:
             return self._bindings[name]
         if name in self._functions:
@@ -964,12 +963,12 @@ class Interpreter:
         raise NameError(msg)
 
     def _store_name(
-        self, globals: MutableMapping[str, Any], name: str, value: Any
+        self, state: MutableMapping[str, Any], name: str, value: Any
     ) -> None:
         if name in self._bindings:
             msg = f"Cannot assign to read-only binding: {name}"
             raise NameError(msg)
-        globals[name] = value
+        state[name] = value
 
     def _call_sync(
         self,
@@ -1090,4 +1089,4 @@ _PRINT_SENTINEL = object()
 _PARALLEL_SENTINEL = object()
 
 
-__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError"]
+__all__ = ["ForeignObjectInterface", "Interpreter", "OpCode", "ParseError"]

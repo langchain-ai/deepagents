@@ -81,12 +81,12 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
         *,
         ptc: list[Callable[..., Any] | BaseTool] | None = None,
         add_ptc_docs: bool = False,
-        max_workers: int | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
         """Initialize the middleware and register the `repl` tool."""
         self._ptc = ptc or []
         self._add_ptc_docs = add_ptc_docs
-        self._max_workers = max_workers
+        self._max_concurrency = max_concurrency
         self.tools = [self._create_repl_tool()]
 
     def _get_ptc_implementations(self) -> dict[str, Callable[..., Any] | BaseTool]:
@@ -248,7 +248,7 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     def _run_interpreter(self, code: str, *, runtime: ToolRuntime | None = None) -> str:
         interpreter = Interpreter(
             functions=self._build_external_functions(runtime=runtime),
-            max_workers=self._max_workers,
+            max_concurrency=self._max_concurrency,
             runtime=runtime,
         )
         try:
@@ -262,7 +262,7 @@ class ReplMiddleware(AgentMiddleware[AgentState[Any], ContextT, ResponseT]):
     ) -> str:
         interpreter = Interpreter(
             functions=self._build_external_functions(runtime=runtime),
-            max_workers=self._max_workers,
+            max_concurrency=self._max_concurrency,
             runtime=runtime,
         )
         try:

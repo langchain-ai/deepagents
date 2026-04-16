@@ -1,9 +1,10 @@
 [agent]
 name = "market-researcher"
 description = "Researches market trends, competitors, and target audiences to inform GTM strategy"
-model = "anthropic:claude-haiku-4-5-20251001"
+model = "openai:gpt-5.4-mini"
 response_format = """
 {
+  "title": "MarketResearchResponse",
   "type": "object",
   "properties": {
     "executive_summary": {
@@ -42,13 +43,18 @@ response_format = """
       "type": "array",
       "items": { "type": "string" },
       "description": "Notable industry trends relevant to the GTM strategy"
+    },
+    "full_report_path": {
+      "type": "string",
+      "description": "Path to the written markdown file containing the full research report"
     }
   },
   "required": [
     "executive_summary",
     "market_size_estimate",
     "key_competitors",
-    "target_segments"
+    "target_segments",
+    "full_report_path"
   ]
 }
 """

@@ -331,18 +331,22 @@ def load_config(config_path: Path) -> DeployConfig:
 
 
 def _parse_response_format(value: str | dict[str, Any]) -> dict[str, Any]:
-    """Parse ``response_format`` — accepts a JSON string or a TOML table dict."""
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError as exc:
-            msg = f"response_format is not valid JSON: {exc}"
-            raise ValueError(msg) from exc
-        if not isinstance(parsed, dict):
-            msg = "response_format JSON must be an object"
-            raise TypeError(msg)
-        return parsed
-    return value
+    """Parse ``response_format`` — must be a JSON string (inline in deepagents.toml)."""
+    if not isinstance(value, str):
+        msg = (
+            "response_format must be a JSON string in deepagents.toml. "
+            "Use a multi-line string: response_format = '''{...}'''"
+        )
+        raise TypeError(msg)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        msg = f"response_format is not valid JSON: {exc}"
+        raise ValueError(msg) from exc
+    if not isinstance(parsed, dict):
+        msg = "response_format JSON must be an object"
+        raise TypeError(msg)
+    return parsed
 
 
 _ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})

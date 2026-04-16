@@ -238,9 +238,9 @@ async def _build_sync_subagents(seed, store, assistant_id):
                         {"content": content, "encoding": "utf-8"},
                     )
 
-        sa_prefix = f"/memories/subagents/{{name}}/"
+        sa_prefix = f"/memories/subagents/{name}/"
         if data.get("skills"):
-            sa["skills"] = [f"{{sa_prefix}}skills/"]
+            sa["skills"] = [f"{sa_prefix}skills/"]
 
         if data.get("mcp"):
             sa["tools"] = await _load_subagent_mcp_tools(data["mcp"])
@@ -254,7 +254,7 @@ async def _build_sync_subagents(seed, store, assistant_id):
         sa["permissions"] = [
             FilesystemPermission(
                 operations=["read", "write"],
-                paths=[f"{{sa_prefix}}**"],
+                paths=[f"{sa_prefix}**"],
                 mode="allow",
             ),
             FilesystemPermission(
@@ -693,7 +693,7 @@ name = {agent_name!r}
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents==0.5.2a2",
+    "deepagents==0.5.3",
 {extra_deps}]
 
 [tool.setuptools]

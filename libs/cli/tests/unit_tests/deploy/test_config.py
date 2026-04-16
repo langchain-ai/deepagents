@@ -205,10 +205,10 @@ class TestParseConfig:
         assert cfg.agent.model == AgentConfig(name="x").model
         assert cfg.sandbox == SandboxConfig()
 
-    def test_inline_response_format_as_dict(self) -> None:
+    def test_inline_response_format_as_dict_raises(self) -> None:
         schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
-        cfg = _parse_config({"agent": {"name": "bot", "response_format": schema}})
-        assert cfg.agent.response_format == schema
+        with pytest.raises(TypeError, match="must be a JSON string"):
+            _parse_config({"agent": {"name": "bot", "response_format": schema}})
 
     def test_inline_response_format_as_json_string(self) -> None:
         schema = {"type": "object", "properties": {"answer": {"type": "string"}}}

@@ -638,8 +638,8 @@ class TestBuiltInProfiles:
         profile = _get_harness_profile(spec)
         assert "execute" in profile.tool_aliases
         assert profile.tool_aliases["execute"] == "shell_command"
-        assert "ls" in profile.tool_aliases
-        assert profile.tool_aliases["ls"] == "list_dir"
+        assert "list_dir" in profile.tool_aliases
+        assert profile.tool_aliases["list_dir"] == "ls"
 
     @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
     def test_codex_profile_includes_apply_patch(self, spec: str) -> None:

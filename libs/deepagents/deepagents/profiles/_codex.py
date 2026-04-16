@@ -56,7 +56,7 @@ on. Batch logical changes into one patch instead of many small ones.
 
 _CODEX_TOOL_ALIASES: dict[str, str] = {
     "execute": "shell_command",
-    "ls": "list_dir",
+    "list_dir": "ls",
 }
 
 _CODEX_TOOL_DESCRIPTION_OVERRIDES: dict[str, str] = {

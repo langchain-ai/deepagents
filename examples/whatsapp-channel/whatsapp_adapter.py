@@ -375,7 +375,7 @@ class WhatsAppAdapter:
             print(f"[whatsapp] Installing bridge dependencies...")
             try:
                 install = subprocess.run(
-                    ["sfw", "npm", "install", "--silent"],
+                    ["sfw", "npm", "install"],
                     cwd=str(bridge_dir),
                     capture_output=True, text=True, timeout=120,
                 )

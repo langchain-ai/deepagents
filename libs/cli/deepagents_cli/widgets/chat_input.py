@@ -474,6 +474,8 @@ class ChatTextArea(TextArea):
         """
         _scroll_x, scroll_y = self.scroll_offset
         absolute_y = scroll_y + y
+        # Private Textual API (verified against textual 3.x); revisit on
+        # major Textual upgrades.
         offset_map = self.wrapped_document._offset_to_line_info
         if absolute_y < 0 or absolute_y >= len(offset_map):
             return None
@@ -515,8 +517,8 @@ class ChatTextArea(TextArea):
         if not cursor_on_hint or not hint:
             return Strip([Segment(hint, hint_style)], cell_length=cell_len(hint))
 
-        theme = self._theme
-        cursor_style = theme.cursor_style if theme else None
+        ta_theme = self._theme
+        cursor_style = ta_theme.cursor_style if ta_theme else None
         first_style = hint_style if cursor_style is None else hint_style + cursor_style
         segments = [Segment(hint[0], first_style)]
         if len(hint) > 1:
@@ -1186,27 +1188,15 @@ class ChatInput(Vertical):
         if not self._text_area:
             return
 
-        if self.mode != "command":
-            if self._text_area.argument_hint:
-                self._text_area.argument_hint = ""
-            if self._text_area.suggestion:
-                self._text_area.suggestion = ""
-            return
-
-        text = self._text_area.text
-        if text.endswith(" ") and text.count(" ") == 1:
-            hint = self._argument_hints.get(text[:-1], "")
-            if hint:
-                if self._text_area.argument_hint != hint:
+        if self.mode == "command":
+            text = self._text_area.text
+            if text.endswith(" ") and text.count(" ") == 1:
+                hint = self._argument_hints.get(text[:-1], "")
+                if hint:
                     self._text_area.argument_hint = hint
-                if self._text_area.suggestion:
-                    self._text_area.suggestion = ""
-                return
+                    return
 
-        if self._text_area.argument_hint:
-            self._text_area.argument_hint = ""
-        if self._text_area.suggestion:
-            self._text_area.suggestion = ""
+        self._text_area.argument_hint = ""
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""

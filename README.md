@@ -146,28 +146,28 @@ from deepagents.middleware import AgentMiddleware
 
 @tool
 def rm(path: str) -> str:
-  """Delete a file path."""
-  return f"deleted {path}"
+    """Delete a file path."""
+    return f"deleted {path}"
 
 
 class PolicyMiddleware(AgentMiddleware):
-  """Example policy check at tool boundary."""
+    """Example policy check at tool boundary."""
 
-  def wrap_tool_call(self, request, handler):
-    if request.tool_call["name"] == "rm":
-      path = str(request.tool_call.get("args", {}).get("path", ""))
-      if path.startswith("/etc"):
-        return ToolMessage(
-          content="Policy denied: destructive operations on /etc are blocked.",
-          tool_call_id=request.tool_call["id"],
-        )
-    return handler(request)
+    def wrap_tool_call(self, request, handler):
+        if request.tool_call["name"] == "rm":
+            path = str(request.tool_call.get("args", {}).get("path", ""))
+            if path.startswith("/etc"):
+                return ToolMessage(
+                    content="Policy denied: destructive operations on /etc are blocked.",
+                    tool_call_id=request.tool_call["id"],
+                )
+        return handler(request)
 
 
 agent = create_deep_agent(
-  model=init_chat_model("openai:gpt-4.1"),
-  tools=[rm],
-  middleware=[PolicyMiddleware()],
+    model=init_chat_model("openai:gpt-4.1"),
+    tools=[rm],
+    middleware=[PolicyMiddleware()],
 )
 ```
 

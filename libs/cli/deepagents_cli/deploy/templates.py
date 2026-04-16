@@ -157,7 +157,7 @@ SANDBOX_BLOCKS = {
 AUTH_ON_HANDLER = '''\
 
 
-@auth.on
+@auth.on.threads
 async def add_owner(
     ctx: Auth.types.AuthContext,
     value: dict,

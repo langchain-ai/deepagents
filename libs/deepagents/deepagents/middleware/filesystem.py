@@ -887,7 +887,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            res: DeleteResult = resolved_backend.delete(validated_path)
+            try:
+                res: DeleteResult = resolved_backend.delete(validated_path)
+            except NotImplementedError:
+                return "Error: This backend does not support file deletion."
             if res.error:
                 return res.error
             return f"Deleted file {res.path}"
@@ -903,7 +906,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
-            res: DeleteResult = await resolved_backend.adelete(validated_path)
+            try:
+                res: DeleteResult = await resolved_backend.adelete(validated_path)
+            except NotImplementedError:
+                return "Error: This backend does not support file deletion."
             if res.error:
                 return res.error
             return f"Deleted file {res.path}"

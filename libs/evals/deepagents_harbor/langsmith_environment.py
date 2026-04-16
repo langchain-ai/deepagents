@@ -203,9 +203,7 @@ class LangSmithEnvironment(BaseEnvironment):
             ``session_id``.
         """
         sanitized_image = LangSmithEnvironment._sanitize_name(image)
-        session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[
-            :_SESSION_HASH_LEN
-        ]
+        session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[:_SESSION_HASH_LEN]
         # "harbor-" (7) + "-" (1) + suffix (8) = 16 reserved chars
         max_image_len = _MAX_NAME_LEN - len("harbor-") - 1 - _SESSION_HASH_LEN
         truncated_image = sanitized_image[:max_image_len].rstrip("-")

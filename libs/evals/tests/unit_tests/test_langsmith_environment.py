@@ -36,21 +36,6 @@ class _FakeExecResult:
 
 
 @dataclass
-class _FakeTemplate:
-    """Minimal stand-in for langsmith SandboxTemplate."""
-
-    name: str = "harbor-ubuntu-24-04"
-
-    @dataclass
-    class _Resources:
-        cpu: str = "1000m"
-        memory: str = "2Gi"
-        storage: str = "10Gi"
-
-    resources: _Resources = field(default_factory=_Resources)
-
-
-@dataclass
 class _FakeSandbox:
     """Minimal stand-in for langsmith AsyncSandbox."""
 
@@ -126,19 +111,11 @@ def _make_env(
     )
 
 
-def _mock_async_client(
-    *,
-    template: _FakeTemplate | None = None,
-    get_template_side_effect: Exception | None = None,
-) -> MagicMock:
+def _mock_async_client() -> MagicMock:
     """Build a mock AsyncSandboxClient wired for start() tests."""
     mock = AsyncMock()
     fake_sb = _FakeSandbox()
     mock.create_sandbox.return_value = fake_sb
-    if get_template_side_effect:
-        mock.get_template.side_effect = get_template_side_effect
-    else:
-        mock.get_template.return_value = template or _FakeTemplate()
     return mock
 
 
@@ -327,11 +304,7 @@ class TestSanitizeName:
 
 
 class TestResourceConversion:
-    """Tests for task resource config → LangSmith format.
-
-    Uses force_build=True so create_template is always called regardless
-    of _ensure_template reuse logic.
-    """
+    """Tests for task resource config → LangSmith format."""
 
     async def test_memory_under_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=512)
@@ -389,88 +362,46 @@ class TestResourceConversion:
             assert mock_client.create_template.call_args.kwargs["storage"] == "2Gi"
 
 
-class TestEnsureTemplate:
-    """Tests for template reuse via _ensure_template."""
+class TestStartTemplateProvisioning:
+    """Tests for per-session template creation in start().
 
-    async def test_reuses_template_when_resources_match(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path)
+    Each trial creates its own template unconditionally — there is no
+    template reuse, conditional deletion, or force-rebuild logic.
+    """
 
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client(
-                template=_FakeTemplate(
-                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
-                ),
-            )
-            mock_cls.return_value = mock_client
-
-            await env.start(force_build=False)
-
-            mock_client.get_template.assert_called_once()
-            mock_client.create_template.assert_not_called()
-
-    async def test_recreates_template_when_resources_differ(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path, cpus=4)
-
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client(
-                template=_FakeTemplate(
-                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
-                ),
-            )
-            mock_cls.return_value = mock_client
-
-            await env.start(force_build=False)
-
-            mock_client.delete_template.assert_called_once()
-            mock_client.create_template.assert_called_once()
-            assert mock_client.create_template.call_args.kwargs["cpu"] == "4000m"
-
-    async def test_creates_template_when_not_found(self, tmp_path: Path) -> None:
-        from langsmith.sandbox import ResourceNotFoundError
-
-        env = _make_env(tmp_path)
-
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client(
-                get_template_side_effect=ResourceNotFoundError(
-                    "not found", resource_type="template"
-                ),
-            )
-            mock_cls.return_value = mock_client
-
-            await env.start(force_build=False)
-
-            mock_client.create_template.assert_called_once()
-
-    async def test_force_build_always_recreates(self, tmp_path: Path) -> None:
+    async def test_always_creates_template(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()
             mock_cls.return_value = mock_client
 
-            await env.start(force_build=True)
-
-            mock_client.get_template.assert_not_called()
-            mock_client.delete_template.assert_called_once()
-            mock_client.create_template.assert_called_once()
-
-    async def test_recreates_template_when_storage_differs(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path, storage_mb=20480)
-
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client(
-                template=_FakeTemplate(
-                    resources=_FakeTemplate._Resources(cpu="1000m", memory="2Gi", storage="10Gi")
-                ),
-            )
-            mock_cls.return_value = mock_client
-
             await env.start(force_build=False)
 
-            mock_client.delete_template.assert_called_once()
             mock_client.create_template.assert_called_once()
-            assert mock_client.create_template.call_args.kwargs["storage"] == "20Gi"
+            mock_client.get_template.assert_not_called()
+            mock_client.delete_template.assert_not_called()
+
+    async def test_force_build_is_noop(self, tmp_path: Path) -> None:
+        """force_build accepted for interface compat but does not change calls."""
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        env_a = _make_env(tmp_path / "a")
+        env_b = _make_env(tmp_path / "b")
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_a = _mock_async_client()
+            mock_cls.return_value = mock_a
+            await env_a.start(force_build=False)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_b = _mock_async_client()
+            mock_cls.return_value = mock_b
+            await env_b.start(force_build=True)
+
+        assert mock_a.create_template.call_count == mock_b.create_template.call_count == 1
+        mock_b.get_template.assert_not_called()
+        mock_b.delete_template.assert_not_called()
 
     async def test_template_name_derived_from_image(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, docker_image="ghcr.io/my-org/my-image:v1.2")
@@ -484,7 +415,25 @@ class TestEnsureTemplate:
             expected = LangSmithEnvironment._build_template_name(
                 "ghcr.io/my-org/my-image:v1.2", "test-session-001"
             )
-            mock_client.get_template.assert_called_once_with(expected)
+            mock_client.create_template.assert_called_once()
+            assert mock_client.create_template.call_args.kwargs["name"] == expected
+
+    async def test_creates_sandbox_from_template(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            expected_name = LangSmithEnvironment._build_template_name(
+                "ubuntu:24.04", "test-session-001"
+            )
+            mock_client.create_sandbox.assert_called_once_with(
+                template_name=expected_name,
+                timeout=120,
+            )
 
 
 class TestBuildTemplateName:
@@ -742,15 +691,10 @@ class TestStop:
 
     async def test_stop_clean_after_failed_start(self, tmp_path: Path) -> None:
         """If create_template fails, _template_name stays None and stop is safe."""
-        from langsmith.sandbox import ResourceNotFoundError
-
         env = _make_env(tmp_path)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = AsyncMock()
-            mock_client.get_template.side_effect = ResourceNotFoundError(
-                "not found", resource_type="template"
-            )
             mock_client.create_template.side_effect = RuntimeError("API 422")
             mock_cls.return_value = mock_client
 

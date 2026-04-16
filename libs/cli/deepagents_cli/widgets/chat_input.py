@@ -759,8 +759,19 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
-        # If completion is active, let parent handle navigation keys
-        if self._completion_active and event.key in {"up", "down", "tab", "enter"}:
+        # If completion is active, let parent handle navigation keys.
+        # Space is included so that slash-command completion can accept the
+        # selected suggestion via the same code path as Tab (avoiding a
+        # frame-lag between the popup hiding and the argument hint appearing).
+        # When the active controller ignores the space (e.g. file completion),
+        # ChatInput.on_key inserts it manually.
+        if self._completion_active and event.key in {
+            "up",
+            "down",
+            "tab",
+            "enter",
+            "space",
+        }:
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
@@ -798,15 +809,6 @@ class ChatTextArea(TextArea):
                 else:
                     self.post_message(self.HistoryNext())
                 return
-
-        # Pre-dismiss: hide the completion popup BEFORE super() updates the
-        # text, so the popup disappear and the new character render in the
-        # same compositor frame. Without this there is a visible frame lag where
-        # the new text is visible but the popup hasn't hidden yet.
-        if self._completion_active and event.is_printable and event.character == " ":
-            parent = self.parent
-            if isinstance(parent, ChatInput):
-                parent._pre_key_completion_dismiss()
 
         await super()._on_key(event)
 
@@ -1160,15 +1162,6 @@ class ChatInput(Vertical):
                 "Cannot update slash commands: controller not initialized "
                 "(widget not yet mounted)"
             )
-
-    def _pre_key_completion_dismiss(self) -> None:
-        """Eagerly hide the completion popup before `TextArea` processes a key.
-
-        Called from `ChatTextArea._on_key` so the popup disappears in the same
-        render frame as the new character, avoiding a frame lag.
-        """
-        if self._current_suggestions:
-            self.clear_completion_suggestions()
 
     def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
         """Rebuild the command-name -> argument-hint lookup.
@@ -1818,6 +1811,12 @@ class ChatInput(Vertical):
                 event.prevent_default()
                 event.stop()
                 self._submit_value(self._text_area.text.strip())
+            case CompletionResult.IGNORED if event.key == "space":
+                # Space was intercepted (prevent_default) so the active
+                # controller could attempt completion. The controller
+                # declined (e.g. file completion), so insert the space that
+                # TextArea would have inserted normally.
+                self._text_area.insert(" ")
             case CompletionResult.IGNORED if event.key == "enter":
                 # Handle Enter when completion is not active (shell/normal modes)
                 value = self._text_area.text.strip()

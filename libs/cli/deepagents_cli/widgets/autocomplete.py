@@ -256,7 +256,7 @@ class SlashCommandController:
             return CompletionResult.IGNORED
 
         match event.key:
-            case "tab":
+            case "tab" | "space":
                 if self._apply_selected_completion(cursor_index):
                     return CompletionResult.HANDLED
                 return CompletionResult.IGNORED

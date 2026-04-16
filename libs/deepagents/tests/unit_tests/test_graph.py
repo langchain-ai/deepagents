@@ -167,6 +167,7 @@ class TestProfileForModel:
         assert result.init_kwargs.get("reasoning_effort") == "medium"
         assert result.init_kwargs.get("use_responses_api") is True
         assert result.tool_aliases.get("execute") == "shell_command"
+        assert result.include_apply_patch is True
 
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})

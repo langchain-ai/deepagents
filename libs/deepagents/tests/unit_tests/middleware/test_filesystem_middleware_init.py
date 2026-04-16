@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.middleware.filesystem import (
+    APPLY_PATCH_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
@@ -44,6 +45,30 @@ class TestFilesystemMiddlewareInit:
         assert tools["write_file"].description == WRITE_FILE_TOOL_DESCRIPTION.rstrip()
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
+
+    def test_apply_patch_tool_absent_by_default(self) -> None:
+        mw = FilesystemMiddleware(backend=StateBackend())
+        names = {t.name for t in mw.tools}
+        assert "apply_patch" not in names
+
+    def test_apply_patch_tool_present_when_enabled(self) -> None:
+        mw = FilesystemMiddleware(backend=StateBackend(), include_apply_patch=True)
+        names = {t.name for t in mw.tools}
+        assert "apply_patch" in names
+
+    def test_apply_patch_custom_description(self) -> None:
+        mw = FilesystemMiddleware(
+            backend=StateBackend(),
+            include_apply_patch=True,
+            custom_tool_descriptions={"apply_patch": "Custom desc"},
+        )
+        tool = next(t for t in mw.tools if t.name == "apply_patch")
+        assert tool.description == "Custom desc"
+
+    def test_apply_patch_default_description(self) -> None:
+        mw = FilesystemMiddleware(backend=StateBackend(), include_apply_patch=True)
+        tool = next(t for t in mw.tools if t.name == "apply_patch")
+        assert tool.description == APPLY_PATCH_TOOL_DESCRIPTION.rstrip()
 
     def test_filesystem_tool_prompt_override_with_longterm_memory(self) -> None:
         """Test that custom tool descriptions work with composite backends and longterm memory."""

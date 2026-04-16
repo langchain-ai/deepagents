@@ -46,7 +46,14 @@ without seeing a prior result.
 
 - Before finishing, reconcile every TODO or plan item created via write_todos. \
 Mark each as done, blocked (with a one-sentence reason), or cancelled. Do not \
-finish with pending items."""
+finish with pending items.
+
+## File Editing
+
+- Prefer apply_patch for single-file edits — it uses the V4A diff format you \
+are trained on. Batch logical changes into one patch instead of many small ones.
+- For auto-generated changes (package.json, lock files, formatter output) or \
+bulk search-and-replace across many files, use edit_file or shell commands instead."""
 
 _CODEX_TOOL_ALIASES: dict[str, str] = {
     "execute": "shell_command",
@@ -67,6 +74,7 @@ _CODEX_PROFILE = _HarnessProfile(
     system_prompt_suffix=_CODEX_SYSTEM_PROMPT_SUFFIX,
     tool_aliases=_CODEX_TOOL_ALIASES,
     tool_description_overrides=_CODEX_TOOL_DESCRIPTION_OVERRIDES,
+    include_apply_patch=True,
 )
 
 for _model in ("openai:gpt-5.2-codex", "openai:gpt-5.3-codex"):

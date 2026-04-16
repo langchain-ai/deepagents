@@ -304,6 +304,7 @@ class TestHarnessProfile:
         assert profile.system_prompt_suffix is None
         assert profile.tool_description_overrides == {}
         assert profile.tool_aliases == {}
+        assert profile.include_apply_patch is False
         assert profile.excluded_tools == frozenset()
         assert profile.extra_middleware == ()
 
@@ -467,6 +468,18 @@ class TestMergeProfiles:
         merged = _merge_profiles(base, override)
         assert merged.tool_aliases == {"execute": "shell_command"}
 
+    def test_include_apply_patch_override_wins(self) -> None:
+        base = _HarnessProfile(include_apply_patch=False)
+        override = _HarnessProfile(include_apply_patch=True)
+        merged = _merge_profiles(base, override)
+        assert merged.include_apply_patch is True
+
+    def test_include_apply_patch_inherits_from_base(self) -> None:
+        base = _HarnessProfile(include_apply_patch=True)
+        override = _HarnessProfile()
+        merged = _merge_profiles(base, override)
+        assert merged.include_apply_patch is True
+
     def test_excluded_tools_union(self) -> None:
         base = _HarnessProfile(excluded_tools=frozenset({"execute", "write_file"}))
         override = _HarnessProfile(excluded_tools=frozenset({"execute", "task"}))
@@ -627,6 +640,11 @@ class TestBuiltInProfiles:
         assert profile.tool_aliases["execute"] == "shell_command"
         assert "ls" in profile.tool_aliases
         assert profile.tool_aliases["ls"] == "list_dir"
+
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_includes_apply_patch(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
+        assert profile.include_apply_patch is True
 
     def test_other_openai_models_unaffected_by_codex_profile(self) -> None:
         """Non-Codex OpenAI models get the provider profile, not the Codex one."""

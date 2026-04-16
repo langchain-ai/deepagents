@@ -105,6 +105,15 @@ class _HarnessProfile:
         become no-ops (same caveat as `tool_description_overrides`).
     """
 
+    include_apply_patch: bool = False
+    """When ``True``, ``FilesystemMiddleware`` adds an ``apply_patch`` tool
+    that accepts V4A diffs — the format Codex models are post-trained on.
+
+    The tool coexists with ``edit_file`` by default; use ``excluded_tools``
+    to remove ``edit_file`` if eval data shows ``apply_patch`` alone
+    performs better.
+    """
+
     excluded_tools: frozenset[str] = frozenset()
     """Tool names to remove from the tool set for this provider/model.
 
@@ -295,6 +304,7 @@ def _merge_profiles(base: _HarnessProfile, override: _HarnessProfile) -> _Harnes
             **override.tool_description_overrides,
         },
         tool_aliases={**base.tool_aliases, **override.tool_aliases},
+        include_apply_patch=override.include_apply_patch or base.include_apply_patch,
         excluded_tools=base.excluded_tools | override.excluded_tools,
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
     )

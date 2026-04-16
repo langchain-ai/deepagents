@@ -454,6 +454,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
+            include_apply_patch=_profile.include_apply_patch,
         ),
         create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
@@ -514,6 +515,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    include_apply_patch=_subagent_profile.include_apply_patch,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -572,6 +574,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
+                include_apply_patch=_profile.include_apply_patch,
             ),
             SubAgentMiddleware(
                 backend=backend,

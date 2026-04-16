@@ -1,0 +1,440 @@
+"""V4A diff parser and applier for the ``apply_patch`` tool.
+
+Ported from OpenAI's reference implementation
+(``openai-agents-python/src/agents/apply_diff.py``) and adapted for
+Deep Agents conventions.
+
+The module is intentionally backend-agnostic: callers pass a
+``file_reader`` callback so the parser never touches the filesystem
+directly.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+class PatchError(ValueError):
+    """Raised when a V4A patch cannot be parsed or applied."""
+
+
+# ---------------------------------------------------------------------------
+# Internal data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Chunk:
+    """A contiguous block of deletions and insertions at a known position."""
+
+    orig_index: int
+    del_lines: list[str] = field(default_factory=list)
+    ins_lines: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ParserState:
+    """Mutable cursor over patch lines."""
+
+    lines: list[str]
+    index: int = 0
+    fuzz: int = 0
+
+
+@dataclass
+class _SectionResult:
+    """Output of `_read_section`: context lines, chunks, and continuation info."""
+
+    context: list[str]
+    chunks: list[_Chunk]
+    end_index: int
+    eof: bool
+
+
+@dataclass
+class _ContextMatch:
+    """Result of fuzzy context search."""
+
+    index: int
+    fuzz: int
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_END_PATCH = "*** End Patch"
+_END_FILE = "*** End of File"
+_SECTION_TERMINATORS = (
+    _END_PATCH,
+    "*** Update File:",
+    "*** Delete File:",
+    "*** Add File:",
+)
+_END_SECTION_MARKERS = (*_SECTION_TERMINATORS, _END_FILE)
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def apply_patch(
+    patch_text: str,
+    *,
+    file_reader: Callable[[str], str | None],
+) -> dict[str, str | None]:
+    """Parse and apply a V4A patch, returning the resulting file changes.
+
+    Args:
+        patch_text: Full V4A patch string (``*** Begin Patch`` ...
+            ``*** End Patch``).
+        file_reader: Callback that returns file content for a given
+            absolute path, or ``None`` if the file does not exist.
+            Called only for ``*** Update File`` and ``*** Delete File``
+            operations.
+
+    Returns:
+        Mapping of file path to new content. ``None`` values indicate
+        file deletion.
+
+    Raises:
+        PatchError: If the patch is malformed or context cannot be matched.
+    """
+    lines = patch_text.strip().split("\n")
+    if len(lines) < 2 or not lines[0].startswith("*** Begin Patch"):
+        msg = "Invalid patch: missing '*** Begin Patch' header"
+        raise PatchError(msg)
+    if lines[-1] != _END_PATCH:
+        msg = "Invalid patch: missing '*** End Patch' footer"
+        raise PatchError(msg)
+
+    state = _ParserState(lines=lines, index=1)
+    results: dict[str, str | None] = {}
+
+    while not _is_done(state, _SECTION_TERMINATORS[:1]):
+        # *** Add File
+        path = _read_prefix(state, "*** Add File: ")
+        if path:
+            if path in results:
+                msg = f"Add File Error: Duplicate Path: {path}"
+                raise PatchError(msg)
+            results[path] = _parse_add_file(state)
+            continue
+
+        # *** Delete File
+        path = _read_prefix(state, "*** Delete File: ")
+        if path:
+            if path in results:
+                msg = f"Delete File Error: Duplicate Path: {path}"
+                raise PatchError(msg)
+            content = file_reader(path)
+            if content is None:
+                msg = f"Delete File Error: Missing File: {path}"
+                raise PatchError(msg)
+            results[path] = None
+            continue
+
+        # *** Update File
+        path = _read_prefix(state, "*** Update File: ")
+        if path:
+            if path in results:
+                msg = f"Update File Error: Duplicate Path: {path}"
+                raise PatchError(msg)
+            content = file_reader(path)
+            if content is None:
+                msg = f"Update File Error: Missing File: {path}"
+                raise PatchError(msg)
+            # Consume optional *** Move to: (acknowledged but not used by this tool)
+            _read_prefix(state, "*** Move to: ")
+            normalized = content.replace("\r\n", "\n")
+            chunks = _parse_update_file(state, normalized)
+            results[path] = _apply_chunks(normalized, chunks)
+            continue
+
+        current = state.lines[state.index] if state.index < len(state.lines) else "<EOF>"
+        msg = f"Unknown Line: {current}"
+        raise PatchError(msg)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Parser helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_done(state: _ParserState, prefixes: Sequence[str]) -> bool:
+    if state.index >= len(state.lines):
+        return True
+    return any(state.lines[state.index].startswith(p) for p in prefixes)
+
+
+def _read_prefix(state: _ParserState, prefix: str) -> str:
+    """If the current line starts with *prefix*, consume it and return the remainder."""
+    if state.index >= len(state.lines):
+        return ""
+    line = state.lines[state.index]
+    if line.startswith(prefix):
+        state.index += 1
+        return line[len(prefix):]
+    return ""
+
+
+def _parse_add_file(state: _ParserState) -> str:
+    """Parse ``*** Add File`` content: all lines must start with ``+``."""
+    output: list[str] = []
+    while not _is_done(state, _SECTION_TERMINATORS):
+        line = state.lines[state.index]
+        state.index += 1
+        if not line.startswith("+"):
+            msg = f"Invalid Add File Line: {line}"
+            raise PatchError(msg)
+        output.append(line[1:])
+    return "\n".join(output)
+
+
+def _parse_update_file(state: _ParserState, text: str) -> list[_Chunk]:
+    """Parse ``*** Update File`` hunks and return positioned chunks."""
+    file_lines = text.split("\n")
+    chunks: list[_Chunk] = []
+    cursor = 0
+
+    while not _is_done(state, _END_SECTION_MARKERS):
+        # Handle @@ anchors
+        anchor = _read_prefix(state, "@@ ")
+        bare_anchor = False
+        if not anchor and state.index < len(state.lines) and state.lines[state.index] == "@@":
+            bare_anchor = True
+            state.index += 1
+
+        if not (anchor or bare_anchor or cursor == 0):
+            current = state.lines[state.index] if state.index < len(state.lines) else ""
+            msg = f"Invalid Line:\n{current}"
+            raise PatchError(msg)
+
+        if anchor.strip():
+            cursor = _advance_cursor_to_anchor(anchor, file_lines, cursor, state)
+
+        section = _read_section(state.lines, state.index)
+        match = _find_context(file_lines, section.context, cursor, eof=section.eof)
+        if match.index == -1:
+            ctx = "\n".join(section.context)
+            kind = "EOF Context" if section.eof else "Context"
+            msg = f"Invalid {kind} {cursor}:\n{ctx}"
+            raise PatchError(msg)
+
+        state.fuzz += match.fuzz
+        state.index = section.end_index
+        cursor = match.index + len(section.context)
+
+        for ch in section.chunks:
+            chunks.append(
+                _Chunk(
+                    orig_index=ch.orig_index + match.index,
+                    del_lines=list(ch.del_lines),
+                    ins_lines=list(ch.ins_lines),
+                )
+            )
+
+    # Consume optional *** End of File
+    if state.index < len(state.lines) and state.lines[state.index] == _END_FILE:
+        state.index += 1
+
+    return chunks
+
+
+def _advance_cursor_to_anchor(
+    anchor: str,
+    file_lines: list[str],
+    cursor: int,
+    state: _ParserState,
+) -> int:
+    """Jump the cursor forward to the region around *anchor*.
+
+    Positions the cursor so that the subsequent context search
+    can find the anchor line and its surroundings.  Returns the
+    index of the anchor line itself (not past it), since the
+    section's context typically includes the anchor as its first
+    context line.
+    """
+    # Exact match — skip ahead only if not already seen before cursor
+    if not any(line == anchor for line in file_lines[:cursor]):
+        for i in range(cursor, len(file_lines)):
+            if file_lines[i] == anchor:
+                return i
+
+    # Fuzzy: strip both sides
+    if not any(line.strip() == anchor.strip() for line in file_lines[:cursor]):
+        for i in range(cursor, len(file_lines)):
+            if file_lines[i].strip() == anchor.strip():
+                state.fuzz += 1
+                return i
+
+    return cursor
+
+
+def _read_section(lines: list[str], start: int) -> _SectionResult:
+    """Read one context+change section until the next terminator."""
+    context: list[str] = []
+    del_lines: list[str] = []
+    ins_lines: list[str] = []
+    chunks: list[_Chunk] = []
+    mode: Literal["keep", "add", "delete"] = "keep"
+    index = start
+
+    while index < len(lines):
+        raw = lines[index]
+        if raw.startswith(("@@", _END_PATCH, "*** Update File:", "*** Delete File:", "*** Add File:", _END_FILE)):
+            break
+        if raw == "***":
+            break
+        if raw.startswith("***"):
+            msg = f"Invalid Line: {raw}"
+            raise PatchError(msg)
+
+        index += 1
+        last_mode = mode
+        line = raw if raw else " "
+        prefix = line[0]
+
+        if prefix == "+":
+            mode = "add"
+        elif prefix == "-":
+            mode = "delete"
+        elif prefix == " ":
+            mode = "keep"
+        else:
+            msg = f"Invalid Line: {line}"
+            raise PatchError(msg)
+
+        content = line[1:]
+
+        if mode == "keep" and last_mode != mode and (del_lines or ins_lines):
+            chunks.append(_Chunk(
+                orig_index=len(context) - len(del_lines),
+                del_lines=list(del_lines),
+                ins_lines=list(ins_lines),
+            ))
+            del_lines = []
+            ins_lines = []
+
+        if mode == "delete":
+            del_lines.append(content)
+            context.append(content)
+        elif mode == "add":
+            ins_lines.append(content)
+        else:
+            context.append(content)
+
+    if del_lines or ins_lines:
+        chunks.append(_Chunk(
+            orig_index=len(context) - len(del_lines),
+            del_lines=list(del_lines),
+            ins_lines=list(ins_lines),
+        ))
+
+    if index == start:
+        next_line = lines[index] if index < len(lines) else ""
+        msg = f"Nothing in this section - index={index} {next_line}"
+        raise PatchError(msg)
+
+    if index < len(lines) and lines[index] == _END_FILE:
+        return _SectionResult(context, chunks, index + 1, eof=True)
+
+    return _SectionResult(context, chunks, index, eof=False)
+
+
+# ---------------------------------------------------------------------------
+# Context matching (fuzzy)
+# ---------------------------------------------------------------------------
+
+
+def _find_context(
+    lines: list[str],
+    context: list[str],
+    start: int,
+    *,
+    eof: bool,
+) -> _ContextMatch:
+    """Find where *context* lines appear in *lines*, starting at *start*."""
+    if eof:
+        end_start = max(0, len(lines) - len(context))
+        match = _find_context_core(lines, context, end_start)
+        if match.index != -1:
+            return match
+        fallback = _find_context_core(lines, context, start)
+        return _ContextMatch(index=fallback.index, fuzz=fallback.fuzz + 10000)
+    return _find_context_core(lines, context, start)
+
+
+def _find_context_core(
+    lines: list[str],
+    context: list[str],
+    start: int,
+) -> _ContextMatch:
+    """Core context search: exact -> rstrip -> strip."""
+    if not context:
+        return _ContextMatch(index=start, fuzz=0)
+
+    for i in range(start, len(lines)):
+        if _slice_matches(lines, context, i, lambda v: v):
+            return _ContextMatch(index=i, fuzz=0)
+
+    for i in range(start, len(lines)):
+        if _slice_matches(lines, context, i, lambda v: v.rstrip()):
+            return _ContextMatch(index=i, fuzz=1)
+
+    for i in range(start, len(lines)):
+        if _slice_matches(lines, context, i, lambda v: v.strip()):
+            return _ContextMatch(index=i, fuzz=100)
+
+    return _ContextMatch(index=-1, fuzz=0)
+
+
+def _slice_matches(
+    source: list[str],
+    target: list[str],
+    start: int,
+    transform: Callable[[str], str],
+) -> bool:
+    """Check if *source[start:start+len(target)]* matches *target* after *transform*."""
+    if start + len(target) > len(source):
+        return False
+    return all(
+        transform(source[start + i]) == transform(target[i])
+        for i in range(len(target))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chunk application
+# ---------------------------------------------------------------------------
+
+
+def _apply_chunks(text: str, chunks: list[_Chunk]) -> str:
+    """Apply positioned chunks to produce the updated file content."""
+    orig_lines = text.split("\n")
+    dest: list[str] = []
+    cursor = 0
+
+    for chunk in chunks:
+        if chunk.orig_index > len(orig_lines):
+            msg = f"Chunk index {chunk.orig_index} exceeds file length {len(orig_lines)}"
+            raise PatchError(msg)
+        if cursor > chunk.orig_index:
+            msg = f"Overlapping chunk at {chunk.orig_index} (cursor at {cursor})"
+            raise PatchError(msg)
+
+        dest.extend(orig_lines[cursor:chunk.orig_index])
+        cursor = chunk.orig_index
+
+        if chunk.ins_lines:
+            dest.extend(chunk.ins_lines)
+
+        cursor += len(chunk.del_lines)
+
+    dest.extend(orig_lines[cursor:])
+    return "\n".join(dest)

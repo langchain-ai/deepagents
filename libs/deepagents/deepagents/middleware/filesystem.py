@@ -322,12 +322,92 @@ FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
     large_tool_results_prefix="/large_tool_results",
 )
 
+APPLY_PATCH_TOOL_DESCRIPTION = """Apply a patch to create, update, or delete files using V4A diff format.
+
+Use for single-file edits. For auto-generated changes or bulk search-and-replace, use edit_file or shell commands.
+
+The patch must follow V4A format:
+- *** Begin Patch / *** End Patch — wrap the entire patch
+- *** Add File: <path> — create a new file (lines prefixed with +)
+- *** Delete File: <path> — delete an existing file
+- *** Update File: <path> — modify a file using context lines and +/- changes
+- @@ — context anchor (optional text after @@ jumps to that line)
+- Lines prefixed with ' ' (space) are context, '+' are additions, '-' are deletions"""
+
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 
 You have access to an `execute` tool for running shell commands in a sandboxed environment.
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
+
+
+def _identify_files_needed(patch_text: str) -> list[str]:
+    """Extract file paths that need to be read before applying a patch."""
+    paths: list[str] = []
+    for line in patch_text.split("\n"):
+        for prefix in ("*** Update File: ", "*** Delete File: "):
+            if line.startswith(prefix):
+                paths.append(line[len(prefix):])
+    return paths
+
+
+def _apply_file_changes(
+    backend: BackendProtocol,
+    changes: dict[str, str | None],
+) -> str:
+    """Apply parsed patch results to the backend synchronously."""
+    msgs: list[str] = []
+    for path, content in changes.items():
+        if content is None:
+            msgs.append(f"Deleted '{path}' (manual removal may be needed)")
+            continue
+        existing = backend.read(path, offset=0, limit=1)
+        has_file = not (isinstance(existing, str) or existing.error)
+        if has_file:
+            raw = backend.read(path, offset=0, limit=999_999)
+            old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
+            result = backend.edit(path, old, content)
+            if result.error:
+                msgs.append(f"Error updating '{path}': {result.error}")
+            else:
+                msgs.append(f"Updated '{path}'")
+        else:
+            result = backend.write(path, content)
+            if result.error:
+                msgs.append(f"Error creating '{path}': {result.error}")
+            else:
+                msgs.append(f"Created '{path}'")
+    return "\n".join(msgs)
+
+
+async def _aapply_file_changes(
+    backend: BackendProtocol,
+    changes: dict[str, str | None],
+) -> str:
+    """Apply parsed patch results to the backend asynchronously."""
+    msgs: list[str] = []
+    for path, content in changes.items():
+        if content is None:
+            msgs.append(f"Deleted '{path}' (manual removal may be needed)")
+            continue
+        existing = await backend.aread(path, offset=0, limit=1)
+        has_file = not (isinstance(existing, str) or existing.error)
+        if has_file:
+            raw = await backend.aread(path, offset=0, limit=999_999)
+            old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
+            result = await backend.aedit(path, old, content)
+            if result.error:
+                msgs.append(f"Error updating '{path}': {result.error}")
+            else:
+                msgs.append(f"Updated '{path}'")
+        else:
+            result = await backend.awrite(path, content)
+            if result.error:
+                msgs.append(f"Error creating '{path}': {result.error}")
+            else:
+                msgs.append(f"Created '{path}'")
+    return "\n".join(msgs)
 
 
 def supports_execution(backend: BackendProtocol) -> bool:
@@ -581,6 +661,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        include_apply_patch: bool = False,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -597,6 +678,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            include_apply_patch: If ``True``, add the ``apply_patch`` tool that
+                accepts V4A diffs. Intended for Codex models.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
@@ -628,6 +711,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_grep_tool(),
             self._create_execute_tool(),
         ]
+        if include_apply_patch:
+            self.tools.append(self._create_apply_patch_tool())
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -906,6 +991,80 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
             infer_schema=False,
             args_schema=EditFileSchema,
+        )
+
+    def _create_apply_patch_tool(self) -> BaseTool:
+        """Create the apply_patch tool (V4A diff format)."""
+        from deepagents.utils._apply_patch import PatchError, apply_patch
+
+        tool_description = (
+            self._custom_tool_descriptions.get("apply_patch")
+            or APPLY_PATCH_TOOL_DESCRIPTION
+        )
+
+        def _read_raw(backend: BackendProtocol, path: str) -> str | None:
+            """Read raw file content from the backend (no line numbers)."""
+            result = backend.read(path, offset=0, limit=999_999)
+            if isinstance(result, str):
+                return result or None
+            if result.error or result.file_data is None:
+                return None
+            content = result.file_data["content"]
+            return content if content else None
+
+        async def _aread_raw(backend: BackendProtocol, path: str) -> str | None:
+            """Async variant of `_read_raw`."""
+            result = await backend.aread(path, offset=0, limit=999_999)
+            if isinstance(result, str):
+                return result or None
+            if result.error or result.file_data is None:
+                return None
+            content = result.file_data["content"]
+            return content if content else None
+
+        def sync_apply_patch(
+            patch: Annotated[str, "The V4A format patch string to apply."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Apply a V4A patch synchronously."""
+            backend = self._get_backend(runtime)
+
+            try:
+                changes = apply_patch(
+                    patch, file_reader=lambda p: _read_raw(backend, p)
+                )
+            except PatchError as e:
+                return f"Error applying patch: {e}"
+
+            return _apply_file_changes(backend, changes)
+
+        async def async_apply_patch(
+            patch: Annotated[str, "The V4A format patch string to apply."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Apply a V4A patch asynchronously."""
+            backend = self._get_backend(runtime)
+
+            # file_reader must be sync for the parser; read files upfront
+            needed = _identify_files_needed(patch)
+            file_cache: dict[str, str | None] = {}
+            for p in needed:
+                file_cache[p] = await _aread_raw(backend, p)
+
+            try:
+                changes = apply_patch(
+                    patch, file_reader=lambda p: file_cache.get(p, None)
+                )
+            except PatchError as e:
+                return f"Error applying patch: {e}"
+
+            return await _aapply_file_changes(backend, changes)
+
+        return StructuredTool.from_function(
+            name="apply_patch",
+            description=tool_description,
+            func=sync_apply_patch,
+            coroutine=async_apply_patch,
         )
 
     def _create_glob_tool(self) -> BaseTool:

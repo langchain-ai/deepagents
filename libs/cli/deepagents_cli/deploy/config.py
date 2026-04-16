@@ -43,6 +43,7 @@ AGENTS_MD_FILENAME = "AGENTS.md"
 SKILLS_DIRNAME = "skills"
 USER_DIRNAME = "user"
 MCP_FILENAME = "mcp.json"
+RESPONSE_FORMAT_FILENAME = "response_format.json"
 SUBAGENTS_DIRNAME = "subagents"
 
 
@@ -53,6 +54,7 @@ class AgentConfig:
     name: str
     description: str = ""
     model: str = "anthropic:claude-sonnet-4-6"
+    response_format: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:  # noqa: D105 — simple guard, not a public API
         if not self.name.strip():
@@ -233,6 +235,10 @@ def _parse_subagent_config(data: dict[str, Any], subagent_dir: Path) -> SubAgent
     }
     if "model" in agent_data:
         agent_kwargs["model"] = agent_data["model"]
+    if "response_format" in agent_data:
+        agent_kwargs["response_format"] = _parse_response_format(
+            agent_data["response_format"]
+        )
 
     return SubAgentConfig(agent=AgentConfig(**agent_kwargs))
 
@@ -324,8 +330,23 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
+def _parse_response_format(value: str | dict[str, Any]) -> dict[str, Any]:
+    """Parse ``response_format`` — accepts a JSON string or a TOML table dict."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            msg = f"response_format is not valid JSON: {exc}"
+            raise ValueError(msg) from exc
+        if not isinstance(parsed, dict):
+            msg = "response_format JSON must be an object"
+            raise TypeError(msg)
+        return parsed
+    return value
+
+
 _ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
-_ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
+_ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model", "response_format"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 
 
@@ -361,6 +382,10 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
         agent_kwargs["description"] = agent_data["description"]
     if "model" in agent_data:
         agent_kwargs["model"] = agent_data["model"]
+    if "response_format" in agent_data:
+        agent_kwargs["response_format"] = _parse_response_format(
+            agent_data["response_format"]
+        )
     agent = AgentConfig(**agent_kwargs)
 
     sandbox_data = data.get("sandbox", {})

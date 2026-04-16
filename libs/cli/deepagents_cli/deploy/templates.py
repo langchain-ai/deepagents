@@ -245,6 +245,9 @@ async def _build_sync_subagents(seed, store, assistant_id):
         if data.get("mcp"):
             sa["tools"] = await _load_subagent_mcp_tools(data["mcp"])
 
+        if data.get("response_format"):
+            sa["response_format"] = data["response_format"]
+
         # Restrict filesystem access to the subagent's own namespace.
         # Allow comes first (first-match wins); the deny rule blocks
         # everything else under /memories/ — parent AGENTS.md, skills, etc.

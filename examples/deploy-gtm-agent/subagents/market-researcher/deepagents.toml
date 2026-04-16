@@ -1,4 +1,54 @@
 [agent]
 name = "market-researcher"
 description = "Researches market trends, competitors, and target audiences to inform GTM strategy"
-model = "anthropic:claude-sonnet-4-6"
+model = "anthropic:claude-haiku-4-5-20251001"
+response_format = """
+{
+  "type": "object",
+  "properties": {
+    "executive_summary": {
+      "type": "string",
+      "description": "Key findings in 2-3 sentences"
+    },
+    "market_size_estimate": {
+      "type": "string",
+      "description": "TAM/SAM/SOM estimates with brief methodology note"
+    },
+    "key_competitors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "positioning": { "type": "string" },
+          "estimated_market_share": { "type": "string" }
+        },
+        "required": ["name", "positioning"]
+      }
+    },
+    "target_segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment": { "type": "string" },
+          "size": { "type": "string" },
+          "key_characteristics": { "type": "string" }
+        },
+        "required": ["segment", "key_characteristics"]
+      }
+    },
+    "trends": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Notable industry trends relevant to the GTM strategy"
+    }
+  },
+  "required": [
+    "executive_summary",
+    "market_size_estimate",
+    "key_competitors",
+    "target_segments"
+  ]
+}
+"""

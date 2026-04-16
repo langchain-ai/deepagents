@@ -424,11 +424,14 @@ def _add_subagent(
     description: str = "A subagent",
     skills: dict[str, str] | None = None,
     mcp: dict | None = None,
+    response_format: dict | None = None,
 ) -> Path:
     """Add a subagent directory to an existing project."""
     sa_dir = project / SUBAGENTS_DIRNAME / name
     sa_dir.mkdir(parents=True, exist_ok=True)
     toml = f'[agent]\nname = "{name}"\ndescription = "{description}"\n'
+    if response_format is not None:
+        toml += f"response_format = {json.dumps(json.dumps(response_format))}\n"
     (sa_dir / "deepagents.toml").write_text(toml, encoding="utf-8")
     (sa_dir / "AGENTS.md").write_text(f"# {name} prompt", encoding="utf-8")
     if skills:
@@ -487,6 +490,35 @@ class TestBuildSeedSubagents:
         seed = _build_seed(project, "# prompt")
         sa = seed["subagents"]["plain"]
         assert sa["mcp"] is None
+
+    def test_sync_subagent_no_response_format(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path)
+        _add_subagent(project, "plain", description="Plain agent")
+        seed = _build_seed(project, "# prompt")
+        assert seed["subagents"]["plain"]["response_format"] is None
+
+    def test_sync_subagent_inline_response_format(self, tmp_path: Path) -> None:
+        schema = {"type": "string"}
+        project = _minimal_project(tmp_path)
+        _add_subagent(
+            project, "typed", description="Typed agent", response_format=schema
+        )
+        seed = _build_seed(project, "# prompt")
+        assert seed["subagents"]["typed"]["response_format"] == schema
+
+    def test_inline_response_format_overrides_file(self, tmp_path: Path) -> None:
+        inline_schema = {"type": "string"}
+        file_schema = {"type": "integer"}
+        project = _minimal_project(tmp_path)
+        sa_dir = _add_subagent(
+            project, "both", description="Both sources", response_format=inline_schema
+        )
+        # Also write a response_format.json file — inline should win.
+        (sa_dir / "response_format.json").write_text(
+            json.dumps(file_schema), encoding="utf-8"
+        )
+        seed = _build_seed(project, "# prompt")
+        assert seed["subagents"]["both"]["response_format"] == inline_schema
 
     def test_no_async_subagents_key(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path)

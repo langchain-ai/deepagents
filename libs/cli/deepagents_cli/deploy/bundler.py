@@ -32,6 +32,7 @@ from typing import Any
 from deepagents_cli.deploy.config import (
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
+    RESPONSE_FORMAT_FILENAME,
     SKILLS_DIRNAME,
     USER_DIRNAME,
     DeployConfig,
@@ -178,6 +179,16 @@ def _build_subagent_seed(subagent: SubAgentProject) -> dict:
     if mcp_path.is_file():
         mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
 
+    if agent.response_format is not None:
+        response_format = agent.response_format
+    else:
+        response_format_path = sa_root / RESPONSE_FORMAT_FILENAME
+        response_format = (
+            json.loads(response_format_path.read_text(encoding="utf-8"))
+            if response_format_path.is_file()
+            else None
+        )
+
     return {
         "config": {
             "name": agent.name,
@@ -187,6 +198,7 @@ def _build_subagent_seed(subagent: SubAgentProject) -> dict:
         "memories": memories,
         "skills": skills,
         "mcp": mcp,
+        "response_format": response_format,
     }
 
 

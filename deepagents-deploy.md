@@ -366,6 +366,51 @@ model = "anthropic:claude-sonnet-4-6"                       # optional — inher
 | `name` | Yes | Unique identifier. Must be unique across all subagents. |
 | `description` | Yes | Shown to the main agent so it knows when to delegate. |
 | `model` | No | Overrides the parent model for this subagent. |
+| `response_format` | No | JSON Schema string constraining the subagent's output. See [Structured output](#structured-output). |
+
+### Structured output
+
+Set `response_format` in a subagent's `[agent]` section to a JSON Schema string. The main agent receives a structured object instead of free-form text, making it easier to extract and compose results.
+
+```toml
+[agent]
+name = "market-researcher"
+description = "Researches market trends, competitors, and target audiences."
+model = "anthropic:claude-haiku-4-5-20251001"
+response_format = """
+{
+  "type": "object",
+  "properties": {
+    "executive_summary": { "type": "string" },
+    "key_competitors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "positioning": { "type": "string" }
+        },
+        "required": ["name", "positioning"]
+      }
+    },
+    "target_segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "segment": { "type": "string" },
+          "key_characteristics": { "type": "string" }
+        },
+        "required": ["segment", "key_characteristics"]
+      }
+    }
+  },
+  "required": ["executive_summary", "key_competitors", "target_segments"]
+}
+"""
+```
+
+`response_format` accepts a JSON string (multiline TOML strings work well for readability) or an inline TOML table. Invalid JSON is caught at bundle time.
 
 ### Inheritance
 

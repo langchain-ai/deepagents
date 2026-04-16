@@ -205,6 +205,26 @@ class TestParseConfig:
         assert cfg.agent.model == AgentConfig(name="x").model
         assert cfg.sandbox == SandboxConfig()
 
+    def test_inline_response_format_as_dict(self) -> None:
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        cfg = _parse_config({"agent": {"name": "bot", "response_format": schema}})
+        assert cfg.agent.response_format == schema
+
+    def test_inline_response_format_as_json_string(self) -> None:
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        cfg = _parse_config(
+            {"agent": {"name": "bot", "response_format": json.dumps(schema)}}
+        )
+        assert cfg.agent.response_format == schema
+
+    def test_response_format_invalid_json_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="not valid JSON"):
+            _parse_config({"agent": {"name": "bot", "response_format": "{bad json"}})
+
+    def test_response_format_optional(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot"}})
+        assert cfg.agent.response_format is None
+
 
 # ---------------------------------------------------------------------------
 # load_config
@@ -439,6 +459,24 @@ class TestLoadSubagents:
         (sub_dir / MCP_FILENAME).write_text(json.dumps(mcp), encoding="utf-8")
         with pytest.raises(ValueError, match="stdio"):
             load_subagents(tmp_path)
+
+    def test_inline_response_format_parsed(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "typed"
+        sub_dir.mkdir(parents=True)
+        schema = {"type": "object", "properties": {"result": {"type": "string"}}}
+        toml_content = (
+            '[agent]\nname = "typed"\ndescription = "A typed subagent"\n'
+            f"response_format = {json.dumps(json.dumps(schema))}\n"
+        )
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(toml_content, encoding="utf-8")
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        result = load_subagents(tmp_path)
+        assert result["typed"].config.agent.response_format == schema
+
+    def test_response_format_defaults_to_none(self, tmp_path: Path) -> None:
+        self._make_subagent(tmp_path, "plain")
+        result = load_subagents(tmp_path)
+        assert result["plain"].config.agent.response_format is None
 
 
 class TestCrossModuleConsistency:

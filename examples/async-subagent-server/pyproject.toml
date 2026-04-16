@@ -1,0 +1,24 @@
+[project]
+name = "async-subagent-server-example"
+version = "0.1.0"
+description = "Self-hosted async subagent server example using deepagents"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.2.6",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "langchain-anthropic>=0.3.0",
+    "langgraph>=0.2.0",
+    "langgraph-sdk>=0.1.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.3",
+]

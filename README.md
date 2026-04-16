@@ -132,3 +132,43 @@ This project was primarily inspired by Claude Code, and initially was largely an
 ## Security
 
 Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police. See the [security policy](https://github.com/langchain-ai/deepagents?tab=security-ov-file) for more information.
+
+You can enforce policy decisions at tool-call boundaries using middleware:
+
+```python
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool
+
+from deepagents import create_deep_agent
+from deepagents.middleware import AgentMiddleware
+
+
+@tool
+def rm(path: str) -> str:
+  """Delete a file path."""
+  return f"deleted {path}"
+
+
+class PolicyMiddleware(AgentMiddleware):
+  """Example policy check at tool boundary."""
+
+  def wrap_tool_call(self, request, handler):
+    if request.tool_call["name"] == "rm":
+      path = str(request.tool_call.get("args", {}).get("path", ""))
+      if path.startswith("/etc"):
+        return ToolMessage(
+          content="Policy denied: destructive operations on /etc are blocked.",
+          tool_call_id=request.tool_call["id"],
+        )
+    return handler(request)
+
+
+agent = create_deep_agent(
+  model=init_chat_model("openai:gpt-4.1"),
+  tools=[rm],
+  middleware=[PolicyMiddleware()],
+)
+```
+
+This pattern keeps policy and governance logic outside model prompts and close to executable actions.

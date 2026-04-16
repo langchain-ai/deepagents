@@ -1973,6 +1973,66 @@ class TestShellCommandInterrupt:
             mock_worker.cancel.assert_called_once()
 
 
+class TestAppArgumentHints:
+    """Full-app regressions for slash-command argument hints."""
+
+    async def test_hint_clears_after_command_submission(self) -> None:
+        """Submitting a slash command clears the inline argument hint."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+            assert chat._text_area.argument_hint == ""
+
+    async def test_hint_clears_after_backspace_mode_exit(self) -> None:
+        """Backspace mode exit clears the hint in the mounted app."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            for _ in "remember ":
+                await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.argument_hint == ""
+
+
 class TestInterruptApprovalPriority:
     """Tests for escape interrupt priority when HITL approval is pending."""
 
@@ -3204,3 +3264,109 @@ class TestServerStartupError:
             msgs = app.query(AppMessage)
             assert len(msgs) == 1
             assert msgs[0]._content == "Agent not configured for this session."
+
+
+class TestHasConversationMessages:
+    """Tests for _has_conversation_messages guard."""
+
+    async def test_returns_false_when_no_agent(self) -> None:
+        """Should return False when the agent is not initialised."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            assert app._agent is None
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_state_empty(self) -> None:
+        """Should return False when state has no values."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_only_system_messages(self) -> None:
+        """Should return False when messages list has no HumanMessage."""
+        from langchain_core.messages import SystemMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [SystemMessage(content="sys")]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_true_when_human_message_present(self) -> None:
+        """Should return True when at least one HumanMessage exists."""
+        from langchain_core.messages import HumanMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [HumanMessage(content="hi")]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_true_on_aget_state_exception(self) -> None:
+        """Should return True on transient errors so /remember is not blocked."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(side_effect=RuntimeError("connection lost"))
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_false_when_state_values_is_none(self) -> None:
+        """Should return False when state.values is None."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = None
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+
+class TestRememberRequiresMessages:
+    """Ensure /remember early-returns when no conversation exists."""
+
+    async def test_remember_no_messages_shows_early_return(self) -> None:
+        """/remember should mount an AppMessage and skip the skill."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "_has_conversation_messages", return_value=False):
+                await app._handle_command("/remember")
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert "Nothing to remember yet" in str(msgs[0]._content)
+
+    async def test_remember_with_messages_delegates_to_skill(self) -> None:
+        """/remember should delegate to _handle_skill_command when messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "_has_conversation_messages", return_value=True),
+                patch.object(app, "_handle_skill_command") as mock_skill,
+            ):
+                await app._handle_command("/remember")
+                await pilot.pause()
+
+            mock_skill.assert_called_once_with("/skill:remember")

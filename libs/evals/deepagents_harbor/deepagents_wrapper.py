@@ -24,7 +24,6 @@ from harbor.models.trajectories import (
     ToolCall,
     Trajectory,
 )
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langsmith import trace
 from langsmith.client import Client
@@ -112,14 +111,21 @@ class DeepAgentsWrapper(BaseAgent):
             self._model = model
             self._model_name = model.model
         else:
+            from deepagents._models import resolve_model
+
             self._model_name = model_name
-            model_kwargs: dict[str, Any] = {}
-            if openrouter_provider:
-                model_kwargs["openrouter_provider"] = {
+            model = resolve_model(model_name)
+            overrides: dict[str, Any] = {}
+            if hasattr(model, "temperature"):
+                overrides["temperature"] = temperature
+            if openrouter_provider and hasattr(model, "openrouter_provider"):
+                overrides["openrouter_provider"] = {
                     "only": [openrouter_provider],
                     "allow_fallbacks": False,
                 }
-            self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
+            if overrides:
+                model = model.model_copy(update=overrides)
+            self._model = model
 
         self._temperature = temperature
         self._verbose = verbose

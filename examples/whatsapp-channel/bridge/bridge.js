@@ -65,7 +65,14 @@ if (chromePath) {
 // --- WhatsApp client ---
 const puppeteerOpts = {
   headless: true,
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    // Use a dedicated Chromium profile dir to avoid lock conflicts
+    // with the host or other containers sharing the session volume
+    `--user-data-dir=${path.join(SESSION_DIR, "chromium-profile")}`,
+  ],
 };
 if (chromePath) {
   puppeteerOpts.executablePath = chromePath;

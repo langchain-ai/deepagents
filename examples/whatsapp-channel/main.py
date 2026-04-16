@@ -48,7 +48,7 @@ async def main() -> None:
     # --- Agent setup ---
     agent = create_deep_agent(
         model=model,
-        backend=LocalShellBackend(),
+        backend=LocalShellBackend(virtual_mode=False),
         tools=[http_request, web_search, fetch_url],
     )
 

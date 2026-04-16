@@ -126,6 +126,48 @@ class TestProfileForModel:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_reconstructs_qualified_spec_from_provider_and_identifier(self) -> None:
+        """Pre-built models with bare identifiers find per-model profiles via provider:id."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            provider_profile = _HarnessProfile(init_kwargs={"base": True})
+            model_profile = _HarnessProfile(init_kwargs={"model_specific": True})
+            _register_harness_profile("someprov", provider_profile)
+            _register_harness_profile("someprov:special-model", model_profile)
+            model = _make_model({"model_name": "special-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "someprov"})
+            result = _harness_profile_for_model(model, None)
+            # Should get the merged profile, not just the provider-level one
+            assert result.init_kwargs["model_specific"] is True
+            assert result.init_kwargs["base"] is True
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_qualified_reconstruction_skipped_when_identifier_has_colon(self) -> None:
+        """Identifiers already containing a colon are not re-qualified."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = _HarnessProfile(init_kwargs={"found": True})
+            _register_harness_profile("myprov", profile)
+            model = _make_model({"model_name": "myprov:already-qualified"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
+            result = _harness_profile_for_model(model, None)
+            # The identifier itself matched via the first _get_harness_profile call
+            assert result is profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_codex_profile_found_for_prebuilt_model(self) -> None:
+        """Simulates Harbor/evals passing a pre-initialized Codex model."""
+        model = _make_model({"model_name": "gpt-5.3-codex"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai"})
+        result = _harness_profile_for_model(model, None)
+        assert result.init_kwargs.get("reasoning_effort") == "medium"
+        assert result.init_kwargs.get("use_responses_api") is True
+        assert result.tool_aliases.get("execute") == "shell_command"
+
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})

@@ -156,6 +156,14 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _Harne
     # Bare model name (no colon) — fall back to provider from the model class.
     provider = get_model_provider(model)
     if provider is not None:
+        # Reconstruct a qualified spec (e.g. "openai:gpt-5.3-codex") so that
+        # per-model profiles registered under the full spec are found even when
+        # the caller passed a pre-built model instance (bare identifier only).
+        if identifier is not None and ":" not in identifier:
+            qualified = f"{provider}:{identifier}"
+            profile = _get_harness_profile(qualified)
+            if profile != _HarnessProfile():
+                return profile
         return _get_harness_profile(provider)
     logger.debug("No harness profile found for pre-built model %s, using defaults", type(model).__name__)
     return _HarnessProfile()

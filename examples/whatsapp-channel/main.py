@@ -63,6 +63,13 @@ async def main() -> None:
             chat_locks[chat_id] = asyncio.Lock()
 
         async with chat_locks[chat_id]:
+            # Handle slash commands
+            text = event.text.strip()
+            if text.lower() in ("/new", "/clear", "/reset"):
+                conversations.pop(chat_id, None)
+                await adapter.send(chat_id, "Conversation cleared.")
+                return
+
             # Send typing indicator
             await adapter.send_typing(chat_id)
 
@@ -72,7 +79,7 @@ async def main() -> None:
             history = conversations[chat_id]
 
             # Append user message
-            history.append(HumanMessage(content=event.text))
+            history.append(HumanMessage(content=text))
 
             try:
                 # Invoke the agent

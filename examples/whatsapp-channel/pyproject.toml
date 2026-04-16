@@ -5,6 +5,7 @@ description = "WhatsApp channel for Deep Agents via whatsapp-web.js bridge"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.5.0a2",
+    "deepagents-cli>=0.5.0a2",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "langchain>=1.2.11",

@@ -58,6 +58,13 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.tool_hooks import (
+  AfterToolCallHook,
+  AsyncAfterToolCallHook,
+  AsyncBeforeToolCallHook,
+  BeforeToolCallHook,
+  ToolHooksMiddleware,
+)
 
 __all__ = [
     "AsyncSubAgent",
@@ -71,5 +78,10 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "AfterToolCallHook",
+    "AsyncAfterToolCallHook",
+    "AsyncBeforeToolCallHook",
+    "BeforeToolCallHook",
+    "ToolHooksMiddleware",
     "create_summarization_tool_middleware",
 ]

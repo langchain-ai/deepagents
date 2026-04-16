@@ -7,6 +7,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.permissions import FilesystemPermission
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.tool_hooks import ToolHooksMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -17,6 +18,7 @@ __all__ = [
     "MemoryMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "ToolHooksMiddleware",
     "__version__",
     "create_deep_agent",
 ]

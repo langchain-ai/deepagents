@@ -133,42 +133,43 @@ This project was primarily inspired by Claude Code, and initially was largely an
 
 Deep Agents follows a "trust the LLM" model. The agent can do anything its tools allow. Enforce boundaries at the tool/sandbox level, not by expecting the model to self-police. See the [security policy](https://github.com/langchain-ai/deepagents?tab=security-ov-file) for more information.
 
-You can enforce policy decisions at tool-call boundaries using middleware:
+For explicit policy enforcement at tool boundaries, Deep Agents supports hook-based integration via `before_tool_call_hooks` and `after_tool_call_hooks` on `create_deep_agent(...)`.
+
+If you want a concrete governance integration reference, see [examples/faramesh_policy_hooks](examples/faramesh_policy_hooks/), which demonstrates a Faramesh policy check before tool execution.
+
+Example:
 
 ```python
+from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
 
-from deepagents import create_deep_agent
-from deepagents.middleware import AgentMiddleware
+
+def deny_sensitive_rm(tool_request):
+  if tool_request.tool_call["name"] != "rm":
+    return None
+
+  path = str(tool_request.tool_call.get("args", {}).get("path", ""))
+  if path.startswith("/etc"):
+    return ToolMessage(
+      content="Policy denied: destructive operations on /etc are blocked.",
+      tool_call_id=tool_request.tool_call["id"],
+    )
+  return None
 
 
 @tool
 def rm(path: str) -> str:
-    """Delete a file path."""
-    return f"deleted {path}"
-
-
-class PolicyMiddleware(AgentMiddleware):
-    """Example policy check at tool boundary."""
-
-    def wrap_tool_call(self, request, handler):
-        if request.tool_call["name"] == "rm":
-            path = str(request.tool_call.get("args", {}).get("path", ""))
-            if path.startswith("/etc"):
-                return ToolMessage(
-                    content="Policy denied: destructive operations on /etc are blocked.",
-                    tool_call_id=request.tool_call["id"],
-                )
-        return handler(request)
+  """Delete a file path."""
+  return f"deleted {path}"
 
 
 agent = create_deep_agent(
     model=init_chat_model("openai:gpt-4.1"),
     tools=[rm],
-    middleware=[PolicyMiddleware()],
+  before_tool_call_hooks=[deny_sensitive_rm],
 )
 ```
 
-This pattern keeps policy and governance logic outside model prompts and close to executable actions.
+This keeps policy logic close to executable actions and avoids relying on prompt-only constraints.

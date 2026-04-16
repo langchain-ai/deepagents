@@ -43,6 +43,13 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.tool_hooks import (
+    AfterToolCallHook,
+    AsyncAfterToolCallHook,
+    AsyncBeforeToolCallHook,
+    BeforeToolCallHook,
+    ToolHooksMiddleware,
+)
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
@@ -220,6 +227,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
+    before_tool_call_hooks: Sequence[BeforeToolCallHook] = (),
+    after_tool_call_hooks: Sequence[AfterToolCallHook] = (),
+    async_before_tool_call_hooks: Sequence[AsyncBeforeToolCallHook] = (),
+    async_after_tool_call_hooks: Sequence[AsyncAfterToolCallHook] = (),
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -290,8 +301,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `SummarizationMiddleware`
             - `PatchToolCallsMiddleware`
             - `AsyncSubAgentMiddleware` (if async `subagents` are provided)
+            - `ToolHooksMiddleware` (if any explicit tool-call hooks are provided)
 
             *User middleware is inserted here.*
+
+        before_tool_call_hooks: Sync callbacks evaluated before each tool call.
+
+            If a hook returns a `ToolMessage` or `Command`, the tool call is
+            short-circuited and the returned value is used directly.
+        after_tool_call_hooks: Sync callbacks evaluated after each tool call.
+
+            Hooks can return a replacement `ToolMessage` or `Command` to
+            override the original result.
+        async_before_tool_call_hooks: Async callbacks evaluated before each
+            tool call in async execution paths.
+        async_after_tool_call_hooks: Async callbacks evaluated after each tool
+            call in async execution paths.
 
             Tail stack:
 
@@ -578,6 +603,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+
+    if before_tool_call_hooks or after_tool_call_hooks or async_before_tool_call_hooks or async_after_tool_call_hooks:
+        deepagent_middleware.append(
+            ToolHooksMiddleware(
+                before_call_hooks=before_tool_call_hooks,
+                after_call_hooks=after_tool_call_hooks,
+                async_before_call_hooks=async_before_tool_call_hooks,
+                async_after_call_hooks=async_after_tool_call_hooks,
+            )
+        )
 
     if middleware:
         deepagent_middleware.extend(middleware)

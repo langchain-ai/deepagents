@@ -25,7 +25,7 @@ dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
     # LangSmith for observability
-    "langsmith>=0.4.0",
+    "langsmith>=0.7.31",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=0.64.0",

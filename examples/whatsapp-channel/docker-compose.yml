@@ -1,6 +1,9 @@
 services:
   whatsapp-agent:
-    build: .
+    build:
+      # Context is the repo root so the Dockerfile can access libs/
+      context: ../..
+      dockerfile: examples/whatsapp-channel/Dockerfile
     # Interactive terminal needed for QR code display on first login
     stdin_open: true
     tty: true

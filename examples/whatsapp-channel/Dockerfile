@@ -33,15 +33,20 @@ ENV CHROME_PATH=/usr/bin/chromium
 WORKDIR /app
 
 # Install Node bridge deps first (cached layer)
-COPY bridge/package.json bridge/package-lock.json* bridge/
+COPY examples/whatsapp-channel/bridge/package.json examples/whatsapp-channel/bridge/package-lock.json* bridge/
 RUN cd bridge && npm install --omit=dev
 
-# Install Python deps (cached layer)
-COPY pyproject.toml .
+# Install local libs from the monorepo (not published to PyPI at these versions)
+COPY libs/deepagents /tmp/libs/deepagents
+COPY libs/cli /tmp/libs/cli
+RUN pip install --no-cache-dir /tmp/libs/deepagents /tmp/libs/cli && rm -rf /tmp/libs
+
+# Install remaining Python deps
+COPY examples/whatsapp-channel/pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
 # Copy application code
-COPY . .
+COPY examples/whatsapp-channel/ .
 
 # Session and media are stored on volumes
 VOLUME ["/app/session", "/app/media"]

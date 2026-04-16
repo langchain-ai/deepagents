@@ -1269,6 +1269,28 @@ class TestSlashCompletionCursorMapping:
 
             assert chat._text_area.text == "help e"
 
+    async def test_click_completion_at_end_updates_hint_without_extra_frame(
+        self,
+    ) -> None:
+        """Click-selecting a command should render final text immediately."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("re")
+            await pilot.pause()
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
     async def test_tab_completion_at_end_replaces_whole_token(self) -> None:
         """Tab-completing at end should replace all typed command text."""
         app = _ChatInputTestApp()

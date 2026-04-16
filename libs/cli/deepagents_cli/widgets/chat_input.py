@@ -937,6 +937,9 @@ class _CompletionViewAdapter:
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
         """Map completion indices to text-area indices before replacing text."""
+        prefix = MODE_PREFIXES.get(self._chat_input.mode, "")
+        if prefix and replacement.startswith(prefix):
+            replacement = replacement[len(prefix) :]
         self._chat_input.replace_completion_range(
             self._chat_input._completion_index_to_text_index(start),
             self._chat_input._completion_index_to_text_index(end),
@@ -1438,6 +1441,9 @@ class ChatInput(Vertical):
             Clamped index in text-area space.
         """
         if not self._text_area:
+            return 0
+
+        if 0 <= index <= self._completion_prefix_len:
             return 0
 
         mapped = index - self._completion_prefix_len
@@ -2057,3 +2063,7 @@ class ChatInput(Vertical):
                 self._text_area.move_cursor((row, remaining))
                 break
             remaining -= len(line) + 1
+
+        # Completion selections should render their final inline hint
+        # immediately, without waiting for the subsequent Changed event.
+        self._update_argument_hint()

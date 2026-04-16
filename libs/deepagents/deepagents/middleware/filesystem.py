@@ -36,6 +36,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     ReadResult,
@@ -145,6 +146,12 @@ class WriteFileSchema(BaseModel):
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
+class DeleteFileSchema(BaseModel):
+    """Input schema for the `delete_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
+
+
 class EditFileSchema(BaseModel):
     """Input schema for the `edit_file` tool."""
 
@@ -231,6 +238,13 @@ Usage:
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+
+Usage:
+- The file must exist and must not be a directory.
+- This operation is irreversible — the file will be permanently removed.
+- Use ls to verify the file exists before deleting."""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
@@ -302,7 +316,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -311,6 +325,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
+- delete_file: delete a file from the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -378,6 +393,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
+    "delete_file",
 )
 
 
@@ -623,6 +639,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_ls_tool(),
             self._create_read_file_tool(),
             self._create_write_file_tool(),
+            self._create_delete_file_tool(),
             self._create_edit_file_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
@@ -853,6 +870,51 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_write_file,
             infer_schema=False,
             args_schema=WriteFileSchema,
+        )
+
+    def _create_delete_file_tool(self) -> BaseTool:
+        """Create the delete_file tool."""
+        tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
+
+        def sync_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Synchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            res: DeleteResult = resolved_backend.delete(validated_path)
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        async def async_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Asynchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            res: DeleteResult = await resolved_backend.adelete(validated_path)
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        return StructuredTool.from_function(
+            name="delete_file",
+            description=tool_description,
+            func=sync_delete_file,
+            coroutine=async_delete_file,
+            infer_schema=False,
+            args_schema=DeleteFileSchema,
         )
 
     def _create_edit_file_tool(self) -> BaseTool:

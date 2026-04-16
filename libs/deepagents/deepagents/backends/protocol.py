@@ -285,6 +285,19 @@ class GrepResult:
 
 
 @dataclass
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of deleted file, None on failure.
+    """
+
+    error: str | None = None
+    path: str | None = None
+
+
+@dataclass
 class GlobResult:
     """Result from backend glob operations.
 
@@ -533,6 +546,21 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the filesystem.
+
+        Args:
+            file_path: Absolute path to the file to delete. Must start with '/'.
+
+        Returns:
+            DeleteResult with path on success, or error on failure.
+        """
+        raise NotImplementedError
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of delete."""
+        return await asyncio.to_thread(self.delete, file_path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.

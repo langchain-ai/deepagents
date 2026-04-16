@@ -1,0 +1,78 @@
+# WhatsApp Channel for Deep Agents
+
+Connect a [Deep Agent](https://github.com/langchain-ai/deepagents) to WhatsApp using a Node.js bridge powered by [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js).
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- An LLM API key (Anthropic, OpenAI, or any provider supported by `langchain`)
+
+## Setup
+
+1. **Install Python dependencies:**
+
+```bash
+cd examples/whatsapp-channel
+pip install -e .
+```
+
+2. **Configure environment:**
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys and settings
+```
+
+3. **Run:**
+
+```bash
+python main.py
+```
+
+On first run, the bridge will display a QR code in your terminal. Scan it with WhatsApp on your phone to link the session.
+
+Subsequent runs reuse the saved session (stored in `./session/`).
+
+## Configuration
+
+All configuration is via environment variables (see `.env.example`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_MODEL` | `claude-sonnet-4-6` | Model for the agent (`provider:model` format) |
+| `ANTHROPIC_API_KEY` | | Anthropic API key |
+| `OPENAI_API_KEY` | | OpenAI API key |
+| `OPENAI_BASE_URL` | | Custom OpenAI-compatible endpoint |
+| `WHATSAPP_BRIDGE_PORT` | `3000` | Bridge HTTP port |
+| `WHATSAPP_SESSION_PATH` | `./session` | WhatsApp session storage |
+| `WHATSAPP_REQUIRE_MENTION` | `false` | Require @mention in groups |
+| `WHATSAPP_MENTION_PATTERNS` | | Comma-separated regex patterns |
+| `WHATSAPP_FREE_RESPONSE_CHATS` | | Chat IDs that skip mention requirement |
+| `WHATSAPP_REPLY_PREFIX` | | Prefix for bot responses |
+| `LANGSMITH_API_KEY` | | LangSmith tracing key |
+| `LANGSMITH_TRACING` | `false` | Enable tracing |
+
+## Architecture
+
+```
+WhatsApp <-> whatsapp-web.js (bridge.js) <-> HTTP <-> WhatsAppAdapter (Python) <-> Deep Agent
+```
+
+The bridge runs as a Node.js subprocess managed by the Python adapter. Messages flow through HTTP endpoints on localhost.
+
+## Features
+
+- Text messaging with conversation history per chat
+- Media support: images, video, voice notes, documents
+- WhatsApp-compatible markdown formatting
+- Group chat support with mention filtering
+- Typing indicators
+- Message chunking for long responses
+- Automatic text extraction from document attachments
+
+## Troubleshooting
+
+- **QR code not showing:** Check that Node.js 18+ is installed (`node --version`)
+- **Session expired:** Delete the `session/` directory and re-scan
+- **Bridge won't start:** Check if port 3000 is in use (`lsof -i :3000`)

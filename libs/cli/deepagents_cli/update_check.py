@@ -174,6 +174,48 @@ def get_latest_version(
     return prerelease if include_prereleases else stable
 
 
+def should_notify_update(latest: str) -> bool:
+    """Return whether the user should be notified about version *latest*.
+
+    Throttles notifications to at most once per `CACHE_TTL` period for a
+    given version, preventing repeated banners every session.
+
+    Args:
+        latest: The version string to check against.
+    """
+    try:
+        if CACHE_FILE.exists():
+            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            notified_at = data.get("notified_at", 0)
+            notified_version = data.get("notified_version")
+            if notified_version == latest and time.time() - notified_at < CACHE_TTL:
+                return False
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read notification state", exc_info=True)
+    return True
+
+
+def mark_update_notified(latest: str) -> None:
+    """Record that the user was notified about version *latest*.
+
+    Writes into the existing cache file so a subsequent
+    `should_notify_update` call can suppress duplicate banners.
+
+    Args:
+        latest: The version string that was shown.
+    """
+    try:
+        data: dict[str, object] = {}
+        if CACHE_FILE.exists():
+            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        data["notified_at"] = time.time()
+        data["notified_version"] = latest
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to write notification marker", exc_info=True)
+
+
 def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
     """Check whether a newer version of deepagents-cli is available.
 

@@ -1475,6 +1475,16 @@ class DeepAgentsApp(App):
                         markup=False,
                     )
             else:
+                from deepagents_cli.update_check import (
+                    mark_update_notified,
+                    should_notify_update,
+                )
+
+                if latest is None or not await asyncio.to_thread(
+                    should_notify_update, latest
+                ):
+                    return
+
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
@@ -1484,6 +1494,7 @@ class DeepAgentsApp(App):
                     timeout=15,
                     markup=False,
                 )
+                await asyncio.to_thread(mark_update_notified, latest)
         except Exception:
             logger.warning("Auto-update failed unexpectedly", exc_info=True)
             self.notify(

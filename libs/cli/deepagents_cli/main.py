@@ -1702,23 +1702,33 @@ def cli_main() -> None:
             # Warn about available update on exit
             try:
                 if result.update_available[0]:
+                    from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
                         is_auto_update_enabled,
+                        mark_update_notified,
+                        should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    console.print()
-                    update_msg = Text("Update available: ", style="yellow bold")
-                    update_msg.append(f"v{latest}", style="yellow")
-                    console.print(update_msg)
-                    cmd_hint = Text("Run: ", style="dim")
-                    cmd_hint.append(upgrade_command(), style="cyan")
-                    console.print(cmd_hint)
-                    if not is_auto_update_enabled():
-                        auto_hint = Text("Enable auto-updates: ", style="dim")
-                        auto_hint.append("/auto-update", style="cyan")
-                        console.print(auto_hint)
+                    if latest and should_notify_update(latest):
+                        console.print()
+                        update_msg = Text("Update available: ", style="yellow bold")
+                        update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(f" (current: v{cli_version})", style="dim")
+                        console.print(update_msg)
+                        cmd_hint = Text("Run: ", style="dim")
+                        cmd_hint.append(upgrade_command(), style="cyan")
+                        console.print(cmd_hint)
+                        if not is_auto_update_enabled():
+                            auto_hint = Text("Tip: use ", style="dim")
+                            auto_hint.append("/auto-update", style="cyan")
+                            auto_hint.append(
+                                " in the CLI to enable auto-updates",
+                                style="dim",
+                            )
+                            console.print(auto_hint)
+                        mark_update_notified(latest)
             except Exception:
                 logger.debug("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:

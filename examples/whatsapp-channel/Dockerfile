@@ -1,9 +1,15 @@
+FROM node:20-slim AS node
+
 FROM python:3.12-slim
 
-# Install Node.js 20, Chromium, and system deps in one layer
+# Copy Node.js from the official image
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# Install Chromium and system deps for whatsapp-web.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        gnupg \
         chromium \
         fonts-liberation \
         libnss3 \
@@ -19,9 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcups2 \
         libxss1 \
         libxtst6 \
-        fuser \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+        psmisc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Point puppeteer/whatsapp-web.js at the system Chromium

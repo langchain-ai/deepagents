@@ -646,6 +646,11 @@ class TestBuiltInProfiles:
         profile = _get_harness_profile(spec)
         assert profile.include_apply_patch is True
 
+    @pytest.mark.parametrize("spec", ["openai:gpt-5.2-codex", "openai:gpt-5.3-codex"])
+    def test_codex_profile_excludes_edit_file(self, spec: str) -> None:
+        profile = _get_harness_profile(spec)
+        assert "edit_file" in profile.excluded_tools
+
     def test_other_openai_models_unaffected_by_codex_profile(self) -> None:
         """Non-Codex OpenAI models get the provider profile, not the Codex one."""
         profile = _get_harness_profile("openai:gpt-5")

@@ -223,7 +223,12 @@ def test_ls_directory_missing_file_yes_no(model: BaseChatModel) -> None:
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
 def test_edit_file_replace_text(model: BaseChatModel) -> None:
-    """Edits a file by replacing text, then validates the edit."""
+    """Edits a file by replacing text, then validates the edit.
+
+    Models with ``edit_file`` can do a blind search-and-replace (1 tool call).
+    Models with only ``apply_patch`` need to read first to build context (2 tool calls).
+    The scorer is intentionally relaxed on step/call counts to support both paths.
+    """
     agent = create_deep_agent(model=model)
     run_agent(
         agent,
@@ -231,13 +236,10 @@ def test_edit_file_replace_text(model: BaseChatModel) -> None:
         model=model,
         query=(
             "Replace all instances of 'cat' with 'dog' in /note.md, then tell me "
-            "how many replacements you made. Do not read the file before editing it."
+            "how many replacements you made."
         ),
-        # 1st step: request a tool call to edit /note.md.
-        # 2nd step: report completion.
-        # 1 tool call request: edit_file.
         scorer=TrajectoryScorer()
-        .expect(agent_steps=2, tool_call_requests=1)
+        .expect(agent_steps=3)
         .success(file_equals("/note.md", "dog dog dog\n")),
     )
 

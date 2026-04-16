@@ -419,7 +419,8 @@ class WhatsAppAdapter:
         if self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
-        # Start bridge
+        # Start bridge — inherit stdout/stderr so QR codes and logs
+        # are visible directly in the terminal
         self._bridge_process = subprocess.Popen(
             [
                 "node", str(bridge_path),
@@ -427,8 +428,6 @@ class WhatsAppAdapter:
                 "--session", str(self._session_path),
                 "--media-dir", str(self._session_path.parent / "media"),
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             env=bridge_env,
         )

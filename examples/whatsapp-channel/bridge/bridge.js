@@ -69,9 +69,9 @@ const puppeteerOpts = {
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-gpu",
-    // Use a dedicated Chromium profile dir to avoid lock conflicts
-    // with the host or other containers sharing the session volume
-    `--user-data-dir=${path.join(SESSION_DIR, "chromium-profile")}`,
+    // Use a temp dir for the Chromium profile so stale lock files
+    // on the session volume never block startup
+    `--user-data-dir=${fs.mkdtempSync(path.join(require("os").tmpdir(), "wa-chrome-"))}`,
   ],
 };
 if (chromePath) {

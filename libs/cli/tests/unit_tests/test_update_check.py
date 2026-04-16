@@ -17,7 +17,9 @@ from deepagents_cli.update_check import (
     get_latest_version,
     is_auto_update_enabled,
     is_update_available,
+    mark_update_notified,
     set_auto_update,
+    should_notify_update,
 )
 
 
@@ -480,3 +482,148 @@ class TestIsAutoUpdateEnabled:
         assert config_path.exists()
         with patch("deepagents_cli.config._is_editable_install", return_value=True):
             assert is_auto_update_enabled() is False
+
+
+class TestShouldNotifyUpdate:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary directory."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_no_file_returns_true(self, state_file) -> None:  # noqa: ARG002
+        """First-run case: no state file exists."""
+        assert should_notify_update("2.0.0") is True
+
+    def test_same_version_within_ttl(self, state_file) -> None:
+        """Same version notified recently — suppress."""
+        state_file.write_text(
+            json.dumps({"notified_at": time.time(), "notified_version": "2.0.0"})
+        )
+        assert should_notify_update("2.0.0") is False
+
+    def test_different_version_within_ttl(self, state_file) -> None:
+        """New version available — notify even within TTL window."""
+        state_file.write_text(
+            json.dumps({"notified_at": time.time(), "notified_version": "1.9.0"})
+        )
+        assert should_notify_update("2.0.0") is True
+
+    def test_same_version_ttl_expired(self, state_file) -> None:
+        """TTL expired — re-notify for same version."""
+        state_file.write_text(
+            json.dumps(
+                {
+                    "notified_at": time.time() - CACHE_TTL - 1,
+                    "notified_version": "2.0.0",
+                }
+            )
+        )
+        assert should_notify_update("2.0.0") is True
+
+    def test_corrupt_json(self, state_file) -> None:
+        """Malformed JSON — fail-open (show banner)."""
+        state_file.write_text("not valid json")
+        assert should_notify_update("2.0.0") is True
+
+    def test_non_dict_json(self, state_file) -> None:
+        """JSON array instead of object — fail-open."""
+        state_file.write_text(json.dumps([1, 2, 3]))
+        assert should_notify_update("2.0.0") is True
+
+    def test_non_numeric_notified_at(self, state_file) -> None:
+        """notified_at is a string — treated as invalid, show banner."""
+        state_file.write_text(
+            json.dumps({"notified_at": "not-a-number", "notified_version": "2.0.0"})
+        )
+        assert should_notify_update("2.0.0") is True
+
+    def test_missing_notified_at_key(self, state_file) -> None:
+        """File exists but missing notified_at — defaults to 0, TTL expired."""
+        state_file.write_text(json.dumps({"notified_version": "2.0.0"}))
+        assert should_notify_update("2.0.0") is True
+
+
+class TestMarkUpdateNotified:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary directory."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_creates_file(self, state_file) -> None:
+        """Creates state file when none exists."""
+        mark_update_notified("2.0.0")
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert data["notified_version"] == "2.0.0"
+        assert isinstance(data["notified_at"], float)
+
+    def test_overwrites_previous(self, state_file) -> None:
+        """Overwrites previous notification marker."""
+        mark_update_notified("1.0.0")
+        mark_update_notified("2.0.0")
+        data = json.loads(state_file.read_text())
+        assert data["notified_version"] == "2.0.0"
+
+    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
+        """Mark then should_notify returns False for same version."""
+        mark_update_notified("2.0.0")
+        assert should_notify_update("2.0.0") is False
+
+    def test_round_trip_different_version(self, state_file) -> None:  # noqa: ARG002
+        """Mark then should_notify returns True for different version."""
+        mark_update_notified("1.9.0")
+        assert should_notify_update("2.0.0") is True
+
+    def test_write_failure_does_not_raise(self, state_file) -> None:
+        """Write failure is absorbed gracefully."""
+        with patch(
+            "deepagents_cli.update_check.UPDATE_STATE_FILE",
+            type(state_file)("/nonexistent/readonly/path/state.json"),
+        ):
+            mark_update_notified("2.0.0")  # should not raise
+
+    def test_does_not_touch_cache_file(self, state_file, cache_file) -> None:
+        """Notification state is independent of version cache."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "version": "2.0.0",
+                    "checked_at": time.time(),
+                }
+            )
+        )
+        mark_update_notified("2.0.0")
+        # Cache file should be untouched
+        cache_data = json.loads(cache_file.read_text())
+        assert "notified_at" not in cache_data
+        assert "notified_version" not in cache_data
+        # State file should have the marker
+        assert state_file.exists()
+        state_data = json.loads(state_file.read_text())
+        assert state_data["notified_version"] == "2.0.0"
+
+    def test_get_latest_version_does_not_clobber_notify(
+        self,
+        state_file,  # noqa: ARG002
+        cache_file,  # noqa: ARG002
+    ) -> None:
+        """get_latest_version writing cache doesn't destroy notification state."""
+        mark_update_notified("2.0.0")
+        with patch("requests.get", return_value=_mock_pypi_response("3.0.0")):
+            get_latest_version(bypass_cache=True)
+        # Notification marker should survive
+        assert should_notify_update("2.0.0") is False
+
+    def test_preserves_seen_version(self, state_file) -> None:
+        """Marking notification preserves existing seen_version data."""
+        from deepagents_cli.update_check import mark_version_seen
+
+        mark_version_seen("1.0.0")
+        mark_update_notified("2.0.0")
+        data = json.loads(state_file.read_text())
+        assert data["seen_version"] == "1.0.0"
+        assert data["notified_version"] == "2.0.0"

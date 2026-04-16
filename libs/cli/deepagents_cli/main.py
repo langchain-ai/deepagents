@@ -1760,7 +1760,7 @@ def cli_main() -> None:
                             console.print(auto_hint)
                         mark_update_notified(latest)
             except Exception:
-                logger.debug("Failed to display exit update banner", exc_info=True)
+                logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C — suppress ugly traceback.
         # `console` may not be bound if Ctrl+C arrives during config import.

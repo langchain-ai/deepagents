@@ -1439,7 +1439,7 @@ class DeepAgentsApp(App):
             )
 
             available, latest = await asyncio.to_thread(is_update_available)
-            if not available:
+            if not available or latest is None:
                 return
 
             self._update_available = (True, latest)
@@ -1480,9 +1480,7 @@ class DeepAgentsApp(App):
                     should_notify_update,
                 )
 
-                if latest is None or not await asyncio.to_thread(
-                    should_notify_update, latest
-                ):
+                if not await asyncio.to_thread(should_notify_update, latest):
                     return
 
                 cmd = upgrade_command()
@@ -1496,12 +1494,7 @@ class DeepAgentsApp(App):
                 )
                 await asyncio.to_thread(mark_update_notified, latest)
         except Exception:
-            logger.warning("Auto-update failed unexpectedly", exc_info=True)
-            self.notify(
-                "Update failed unexpectedly.",
-                severity="warning",
-                timeout=10,
-            )
+            logger.warning("Update check/notify failed unexpectedly", exc_info=True)
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""

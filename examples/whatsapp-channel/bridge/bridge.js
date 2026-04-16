@@ -23,13 +23,52 @@ let clientStatus = "disconnected"; // "disconnected" | "qr_pending" | "connected
 let botId = null;
 const messageQueue = [];
 
+// --- Detect system Chrome/Chromium ---
+function findChrome() {
+  const candidates =
+    process.platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        ]
+      : process.platform === "win32"
+        ? [
+            process.env.PROGRAMFILES + "\\Google\\Chrome\\Application\\chrome.exe",
+            process.env["PROGRAMFILES(X86)"] + "\\Google\\Chrome\\Application\\chrome.exe",
+          ]
+        : [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+          ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return undefined; // fall back to puppeteer's bundled browser if available
+}
+
+const chromePath = process.env.CHROME_PATH || findChrome();
+if (chromePath) {
+  console.log(`Using Chrome at: ${chromePath}`);
+} else {
+  console.log("No system Chrome found; using puppeteer bundled browser (if available)");
+}
+
 // --- WhatsApp client ---
+const puppeteerOpts = {
+  headless: true,
+  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+};
+if (chromePath) {
+  puppeteerOpts.executablePath = chromePath;
+}
+
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESSION_DIR }),
-  puppeteer: {
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  },
+  puppeteer: puppeteerOpts,
 });
 
 client.on("qr", (qr) => {

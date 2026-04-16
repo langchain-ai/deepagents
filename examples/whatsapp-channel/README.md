@@ -76,3 +76,5 @@ The bridge runs as a Node.js subprocess managed by the Python adapter. Messages 
 - **QR code not showing:** Check that Node.js 18+ is installed (`node --version`)
 - **Session expired:** Delete the `session/` directory and re-scan
 - **Bridge won't start:** Check if port 3000 is in use (`lsof -i :3000`)
+- **Chrome not found:** The bridge auto-detects system Chrome/Chromium. If detection fails, set `CHROME_PATH=/path/to/chrome` in your `.env`
+- **Puppeteer download fails:** Chrome download is skipped by default — the bridge uses your system Chrome. If you have no system Chrome, install one or set `PUPPETEER_SKIP_DOWNLOAD=false` and retry

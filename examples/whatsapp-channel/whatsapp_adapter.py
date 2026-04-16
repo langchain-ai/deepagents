@@ -374,10 +374,13 @@ class WhatsAppAdapter:
         if not (bridge_dir / "node_modules").exists():
             print(f"[whatsapp] Installing bridge dependencies...")
             try:
+                install_env = os.environ.copy()
+                install_env["PUPPETEER_SKIP_DOWNLOAD"] = "true"
                 install = subprocess.run(
                     ["sfw", "npm", "install"],
                     cwd=str(bridge_dir),
                     capture_output=True, text=True, timeout=120,
+                    env=install_env,
                 )
                 if install.returncode != 0:
                     print(f"[whatsapp] npm install failed: {install.stderr}")

@@ -13,6 +13,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
 from whatsapp_adapter import MessageEvent, WhatsAppAdapter
 
 load_dotenv()
@@ -44,7 +45,7 @@ async def main() -> None:
     model = init_chat_model(model_name)
 
     # --- Agent setup ---
-    agent = create_deep_agent(model=model)
+    agent = create_deep_agent(model=model, backend=LocalShellBackend())
 
     # --- Per-chat conversation history (in-memory) ---
     conversations: dict[str, list] = {}

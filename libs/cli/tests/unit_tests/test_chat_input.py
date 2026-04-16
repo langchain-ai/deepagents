@@ -2379,6 +2379,29 @@ class TestArgumentHints:
             assert chat._text_area.argument_hint == "[context]"
             assert _render_text_area_line(chat._text_area) == "remember [context]"
 
+    async def test_hint_clears_when_extra_space_is_inserted(self) -> None:
+        """Typing another space should leave the exact placeholder state."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat._text_area.argument_hint == "[context]"
+
+            await pilot.press("left")
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert chat._text_area.text == "remember  "
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember"
+
     async def test_hint_cleared_when_command_mode_exits_via_submit(self) -> None:
         """Submitting a command clears ghost text when mode resets to normal."""
         app = _RecordingApp()

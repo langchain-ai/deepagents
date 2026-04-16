@@ -1201,8 +1201,8 @@ class ChatInput(Vertical):
             return
 
         text = self._text_area.text
-        if text.endswith(" ") and " " not in text.rstrip():
-            hint = self._argument_hints.get(text.rstrip(), "")
+        if text.endswith(" ") and text.count(" ") == 1:
+            hint = self._argument_hints.get(text[:-1], "")
             if hint:
                 if self._text_area.argument_hint != hint:
                     self._text_area.argument_hint = hint

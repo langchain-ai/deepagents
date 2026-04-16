@@ -1991,14 +1991,15 @@ class TestAppArgumentHints:
             await pilot.pause()
 
             assert chat.mode == "command"
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
             await pilot.press("enter")
             await pilot.pause()
 
             assert chat.mode == "normal"
             assert chat._text_area.text == ""
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
 
     async def test_hint_clears_after_backspace_mode_exit(self) -> None:
         """Backspace mode exit clears the hint in the mounted app."""
@@ -2015,19 +2016,21 @@ class TestAppArgumentHints:
             await pilot.pause()
 
             assert chat.mode == "command"
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
             for _ in "remember ":
                 await pilot.press("left")
             await pilot.pause()
             assert chat._text_area.cursor_location == (0, 0)
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
             assert chat._text_area.text == "remember "
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
 
 
 class TestInterruptApprovalPriority:

@@ -262,6 +262,11 @@ def _prompt_text(prompt: Static) -> str:
     return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
 
 
+def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
+    """Render a text-area line and trim widget padding for assertions."""
+    return text_area.render_line(y).text.rstrip()
+
+
 class TestPromptIndicator:
     """Test that the prompt indicator reflects the current input mode."""
 
@@ -2309,7 +2314,8 @@ class TestArgumentHints:
             chat._text_area.insert("remember ")
             await pilot.pause()
 
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
 
     async def test_hint_cleared_when_args_typed(self) -> None:
         """Ghost text disappears once the user starts typing arguments."""
@@ -2322,11 +2328,34 @@ class TestArgumentHints:
             await _pause_for_strip(pilot)
             chat._text_area.insert("remember ")
             await pilot.pause()
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
 
             chat._text_area.insert("x")
             await pilot.pause()
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember x"
+
+    async def test_hint_stays_at_end_when_cursor_moves(self) -> None:
+        """Moving the cursor should not move the rendered argument hint."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
+            for _ in "remember ":
+                await pilot.press("left")
+            await pilot.pause()
+
+            assert chat._text_area.cursor_location == (0, 0)
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
 
     async def test_hint_cleared_when_command_mode_exits_via_submit(self) -> None:
         """Submitting a command clears ghost text when mode resets to normal."""
@@ -2339,13 +2368,13 @@ class TestArgumentHints:
             await _pause_for_strip(pilot)
             chat._text_area.insert("remember ")
             await pilot.pause()
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
 
             await pilot.press("enter")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "/remember"
 
@@ -2360,7 +2389,7 @@ class TestArgumentHints:
             await _pause_for_strip(pilot)
             chat._text_area.insert("remember ")
             await pilot.pause()
-            assert chat._text_area.suggestion == "[context]"
+            assert chat._text_area.argument_hint == "[context]"
 
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
@@ -2369,7 +2398,8 @@ class TestArgumentHints:
 
             assert chat.mode == "normal"
             assert chat._text_area.text == "remember "
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember"
 
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""
@@ -2382,7 +2412,7 @@ class TestArgumentHints:
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
 
     async def test_hint_not_shown_for_unknown_command(self) -> None:
         """Ghost text does not appear for commands without argument hints."""
@@ -2396,7 +2426,7 @@ class TestArgumentHints:
             chat._text_area.insert("help ")
             await pilot.pause()
 
-            assert chat._text_area.suggestion == ""
+            assert chat._text_area.argument_hint == ""
 
     async def test_pre_key_dismiss_hides_popup_on_space(self) -> None:
         """Popup is hidden before TextArea processes the space character."""

@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.cells import cell_len
+from rich.segment import Segment
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -16,6 +18,7 @@ from textual.css.query import NoMatches
 from textual.geometry import Offset
 from textual.message import Message
 from textual.reactive import reactive
+from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_cli import theme
@@ -396,6 +399,9 @@ class ChatTextArea(TextArea):
         typing activity.
         """
 
+    argument_hint: reactive[str] = reactive("")
+    """Inline slash-command argument hint rendered at the end of the line."""
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
         # Remove placeholder if passed, TextArea doesn't support it the same way
@@ -412,6 +418,110 @@ class ChatTextArea(TextArea):
         self._paste_burst_timer: Timer | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+
+    def render_line(self, y: int) -> Strip:
+        """Render a single line, appending any argument hint at line end.
+
+        The built-in `TextArea.suggestion` renders at the cursor position,
+        but slash-command argument hints should stay attached to the end of the
+        command text regardless of cursor movement.
+
+        Args:
+            y: Y Coordinate of line relative to the widget region.
+
+        Returns:
+            A rendered line.
+        """
+        strip = super().render_line(y)
+        if not self._should_render_argument_hint():
+            return strip
+
+        line_info = self._get_visual_line_info(y)
+        if line_info is None:
+            return strip
+
+        line_index, section_offset = line_info
+        if not self._is_argument_hint_section(line_index, section_offset):
+            return strip
+
+        content_cells = self._get_section_cell_length(line_index, section_offset)
+        if content_cells >= strip.cell_length:
+            return strip
+
+        prefix = strip.crop(0, content_cells)
+        suffix = strip.crop(content_cells, strip.cell_length)
+        suffix_width = suffix.cell_length
+        cursor_on_hint = self._cursor_at_argument_hint_anchor(line_index)
+        if cursor_on_hint and suffix_width > 0:
+            suffix = suffix.crop(1, suffix.cell_length)
+
+        hint_strip = self._build_argument_hint_strip(cursor_on_hint=cursor_on_hint)
+        tail = Strip.join([hint_strip, suffix]).crop(0, suffix_width)
+        return Strip.join([prefix, tail])
+
+    def _should_render_argument_hint(self) -> bool:
+        """Return whether the inline argument hint should be rendered."""
+        return bool(
+            self.argument_hint and (self.has_focus or not self.hide_suggestion_on_blur)
+        )
+
+    def _get_visual_line_info(self, y: int) -> tuple[int, int] | None:
+        """Map a widget-relative y coordinate to wrapped line metadata.
+
+        Returns:
+            Tuple of `(line_index, section_offset)` for the wrapped line at `y`,
+            otherwise `None` when `y` is outside the wrapped document.
+        """
+        _scroll_x, scroll_y = self.scroll_offset
+        absolute_y = scroll_y + y
+        offset_map = self.wrapped_document._offset_to_line_info
+        if absolute_y < 0 or absolute_y >= len(offset_map):
+            return None
+        return offset_map[absolute_y]
+
+    def _is_argument_hint_section(self, line_index: int, section_offset: int) -> bool:
+        """Return whether a wrapped section owns the end-of-line hint."""
+        if line_index != self.document.line_count - 1:
+            return False
+        return section_offset == len(self.wrapped_document.get_offsets(line_index))
+
+    def _get_section_cell_length(self, line_index: int, section_offset: int) -> int:
+        """Return the rendered cell width of a wrapped text section."""
+        wrapped_sections = self.wrapped_document.get_sections(line_index)
+        if section_offset < 0 or section_offset >= len(wrapped_sections):
+            return 0
+        section_text = wrapped_sections[section_offset].expandtabs(self.indent_width)
+        return cell_len(section_text)
+
+    def _cursor_at_argument_hint_anchor(self, line_index: int) -> bool:
+        """Return whether the cursor currently sits on the hint anchor."""
+        if not self._draw_cursor or not self.show_cursor or not self.has_focus:
+            return False
+        cursor_row, cursor_column = self.selection.end
+        if cursor_row != line_index:
+            return False
+        return cursor_column == len(self.document.get_line(line_index))
+
+    def _build_argument_hint_strip(self, *, cursor_on_hint: bool) -> Strip:
+        """Build a strip for the current argument hint text.
+
+        Returns:
+            A `Strip` containing the current argument hint, with cursor styling
+            applied to the first hint character when the cursor sits on the
+            hint anchor.
+        """
+        hint = self.argument_hint
+        hint_style = self.get_component_rich_style("text-area--suggestion")
+        if not cursor_on_hint or not hint:
+            return Strip([Segment(hint, hint_style)], cell_length=cell_len(hint))
+
+        theme = self._theme
+        cursor_style = theme.cursor_style if theme else None
+        first_style = hint_style if cursor_style is None else hint_style + cursor_style
+        segments = [Segment(hint[0], first_style)]
+        if len(hint) > 1:
+            segments.append(Segment(hint[1:], hint_style))
+        return Strip(segments, cell_length=cell_len(hint))
 
     def scroll_cursor_visible(
         self, center: bool = False, animate: bool = False
@@ -1072,15 +1182,17 @@ class ChatInput(Vertical):
     def _update_argument_hint(self) -> None:
         """Show or clear inline ghost text for slash-command argument hints.
 
-        Sets `TextArea.suggestion` when the input is a known slash command
-        followed by a trailing space with no args typed yet. Both spacebar
-        and Tab completion produce this state (Tab goes through
+        Sets `ChatTextArea.argument_hint` when the input is a known slash
+        command followed by a trailing space with no args typed yet. Both
+        spacebar and Tab completion produce this state (Tab goes through
         `replace_completion_range` which appends a trailing space).
         """
         if not self._text_area:
             return
 
         if self.mode != "command":
+            if self._text_area.argument_hint:
+                self._text_area.argument_hint = ""
             if self._text_area.suggestion:
                 self._text_area.suggestion = ""
             return
@@ -1089,10 +1201,14 @@ class ChatInput(Vertical):
         if text.endswith(" ") and " " not in text.rstrip():
             hint = self._argument_hints.get(text.rstrip(), "")
             if hint:
-                if self._text_area.suggestion != hint:
-                    self._text_area.suggestion = hint
+                if self._text_area.argument_hint != hint:
+                    self._text_area.argument_hint = hint
+                if self._text_area.suggestion:
+                    self._text_area.suggestion = ""
                 return
 
+        if self._text_area.argument_hint:
+            self._text_area.argument_hint = ""
         if self._text_area.suggestion:
             self._text_area.suggestion = ""
 

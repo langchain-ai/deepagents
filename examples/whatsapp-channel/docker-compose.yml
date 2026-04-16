@@ -1,0 +1,19 @@
+services:
+  whatsapp-agent:
+    build: .
+    # Interactive terminal needed for QR code display on first login
+    stdin_open: true
+    tty: true
+    env_file: .env
+    environment:
+      - WHATSAPP_SESSION_PATH=/app/session
+    volumes:
+      # Persist WhatsApp session across rebuilds
+      - whatsapp-session:/app/session
+      # Persist downloaded media
+      - whatsapp-media:/app/media
+    # No ports exposed — bridge runs on localhost inside the container
+
+volumes:
+  whatsapp-session:
+  whatsapp-media:

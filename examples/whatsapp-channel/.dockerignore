@@ -1,0 +1,8 @@
+.env
+.env.*
+.venv/
+__pycache__/
+session/
+media/
+bridge/node_modules/
+*.pyc

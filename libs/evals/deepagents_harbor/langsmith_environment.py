@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import hashlib
 import re
 import shlex
 from pathlib import Path
@@ -13,7 +13,7 @@ from dockerfile_parse import DockerfileParser
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
 from harbor.utils.logger import logger
-from langsmith.sandbox import AsyncSandboxClient, ResourceNotFoundError
+from langsmith.sandbox import AsyncSandboxClient
 
 from deepagents_harbor.langsmith import resolve_langsmith_api_key
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
 _MB_PER_GB = 1024
 _MAX_NAME_LEN = 63
+_SESSION_HASH_LEN = 8
 
 
 class LangSmithEnvironment(BaseEnvironment):
@@ -41,9 +42,9 @@ class LangSmithEnvironment(BaseEnvironment):
     creates a LangSmith template + sandbox with the appropriate resources, and
     delegates all exec/file operations to the LangSmith sandbox SDK.
 
-    Template names are derived from the container image so that multiple trials
-    using the same image can share a template. The template is only recreated
-    when the resource limits change.
+    Each trial gets its own template (named with the session ID) so that
+    concurrent trials never race on shared resources during creation or
+    teardown.
     """
 
     def __init__(
@@ -66,6 +67,7 @@ class LangSmithEnvironment(BaseEnvironment):
             **kwargs: Forwarded to `BaseEnvironment` (e.g. `logger`,
                 `override_cpus`, `override_memory_mb`).
         """
+        self._session_id = session_id
         self._sandbox: AsyncSandbox | None = None
         self._client: AsyncSandboxClient | None = None
         self._template_name: str | None = None
@@ -177,72 +179,45 @@ class LangSmithEnvironment(BaseEnvironment):
             name = f"h-{name}"
         return name[:_MAX_NAME_LEN].rstrip("-")
 
-    # -- Lifecycle -------------------------------------------------------------
+    # -- Template naming -------------------------------------------------------
 
-    async def _ensure_template(
-        self,
-        client: AsyncSandboxClient,
-        template_name: str,
-        image: str,
-        cpu: str,
-        memory: str,
-        storage: str,
-    ) -> None:
-        """Ensure a template exists with the correct resource limits.
+    @staticmethod
+    def _build_template_name(image: str, session_id: str) -> str:
+        """Build a unique LangSmith template name within the 63-char limit.
 
-        If a template already exists with matching resources, it is reused.
-        Otherwise it is deleted and recreated.
+        Previous implementation concatenated ``harbor-{image}-{session}`` and
+        truncated to 63 characters.  When the image name was long the unique
+        session suffix was silently chopped off, causing name collisions across
+        concurrent matrix jobs.
+
+        This version reserves 8 hex characters (from a SHA-256 of the full
+        session ID) as a suffix so uniqueness is guaranteed regardless of
+        image-name length.
 
         Args:
-            client: The async sandbox client.
-            template_name: Desired template name.
-            image: Container image.
-            cpu: CPU limit string.
-            memory: Memory limit string.
-            storage: Storage limit string.
+            image: Container image reference (e.g. ``alexgshaw/foo:tag``).
+            session_id: Unique trial session identifier.
+
+        Returns:
+            A sanitized name of at most 63 characters, guaranteed unique per
+            ``session_id``.
         """
-        from langsmith.sandbox import ResourceNotFoundError
+        sanitized_image = LangSmithEnvironment._sanitize_name(image)
+        session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[:_SESSION_HASH_LEN]
+        # "harbor-" (7) + "-" (1) + suffix (8) = 16 reserved chars
+        max_image_len = _MAX_NAME_LEN - len("harbor-") - 1 - _SESSION_HASH_LEN
+        truncated_image = sanitized_image[:max_image_len].rstrip("-")
+        return f"harbor-{truncated_image}-{session_suffix}"
 
-        try:
-            existing = await client.get_template(template_name)
-            needs_recreate = (
-                existing.resources.memory != memory
-                or existing.resources.cpu != cpu
-                or existing.resources.storage != storage
-            )
-            if not needs_recreate:
-                logger.info("Reusing existing LangSmith template '%s'", template_name)
-                return
-            logger.info(
-                "Template '%s' exists but resource limits differ, recreating",
-                template_name,
-            )
-            await client.delete_template(template_name)
-        except ResourceNotFoundError:
-            logger.debug("Template '%s' not found, will create", template_name)
-
-        await client.create_template(
-            name=template_name,
-            image=image,
-            cpu=cpu,
-            memory=memory,
-            storage=storage,
-        )
-        logger.info(
-            "Created LangSmith template '%s' (image=%s, cpu=%s, mem=%s, disk=%s)",
-            template_name,
-            image,
-            cpu,
-            memory,
-            storage,
-        )
+    # -- Lifecycle -------------------------------------------------------------
 
     async def start(self, force_build: bool) -> None:
         """Provision a LangSmith sandbox from the task's Dockerfile image.
 
         Args:
-            force_build: When True, delete and recreate the template even if
-                one already exists with matching resources.
+            force_build: Accepted for interface compatibility but unused.
+                Each trial creates its own template, so there is nothing
+                to force-rebuild.
         """
         image = self._resolve_image()
 
@@ -261,7 +236,7 @@ class LangSmithEnvironment(BaseEnvironment):
         client = AsyncSandboxClient(api_key=api_key)
         self._client = client
 
-        template_name = f"harbor-{self._sanitize_name(image)}"[:_MAX_NAME_LEN]
+        template_name = self._build_template_name(image, self._session_id)
 
         cpu = f"{self.task_env_config.cpus * 1000}m"
         memory_mb = self.task_env_config.memory_mb
@@ -269,24 +244,21 @@ class LangSmithEnvironment(BaseEnvironment):
         storage_gi = max(1, (self.task_env_config.storage_mb + _MB_PER_GB - 1) // _MB_PER_GB)
         storage = f"{storage_gi}Gi"
 
-        if force_build:
-            with contextlib.suppress(ResourceNotFoundError):
-                await client.delete_template(template_name)
-            await client.create_template(
-                name=template_name,
-                image=image,
-                cpu=cpu,
-                memory=memory,
-                storage=storage,
-            )
-            logger.info(
-                "Force-created LangSmith template '%s' (image=%s)",
-                template_name,
-                image,
-            )
-        else:
-            await self._ensure_template(client, template_name, image, cpu, memory, storage)
-
+        await client.create_template(
+            name=template_name,
+            image=image,
+            cpu=cpu,
+            memory=memory,
+            storage=storage,
+        )
+        logger.info(
+            "Created LangSmith template '%s' (image=%s, cpu=%s, mem=%s, disk=%s)",
+            template_name,
+            image,
+            cpu,
+            memory,
+            storage,
+        )
         self._template_name = template_name
 
         sandbox = await client.create_sandbox(
@@ -303,7 +275,10 @@ class LangSmithEnvironment(BaseEnvironment):
         )
 
     async def stop(self, delete: bool) -> None:
-        """Tear down the LangSmith sandbox and template.
+        """Tear down the LangSmith sandbox and its dedicated template.
+
+        Deletes the sandbox first so the template has no remaining
+        dependents and can be safely removed.
 
         Args:
             delete: If True, delete the sandbox and template before

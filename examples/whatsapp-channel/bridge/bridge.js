@@ -10,9 +10,13 @@ function getArg(name, defaultVal) {
   const idx = args.indexOf(`--${name}`);
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : defaultVal;
 }
+function hasFlag(name) {
+  return args.includes(`--${name}`);
+}
 const PORT = parseInt(getArg("port", "3000"), 10);
 const SESSION_DIR = path.resolve(getArg("session", "./session"));
 const MEDIA_DIR = path.resolve(getArg("media-dir", "./media"));
+const SELF_ONLY = hasFlag("self-only");
 
 // Ensure directories exist
 fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -22,6 +26,7 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 let clientStatus = "disconnected"; // "disconnected" | "qr_pending" | "connected"
 let botId = null;
 const messageQueue = [];
+const sentMessageIds = new Set(); // track IDs we sent to avoid reply loops
 
 // --- Detect system Chrome/Chromium ---
 function findChrome() {
@@ -96,8 +101,19 @@ client.on("auth_failure", (msg) => {
 client.on("message", async (msg) => {
   // Skip status broadcasts
   if (msg.from === "status@broadcast") return;
-  // Skip messages sent by the bot itself
-  if (msg.fromMe) return;
+
+  if (SELF_ONLY) {
+    // Self-only mode: only process messages from our own number
+    if (!msg.fromMe) return;
+    // Skip messages we sent via the bridge (bot replies) to avoid loops
+    if (sentMessageIds.has(msg.id._serialized)) {
+      sentMessageIds.delete(msg.id._serialized);
+      return;
+    }
+  } else {
+    // Normal mode: skip all self-sent messages
+    if (msg.fromMe) return;
+  }
 
   const chat = await msg.getChat();
   const contact = await msg.getContact();
@@ -170,6 +186,7 @@ app.post("/send", async (req, res) => {
     const options = {};
     if (replyTo) options.quotedMessageId = replyTo;
     const sent = await client.sendMessage(chatId, message, options);
+    sentMessageIds.add(sent.id._serialized);
     res.json({ messageId: sent.id._serialized });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -188,6 +205,7 @@ app.post("/send-media", async (req, res) => {
     if (caption) options.caption = caption;
     if (mediaType === "document") options.sendMediaAsDocument = true;
     const sent = await client.sendMessage(chatId, media, options);
+    sentMessageIds.add(sent.id._serialized);
     res.json({ messageId: sent.id._serialized });
   } catch (e) {
     res.status(500).json({ error: e.message });

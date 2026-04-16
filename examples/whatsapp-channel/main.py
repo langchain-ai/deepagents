@@ -33,6 +33,7 @@ def _build_config() -> dict:
         "mention_patterns": os.getenv("WHATSAPP_MENTION_PATTERNS"),
         "free_response_chats": os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", ""),
         "reply_prefix": os.getenv("WHATSAPP_REPLY_PREFIX"),
+        "self_only": os.getenv("WHATSAPP_SELF_ONLY", "true"),
     }
 
 

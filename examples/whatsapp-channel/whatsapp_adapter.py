@@ -344,6 +344,9 @@ class WhatsAppAdapter:
         self._mention_patterns = _compile_mention_patterns(
             config.get("mention_patterns")
         )
+        self._self_only: bool = str(
+            config.get("self_only", "false")
+        ).lower() in ("true", "1", "yes", "on")
         self._on_message: MessageCallback | None = None
         self._bridge_process: subprocess.Popen | None = None
         self._http_session: Any = None  # aiohttp.ClientSession
@@ -421,13 +424,16 @@ class WhatsAppAdapter:
 
         # Start bridge — inherit stdout/stderr so QR codes and logs
         # are visible directly in the terminal
+        bridge_cmd = [
+            "node", str(bridge_path),
+            "--port", str(self._bridge_port),
+            "--session", str(self._session_path),
+            "--media-dir", str(self._session_path.parent / "media"),
+        ]
+        if self._self_only:
+            bridge_cmd.append("--self-only")
         self._bridge_process = subprocess.Popen(
-            [
-                "node", str(bridge_path),
-                "--port", str(self._bridge_port),
-                "--session", str(self._session_path),
-                "--media-dir", str(self._session_path.parent / "media"),
-            ],
+            bridge_cmd,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             env=bridge_env,
         )

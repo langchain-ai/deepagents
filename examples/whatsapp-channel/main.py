@@ -47,6 +47,7 @@ async def main() -> None:
 
     # --- Per-chat conversation history (in-memory) ---
     conversations: dict[str, list] = {}
+    chat_locks: dict[str, asyncio.Lock] = {}
 
     # --- Adapter setup ---
     config = _build_config()
@@ -56,59 +57,64 @@ async def main() -> None:
         """Callback invoked for each inbound WhatsApp message."""
         chat_id = event.chat_id
 
-        # Send typing indicator
-        await adapter.send_typing(chat_id)
+        # Serialize message processing per chat to avoid race conditions
+        if chat_id not in chat_locks:
+            chat_locks[chat_id] = asyncio.Lock()
 
-        # Get or create conversation history
-        if chat_id not in conversations:
-            conversations[chat_id] = []
-        history = conversations[chat_id]
+        async with chat_locks[chat_id]:
+            # Send typing indicator
+            await adapter.send_typing(chat_id)
 
-        # Append user message
-        history.append(HumanMessage(content=event.text))
+            # Get or create conversation history
+            if chat_id not in conversations:
+                conversations[chat_id] = []
+            history = conversations[chat_id]
 
-        try:
-            # Invoke the agent
-            result = await agent.ainvoke({"messages": history})
+            # Append user message
+            history.append(HumanMessage(content=event.text))
 
-            # Extract the agent's final response text
-            response_messages = result.get("messages", [])
-            response_text = ""
-            for msg in reversed(response_messages):
-                if isinstance(msg, AIMessage) and msg.content:
-                    if isinstance(msg.content, str):
-                        response_text = msg.content
-                    elif isinstance(msg.content, list):
-                        # Content blocks: find the last text block
-                        for block in reversed(msg.content):
-                            if isinstance(block, str):
-                                response_text = block
-                                break
-                            elif isinstance(block, dict) and block.get("type") == "text":
-                                response_text = block["text"]
-                                break
-                    if response_text:
-                        break
+            try:
+                # Invoke the agent
+                result = await agent.ainvoke({"messages": history})
 
-            if response_text:
-                # Send response
-                send_result = await adapter.send(
-                    chat_id, response_text, reply_to=event.message_id,
-                )
-                if not send_result.success:
-                    logger.error("Failed to send: %s", send_result.error)
+                # Extract the agent's final response text
+                response_messages = result.get("messages", [])
+                response_text = ""
+                for msg in reversed(response_messages):
+                    if isinstance(msg, AIMessage) and msg.content:
+                        if isinstance(msg.content, str):
+                            response_text = msg.content
+                        elif isinstance(msg.content, list):
+                            # Content blocks: find the last text block
+                            for block in reversed(msg.content):
+                                if isinstance(block, str):
+                                    response_text = block
+                                    break
+                                elif isinstance(block, dict) and block.get("type") == "text":
+                                    response_text = block["text"]
+                                    break
+                        if response_text:
+                            break
 
-                # Append to history
-                history.append(AIMessage(content=response_text))
-            else:
-                logger.warning("Agent returned no text response for chat %s", chat_id)
+                if response_text:
+                    # Send response
+                    send_result = await adapter.send(
+                        chat_id, response_text, reply_to=event.message_id,
+                    )
+                    if not send_result.success:
+                        logger.error("Failed to send: %s", send_result.error)
 
-            # Sync history with full agent output
-            conversations[chat_id] = result.get("messages", history)
+                    # Append to history
+                    history.append(AIMessage(content=response_text))
+                else:
+                    logger.warning("Agent returned no text response for chat %s", chat_id)
 
-        except Exception:
-            logger.exception("Error processing message from %s", chat_id)
-            await adapter.send(chat_id, "Sorry, something went wrong processing your message.")
+                # Sync history with full agent output
+                conversations[chat_id] = result.get("messages", history)
+
+            except Exception:
+                logger.exception("Error processing message from %s", chat_id)
+                await adapter.send(chat_id, "Sorry, something went wrong processing your message.")
 
     adapter.on_message(handle_message)
 

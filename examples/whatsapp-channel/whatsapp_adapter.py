@@ -375,7 +375,7 @@ class WhatsAppAdapter:
             print(f"[whatsapp] Installing bridge dependencies...")
             try:
                 install = subprocess.run(
-                    ["npm", "install", "--silent"],
+                    ["sfw", "npm", "install", "--silent"],
                     cwd=str(bridge_dir),
                     capture_output=True, text=True, timeout=120,
                 )
@@ -611,11 +611,12 @@ class WhatsAppAdapter:
             return
         try:
             import aiohttp
-            await self._http_session.post(
+            async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": chat_id},
                 timeout=aiohttp.ClientTimeout(total=5),
-            )
+            ) as resp:
+                pass  # Fire-and-forget; response consumed to avoid leaks
         except Exception:
             pass
 

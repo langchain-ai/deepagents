@@ -238,12 +238,28 @@ async def _build_sync_subagents(seed, store, assistant_id):
                         {"content": content, "encoding": "utf-8"},
                     )
 
+        sa_prefix = f"/memories/subagents/{{name}}/"
         if data.get("skills"):
-            sa_skills_prefix = f"/memories/subagents/{name}/skills/"
-            sa["skills"] = [sa_skills_prefix]
+            sa["skills"] = [f"{{sa_prefix}}skills/"]
 
         if data.get("mcp"):
             sa["tools"] = await _load_subagent_mcp_tools(data["mcp"])
+
+        # Restrict filesystem access to the subagent's own namespace.
+        # Allow comes first (first-match wins); the deny rule blocks
+        # everything else under /memories/ — parent AGENTS.md, skills, etc.
+        sa["permissions"] = [
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=[f"{{sa_prefix}}**"],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=["/memories/**"],
+                mode="deny",
+            ),
+        ]
 
         subagents.append(sa)
     return subagents
@@ -272,36 +288,6 @@ async def _load_subagent_mcp_tools(mcp_config):
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to load subagent MCP tools: %s", exc)
         return []
-'''
-
-
-# ---------------------------------------------------------------------------
-# Async subagents loader (only emitted when async subagents are present)
-# ---------------------------------------------------------------------------
-
-ASYNC_SUBAGENTS_TEMPLATE = '''\
-from deepagents.middleware.async_subagents import AsyncSubAgent
-
-
-def _build_async_subagents(seed):
-    """Build AsyncSubAgent dicts from seed data."""
-    async_data = seed.get("async_subagents", [])
-    if not async_data:
-        return []
-
-    subagents = []
-    for entry in async_data:
-        asa: AsyncSubAgent = {
-            "name": entry["name"],
-            "description": entry["description"],
-            "graph_id": entry["graph_id"],
-        }
-        if entry.get("url"):
-            asa["url"] = entry["url"]
-        if entry.get("headers"):
-            asa["headers"] = entry["headers"]
-        subagents.append(asa)
-    return subagents
 '''
 
 
@@ -553,8 +539,6 @@ async def _seed_user_memories_if_needed(
 
 {sync_subagents_block}
 
-{async_subagents_block}
-
 
 def _make_namespace_factory(assistant_id: str, *extra: str):
     """Return a namespace factory closed over an assistant id + extra."""
@@ -661,7 +645,6 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     seed = _load_seed()
     all_subagents: list = []
     {sync_subagents_load_call}
-    {async_subagents_load_call}
 
     backend_factory = _build_backend_factory(assistant_id)
 

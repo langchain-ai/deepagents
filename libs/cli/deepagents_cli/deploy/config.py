@@ -61,17 +61,6 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
-class AsyncSubAgentConfig:
-    """A reference to an async sub-agent declared in `[[async_subagents]]`."""
-
-    name: str
-    description: str
-    graph_id: str
-    url: str = ""
-    headers: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class SubAgentConfig:
     """Parsed from a subagent's deepagents.toml."""
 
@@ -114,7 +103,6 @@ class DeployConfig:
 
     agent: AgentConfig
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
-    async_subagents: list[AsyncSubAgentConfig] = field(default_factory=list)
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -249,35 +237,6 @@ def _parse_subagent_config(data: dict[str, Any], subagent_dir: Path) -> SubAgent
     return SubAgentConfig(agent=AgentConfig(**agent_kwargs))
 
 
-def validate_subagent_names(
-    async_subagents: list[AsyncSubAgentConfig],
-    sync_subagents: dict[str, SubAgentProject],
-) -> list[str]:
-    """Check that all subagent names are unique across sync and async.
-
-    Returns list of validation error strings. Empty if all names are unique.
-    """
-    errors: list[str] = []
-    seen: dict[str, str] = {}  # name -> source
-    for asa in async_subagents:
-        if asa.name in seen:
-            errors.append(
-                f"Duplicate subagent name '{asa.name}': declared in both "
-                f"{seen[asa.name]} and async_subagents"
-            )
-        else:
-            seen[asa.name] = "async_subagents"
-    for name in sync_subagents:
-        if name in seen:
-            errors.append(
-                f"Duplicate subagent name '{name}': declared in both "
-                f"{seen[name]} and subagents/"
-            )
-        else:
-            seen[name] = "subagents/"
-    return errors
-
-
 def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
     """Discover and load subagent projects from ``subagents/``.
 
@@ -365,11 +324,8 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "async_subagents"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
-_ALLOWED_ASYNC_SUBAGENT_KEYS = frozenset(
-    {"name", "description", "graph_id", "url", "headers"}
-)
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 
 
@@ -421,37 +377,7 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     }
     sandbox = SandboxConfig(**sandbox_kwargs)
 
-    # Parse [[async_subagents]] entries.
-    raw_subagents = data.get("async_subagents", [])
-    async_subagents: list[AsyncSubAgentConfig] = []
-    for i, entry in enumerate(raw_subagents):
-        unknown_sub = set(entry.keys()) - _ALLOWED_ASYNC_SUBAGENT_KEYS
-        if unknown_sub:
-            msg = (
-                f"Unknown key(s) in [[async_subagents]][{i}]: {sorted(unknown_sub)}. "
-                f"Allowed: {sorted(_ALLOWED_ASYNC_SUBAGENT_KEYS)}"
-            )
-            raise ValueError(msg)
-
-        missing = {"name", "description", "graph_id"} - set(entry.keys())
-        if missing:
-            msg = (
-                f"Missing required field(s) in [[async_subagents]][{i}]: "
-                f"{sorted(missing)}"
-            )
-            raise ValueError(msg)
-
-        async_subagents.append(
-            AsyncSubAgentConfig(
-                name=entry["name"],
-                description=entry["description"],
-                graph_id=entry["graph_id"],
-                url=entry.get("url", ""),
-                headers=entry.get("headers", {}),
-            )
-        )
-
-    return DeployConfig(agent=agent, sandbox=sandbox, async_subagents=async_subagents)
+    return DeployConfig(agent=agent, sandbox=sandbox)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {

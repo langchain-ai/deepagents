@@ -6,8 +6,3 @@ model = "anthropic:claude-sonnet-4-6"
 [sandbox]
 provider = "none"
 
-[[async_subagents]]
-name = "content-writer"
-description = "Writes blog posts, landing pages, and marketing copy based on research findings"
-graph_id = "deepagents-deploy-content-writer"
-url = "https://deepagents-deploy-content-w-6909480a63d7575eb597d5a1b3c6e61e.us.langgraph.app"

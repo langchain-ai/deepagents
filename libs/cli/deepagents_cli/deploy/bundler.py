@@ -39,7 +39,6 @@ from deepagents_cli.deploy.config import (
     load_subagents,
 )
 from deepagents_cli.deploy.templates import (
-    ASYNC_SUBAGENTS_TEMPLATE,
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
@@ -115,14 +114,12 @@ def bundle(
     # 5. Render deploy_graph.py.
     has_user_memories = (project_root / USER_DIRNAME).is_dir()
     has_sync_subagents = bool(sync_subagents)
-    has_async_subagents = bool(config.async_subagents)
     (build_dir / "deploy_graph.py").write_text(
         _render_deploy_graph(
             config,
             mcp_present=mcp_present,
             has_user_memories=has_user_memories,
             has_sync_subagents=has_sync_subagents,
-            has_async_subagents=has_async_subagents,
         ),
         encoding="utf-8",
     )
@@ -247,18 +244,6 @@ def _build_seed(
             name: _build_subagent_seed(sa) for name, sa in sync_subagents.items()
         }
 
-    # Async subagents.
-    if config.async_subagents:
-        seed["async_subagents"] = [
-            {
-                "name": asa.name,
-                "description": asa.description,
-                "graph_id": asa.graph_id,
-                "url": asa.url,
-            }
-            for asa in config.async_subagents
-        ]
-
     return seed
 
 
@@ -268,7 +253,6 @@ def _render_deploy_graph(
     mcp_present: bool,
     has_user_memories: bool = False,
     has_sync_subagents: bool = False,
-    has_async_subagents: bool = False,
 ) -> str:
     """Render the generated `deploy_graph.py`."""
     provider = config.sandbox.provider
@@ -294,13 +278,6 @@ def _render_deploy_graph(
         sync_subagents_block = ""
         sync_subagents_load_call = "pass  # no sync subagents"
 
-    if has_async_subagents:
-        async_subagents_block = ASYNC_SUBAGENTS_TEMPLATE
-        async_subagents_load_call = "all_subagents.extend(_build_async_subagents(seed))"
-    else:
-        async_subagents_block = ""
-        async_subagents_load_call = "pass  # no async subagents"
-
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
         sandbox_template=config.sandbox.template,
@@ -312,9 +289,7 @@ def _render_deploy_graph(
         default_assistant_id=config.agent.name,
         has_user_memories=has_user_memories,
         sync_subagents_block=sync_subagents_block,
-        async_subagents_block=async_subagents_block,
         sync_subagents_load_call=sync_subagents_load_call,
-        async_subagents_load_call=async_subagents_load_call,
     )
 
 
@@ -414,20 +389,11 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     # Subagent summary.
     sync_subagents = seed.get("subagents", {})
-    async_subagents_data = seed.get("async_subagents", [])
-    if sync_subagents or async_subagents_data:
-        parts = []
-        if sync_subagents:
-            parts.append(f"{len(sync_subagents)} sync")
-        if async_subagents_data:
-            parts.append(f"{len(async_subagents_data)} async")
-        print(f"\n  Subagents ({', '.join(parts)}):")
+    if sync_subagents:
+        print(f"\n  Subagents ({len(sync_subagents)}):")
         for name, sa_data in sync_subagents.items():
             desc = sa_data.get("config", {}).get("description", "")
-            print(f"    {name} (sync) \u2014 {desc}")
-        for asa in async_subagents_data:
-            desc = asa.get("description", "")
-            print(f"    {asa['name']} (async) \u2014 {desc}")
+            print(f"    {name} \u2014 {desc}")
 
     print(f"\n  Sandbox: {config.sandbox.provider}")
     print(f"\n  Build directory: {build_dir}")

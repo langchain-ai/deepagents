@@ -75,6 +75,31 @@ class SendResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _sniff_image_mime(path: str) -> str:
+    """Detect an image's mime type from its magic bytes.
+
+    WhatsApp relays PNG, JPEG, WebP, and GIF. Anthropic rejects messages
+    whose declared media type disagrees with the actual bytes, so we sniff
+    rather than trust the file extension. Falls back to ``image/jpeg`` for
+    unreadable files or unknown formats — the extension is the most common
+    culprit for "wrong type" complaints, not unusual formats.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on *port*."""
     try:
@@ -749,7 +774,7 @@ class WhatsAppAdapter:
         media_types: list[str] = []
         for url in media_urls:
             if msg_type == MessageType.PHOTO:
-                media_types.append("image/jpeg")
+                media_types.append(_sniff_image_mime(url))
             elif msg_type == MessageType.VOICE:
                 media_types.append("audio/ogg")
             elif msg_type == MessageType.VIDEO:

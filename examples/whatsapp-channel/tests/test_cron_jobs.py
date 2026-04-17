@@ -81,3 +81,31 @@ class TestParseSchedule:
     def test_rejects_every_without_duration(self) -> None:
         with pytest.raises(ValueError):
             parse_schedule("every")
+
+
+from cron.jobs import compute_next_run
+
+
+class TestComputeNextRun:
+    def test_one_shot_first_run(self) -> None:
+        schedule = {"kind": "once", "run_at": "2026-04-20T09:00:00+00:00"}
+        assert compute_next_run(schedule) == "2026-04-20T09:00:00+00:00"
+
+    def test_one_shot_already_ran(self) -> None:
+        schedule = {"kind": "once", "run_at": "2026-04-20T09:00:00+00:00"}
+        assert compute_next_run(schedule, last_run_at="2026-04-20T09:00:01+00:00") is None
+
+    def test_interval_first_run(self) -> None:
+        # First run = now + interval
+        schedule = {"kind": "interval", "minutes": 60}
+        result = compute_next_run(schedule)
+        assert result is not None
+        next_run = datetime.fromisoformat(result)
+        delta = next_run - datetime.now().astimezone()
+        assert timedelta(minutes=59) <= delta <= timedelta(minutes=61)
+
+    def test_interval_subsequent_run(self) -> None:
+        schedule = {"kind": "interval", "minutes": 30}
+        last = "2026-04-20T10:00:00+00:00"
+        result = compute_next_run(schedule, last_run_at=last)
+        assert result == "2026-04-20T10:30:00+00:00"

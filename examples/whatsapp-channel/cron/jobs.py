@@ -86,3 +86,32 @@ def parse_schedule(s: str) -> dict[str, Any]:
         "run_at": run_at.isoformat(),
         "display": f"once in {original}",
     }
+
+
+def compute_next_run(
+    schedule: dict[str, Any],
+    last_run_at: str | None = None,
+) -> str | None:
+    """Compute the next run time as an ISO string, or ``None`` if no more runs.
+
+    For ``"once"``: returns ``schedule["run_at"]`` on first call (``last_run_at`` is
+    ``None``), ``None`` afterwards.
+
+    For ``"interval"``: first run is ``now + minutes``; subsequent runs are
+    ``last_run_at + minutes``.
+    """
+    kind = schedule["kind"]
+    if kind == "once":
+        if last_run_at is None:
+            return schedule["run_at"]
+        return None
+    if kind == "interval":
+        minutes = int(schedule["minutes"])
+        if last_run_at is None:
+            base = _now_aware()
+        else:
+            base = datetime.fromisoformat(last_run_at)
+            if base.tzinfo is None:
+                base = base.astimezone()
+        return (base + timedelta(minutes=minutes)).isoformat()
+    raise ValueError(f"Unknown schedule kind: {kind!r}")

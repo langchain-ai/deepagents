@@ -56,16 +56,18 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
 - Use `for item in items do ... end` for loops.
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
-- Use `parallel(expr1, expr2)` only for independent expressions that can run concurrently.
-- Use `try(expr, fallback)` when a failed lookup or function call should fall back to another value.
+- Use `parallel([task(call1(...)), task(call2(...))])` only for independent callable invocations that can run concurrently.
 - The REPL can only use the language features above and the foreign functions listed below.
 - If the task needs multiple foreign function calls, prefer writing one complete REPL program instead of splitting the work across multiple `repl` invocations.
+- When writing REPL scripts, always pipeline dependent lookups within a single call when possible.
+- If a result from one foreign function is needed as input to later foreign function calls, write one REPL program that performs the full sequence of dependent calls instead of returning intermediate results to the model between steps.
+- Only split work across multiple `repl` invocations when you genuinely cannot determine what to do next without additional model reasoning or user input.
 - If one foreign function returns an ID or other value that can be passed directly into the next foreign function, trust it and chain the calls instead of stopping to double-check it.
 - If you want to inspect an intermediate value, print it inside the same REPL program; otherwise, try to fetch as much information as possible in one program.
 - Example syntax only - this shows the language shape, not specific available foreign functions:
   `items = lookup_fn("value")`
   `first_item = items[0]`
   `item_id = first_item["id"]`
-  `print(parallel(detail_fn(item_id), status_fn(item_id)))`
+  `print(parallel([task(detail_fn(item_id)), task(status_fn(item_id))]))`
 - Use the repl for small computations, collection manipulation, branching, loops, and calling externally registered foreign functions.
 

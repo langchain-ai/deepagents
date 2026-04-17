@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import (
@@ -13,12 +15,12 @@ from langchain_core.tools.base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+    from collections.abc import Callable, Mapping, MutableMapping, Sequence
 
     from langchain.tools import ToolRuntime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Token:
     """A lexical token produced by the tokenizer."""
 
@@ -26,115 +28,6 @@ class Token:
     value: Any
     line: int
     column: int
-
-
-class Statement:
-    """Base class for parsed statements."""
-
-
-class Expression:
-    """Base class for parsed expressions."""
-
-
-@dataclass(frozen=True)
-class Program:
-    """A parsed REPL program."""
-
-    statements: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class Assign(Statement):
-    """An assignment statement."""
-
-    name: str
-    value: Expression
-
-
-@dataclass(frozen=True)
-class IfStatement(Statement):
-    """A conditional statement."""
-
-    condition: Expression
-    then_body: tuple[Statement, ...]
-    else_body: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class ForStatement(Statement):
-    """A for-loop statement."""
-
-    name: str
-    iterable: Expression
-    body: tuple[Statement, ...]
-
-
-@dataclass(frozen=True)
-class ExpressionStatement(Statement):
-    """A statement that evaluates an expression."""
-
-    expression: Expression
-
-
-@dataclass(frozen=True)
-class Name(Expression):
-    """A name reference expression."""
-
-    value: str
-
-
-@dataclass(frozen=True)
-class Literal(Expression):
-    """A literal value expression."""
-
-    value: Any
-
-
-@dataclass(frozen=True)
-class ListLiteral(Expression):
-    """A list literal expression."""
-
-    items: tuple[Expression, ...]
-
-
-@dataclass(frozen=True)
-class DictLiteral(Expression):
-    """A dict literal expression."""
-
-    items: tuple[tuple[str, Expression], ...]
-
-
-@dataclass(frozen=True)
-class BinaryOperation(Expression):
-    """A binary operation expression."""
-
-    left: Expression
-    operator: str
-    right: Expression
-
-
-@dataclass(frozen=True)
-class Attribute(Expression):
-    """An attribute access expression."""
-
-    target: Expression
-    name: str
-
-
-@dataclass(frozen=True)
-class Call(Expression):
-    """A function or callable invocation expression."""
-
-    target: Expression
-    args: tuple[Expression, ...]
-
-
-@dataclass(frozen=True)
-class Index(Expression):
-    """An indexing expression."""
-
-    target: Expression
-    index: Expression
 
 
 class ParseError(ValueError):
@@ -160,8 +53,15 @@ class ForeignObjectInterface(Protocol):
         """Invoke `value(*args)` for a supported foreign object."""
 
 
+@dataclass(frozen=True, slots=True)
+class Task:
+    """Deferred callable execution specification for `parallel`."""
+
+    target: Any
+    args: tuple[Any, ...]
+
+
 def _get_injected_arg_names(tool: BaseTool) -> set[str]:
-    """Return injected parameter names for a tool input schema."""
     return {
         name
         for name, type_ in get_all_basemodel_annotations(
@@ -172,7 +72,6 @@ def _get_injected_arg_names(tool: BaseTool) -> set[str]:
 
 
 def _get_runtime_arg_name(tool: BaseTool) -> str | None:
-    """Return the injected runtime parameter name for a tool, if any."""
     if "runtime" in _get_injected_arg_names(tool):
         return "runtime"
     return None
@@ -182,7 +81,6 @@ def _filter_injected_kwargs(
     tool: BaseTool,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Drop model-controlled injected args from a tool payload."""
     injected_arg_names = _get_injected_arg_names(tool)
     return {
         name: value for name, value in payload.items() if name not in injected_arg_names
@@ -195,7 +93,6 @@ def _build_tool_payload(
     *,
     runtime: ToolRuntime | None = None,
 ) -> str | dict[str, Any]:
-    """Convert REPL call arguments into a LangChain tool payload."""
     input_schema = tool.get_input_schema()
     schema_annotations = getattr(input_schema, "__annotations__", {})
     fields = [
@@ -235,38 +132,64 @@ class _Tokenizer:
 
     def tokenize(self) -> list[Token]:
         tokens: list[Token] = []
+        append_token = tokens.append
         while self._index < self._length:
-            char = self._source[self._index]
-            if char in " \t\r":
-                self._advance()
+            token = self._read_next_token()
+            if token is None:
                 continue
-            if char == "\n":
-                tokens.append(Token("NEWLINE", "\n", self._line, self._column))
-                self._advance()
-                continue
-            if char == "#":
-                self._skip_comment()
-                continue
-            if char in "()+-[]{}:,.=":
-                tokens.append(Token(char, char, self._line, self._column))
-                self._advance()
-                continue
-            if char == '"':
-                tokens.append(self._read_string())
-                continue
-            if char.isdigit() or (char == "-" and self._peek().isdigit()):
-                tokens.append(self._read_number())
-                continue
-            if char.isalpha() or char == "_":
-                tokens.append(self._read_name())
-                continue
-            msg = (
-                f"Unexpected character {char!r} at line {self._line}, "
-                f"column {self._column}"
-            )
-            raise ParseError(msg)
-        tokens.append(Token("EOF", None, self._line, self._column))
+            append_token(token)
+        append_token(Token("EOF", None, self._line, self._column))
         return tokens
+
+    def _read_next_token(self) -> Token | None:
+        char = self._source[self._index]
+        if char in " \t\r":
+            self._advance()
+            return None
+        token_readers: tuple[tuple[bool, Callable[[], Token | None]], ...] = (
+            (char == "\n", self._read_newline_token),
+            (
+                char == "#" or (char == "/" and self._peek() == "/"),
+                self._skip_comment_token,
+            ),
+            (char in "<>=", self._read_operator_token),
+            (char in "()+-[]{}:,.", self._read_punctuation_token),
+            (char == '"', self._read_string),
+            (
+                char.isdigit() or (char == "-" and self._peek().isdigit()),
+                self._read_number,
+            ),
+            (char.isalpha() or char == "_", self._read_name),
+        )
+        for matches, reader in token_readers:
+            if matches:
+                return reader()
+        msg = (
+            f"Unexpected character {char!r} at line {self._line}, column {self._column}"
+        )
+        raise ParseError(msg)
+
+    def _read_newline_token(self) -> Token:
+        token = Token("NEWLINE", "\n", self._line, self._column)
+        self._advance()
+        return token
+
+    def _skip_comment_token(self) -> None:
+        self._skip_comment()
+
+    def _read_punctuation_token(self) -> Token:
+        char = self._source[self._index]
+        token = Token(char, char, self._line, self._column)
+        self._advance()
+        return token
+
+    def _read_operator_token(self) -> Token:
+        line = self._line
+        column = self._column
+        token_value = self._advance()
+        if self._index < self._length and self._source[self._index] == "=":
+            token_value += self._advance()
+        return Token(token_value, token_value, line, column)
 
     def _advance(self) -> str:
         char = self._source[self._index]
@@ -292,6 +215,7 @@ class _Tokenizer:
         column = self._column
         self._advance()
         chars: list[str] = []
+        append_char = chars.append
         while self._index < self._length:
             char = self._advance()
             if char == '"':
@@ -299,10 +223,9 @@ class _Tokenizer:
             if char == "\\":
                 if self._index >= self._length:
                     break
-                escaped = self._advance()
-                chars.append(self._decode_escape(escaped))
+                append_char(self._decode_escape(self._advance()))
                 continue
-            chars.append(char)
+            append_char(char)
         msg = f"Unterminated string at line {line}, column {column}"
         raise ParseError(msg)
 
@@ -321,14 +244,15 @@ class _Tokenizer:
         column = self._column
         chars = [self._advance()]
         has_dot = False
+        append_char = chars.append
         while self._index < self._length:
             char = self._source[self._index]
             if char.isdigit():
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             if char == "." and not has_dot:
                 has_dot = True
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             break
         text = "".join(chars)
@@ -339,10 +263,11 @@ class _Tokenizer:
         line = self._line
         column = self._column
         chars = [self._advance()]
+        append_char = chars.append
         while self._index < self._length:
             char = self._source[self._index]
             if char.isalnum() or char == "_":
-                chars.append(self._advance())
+                append_char(self._advance())
                 continue
             break
         text = "".join(chars)
@@ -362,167 +287,307 @@ class _Tokenizer:
         return Token(kind, text, line, column)
 
 
-class _Parser:
+class OpCode(IntEnum):
+    """Opcode values for the interpreter virtual machine."""
+
+    LOAD_CONST = 0
+    LOAD_NAME = 1
+    STORE_NAME = 2
+    SET_LAST = 3
+    BUILD_LIST = 4
+    BUILD_DICT = 5
+    BINARY_OP = 6
+    GET_INDEX = 7
+    GET_ATTR = 8
+    CALL = 9
+    JUMP = 10
+    JUMP_IF_FALSE = 11
+    ITER_PREP = 12
+    ITER_NEXT = 13
+    RETURN_VALUE = 14
+    BUILD_TASK = 15
+
+
+@dataclass(frozen=True, slots=True)
+class Instruction:
+    opcode: OpCode
+    arg: Any = None
+
+
+@dataclass(slots=True)
+class ForLoopState:
+    target_name: str
+    items: list[Any]
+    index: int = 0
+
+
+@dataclass(slots=True)
+class VMState:
+    instructions: Sequence[Instruction]
+    state: MutableMapping[str, Any]
+    pc: int = 0
+    stack: list[Any] = field(default_factory=list)
+    last_value: Any = None
+    loop_stack: list[ForLoopState] = field(default_factory=list)
+
+
+class _ProgramCompiler:
     def __init__(self, tokens: list[Token]) -> None:
         self._tokens = tokens
         self._index = 0
+        self._instructions: list[Instruction] = []
 
-    def parse(self) -> Program:
-        statements = self._parse_block(stop_kinds={"EOF"})
+    def compile(self) -> tuple[Instruction, ...]:
+        self._compile_block(stop_kinds={"EOF"})
         self._expect("EOF")
-        return Program(tuple(statements))
+        self._emit(OpCode.RETURN_VALUE)
+        return tuple(self._instructions)
 
-    def _parse_block(self, *, stop_kinds: set[str]) -> list[Statement]:
-        statements: list[Statement] = []
+    def _compile_block(self, *, stop_kinds: set[str]) -> None:
         self._skip_newlines()
         while self._current().kind not in stop_kinds:
-            statements.append(self._parse_statement())
+            self._compile_statement()
             self._skip_newlines()
-        return statements
 
-    def _parse_statement(self) -> Statement:
+    def _compile_statement(self) -> None:
         token = self._current()
         if token.kind == "IF":
-            return self._parse_if()
+            self._compile_if()
+            return
         if token.kind == "FOR":
-            return self._parse_for()
+            self._compile_for()
+            return
         if token.kind == "NAME" and self._peek().kind == "=":
-            name = self._advance().value
+            name = str(self._advance().value)
             self._expect("=")
-            return Assign(name=name, value=self._parse_expression())
-        return ExpressionStatement(self._parse_expression())
+            self._compile_expression()
+            self._emit(OpCode.STORE_NAME, name)
+            self._emit(OpCode.SET_LAST)
+            return
+        self._compile_expression()
+        self._emit(OpCode.SET_LAST)
 
-    def _parse_if(self) -> IfStatement:
+    def _compile_if(self) -> None:
         self._expect("IF")
-        condition = self._parse_expression()
+        self._compile_expression()
+        jump_if_false_index = self._emit(OpCode.JUMP_IF_FALSE, None)
         self._expect("THEN")
         self._consume_statement_separator()
-        then_body = tuple(self._parse_block(stop_kinds={"ELSE", "END"}))
-        else_body: tuple[Statement, ...] = ()
+        self._compile_block(stop_kinds={"ELSE", "END"})
+        jump_end_index = self._emit(OpCode.JUMP, None)
+        else_start = len(self._instructions)
         if self._match("ELSE"):
             self._consume_statement_separator()
-            else_body = tuple(self._parse_block(stop_kinds={"END"}))
+            self._compile_block(stop_kinds={"END"})
+        end_index = len(self._instructions)
+        self._patch(jump_if_false_index, else_start)
+        self._patch(jump_end_index, end_index)
         self._expect("END")
-        return IfStatement(
-            condition=condition, then_body=then_body, else_body=else_body
-        )
 
-    def _parse_for(self) -> ForStatement:
+    def _compile_for(self) -> None:
         self._expect("FOR")
-        name = self._expect("NAME").value
+        name = str(self._expect("NAME").value)
         self._expect("IN")
-        iterable = self._parse_expression()
+        self._compile_expression()
+        self._emit(OpCode.ITER_PREP, name)
         self._expect("DO")
         self._consume_statement_separator()
-        body = tuple(self._parse_block(stop_kinds={"END"}))
+        loop_start = len(self._instructions)
+        iter_next_index = self._emit(OpCode.ITER_NEXT, None)
+        self._compile_block(stop_kinds={"END"})
+        self._emit(OpCode.JUMP, loop_start)
+        self._patch(iter_next_index, len(self._instructions))
         self._expect("END")
-        return ForStatement(name=name, iterable=iterable, body=body)
 
-    def _parse_expression(self) -> Expression:
-        expr = self._parse_postfix()
+    def _compile_expression(self) -> None:
+        self._compile_additive()
+        while True:
+            if self._match("=="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "==")
+                continue
+            if self._match(">="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, ">=")
+                continue
+            if self._match("<="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "<=")
+                continue
+            if self._match(">"):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, ">")
+                continue
+            if self._match("<"):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "<")
+                continue
+            break
+
+    def _compile_additive(self) -> None:
+        self._compile_unary()
         while True:
             if self._match("+"):
-                expr = BinaryOperation(
-                    left=expr,
-                    operator="+",
-                    right=self._parse_postfix(),
-                )
+                self._compile_unary()
+                self._emit(OpCode.BINARY_OP, "+")
                 continue
             if self._match("-"):
-                expr = BinaryOperation(
-                    left=expr,
-                    operator="-",
-                    right=self._parse_postfix(),
-                )
+                self._compile_unary()
+                self._emit(OpCode.BINARY_OP, "-")
                 continue
             break
-        return expr
 
-    def _parse_postfix(self) -> Expression:
-        expr = self._parse_primary()
+    def _compile_unary(self) -> None:
+        if self._match("-"):
+            self._emit(OpCode.LOAD_CONST, 0)
+            self._compile_unary()
+            self._emit(OpCode.BINARY_OP, "-")
+            return
+        self._compile_postfix()
+
+    def _compile_postfix(self) -> None:
+        self._compile_primary()
         while True:
             if self._match("["):
-                index = self._parse_expression()
+                self._skip_newlines()
+                self._compile_expression()
+                self._skip_newlines()
                 self._expect("]")
-                expr = Index(target=expr, index=index)
+                self._emit(OpCode.GET_INDEX)
                 continue
             if self._match("."):
-                expr = Attribute(target=expr, name=self._expect("NAME").value)
+                self._emit(OpCode.GET_ATTR, str(self._expect("NAME").value))
                 continue
             if self._match("("):
-                expr = Call(target=expr, args=tuple(self._parse_arguments()))
+                arg_count = self._compile_arguments()
+                self._emit(OpCode.CALL, arg_count)
                 continue
             break
-        return expr
 
-    def _parse_primary(self) -> Expression:  # noqa: PLR0911
+    def _compile_primary(self) -> None:
         token = self._current()
+        literal_token_kinds = {"NUMBER", "STRING", "TRUE", "FALSE", "NONE"}
         if token.kind == "NAME":
-            return Name(self._advance().value)
-        if token.kind == "NUMBER":
-            return Literal(self._advance().value)
-        if token.kind == "STRING":
-            return Literal(self._advance().value)
-        if token.kind == "TRUE":
-            self._advance()
-            return Literal(value=True)
-        if token.kind == "FALSE":
-            self._advance()
-            return Literal(value=False)
-        if token.kind == "NONE":
-            self._advance()
-            return Literal(None)
+            self._compile_name_primary()
+            return
+        if token.kind in literal_token_kinds:
+            self._compile_literal_primary(token.kind)
+            return
         if token.kind == "[":
-            return self._parse_list()
+            self._compile_list()
+            return
         if token.kind == "{":
-            return self._parse_dict()
+            self._compile_dict()
+            return
         if token.kind == "(":
             self._advance()
-            expr = self._parse_expression()
+            self._compile_expression()
             self._expect(")")
-            return expr
+            return
         msg = (
             f"Unexpected token {token.kind} at line {token.line}, column {token.column}"
         )
         raise ParseError(msg)
 
-    def _parse_arguments(self) -> list[Expression]:
-        args: list[Expression] = []
+    def _compile_name_primary(self) -> None:
+        value = str(self._advance().value)
+        if value == "print":
+            self._emit(OpCode.LOAD_CONST, _PRINT_SENTINEL)
+            return
+        if value == "parallel":
+            self._emit(OpCode.LOAD_CONST, _PARALLEL_SENTINEL)
+            return
+        if value == "task":
+            self._expect("(")
+            self._compile_task_invocation()
+            return
+        self._emit(OpCode.LOAD_NAME, value)
+
+    def _compile_literal_primary(self, kind: str) -> None:
+        literal_values = {
+            "TRUE": True,
+            "FALSE": False,
+            "NONE": None,
+        }
+        token = self._advance()
+        if kind in {"NUMBER", "STRING"}:
+            self._emit(OpCode.LOAD_CONST, token.value)
+            return
+        self._emit(OpCode.LOAD_CONST, literal_values[kind])
+
+    def _compile_task_invocation(self) -> None:
+        self._compile_task_target()
+        self._expect("(")
+        arg_count = self._compile_arguments()
+        self._emit(OpCode.BUILD_TASK, arg_count)
+        self._expect(")")
+
+    def _compile_task_target(self) -> None:
+        token = self._current()
+        if token.kind != "NAME":
+            msg = "task expects exactly one callable invocation"
+            raise ParseError(msg)
+        self._emit(OpCode.LOAD_NAME, str(self._advance().value))
+        while self._match("."):
+            self._emit(OpCode.GET_ATTR, str(self._expect("NAME").value))
+
+    def _compile_arguments(self) -> int:
+        count = 0
         self._skip_newlines()
         if self._match(")"):
-            return args
+            return count
         while True:
-            args.append(self._parse_expression())
+            self._compile_expression()
+            count += 1
             self._skip_newlines()
             if self._match(")"):
-                return args
+                return count
             self._expect(",")
             self._skip_newlines()
 
-    def _parse_list(self) -> ListLiteral:
+    def _compile_list(self) -> None:
         self._expect("[")
-        items: list[Expression] = []
+        count = 0
+        self._skip_newlines()
         if self._match("]"):
-            return ListLiteral(tuple(items))
+            self._emit(OpCode.BUILD_LIST, 0)
+            return
         while True:
-            items.append(self._parse_expression())
+            self._compile_expression()
+            count += 1
+            self._skip_newlines()
             if self._match("]"):
-                return ListLiteral(tuple(items))
+                self._emit(OpCode.BUILD_LIST, count)
+                return
             self._expect(",")
+            self._skip_newlines()
 
-    def _parse_dict(self) -> DictLiteral:
+    def _compile_dict(self) -> None:
         self._expect("{")
-        items: list[tuple[str, Expression]] = []
+        count = 0
+        self._skip_newlines()
         if self._match("}"):
-            return DictLiteral(tuple(items))
+            self._emit(OpCode.BUILD_DICT, 0)
+            return
         while True:
             key = self._expect("STRING").value
+            self._emit(OpCode.LOAD_CONST, key)
             self._expect(":")
-            value = self._parse_expression()
-            items.append((key, value))
+            self._compile_expression()
+            count += 1
+            self._skip_newlines()
             if self._match("}"):
-                return DictLiteral(tuple(items))
+                self._emit(OpCode.BUILD_DICT, count)
+                return
             self._expect(",")
+            self._skip_newlines()
+
+    def _emit(self, opcode: OpCode, arg: Any = None) -> int:
+        self._instructions.append(Instruction(opcode, arg))
+        return len(self._instructions) - 1
+
+    def _patch(self, index: int, arg: Any) -> None:
+        self._instructions[index] = Instruction(self._instructions[index].opcode, arg)
 
     def _consume_statement_separator(self) -> None:
         if self._match("NEWLINE"):
@@ -562,247 +627,524 @@ class _Parser:
         return True
 
 
-class Interpreter:
-    """Evaluate programs written in the mini REPL language."""
+class _StringForeignInterface:
+    _ALLOWED_MEMBERS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "capitalize",
+            "endswith",
+            "isalnum",
+            "isalpha",
+            "isdigit",
+            "join",
+            "lower",
+            "lstrip",
+            "replace",
+            "rstrip",
+            "split",
+            "splitlines",
+            "startswith",
+            "strip",
+            "title",
+            "upper",
+        }
+    )
 
-    def __init__(
+    def supports(self, value: Any) -> bool:
+        return type(value) is str
+
+    def get_item(self, value: Any, key: Any) -> Any:
+        if not isinstance(key, int):
+            msg = "string indexes must be integers"
+            raise TypeError(msg)
+        return value[key]
+
+    def resolve_member(self, value: Any, name: str) -> Any:
+        if name not in self._ALLOWED_MEMBERS:
+            msg = f"Unknown foreign member: {name}"
+            raise AttributeError(msg)
+        return getattr(value, name)
+
+    def call(self, value: Any, args: tuple[Any, ...]) -> Any:
+        return value(*args)
+
+
+class Interpreter:
+    """Compile and evaluate the mini REPL language against a bound environment."""
+
+    def __init__(  # noqa: PLR0913 - constructor intentionally accepts runtime configuration
         self,
         *,
         functions: Mapping[str, Callable[..., Any] | BaseTool] | None = None,
-        env: MutableMapping[str, Any] | None = None,
+        state: MutableMapping[str, Any] | None = None,
+        bindings: Mapping[str, Any] | None = None,
         foreign_interfaces: Sequence[ForeignObjectInterface] = (),
-        max_workers: int | None = None,
         runtime: ToolRuntime | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
-        """Initialize the interpreter with optional foreign functions."""
+        """Initialize an interpreter with callable bindings and execution state."""
         self._functions = dict(functions or {})
-        self._foreign_interfaces = foreign_interfaces
-        self._env: MutableMapping[str, Any] = env if env is not None else {}
+        self._bindings = dict(bindings or {})
+        self._foreign_interfaces = (
+            _StringForeignInterface(),
+            *tuple(foreign_interfaces),
+        )
+        self._state: MutableMapping[str, Any] = state if state is not None else {}
         self._printed_lines: list[str] = []
-        self._max_workers = max_workers
         self._runtime = runtime
+        self._max_concurrency = max_concurrency or 10
+        self._compiler = _ProgramCompiler
 
     @property
     def env(self) -> dict[str, Any]:
-        """Return a copy of the current variable bindings."""
-        return dict(self._env)
+        """Return a copy of the mutable interpreter state."""
+        return dict(self._state)
+
+    @property
+    def state(self) -> dict[str, Any]:
+        """Return a copy of the mutable interpreter state."""
+        return dict(self._state)
+
+    @property
+    def bindings(self) -> dict[str, Any]:
+        """Return the read-only external bindings available to programs."""
+        return dict(self._bindings)
 
     @property
     def printed_lines(self) -> list[str]:
-        """Return the captured output lines."""
+        """Return captured lines produced by `print`."""
         return list(self._printed_lines)
 
+    def compile(self, source: str) -> tuple[Instruction, ...]:
+        """Compile source code into VM instructions."""
+        return self._compiler(_Tokenizer(source).tokenize()).compile()
+
     def evaluate(
+        self, source: str, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        """Evaluate source synchronously and persist resulting state."""
+        instructions = self.compile(source)
+        vm_state = self._new_state(instructions, self._state)
+        value = self._run_vm_sync(vm_state, print_callback=print_callback)
+        self._state = vm_state.state
+        return value
+
+    async def aevaluate(
+        self, source: str, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        """Evaluate source asynchronously and persist resulting state."""
+        instructions = self.compile(source)
+        vm_state = self._new_state(instructions, self._state)
+        value = await self._run_vm_async(vm_state, print_callback=print_callback)
+        self._state = vm_state.state
+        return value
+
+    def _new_state(
+        self, instructions: tuple[Instruction, ...], state: MutableMapping[str, Any]
+    ) -> VMState:
+        return VMState(instructions=instructions, state=state)
+
+    def _run_vm_sync(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        while state.pc < len(state.instructions):
+            if self._step_vm_sync(state, print_callback=print_callback):
+                return state.last_value
+        return state.last_value
+
+    async def _run_vm_async(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> Any:
+        while state.pc < len(state.instructions):
+            if await self._step_vm_async(state, print_callback=print_callback):
+                return state.last_value
+        return state.last_value
+
+    def _step_vm_sync(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> bool:
+        instruction = state.instructions[state.pc]
+        state.pc += 1
+        return self._dispatch_vm_sync(
+            state,
+            instruction,
+            print_callback=print_callback,
+        )
+
+    async def _step_vm_async(
+        self, state: VMState, *, print_callback: Callable[[str], None] | None = None
+    ) -> bool:
+        instruction = state.instructions[state.pc]
+        state.pc += 1
+        return await self._dispatch_vm_async(
+            state,
+            instruction,
+            print_callback=print_callback,
+        )
+
+    def _dispatch_vm_sync(
         self,
-        source: str,
+        state: VMState,
+        instruction: Instruction,
         *,
         print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        """Parse and evaluate REPL source code."""
-        program = self.parse(source)
-        return self._eval_program(program, self._env, print_callback=print_callback)
-
-    def parse(self, source: str) -> Program:
-        """Parse REPL source code into a program object."""
-        tokens = _Tokenizer(source).tokenize()
-        return _Parser(tokens).parse()
-
-    def _eval_program(
-        self,
-        program: Program,
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        result: Any = None
-        for statement in program.statements:
-            result = self._eval_statement(statement, env, print_callback=print_callback)
-        return result
-
-    def _eval_block(
-        self,
-        statements: Iterable[Statement],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        result: Any = None
-        for statement in statements:
-            result = self._eval_statement(statement, env, print_callback=print_callback)
-        return result
-
-    def _eval_statement(
-        self,
-        statement: Statement,
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if isinstance(statement, Assign):
-            value = self._eval_expression(
-                statement.value,
-                env,
+    ) -> bool:
+        opcode = instruction.opcode
+        should_return = opcode == OpCode.RETURN_VALUE
+        handled = True
+        if opcode in {
+            OpCode.LOAD_CONST,
+            OpCode.LOAD_NAME,
+            OpCode.STORE_NAME,
+            OpCode.SET_LAST,
+        }:
+            self._handle_basic_opcode(state, instruction)
+        elif opcode in {OpCode.BUILD_LIST, OpCode.BUILD_DICT}:
+            self._handle_collection_opcode(state, instruction)
+        elif opcode in {OpCode.BINARY_OP, OpCode.GET_INDEX, OpCode.GET_ATTR}:
+            self._handle_lookup_opcode(state, instruction)
+        elif opcode == OpCode.CALL:
+            self._handle_call_opcode_sync(
+                state,
+                instruction,
                 print_callback=print_callback,
             )
-            env[statement.name] = value
-            return value
-        if isinstance(statement, IfStatement):
-            condition = self._eval_expression(
-                statement.condition,
-                env,
+        elif opcode == OpCode.BUILD_TASK:
+            state.stack.append(self._build_task(state.stack, int(instruction.arg)))
+        elif opcode in {
+            OpCode.JUMP,
+            OpCode.JUMP_IF_FALSE,
+            OpCode.ITER_PREP,
+            OpCode.ITER_NEXT,
+        }:
+            self._handle_control_flow_opcode(state, instruction)
+        elif opcode != OpCode.RETURN_VALUE:
+            handled = False
+        if not handled:
+            msg = f"Unsupported opcode: {opcode}"
+            raise ValueError(msg)
+        return should_return
+
+    async def _dispatch_vm_async(
+        self,
+        state: VMState,
+        instruction: Instruction,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> bool:
+        opcode = instruction.opcode
+        should_return = opcode == OpCode.RETURN_VALUE
+        handled = True
+        if opcode in {
+            OpCode.LOAD_CONST,
+            OpCode.LOAD_NAME,
+            OpCode.STORE_NAME,
+            OpCode.SET_LAST,
+        }:
+            self._handle_basic_opcode(state, instruction)
+        elif opcode in {OpCode.BUILD_LIST, OpCode.BUILD_DICT}:
+            self._handle_collection_opcode(state, instruction)
+        elif opcode in {OpCode.BINARY_OP, OpCode.GET_INDEX, OpCode.GET_ATTR}:
+            self._handle_lookup_opcode(state, instruction)
+        elif opcode == OpCode.CALL:
+            await self._handle_call_opcode_async(
+                state,
+                instruction,
                 print_callback=print_callback,
             )
-            branch = (
-                statement.then_body
-                if self._is_truthy(condition)
-                else statement.else_body
+        elif opcode == OpCode.BUILD_TASK:
+            state.stack.append(self._build_task(state.stack, int(instruction.arg)))
+        elif opcode in {
+            OpCode.JUMP,
+            OpCode.JUMP_IF_FALSE,
+            OpCode.ITER_PREP,
+            OpCode.ITER_NEXT,
+        }:
+            self._handle_control_flow_opcode(state, instruction)
+        elif opcode != OpCode.RETURN_VALUE:
+            handled = False
+        if not handled:
+            msg = f"Unsupported opcode: {opcode}"
+            raise ValueError(msg)
+        return should_return
+
+    def _handle_basic_opcode(self, state: VMState, instruction: Instruction) -> None:
+        opcode = instruction.opcode
+        arg = instruction.arg
+        if opcode == OpCode.LOAD_CONST:
+            state.stack.append(arg)
+            return
+        if opcode == OpCode.LOAD_NAME:
+            state.stack.append(self._load_name(state.state, arg))
+            return
+        if opcode == OpCode.STORE_NAME:
+            self._store_name(state.state, arg, state.stack[-1])
+            return
+        state.last_value = state.stack[-1] if state.stack else None
+
+    def _handle_collection_opcode(
+        self, state: VMState, instruction: Instruction
+    ) -> None:
+        count = int(instruction.arg)
+        if instruction.opcode == OpCode.BUILD_LIST:
+            items = state.stack[-count:] if count else []
+            if count:
+                del state.stack[-count:]
+            state.stack.append(list(items))
+            return
+        item_count = 2 * count
+        items = state.stack[-item_count:] if count else []
+        if count:
+            del state.stack[-item_count:]
+        built: dict[str, Any] = {}
+        for index in range(0, len(items), 2):
+            built[str(items[index])] = items[index + 1]
+        state.stack.append(built)
+
+    def _handle_lookup_opcode(self, state: VMState, instruction: Instruction) -> None:
+        if instruction.opcode == OpCode.BINARY_OP:
+            right = state.stack.pop()
+            left = state.stack.pop()
+            state.stack.append(
+                self._eval_binary_operation(left, instruction.arg, right)
             )
-            return self._eval_block(branch, env, print_callback=print_callback)
-        if isinstance(statement, ForStatement):
-            result: Any = None
-            iterable = self._eval_expression(
-                statement.iterable,
-                env,
-                print_callback=print_callback,
-            )
+            return
+        if instruction.opcode == OpCode.GET_INDEX:
+            index = state.stack.pop()
+            target = state.stack.pop()
+            state.stack.append(self._eval_index(target, index))
+            return
+        target = state.stack.pop()
+        state.stack.append(self._resolve_member(target, instruction.arg))
+
+    def _handle_control_flow_opcode(
+        self, state: VMState, instruction: Instruction
+    ) -> None:
+        opcode = instruction.opcode
+        arg = instruction.arg
+        if opcode == OpCode.JUMP:
+            state.pc = int(arg)
+            return
+        if opcode == OpCode.JUMP_IF_FALSE:
+            if not state.stack.pop():
+                state.pc = int(arg)
+            return
+        if opcode == OpCode.ITER_PREP:
+            iterable = state.stack.pop()
             if not isinstance(iterable, list):
                 msg = "for loops require a list iterable"
                 raise TypeError(msg)
-            for item in iterable:
-                env[statement.name] = item
-                result = self._eval_block(
-                    statement.body,
-                    env,
-                    print_callback=print_callback,
-                )
-            return result
-        if isinstance(statement, ExpressionStatement):
-            return self._eval_expression(
-                statement.expression,
-                env,
-                print_callback=print_callback,
-            )
-        msg = f"Unsupported statement: {type(statement).__name__}"
-        raise ValueError(msg)
+            state.loop_stack.append(ForLoopState(arg, iterable))
+            return
+        loop_state = state.loop_stack[-1]
+        if loop_state.index >= len(loop_state.items):
+            state.loop_stack.pop()
+            state.pc = int(arg)
+            return
+        state.state[loop_state.target_name] = loop_state.items[loop_state.index]
+        loop_state.index += 1
 
-    def _eval_expression(  # noqa: C901, PLR0911  # expression dispatch is centralized here
+    def _pop_call(
+        self, stack: list[Any], arg_count: int
+    ) -> tuple[Any, tuple[Any, ...]]:
+        target_index = len(stack) - arg_count - 1
+        target = stack[target_index]
+        args = tuple(stack[target_index + 1 :])
+        del stack[target_index:]
+        return target, args
+
+    def _handle_call_opcode_sync(
         self,
-        expression: Expression,
-        env: MutableMapping[str, Any],
+        state: VMState,
+        instruction: Instruction,
         *,
         print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if isinstance(expression, Literal):
-            return expression.value
-        if isinstance(expression, Name):
-            if expression.value in env:
-                return env[expression.value]
-            if expression.value in self._functions:
-                return self._functions[expression.value]
-            msg = f"Unknown name: {expression.value}"
-            raise NameError(msg)
-        if isinstance(expression, ListLiteral):
-            return [
-                self._eval_expression(item, env, print_callback=print_callback)
-                for item in expression.items
+    ) -> None:
+        target, args = self._pop_call(state.stack, int(instruction.arg))
+        if target is _PARALLEL_SENTINEL:
+            result = self._run_parallel_sync(args, print_callback=print_callback)
+        else:
+            result = self._call_sync(target, args, print_callback=print_callback)
+        state.stack.append(result)
+
+    async def _handle_call_opcode_async(
+        self,
+        state: VMState,
+        instruction: Instruction,
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        target, args = self._pop_call(state.stack, int(instruction.arg))
+        if target is _PARALLEL_SENTINEL:
+            result = await self._run_parallel_async(args, print_callback=print_callback)
+        else:
+            result = await self._call_async(target, args, print_callback=print_callback)
+        state.stack.append(result)
+
+    def _build_task(self, stack: list[Any], arg_count: int) -> Task:
+        target, args = self._pop_call(stack, arg_count)
+        if target is _PRINT_SENTINEL or target is _PARALLEL_SENTINEL:
+            msg = "task expects exactly one callable invocation"
+            raise ValueError(msg)
+        return Task(target=target, args=args)
+
+    def _run_parallel_sync(
+        self,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        if len(args) != 1 or not isinstance(args[0], list):
+            msg = "parallel expects a single list of tasks"
+            raise ValueError(msg)
+        tasks = args[0]
+        if any(not isinstance(task, Task) for task in tasks):
+            msg = "parallel expects a list of tasks"
+            raise TypeError(msg)
+        if not tasks:
+            return []
+        max_concurrency = self._max_concurrency or len(tasks)
+        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+            futures = [
+                executor.submit(
+                    self._call_sync,
+                    task.target,
+                    task.args,
+                    print_callback=print_callback,
+                )
+                for task in tasks
             ]
-        if isinstance(expression, DictLiteral):
-            return {
-                key: self._eval_expression(value, env, print_callback=print_callback)
-                for key, value in expression.items
-            }
-        if isinstance(expression, BinaryOperation):
-            left = self._eval_expression(
-                expression.left,
-                env,
-                print_callback=print_callback,
-            )
-            right = self._eval_expression(
-                expression.right,
-                env,
-                print_callback=print_callback,
-            )
-            return self._eval_binary_operation(left, expression.operator, right)
-        if isinstance(expression, Index):
-            target = self._eval_expression(
-                expression.target,
-                env,
-                print_callback=print_callback,
-            )
-            index = self._eval_expression(
-                expression.index,
-                env,
-                print_callback=print_callback,
-            )
-            return self._eval_index(target, index)
-        if isinstance(expression, Attribute):
-            target = self._eval_expression(
-                expression.target,
-                env,
-                print_callback=print_callback,
-            )
-            return self._resolve_member(target, expression.name)
-        if isinstance(expression, Call):
-            return self._eval_call(expression, env, print_callback=print_callback)
-        msg = f"Unsupported expression: {type(expression).__name__}"
-        raise ValueError(msg)
+            return [future.result() for future in futures]
 
-    def _eval_call(
+    async def _run_parallel_async(
         self,
-        expression: Call,
-        env: MutableMapping[str, Any],
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> list[Any]:
+        if len(args) != 1 or not isinstance(args[0], list):
+            msg = "parallel expects a single list of tasks"
+            raise ValueError(msg)
+        tasks = args[0]
+        if any(not isinstance(task, Task) for task in tasks):
+            msg = "parallel expects a list of tasks"
+            raise TypeError(msg)
+        if not tasks:
+            return []
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _run_one(task: Task) -> Any:
+            async with semaphore:
+                return await self._call_async(
+                    task.target,
+                    task.args,
+                    print_callback=print_callback,
+                )
+
+        return list(await asyncio.gather(*[_run_one(task) for task in tasks]))
+
+    def _load_name(self, state: MutableMapping[str, Any], name: str) -> Any:
+        if name in state:
+            return state[name]
+        if name in self._bindings:
+            return self._bindings[name]
+        if name in self._functions:
+            return self._functions[name]
+        msg = f"Unknown name: {name}"
+        raise NameError(msg)
+
+    def _store_name(
+        self, state: MutableMapping[str, Any], name: str, value: Any
+    ) -> None:
+        if name in self._bindings:
+            msg = f"Cannot assign to read-only binding: {name}"
+            raise NameError(msg)
+        state[name] = value
+
+    def _call_sync(
+        self,
+        target: Any,
+        args: tuple[Any, ...],
         *,
         print_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        if isinstance(expression.target, Name):
-            if expression.target.value == "print":
-                return self._eval_print(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-            if expression.target.value == "parallel":
-                return self._eval_parallel(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-            if expression.target.value == "try":
-                return self._eval_try(
-                    expression.args,
-                    env,
-                    print_callback=print_callback,
-                )
-        target = self._eval_expression(
-            expression.target,
-            env,
-            print_callback=print_callback,
-        )
-        args = tuple(
-            self._eval_expression(arg, env, print_callback=print_callback)
-            for arg in expression.args
-        )
+        if target is _PRINT_SENTINEL:
+            return self._eval_print(args, print_callback=print_callback)
+        if isinstance(target, BaseTool):
+            return target.invoke(
+                _build_tool_payload(target, args, runtime=self._runtime)
+            )
+        if callable(target):
+            result = target(*args)
+            if asyncio.iscoroutine(result):
+                msg = "Async call encountered in synchronous interpreter"
+                raise TypeError(msg)
+            return result
+        return self._handler_for(target).call(target, args)
+
+    async def _call_async(
+        self,
+        target: Any,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if target is _PRINT_SENTINEL:
+            return self._eval_print(args, print_callback=print_callback)
         if isinstance(target, BaseTool):
             payload = _build_tool_payload(target, args, runtime=self._runtime)
+            if getattr(target, "coroutine", None) is not None:
+                return await target.ainvoke(payload)
             return target.invoke(payload)
         if callable(target):
-            return target(*args)
-        handler = self._handler_for(target)
-        return handler.call(target, args)
+            result = target(*args)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+        return self._handler_for(target).call(target, args)
+
+    def _eval_print(
+        self,
+        args: tuple[Any, ...],
+        *,
+        print_callback: Callable[[str], None] | None = None,
+    ) -> Any:
+        if len(args) != 1:
+            msg = "print expects exactly one argument"
+            raise ValueError(msg)
+        value = args[0]
+        formatted = self._format_value(value)
+        self._printed_lines.append(formatted)
+        if print_callback is not None:
+            print_callback(formatted)
+        return value
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
-        if isinstance(left, bool) or isinstance(right, bool):
+        if operator == "==":
+            return left == right
+        if operator == "+" and isinstance(left, str) and isinstance(right, str):
+            return left + right
+        self._validate_numeric_operands(left, right)
+        operations = {
+            "+": lambda lhs, rhs: lhs + rhs,
+            "-": lambda lhs, rhs: lhs - rhs,
+            ">": lambda lhs, rhs: lhs > rhs,
+            "<": lambda lhs, rhs: lhs < rhs,
+            ">=": lambda lhs, rhs: lhs >= rhs,
+            "<=": lambda lhs, rhs: lhs <= rhs,
+        }
+        try:
+            return operations[operator](left, right)
+        except KeyError as exc:
+            msg = f"Unsupported binary operator: {operator}"
+            raise ValueError(msg) from exc
+
+    def _validate_numeric_operands(self, left: Any, right: Any) -> None:
+        if type(left) is bool or type(right) is bool:
             msg = "binary operations require numeric operands"
             raise TypeError(msg)
         if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
             msg = "binary operations require numeric operands"
             raise TypeError(msg)
-        if operator == "+":
-            return left + right
-        if operator == "-":
-            return left - right
-        msg = f"Unsupported binary operator: {operator}"
-        raise ValueError(msg)
 
     def _eval_index(self, target: Any, index: Any) -> Any:
         if isinstance(target, list):
@@ -815,71 +1157,27 @@ class Interpreter:
                 msg = "dict indexes must be strings"
                 raise TypeError(msg)
             return target[index]
-        handler = self._handler_for(target)
-        return handler.get_item(target, index)
+        handler = self._maybe_handler_for(target)
+        if handler is not None:
+            return handler.get_item(target, index)
+        msg = f"'{type(target).__name__}' object is not subscriptable"
+        raise TypeError(msg)
 
     def _resolve_member(self, target: Any, name: str) -> Any:
-        handler = self._handler_for(target)
-        return handler.resolve_member(target, name)
+        return self._handler_for(target).resolve_member(target, name)
 
-    def _handler_for(self, value: Any) -> ForeignObjectInterface:
+    def _maybe_handler_for(self, value: Any) -> ForeignObjectInterface | None:
         for handler in self._foreign_interfaces:
             if handler.supports(value):
                 return handler
+        return None
+
+    def _handler_for(self, value: Any) -> ForeignObjectInterface:
+        handler = self._maybe_handler_for(value)
+        if handler is not None:
+            return handler
         msg = f"No foreign object handler for {type(value).__name__}"
         raise TypeError(msg)
-
-    def _eval_print(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(args) != 1:
-            msg = "print expects exactly one argument"
-            raise ValueError(msg)
-        value = self._eval_expression(args[0], env, print_callback=print_callback)
-        formatted = self._format_value(value)
-        self._printed_lines.append(formatted)
-        if print_callback is not None:
-            print_callback(formatted)
-        return value
-
-    def _eval_parallel(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> list[Any]:
-        snapshots = [dict(env) for _ in args]
-        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            futures = [
-                executor.submit(
-                    self._eval_expression,
-                    arg,
-                    snapshot,
-                    print_callback=print_callback,
-                )
-                for arg, snapshot in zip(args, snapshots, strict=False)
-            ]
-            return [future.result() for future in futures]
-
-    def _eval_try(
-        self,
-        args: tuple[Expression, ...],
-        env: MutableMapping[str, Any],
-        *,
-        print_callback: Callable[[str], None] | None = None,
-    ) -> Any:
-        if len(args) != 2:  # noqa: PLR2004  # try(expr, fallback) always takes two args
-            msg = "try expects exactly two arguments"
-            raise ValueError(msg)
-        try:
-            return self._eval_expression(args[0], env, print_callback=print_callback)
-        except Exception:  # noqa: BLE001
-            return self._eval_expression(args[1], env, print_callback=print_callback)
 
     def _format_value(self, value: Any) -> str:
         if value is None:
@@ -890,8 +1188,9 @@ class Interpreter:
             return "False"
         return str(value)
 
-    def _is_truthy(self, value: Any) -> bool:
-        return bool(value)
+
+_PRINT_SENTINEL = object()
+_PARALLEL_SENTINEL = object()
 
 
-__all__ = ["ForeignObjectInterface", "Interpreter", "ParseError", "Program"]
+__all__ = ["ForeignObjectInterface", "Interpreter", "OpCode", "ParseError"]

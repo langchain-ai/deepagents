@@ -361,7 +361,7 @@ def test_deepagent_with_repl_parallel_following_get_chain() -> None:
 user_id = 43
 item_ids = favorite_item_ids(user_id)
 first_item_id = item_ids[0]
-print(parallel(item_name(first_item_id), item_score(first_item_id)))
+print(parallel([task(item_name(first_item_id)), task(item_score(first_item_id))]))
 """,
                             },
                             "id": "call_1",

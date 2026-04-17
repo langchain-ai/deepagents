@@ -577,6 +577,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 }
             )
 
+        for spec in specs:
+            spec["runnable"] = spec["runnable"].with_config({"configurable": {"ls_agent_type": "subagent"}})
+
         return specs
 
     def wrap_model_call(

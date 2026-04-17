@@ -1439,7 +1439,7 @@ class DeepAgentsApp(App):
             )
 
             available, latest = await asyncio.to_thread(is_update_available)
-            if not available:
+            if not available or latest is None:
                 return
 
             self._update_available = (True, latest)
@@ -1447,7 +1447,7 @@ class DeepAgentsApp(App):
             logger.debug("Background update check failed", exc_info=True)
             return
 
-        # Phase 2: auto-update or notify (failures surfaced to user)
+        # Phase 2: auto-update or notify
         try:
             from deepagents_cli._version import __version__ as cli_version
 
@@ -1475,22 +1475,32 @@ class DeepAgentsApp(App):
                         markup=False,
                     )
             else:
+                from deepagents_cli.update_check import (
+                    mark_update_notified,
+                    should_notify_update,
+                )
+
+                if not await asyncio.to_thread(should_notify_update, latest):
+                    return
+
                 cmd = upgrade_command()
                 self.notify(
                     f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}\n"
+                    f"Run: {cmd}\n\n"
                     f"Enable auto-updates: /auto-update",
                     severity="information",
                     timeout=15,
                     markup=False,
                 )
+                await asyncio.to_thread(mark_update_notified, latest)
         except Exception:
-            logger.warning("Auto-update failed unexpectedly", exc_info=True)
-            self.notify(
-                "Update failed unexpectedly.",
-                severity="warning",
-                timeout=10,
-            )
+            logger.warning("Update check/notify failed unexpectedly", exc_info=True)
+            if is_auto_update_enabled():
+                self.notify(
+                    "Auto-update failed unexpectedly.",
+                    severity="warning",
+                    timeout=10,
+                )
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""
@@ -1505,11 +1515,15 @@ class DeepAgentsApp(App):
 
         try:
             from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
+
+            if await asyncio.to_thread(_is_editable_install):
+                heading = f"Now running v{cli_version}"
+            else:
+                heading = f"Updated to v{cli_version}"
 
             await self._mount_message(
-                AppMessage(
-                    f"Updated to v{cli_version}\nSee what's new: {CHANGELOG_URL}"
-                )
+                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
             )
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)
@@ -2759,6 +2773,15 @@ class DeepAgentsApp(App):
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
+            if not await self._has_conversation_messages():
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to remember yet. Start a conversation first,"
+                        " then use /remember to capture learnings."
+                    )
+                )
+                return
             args = command.strip()[len("/remember") :].strip()
             rewritten = f"/skill:remember {args}" if args else "/skill:remember"
             await self._handle_skill_command(rewritten)
@@ -3038,6 +3061,35 @@ class DeepAgentsApp(App):
 
         skill_name, args = parse_skill_command(command)
         await self._invoke_skill(skill_name, args, command=command)
+
+    async def _has_conversation_messages(self) -> bool:
+        """Check whether the current thread has at least one human message.
+
+        Returns:
+            `True` if the conversation contains a `HumanMessage`, `False`
+            otherwise. On transient errors (network, corrupt state) returns
+            `True` so that `/remember` is not blocked with a misleading
+            "nothing to remember" message.
+        """
+        if not self._agent:
+            return False
+        try:
+            from langchain_core.messages import HumanMessage
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": self._lc_thread_id},
+            }
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return False
+            messages = state.values.get("messages", [])
+            return any(isinstance(m, HumanMessage) for m in messages)
+        except Exception:
+            logger.warning(
+                "Failed to check conversation messages; allowing /remember to proceed",
+                exc_info=True,
+            )
+            return True
 
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
@@ -3604,7 +3656,9 @@ class DeepAgentsApp(App):
 
         # Server mode / direct checkpointer may return dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
-        if messages and isinstance(messages[0], dict):
+        # `any(...)` guards against heterogeneous lists where only some
+        # elements are serialized.
+        if any(isinstance(m, dict) for m in messages):
             from langchain_core.messages.utils import convert_to_messages
 
             messages = convert_to_messages(messages)

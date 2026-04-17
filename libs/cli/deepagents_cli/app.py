@@ -3656,7 +3656,9 @@ class DeepAgentsApp(App):
 
         # Server mode / direct checkpointer may return dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
-        if messages and isinstance(messages[0], dict):
+        # `any(...)` guards against heterogeneous lists where only some
+        # elements are serialized.
+        if any(isinstance(m, dict) for m in messages):
             from langchain_core.messages.utils import convert_to_messages
 
             messages = convert_to_messages(messages)

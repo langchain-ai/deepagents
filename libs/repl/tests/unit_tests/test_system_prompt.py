@@ -83,6 +83,8 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
     assert "/**" in prompt
     assert "```ts" in prompt
     assert "prefer writing one complete REPL program" in prompt
+    assert "always pipeline dependent lookups within a single call" in prompt
+    assert "performs the full sequence of dependent calls" in prompt
     assert "trust it and chain the calls" in prompt
     assert "print it inside the same REPL program" in prompt
     assert "Example syntax only - this shows the language shape" in prompt

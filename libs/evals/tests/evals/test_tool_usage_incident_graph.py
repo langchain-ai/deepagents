@@ -14,8 +14,8 @@ from deepagents import create_deep_agent
 from langchain.agents.middleware.types import ToolCallRequest, wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException, tool
-from langchain_repl.middleware import ReplMiddleware
 from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_repl.middleware import ReplMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,7 +30,11 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.eval_tier("baseline")]
+pytestmark = [
+    pytest.mark.eval_category("tool_use"),
+    pytest.mark.eval_tier("baseline"),
+    pytest.mark.repl("quickjs", "langchain"),
+]
 
 
 class Engineer(TypedDict):
@@ -762,21 +766,27 @@ async def _incident_graph_tool_error_middleware(
         )
 
 
-def _create_agent(model: BaseChatModel):
-    return create_deep_agent(
-        model=model,
-        # tools=INCIDENT_GRAPH_TOOLS,
-        middleware=[
-            _incident_graph_tool_error_middleware,
-            # QuickJSMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True),
-            ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True),
-        ],
-    )
+def _create_agent(model: BaseChatModel, repl_name: str | None):
+    """Create an agent implementation."""
+    middleware = [_incident_graph_tool_error_middleware]
+    if repl_name == "langchain":
+        middleware.append(ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
+    elif repl_name == "quickjs":
+        middleware.append(QuickJSMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
+    elif repl_name is not None:
+        msg = f'Unknown repl_name "{repl_name}"'
+        raise ValueError(msg)
+    return create_deep_agent(model=model, middleware=middleware)
+
+
+@pytest.fixture
+def agent(model: BaseChatModel, repl_name: str | None):
+    """Get an agent implementation."""
+    return _create_agent(model, repl_name)
 
 
 @pytest.mark.langsmith
-async def test_single_tool_list_incident_ids(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_single_tool_list_incident_ids(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -797,8 +807,7 @@ async def test_single_tool_list_incident_ids(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-async def test_two_tools_current_incident_service_name(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_two_tools_current_incident_service_name(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -820,8 +829,7 @@ async def test_two_tools_current_incident_service_name(model: BaseChatModel) -> 
 
 
 @pytest.mark.langsmith
-async def test_three_tools_find_service_owner_team(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_three_tools_find_service_owner_team(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -844,9 +852,9 @@ async def test_three_tools_find_service_owner_team(model: BaseChatModel) -> None
 
 @pytest.mark.langsmith
 async def test_multi_question_current_incident_service_and_incident_oncall(
+    agent,
     model: BaseChatModel,
 ) -> None:
-    agent = _create_agent(model)
     await run_agent_async(
         agent,
         model=model,
@@ -877,9 +885,9 @@ async def test_multi_question_current_incident_service_and_incident_oncall(
 
 @pytest.mark.langsmith
 async def test_multi_question_incident_oncall_and_incident_environment(
+    agent,
     model: BaseChatModel,
 ) -> None:
-    agent = _create_agent(model)
     await run_agent_async(
         agent,
         model=model,
@@ -912,9 +920,9 @@ async def test_multi_question_incident_oncall_and_incident_environment(
 
 @pytest.mark.langsmith
 async def test_multi_question_incident_oncall_and_service_with_most_firing_alerts(
+    agent,
     model: BaseChatModel,
 ) -> None:
-    agent = _create_agent(model)
     await run_agent_async(
         agent,
         model=model,
@@ -943,8 +951,7 @@ async def test_multi_question_incident_oncall_and_service_with_most_firing_alert
 
 
 @pytest.mark.langsmith
-async def test_multi_question_three_independent_simple_lookups(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_multi_question_three_independent_simple_lookups(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -978,8 +985,7 @@ async def test_multi_question_three_independent_simple_lookups(model: BaseChatMo
 
 
 @pytest.mark.langsmith
-async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_four_tools_incident_to_oncall_name(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1002,8 +1008,7 @@ async def test_four_tools_incident_to_oncall_name(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-async def test_four_tools_service_runbook_url(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_four_tools_service_runbook_url(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1025,8 +1030,7 @@ async def test_four_tools_service_runbook_url(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_five_tools_incident_latest_deploy_and_repo(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1055,8 +1059,7 @@ async def test_five_tools_incident_latest_deploy_and_repo(model: BaseChatModel) 
 
 
 @pytest.mark.langsmith
-async def test_five_tools_incident_environment_name_and_region(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_five_tools_incident_environment_name_and_region(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1088,8 +1091,7 @@ async def test_five_tools_incident_environment_name_and_region(model: BaseChatMo
 
 
 @pytest.mark.langsmith
-async def test_five_tools_service_dependency_names_parallel(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_five_tools_service_dependency_names_parallel(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1117,8 +1119,7 @@ async def test_five_tools_service_dependency_names_parallel(model: BaseChatModel
 
 
 @pytest.mark.langsmith
-async def test_five_tools_service_alert_names_parallel(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_five_tools_service_alert_names_parallel(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1146,8 +1147,9 @@ async def test_five_tools_service_alert_names_parallel(model: BaseChatModel) -> 
 
 
 @pytest.mark.langsmith
-async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_six_tools_current_incident_oncall_name_and_email(
+    agent, model: BaseChatModel
+) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1175,8 +1177,7 @@ async def test_six_tools_current_incident_oncall_name_and_email(model: BaseChatM
 
 
 @pytest.mark.langsmith
-async def test_six_tools_service_repo_and_branch(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_six_tools_service_repo_and_branch(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1202,8 +1203,7 @@ async def test_six_tools_service_repo_and_branch(model: BaseChatModel) -> None:
 
 
 @pytest.mark.langsmith
-async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_six_tools_incident_title_severity_and_status(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1227,8 +1227,7 @@ async def test_six_tools_incident_title_severity_and_status(model: BaseChatModel
 
 
 @pytest.mark.langsmith
-async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_six_tools_current_incident_metrics_parallel(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1262,8 +1261,7 @@ async def test_six_tools_current_incident_metrics_parallel(model: BaseChatModel)
 
 
 @pytest.mark.langsmith
-async def test_aggregation_active_incident_count_by_team(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_aggregation_active_incident_count_by_team(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1306,8 +1304,7 @@ async def test_aggregation_active_incident_count_by_team(model: BaseChatModel) -
 
 
 @pytest.mark.langsmith
-async def test_comparison_active_incident_most_dependencies(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_comparison_active_incident_most_dependencies(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1357,8 +1354,9 @@ async def test_comparison_active_incident_most_dependencies(model: BaseChatModel
 
 
 @pytest.mark.langsmith
-async def test_latest_selection_active_incident_most_recent_deploy(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_latest_selection_active_incident_most_recent_deploy(
+    agent, model: BaseChatModel
+) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1412,8 +1410,7 @@ async def test_latest_selection_active_incident_most_recent_deploy(model: BaseCh
 
 
 @pytest.mark.langsmith
-async def test_metric_ranking_active_incident_highest_latency(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_metric_ranking_active_incident_highest_latency(agent, model: BaseChatModel) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1465,8 +1462,9 @@ async def test_metric_ranking_active_incident_highest_latency(model: BaseChatMod
 
 
 @pytest.mark.langsmith
-async def test_alert_aggregation_service_with_most_firing_alerts(model: BaseChatModel) -> None:
-    agent = _create_agent(model)
+async def test_alert_aggregation_service_with_most_firing_alerts(
+    agent, model: BaseChatModel
+) -> None:
     await run_agent_async(
         agent,
         model=model,
@@ -1521,9 +1519,9 @@ async def test_alert_aggregation_service_with_most_firing_alerts(model: BaseChat
 
 @pytest.mark.langsmith
 async def test_dependency_reasoning_active_incident_depending_on_identity_api(
+    agent,
     model: BaseChatModel,
 ) -> None:
-    agent = _create_agent(model)
     await run_agent_async(
         agent,
         model=model,

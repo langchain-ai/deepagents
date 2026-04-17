@@ -54,3 +54,91 @@ class TestExtractMarkdownImages:
         assert "\n\n\n" not in cleaned
         assert "Here:" in cleaned
         assert "Done" in cleaned
+
+
+from whatsapp_adapter import MessageEvent, MessageType, _build_inbound_content
+
+
+def _photo_event(text: str, urls: list[Path], mimes: list[str]) -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.PHOTO,
+        chat_id="c",
+        chat_name="chat",
+        chat_type="dm",
+        user_id="u",
+        user_name="user",
+        media_urls=[str(p) for p in urls],
+        media_types=mimes,
+    )
+
+
+class TestBuildInboundContent:
+    def test_text_event_returns_plain_string(self) -> None:
+        event = MessageEvent(
+            text="hi",
+            message_type=MessageType.TEXT,
+            chat_id="c",
+            chat_name="chat",
+            chat_type="dm",
+            user_id="u",
+            user_name="user",
+        )
+        assert _build_inbound_content(event) == "hi"
+
+    def test_photo_event_with_one_image(self, tiny_png: Path) -> None:
+        event = _photo_event("look", [tiny_png], ["image/png"])
+        content = _build_inbound_content(event)
+        assert isinstance(content, list)
+        assert content[0] == {"type": "text", "text": "look"}
+        assert len(content) == 2
+        block = content[1]
+        assert block["type"] == "image"
+        assert block["source_type"] == "base64"
+        assert block["mime_type"] == "image/png"
+        assert isinstance(block["data"], str) and block["data"]
+
+    def test_photo_event_with_empty_body_uses_placeholder(
+        self, tiny_png: Path
+    ) -> None:
+        event = _photo_event("", [tiny_png], ["image/png"])
+        content = _build_inbound_content(event)
+        assert isinstance(content, list)
+        assert content[0] == {"type": "text", "text": "(image)"}
+
+    def test_photo_event_with_two_images(
+        self, tiny_png: Path, tiny_jpeg: Path
+    ) -> None:
+        event = _photo_event(
+            "both", [tiny_png, tiny_jpeg], ["image/png", "image/jpeg"]
+        )
+        content = _build_inbound_content(event)
+        assert isinstance(content, list)
+        assert len(content) == 3
+        assert content[1]["mime_type"] == "image/png"
+        assert content[2]["mime_type"] == "image/jpeg"
+
+    def test_oversize_image_dropped(
+        self, tiny_png: Path, oversize_image: Path
+    ) -> None:
+        event = _photo_event(
+            "hi",
+            [oversize_image, tiny_png],
+            ["image/png", "image/png"],
+        )
+        content = _build_inbound_content(event)
+        assert isinstance(content, list)
+        assert len(content) == 2  # text + 1 surviving image
+
+    def test_unreadable_image_dropped(
+        self, tiny_png: Path, tmp_path: Path
+    ) -> None:
+        missing = tmp_path / "missing.png"  # never created
+        event = _photo_event(
+            "hi",
+            [missing, tiny_png],
+            ["image/png", "image/png"],
+        )
+        content = _build_inbound_content(event)
+        assert isinstance(content, list)
+        assert len(content) == 2  # text + 1 surviving image

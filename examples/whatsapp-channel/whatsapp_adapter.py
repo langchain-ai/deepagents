@@ -8,6 +8,7 @@ WhatsApp adapter.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -148,6 +149,61 @@ def extract_markdown_images(text: str) -> tuple[str, list[tuple[str, str]]]:
         cleaned = cleaned.replace(f"{_CODE_PH}{i}\x00", code)
 
     return cleaned, refs
+
+
+_MAX_INBOUND_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _build_inbound_content(event: MessageEvent) -> str | list[dict]:
+    """Return LangChain HumanMessage content for an inbound message.
+
+    Returns a plain string for text-only messages, or a list of content
+    blocks (text + images) for PHOTO events with readable images within
+    the size limit. Oversize or unreadable images are dropped with a
+    warning; if every image is dropped, falls back to plain-string text.
+    """
+    text = event.text.strip()
+    if event.message_type != MessageType.PHOTO or not event.media_urls:
+        return text
+
+    image_blocks: list[dict] = []
+    for i, path in enumerate(event.media_urls):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            logger.warning("inbound image unreadable: %s", path)
+            continue
+        if size > _MAX_INBOUND_IMAGE_BYTES:
+            logger.warning(
+                "inbound image over size limit (%d > %d): %s",
+                size,
+                _MAX_INBOUND_IMAGE_BYTES,
+                path,
+            )
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+        except OSError:
+            logger.warning("inbound image read failed: %s", path)
+            continue
+        mime = (
+            event.media_types[i]
+            if i < len(event.media_types)
+            else "image/jpeg"
+        )
+        image_blocks.append({
+            "type": "image",
+            "source_type": "base64",
+            "data": data,
+            "mime_type": mime,
+        })
+
+    if not image_blocks:
+        return text
+
+    text_block = {"type": "text", "text": text or "(image)"}
+    return [text_block, *image_blocks]
 
 
 def _kill_port_process(port: int) -> None:

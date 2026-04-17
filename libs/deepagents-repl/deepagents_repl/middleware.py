@@ -17,10 +17,12 @@ the full design rationale.
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -39,7 +41,8 @@ from deepagents_repl._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from deepagents_repl._repl import _Registry, format_outcome
+from deepagents_repl._repl import SwarmBinding, _Registry, format_outcome
+from deepagents_repl._swarm import DEFAULT_CONCURRENCY, compile_subagents
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,39 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+
+
+_SWARM_PROMPT_TEMPLATE = """
+
+### API Reference — `swarm()` global
+
+Fan out tasks to subagents and collect all results. Returns a summary object.
+
+```typescript
+// Virtual-table form — one task per file resolved from the VFS
+const summary = await swarm({{
+  glob: "feedback/*.txt",         // glob pattern(s), or filePaths: ["/a.txt", "/b.txt"]
+  instruction: "Classify as bug, feature, or praise. Return JSON: {{category, confidence}}.",
+  subagentType: "{default_subagent}",        // optional
+  concurrency: 5,                 // optional, default {default_concurrency}
+}});
+
+// Pre-built tasks form — explicit task list
+const summary = await swarm({{
+  tasks: [
+    {{ id: "q1", description: "Summarize /reports/q1.txt in one sentence." }},
+    {{ id: "q2", description: "Summarize /reports/q2.txt in one sentence." }},
+  ],
+}});
+
+// summary shape: {{ total, completed, failed, resultsDir, failedTasks }}
+// Read individual results from resultsDir/results.jsonl
+```
+
+Available subagent types: {available_subagents}
+
+Use `swarm()` for large batches; it handles concurrency limits, timeouts, and result persistence.
+Read `<resultsDir>/results.jsonl` after the call to access per-task outputs."""
 
 
 class EvalSchema(BaseModel):
@@ -146,6 +182,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
         ptc: PTCOption = False,
+        backend: BackendProtocol | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
     ) -> None:
         super().__init__()
         self._memory_limit = memory_limit
@@ -154,16 +192,48 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
         self._ptc = ptc
+        self._backend = backend
+        # Swarm is active only when both a backend and at least one
+        # subagent are configured. Either alone is a user error — swarm
+        # needs a VFS to persist results.jsonl and at least one subagent
+        # to dispatch to — but we treat "neither configured" as the
+        # common case (swarm disabled) and don't raise.
+        if subagents and backend is not None:
+            subagent_graphs, subagent_descriptions = compile_subagents(subagents)
+            swarm_binding: SwarmBinding | None = SwarmBinding(
+                backend=backend, subagent_graphs=subagent_graphs
+            )
+            self._swarm_subagent_descriptions = subagent_descriptions
+        elif subagents and backend is None:
+            msg = (
+                "REPLMiddleware: `subagents` requires `backend` (results.jsonl must "
+                "be written somewhere). Pass a BackendProtocol instance (e.g. "
+                "`StateBackend()`) alongside `subagents`."
+            )
+            raise ValueError(msg)
+        else:
+            swarm_binding = None
+            self._swarm_subagent_descriptions = []
         self._registry = _Registry(
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
+            swarm_binding=swarm_binding,
         )
-        self._base_system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        base_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             tool_name=tool_name,
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),
         )
+        if swarm_binding is not None:
+            available = ", ".join(s["name"] for s in self._swarm_subagent_descriptions)
+            default = self._swarm_subagent_descriptions[0]["name"]
+            base_prompt += _SWARM_PROMPT_TEMPLATE.format(
+                available_subagents=available,
+                default_subagent=default,
+                default_concurrency=DEFAULT_CONCURRENCY,
+            )
+        self._base_system_prompt = base_prompt
         # Backwards-compatible alias used in tests / external introspection.
         self.system_prompt = self._base_system_prompt
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None

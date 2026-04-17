@@ -32,8 +32,10 @@ from quickjs_rs import (
 from deepagents_repl._ptc import to_camel_case
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
+    from langchain_core.runnables import Runnable
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -234,6 +236,62 @@ def _coerce_tool_output(value: Any) -> str:
         return str(value)
 
 
+def _coerce_task_list(raw: Any) -> list[Any]:
+    """Coerce a JS-side ``tasks`` input into ``list[SwarmTaskSpec]``.
+
+    Accepts the JS wire shape (``subagentType``) and normalises to the
+    Python dataclass field (``subagent_type``). Raises on any entry that
+    doesn't carry the required string fields — we'd rather fail fast in
+    the host bridge than have ``execute_swarm`` report per-task errors
+    for a malformed batch.
+    """
+    # Local import to avoid an import cycle at module-load time; this is
+    # only hit inside the swarm host bridge.
+    from deepagents_repl._swarm.types import SwarmTaskSpec  # noqa: PLC0415
+
+    if not isinstance(raw, list):
+        msg = "swarm().tasks must be an array"
+        raise ValueError(msg)
+
+    tasks: list[SwarmTaskSpec] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            msg = f"swarm().tasks[{idx}] must be an object"
+            raise ValueError(msg)
+        task_id = entry.get("id")
+        description = entry.get("description")
+        if not isinstance(task_id, str) or not task_id:
+            msg = f"swarm().tasks[{idx}].id must be a non-empty string"
+            raise ValueError(msg)
+        if not isinstance(description, str) or not description:
+            msg = f"swarm().tasks[{idx}].description must be a non-empty string"
+            raise ValueError(msg)
+        subagent_type = entry.get("subagentType") or entry.get("subagent_type")
+        if subagent_type is not None and not isinstance(subagent_type, str):
+            msg = f"swarm().tasks[{idx}].subagentType must be a string when provided"
+            raise ValueError(msg)
+        tasks.append(
+            SwarmTaskSpec(id=task_id, description=description, subagent_type=subagent_type)
+        )
+    return tasks
+
+
+def _as_str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    return None
+
+
+def _as_str_or_str_list(value: Any) -> str | list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return _as_str_list(value)
+
+
 def _synth_tool_call_id(tool_name: str) -> str:
     """Mint a synthetic tool_call_id for a PTC-driven tool invocation.
 
@@ -305,6 +363,19 @@ def _inject_tool_args_for_ptc(
     return enriched
 
 
+@dataclass
+class SwarmBinding:
+    """Bundle of state needed by the in-REPL ``swarm()`` global.
+
+    ``backend`` and ``subagent_graphs`` are fixed for the lifetime of the
+    REPL middleware; ``current_state`` is pulled from the outer
+    ``ToolRuntime`` at call time (see ``_register_swarm_bridge``).
+    """
+
+    backend: BackendProtocol
+    subagent_graphs: Mapping[str, Runnable]
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer + lock, per LangGraph thread."""
 
@@ -314,6 +385,7 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
+        swarm_binding: SwarmBinding | None = None,
     ) -> None:
         # The Context-level ``timeout`` is used as the cumulative budget
         # for sync evals. Async evals pass ``timeout=`` per call so each
@@ -357,8 +429,11 @@ class _ThreadREPL:
         # graph state, store, context, etc. Set via ``set_outer_runtime``
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
+        self._swarm_binding: SwarmBinding | None = swarm_binding
         if capture_console:
             self._install_console()
+        if swarm_binding is not None:
+            self._install_swarm(swarm_binding)
 
     def _install_console(self) -> None:
         ctx = self._ctx
@@ -389,6 +464,106 @@ class _ThreadREPL:
             " error: __console_error,"
             "}; undefined"
         )
+
+    def _install_swarm(self, binding: SwarmBinding) -> None:
+        """Install a JS-side ``swarm(input)`` async global backed by ``execute_swarm``.
+
+        The bridge reads subagent graphs + backend from ``binding`` (fixed
+        at middleware construction time) and ``current_state`` from the
+        outer ``ToolRuntime`` captured on each eval. Host functions can't
+        be un-registered, so we install once; there is no "uninstall".
+        """
+        # Delayed import: keeps the swarm subpackage (and its langchain
+        # transitive imports via compile.py) out of the cold path for
+        # REPLs that don't configure swarm.
+        from deepagents_repl._swarm import (  # noqa: PLC0415
+            SwarmExecutionOptions,
+            VirtualTableInput,
+            execute_swarm,
+            resolve_virtual_table_tasks,
+        )
+        from deepagents_repl._swarm.types import FailedTaskInfo  # noqa: PLC0415
+
+        async def _swarm(raw_input: Any = None) -> dict[str, Any]:
+            input_dict = raw_input if isinstance(raw_input, dict) else {}
+            current_state = self._current_state_from_runtime()
+
+            if "tasks" in input_dict and input_dict["tasks"] is not None:
+                tasks = _coerce_task_list(input_dict["tasks"])
+                synthesized_tasks_jsonl: str | None = None
+            else:
+                vt_input = VirtualTableInput(
+                    instruction=input_dict.get("instruction") or "",
+                    file_paths=_as_str_list(input_dict.get("filePaths"))
+                    or _as_str_list(input_dict.get("file_paths")),
+                    glob=_as_str_or_str_list(input_dict.get("glob")),
+                    subagent_type=input_dict.get("subagentType")
+                    or input_dict.get("subagent_type"),
+                )
+                if not vt_input.instruction and not input_dict.get("tasks"):
+                    msg = (
+                        "swarm() requires either `tasks` or a virtual-table form "
+                        "(`instruction` plus `glob`/`filePaths`)"
+                    )
+                    raise ValueError(msg)
+                resolved = await resolve_virtual_table_tasks(vt_input, binding.backend)
+                if resolved.error is not None:
+                    # Raise so JS sees a rejected Promise — matches the JS port.
+                    raise ValueError(resolved.error)
+                assert resolved.tasks is not None  # noqa: S101
+                tasks = resolved.tasks
+                synthesized_tasks_jsonl = resolved.tasks_jsonl
+
+            concurrency = input_dict.get("concurrency")
+            if concurrency is not None and not isinstance(concurrency, int):
+                concurrency = int(concurrency)
+
+            summary = await execute_swarm(
+                SwarmExecutionOptions(
+                    tasks=tasks,
+                    subagent_graphs=binding.subagent_graphs,
+                    backend=binding.backend,
+                    current_state=current_state,
+                    concurrency=concurrency,
+                    synthesized_tasks_jsonl=synthesized_tasks_jsonl,
+                )
+            )
+            # Shape the response with JS-style keys so `JSON.stringify` on
+            # the JS side produces wire-compatible output with the JS port.
+            return {
+                "total": summary.total,
+                "completed": summary.completed,
+                "failed": summary.failed,
+                "resultsDir": summary.results_dir,
+                "failedTasks": [
+                    _failed_task_to_wire(f) for f in summary.failed_tasks
+                ],
+            }
+
+        def _failed_task_to_wire(f: FailedTaskInfo) -> dict[str, str]:
+            return {"id": f.id, "error": f.error}
+
+        self._ctx.register("swarm", _swarm, is_async=True)
+
+    def _current_state_from_runtime(self) -> dict[str, Any]:
+        """Best-effort read of the agent state from the outer ToolRuntime.
+
+        The state dict is passed to subagents (with excluded keys filtered
+        out inside ``execute_swarm``). When no outer runtime is attached
+        — e.g. unit tests driving the REPL directly — return an empty
+        dict so swarm still runs.
+        """
+        runtime = self._outer_runtime
+        if runtime is None:
+            return {}
+        state = getattr(runtime, "state", None)
+        if isinstance(state, dict):
+            return state
+        if state is None:
+            return {}
+        # Pydantic / dataclass-ish state: fall back to its __dict__ so
+        # arbitrary fields survive the filter step downstream.
+        return getattr(state, "__dict__", {}) or {}
 
     def install_tools(self, tools: Sequence[BaseTool]) -> None:
         """Expose ``tools`` as ``globalThis.tools.<camelCase>`` in the REPL.
@@ -605,6 +780,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
+    swarm_binding: SwarmBinding | None = None
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
     _init_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -627,6 +803,7 @@ class _Registry:
                         self._runtime,
                         timeout=self.timeout,
                         capture_console=self.capture_console,
+                        swarm_binding=self.swarm_binding,
                     )
                     self._repls[thread_id] = repl
         return repl

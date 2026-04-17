@@ -109,3 +109,40 @@ class TestComputeNextRun:
         last = "2026-04-20T10:00:00+00:00"
         result = compute_next_run(schedule, last_run_at=last)
         assert result == "2026-04-20T10:30:00+00:00"
+
+
+from cron.jobs import load_jobs, save_jobs
+
+
+class TestStorage:
+    def test_load_missing_file_returns_empty(self, jobs_path) -> None:
+        assert load_jobs(jobs_path) == []
+
+    def test_save_then_load_round_trip(self, jobs_path) -> None:
+        job = {"id": "abc", "name": "hello", "prompt": "hi"}
+        save_jobs(jobs_path, [job])
+        assert load_jobs(jobs_path) == [job]
+
+    def test_save_creates_parent_dir(self, jobs_path) -> None:
+        assert not jobs_path.parent.exists()
+        save_jobs(jobs_path, [])
+        assert jobs_path.parent.exists()
+
+    def test_save_is_atomic_no_tmp_left(self, jobs_path) -> None:
+        save_jobs(jobs_path, [{"id": "abc"}])
+        leftover = list(jobs_path.parent.glob(".jobs_*.tmp"))
+        assert leftover == []
+
+    def test_save_writes_top_level_shape(self, jobs_path) -> None:
+        import json
+
+        save_jobs(jobs_path, [{"id": "abc"}])
+        data = json.loads(jobs_path.read_text())
+        assert set(data.keys()) == {"jobs", "updated_at"}
+        assert data["jobs"] == [{"id": "abc"}]
+
+    def test_load_corrupt_file_raises(self, jobs_path) -> None:
+        jobs_path.parent.mkdir(parents=True)
+        jobs_path.write_text("{not valid json at all")
+        with pytest.raises(RuntimeError):
+            load_jobs(jobs_path)

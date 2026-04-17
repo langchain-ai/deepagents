@@ -241,6 +241,38 @@ async def main() -> None:
 
                 # ---- Deliver the response ----
                 if response_text:
+                    # Extract any markdown image refs; validate each path
+                    cleaned_text, image_refs = extract_markdown_images(
+                        response_text,
+                    )
+                    valid_images: list[tuple[str, str]] = []
+                    missing_alts: list[str] = []
+                    for alt, path in image_refs:
+                        try:
+                            p = Path(path)
+                            ok = (
+                                p.is_file()
+                                and p.stat().st_size <= 16 * 1024 * 1024
+                            )
+                        except OSError:
+                            ok = False
+                        if ok:
+                            valid_images.append((alt, str(p)))
+                        else:
+                            missing_alts.append(alt or "image")
+
+                    text_to_send = cleaned_text
+                    if missing_alts:
+                        seen: set[str] = set()
+                        for name in missing_alts:
+                            if name in seen:
+                                continue
+                            seen.add(name)
+                            text_to_send = (
+                                f"{text_to_send.rstrip()}\n"
+                                f"_(couldn't attach: {name})_"
+                            )
+
                     if actions:
                         # Tools were used: update status to "Done", then send
                         # the response as a separate message.
@@ -249,7 +281,7 @@ async def main() -> None:
                                 chat_id, status_msg_id,
                                 _build_status_text(actions, done=True),
                             )
-                        send_result = await adapter.send(chat_id, response_text)
+                        send_result = await adapter.send(chat_id, text_to_send)
                         if not send_result.success:
                             logger.error("Failed to send: %s", send_result.error)
                     else:
@@ -258,13 +290,27 @@ async def main() -> None:
                         sent = False
                         if status_msg_id:
                             edit_result = await adapter.edit_message(
-                                chat_id, status_msg_id, response_text,
+                                chat_id, status_msg_id, text_to_send,
                             )
                             sent = edit_result.success
                         if not sent:
                             await adapter.send(
-                                chat_id, response_text,
+                                chat_id, text_to_send,
                                 reply_to=event.message_id,
+                            )
+
+                    # Send each valid image as a follow-up media message.
+                    # History stores the original response_text (refs intact)
+                    # so the agent sees its own markdown on the next turn.
+                    for alt, img_path in valid_images:
+                        media_result = await adapter.send_media(
+                            chat_id, img_path, "image",
+                            caption=alt or None,
+                        )
+                        if not media_result.success:
+                            logger.warning(
+                                "send_media failed for %s: %s",
+                                img_path, media_result.error,
                             )
 
                     history.append(AIMessage(content=response_text))

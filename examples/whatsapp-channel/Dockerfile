@@ -47,6 +47,7 @@ RUN pip install --no-cache-dir -e .
 # Copy application code (explicit files to avoid copying host session/media dirs
 # — the .dockerignore in the example dir is ignored since the build context is repo root)
 COPY examples/whatsapp-channel/*.py .
+COPY examples/whatsapp-channel/cron/ cron/
 COPY examples/whatsapp-channel/bridge/bridge.js bridge/
 COPY examples/whatsapp-channel/.env.example .
 COPY examples/whatsapp-channel/README.md .

@@ -40,6 +40,10 @@ Deep Agents is an agent harness. An opinionated, ready-to-run agent out of the b
 ```bash
 pip install deepagents
 # or
+
+> **Status**: active | **Version**: unversioned | **README refreshed**: 2026-04-17
+>
+> Since README was last updated (2026-03-07): 510 tracked commits (116 feat, 136 fix, 258 chore). Fork with upstream-mirror sync.
 uv add deepagents
 ```
 

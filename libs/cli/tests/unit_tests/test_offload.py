@@ -123,12 +123,12 @@ class TestOffloadInAutocomplete:
 
     def test_offload_in_slash_commands(self) -> None:
         """The /offload command should be in the SLASH_COMMANDS list."""
-        labels = [label for label, *_ in SLASH_COMMANDS]
+        labels = [entry.name for entry in SLASH_COMMANDS]
         assert "/offload" in labels
 
     def test_offload_sorted_alphabetically(self) -> None:
         """The /offload entry should appear between /model and /quit."""
-        labels = [label for label, *_ in SLASH_COMMANDS]
+        labels = [entry.name for entry in SLASH_COMMANDS]
         model_idx = labels.index("/model")
         offload_idx = labels.index("/offload")
         quit_idx = labels.index("/quit")

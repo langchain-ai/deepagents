@@ -187,7 +187,12 @@ class ProviderConfig(TypedDict, total=False):
     """List of model identifiers available from this provider."""
 
     api_key_env: str
-    """Environment variable name containing the API key."""
+    """Name of the environment variable that holds the API key.
+
+    This is the env var *name* (e.g., `"OPENAI_API_KEY"`), not the secret
+    itself. The CLI resolves it at startup to verify credentials before model
+    creation.
+    """
 
     base_url: str
     """Custom base URL."""
@@ -208,6 +213,10 @@ class ProviderConfig(TypedDict, total=False):
     every model from this provider. Model-keyed sub-tables (e.g.,
     `[params."qwen3:4b"]`) override individual values for that model only;
     the merge is shallow (model wins on conflict).
+
+    Do not set `api_key` here — the early credential check runs before
+    `params` are read, so the CLI will reject the model before it sees the key.
+    Use `api_key_env` to point at an environment variable instead.
     """
 
     profile: dict[str, Any]

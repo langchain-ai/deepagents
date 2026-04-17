@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.39](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.38...deepagents-cli==0.0.39) (2026-04-17)
+
+
+### Features
+
+* **cli:** inline argument hints for slash commands ([#2181](https://github.com/langchain-ai/deepagents/issues/2181)) ([6b58e06](https://github.com/langchain-ai/deepagents/commit/6b58e06b06f6fb360d85c54eac31953d1e47dd7a))
+* **cli:** subagents for `deepagents deploy` ([#2786](https://github.com/langchain-ai/deepagents/issues/2786)) ([7dd5565](https://github.com/langchain-ai/deepagents/commit/7dd5565e30ab91a2cd2ca10fcd227e590451f13c))
+
+
+### Bug Fixes
+
+* **cli:** throttle update notification to once per day and fix teardown banner ([#2764](https://github.com/langchain-ai/deepagents/issues/2764)) ([ba31294](https://github.com/langchain-ai/deepagents/commit/ba31294b733d4ef542d18830eec6df30cfa0d23f))
+
 ## [0.0.38](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.37...deepagents-cli==0.0.38) (2026-04-15)
 
 

@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
@@ -16,6 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from tools import fetch_url, http_request, web_search
+from cron import build_cron_tools, origin_ctx, start_ticker
 from whatsapp_adapter import MessageEvent, WhatsAppAdapter
 
 load_dotenv()
@@ -87,11 +89,16 @@ async def main() -> None:
     print(f"[main] Initializing model: {model_name}")
     model = init_chat_model(model_name)
 
+    # --- Cron jobs path ---
+    jobs_path = Path(
+        os.getenv("WHATSAPP_CRON_PATH", "./cron/jobs.json"),
+    ).expanduser().resolve()
+
     # --- Agent setup ---
     agent = create_deep_agent(
         model=model,
         backend=LocalShellBackend(virtual_mode=False),
-        tools=[http_request, web_search, fetch_url],
+        tools=[http_request, web_search, fetch_url, *build_cron_tools(jobs_path)],
     )
 
     # --- Per-chat conversation history (in-memory) ---
@@ -128,6 +135,11 @@ async def main() -> None:
 
             # Append user message
             history.append(HumanMessage(content=text))
+
+            origin_ctx.set({
+                "chat_id": chat_id,
+                "message_id": event.message_id,
+            })
 
             status_msg_id: str | None = None
             try:
@@ -290,6 +302,11 @@ async def main() -> None:
         print("[main] Failed to connect. Exiting.")
         sys.exit(1)
 
+    tick_interval = float(os.getenv("WHATSAPP_CRON_TICK_SECONDS", "60"))
+    ticker_task = start_ticker(
+        jobs_path, adapter, agent, chat_locks, tick_interval=tick_interval,
+    )
+
     print("[main] WhatsApp channel running. Press Ctrl+C to stop.")
 
     # --- Graceful shutdown ---
@@ -304,6 +321,11 @@ async def main() -> None:
         loop.add_signal_handler(sig, _signal_handler)
 
     await stop_event.wait()
+    ticker_task.cancel()
+    try:
+        await ticker_task
+    except asyncio.CancelledError:
+        pass
     await adapter.disconnect()
     print("[main] Done.")
 

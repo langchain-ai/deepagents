@@ -18,7 +18,12 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from tools import fetch_url, http_request, web_search
 from cron import build_cron_tools, origin_ctx, start_ticker
-from whatsapp_adapter import MessageEvent, WhatsAppAdapter
+from whatsapp_adapter import (
+    MessageEvent,
+    WhatsAppAdapter,
+    _build_inbound_content,
+    extract_markdown_images,
+)
 
 load_dotenv()
 
@@ -133,8 +138,8 @@ async def main() -> None:
                 conversations[chat_id] = []
             history = conversations[chat_id]
 
-            # Append user message
-            history.append(HumanMessage(content=text))
+            # Append user message (multimodal content if inbound photo)
+            history.append(HumanMessage(content=_build_inbound_content(event)))
 
             origin_ctx.set({
                 "chat_id": chat_id,

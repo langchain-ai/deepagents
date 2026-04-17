@@ -71,6 +71,36 @@ The bridge runs as a Node.js subprocess managed by the Python adapter. Messages 
 - Message chunking for long responses
 - Automatic text extraction from document attachments
 
+## Scheduled tasks (cron)
+
+The agent can schedule background tasks whose results are delivered back to the chat where you scheduled them. Results come as regular WhatsApp messages.
+
+Ask the agent to schedule things in plain language:
+
+- *"Every 2 hours, summarize new posts on Hacker News."*
+- *"Remind me in 45 minutes to take the bread out."*
+- *"List my scheduled tasks."* / *"Cancel the Hacker News one."*
+
+Supported schedules:
+
+- Duration (one-shot): `30m`, `2h`, `1d`.
+- Interval (recurring): `every 15m`, `every 2h`, `every 1d`.
+
+Cron expressions (`0 9 * * *`) and absolute timestamps are not supported.
+
+Configuration:
+
+| Variable | Default | Description |
+|---|---|---|
+| `WHATSAPP_CRON_PATH` | `./cron/jobs.json` | Where job state is persisted |
+| `WHATSAPP_CRON_TICK_SECONDS` | `60` | How often the scheduler checks for due jobs |
+
+Limitations:
+
+- Only one `main.py` process should run against a given `jobs.json`; there is no multi-process file lock.
+- A failed delivery is logged and stored in `last_error` but not retried — the output is lost. (Interval jobs simply fire again on the next tick.)
+- If the process is down when a recurring job was due, that window is skipped (no backfill).
+
 ## Troubleshooting
 
 - **QR code not showing:** Check that Node.js 18+ is installed (`node --version`)

@@ -31,6 +31,14 @@ load_dotenv()
 # Status-message helpers
 # ---------------------------------------------------------------------------
 
+_IMAGE_ATTACH_INSTRUCTIONS = (
+    "To attach an image in your reply, include "
+    "`![short description](/absolute/path/to/file.png)` in your final message. "
+    "The path must be a local file you have already saved (for example, "
+    "downloaded via http_request or generated via the shell). "
+    "Supported formats: PNG, JPEG, GIF, WebP. Size limit: 16 MB."
+)
+
 # Minimum seconds between successive message edits to avoid rate-limits.
 _EDIT_THROTTLE_SECS = 2.0
 
@@ -104,6 +112,7 @@ async def main() -> None:
         model=model,
         backend=LocalShellBackend(virtual_mode=False),
         tools=[http_request, web_search, fetch_url, *build_cron_tools(jobs_path)],
+        system_prompt=_IMAGE_ATTACH_INSTRUCTIONS,
     )
 
     # --- Per-chat conversation history (in-memory) ---

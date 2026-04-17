@@ -146,3 +146,84 @@ class TestStorage:
         jobs_path.write_text("{not valid json at all")
         with pytest.raises(RuntimeError):
             load_jobs(jobs_path)
+
+
+from cron.jobs import create_job
+
+
+class TestCreateJob:
+    def test_creates_one_shot_with_repeat_1(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="summarize news",
+            schedule="30m",
+            origin={"chat_id": "123@c.us", "message_id": "msg1"},
+        )
+        assert job["schedule"]["kind"] == "once"
+        assert job["repeat"] == {"times": 1, "completed": 0}
+        assert job["enabled"] is True
+        assert job["origin"] == {"chat_id": "123@c.us", "message_id": "msg1"}
+        assert len(job["id"]) == 12
+        assert job["name"] == "summarize news"
+        assert job["next_run_at"] == job["schedule"]["run_at"]
+        assert job["last_run_at"] is None
+        assert job["last_status"] is None
+
+    def test_creates_interval_with_repeat_forever(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="daily news",
+            schedule="every 2h",
+            origin={"chat_id": "123@c.us", "message_id": None},
+        )
+        assert job["schedule"]["kind"] == "interval"
+        assert job["repeat"] == {"times": None, "completed": 0}
+        assert job["next_run_at"] is not None
+
+    def test_explicit_name(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="long prompt that exceeds the default-label length so we "
+                   "must truncate it otherwise names get ugly",
+            schedule="30m",
+            origin={"chat_id": "123", "message_id": None},
+            name="tidy",
+        )
+        assert job["name"] == "tidy"
+
+    def test_default_name_truncates(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="x" * 100,
+            schedule="30m",
+            origin={"chat_id": "123", "message_id": None},
+        )
+        assert len(job["name"]) == 50
+
+    def test_explicit_repeat_3(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="p",
+            schedule="every 10m",
+            origin={"chat_id": "123", "message_id": None},
+            repeat=3,
+        )
+        assert job["repeat"] == {"times": 3, "completed": 0}
+
+    def test_persists_to_storage(self, jobs_path) -> None:
+        job = create_job(
+            jobs_path,
+            prompt="p",
+            schedule="30m",
+            origin={"chat_id": "123", "message_id": None},
+        )
+        assert load_jobs(jobs_path) == [job]
+
+    def test_rejects_bad_schedule(self, jobs_path) -> None:
+        with pytest.raises(ValueError):
+            create_job(
+                jobs_path,
+                prompt="p",
+                schedule="0 9 * * *",
+                origin={"chat_id": "123", "message_id": None},
+            )

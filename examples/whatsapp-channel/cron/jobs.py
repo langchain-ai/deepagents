@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 from pathlib import Path
 
 _DURATION_RE = re.compile(
@@ -183,3 +184,52 @@ def save_jobs(jobs_path: Path, jobs: list[dict[str, Any]]) -> None:
         except OSError:
             pass
         raise
+
+
+def create_job(
+    jobs_path: Path,
+    *,
+    prompt: str,
+    schedule: str,
+    origin: dict[str, Any],
+    name: str | None = None,
+    repeat: int | None = None,
+) -> dict[str, Any]:
+    """Create, persist, and return a new cron job.
+
+    ``origin`` must contain at least ``chat_id``; ``message_id`` may be ``None``.
+    For one-shot schedules, ``repeat`` defaults to 1 (run once). For interval
+    schedules, ``repeat=None`` means run forever.
+    """
+    parsed = parse_schedule(schedule)
+    if repeat is not None and repeat <= 0:
+        repeat = None
+    if parsed["kind"] == "once" and repeat is None:
+        repeat = 1
+
+    label = (prompt or "cron job").strip()
+    job_name = name.strip() if name else label[:50].strip()
+    now = _now_aware().isoformat()
+
+    job = {
+        "id": uuid.uuid4().hex[:12],
+        "name": job_name,
+        "prompt": prompt,
+        "schedule": parsed,
+        "repeat": {"times": repeat, "completed": 0},
+        "enabled": True,
+        "created_at": now,
+        "next_run_at": compute_next_run(parsed),
+        "last_run_at": None,
+        "last_status": None,
+        "last_error": None,
+        "origin": {
+            "chat_id": origin["chat_id"],
+            "message_id": origin.get("message_id"),
+        },
+    }
+
+    jobs = load_jobs(jobs_path)
+    jobs.append(job)
+    save_jobs(jobs_path, jobs)
+    return job

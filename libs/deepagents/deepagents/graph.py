@@ -28,10 +28,11 @@ from langgraph.typing import ContextT
 from deepagents._models import get_model_identifier, get_model_provider, resolve_model
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.backends.protocol import BACKEND_TYPES, BackendFactory, BackendProtocol
 from deepagents.middleware._tool_aliasing import _ToolAliasingMiddleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.codex_compaction import CodexCompactionMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -129,6 +130,32 @@ def _resolve_extra_middleware(
     if callable(extra):
         return list(extra())  # ty: ignore[call-top-callable]
     return list(extra)
+
+
+def _build_compaction_layer(
+    profile: _HarnessProfile,
+    model: BaseChatModel,
+    backend: BACKEND_TYPES,
+) -> AgentMiddleware[Any, Any, Any]:
+    """Return the context-management middleware for the given profile.
+
+    Codex profiles opt into OpenAI's Responses `/compact` endpoint via
+    `CodexCompactionMiddleware`, which transparently falls back to LLM-based
+    summarization if the API call fails. Every other profile uses the default
+    `SummarizationMiddleware` directly.
+
+    Args:
+        profile: Merged harness profile for the target model.
+        model: Resolved chat model instance.
+        backend: Backend or factory for offloading history.
+
+    Returns:
+        A single middleware instance to slot into the agent stack in place of
+        the prior `create_summarization_middleware(model, backend)` call.
+    """
+    if profile.use_codex_compaction:
+        return CodexCompactionMiddleware(model, backend)
+    return create_summarization_middleware(model, backend)
 
 
 def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _HarnessProfile:
@@ -456,7 +483,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             custom_tool_descriptions=_profile.tool_description_overrides,
             include_apply_patch=_profile.include_apply_patch,
         ),
-        create_summarization_middleware(model, backend),
+        _build_compaction_layer(_profile, model, backend),
         PatchToolCallsMiddleware(),
     ]
     if skills is not None:
@@ -517,7 +544,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     include_apply_patch=_subagent_profile.include_apply_patch,
                 ),
-                create_summarization_middleware(subagent_model, backend),
+                _build_compaction_layer(_subagent_profile, subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
             subagent_skills = spec.get("skills")
@@ -586,7 +613,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
             ),
-            create_summarization_middleware(model, backend),
+            _build_compaction_layer(_profile, model, backend),
             PatchToolCallsMiddleware(),
         ]
     )

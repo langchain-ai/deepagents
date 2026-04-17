@@ -13,6 +13,14 @@ Codex-specific tuning here.
 Prompt additions are derived from the official Codex Prompting Guide
 (https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide)
 and optimized for the Deep Agents tool set.
+
+Context compaction on Codex uses the OpenAI Responses ``/compact`` endpoint
+rather than the default LLM-based summarization. Compaction returns an
+opaque ``encrypted_content`` item that preserves procedural fidelity better
+than an ad-hoc text summary, which matters for long multi-turn sessions
+with tool use. On ``/compact`` failure, the middleware transparently falls
+back to the standard ``SummarizationMiddleware`` pathway — no crash, no
+dropped context.
 """
 
 from deepagents.profiles._harness_profiles import _HarnessProfile, _register_harness_profile
@@ -74,6 +82,7 @@ _CODEX_PROFILE = _HarnessProfile(
     tool_aliases=_CODEX_TOOL_ALIASES,
     tool_description_overrides=_CODEX_TOOL_DESCRIPTION_OVERRIDES,
     include_apply_patch=True,
+    use_codex_compaction=True,
     excluded_tools=frozenset({"edit_file"}),
 )
 

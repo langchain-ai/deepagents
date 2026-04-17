@@ -20,6 +20,8 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
+from deepagents.middleware.codex_compaction import CodexCompactionMiddleware
+from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import _HARNESS_PROFILES, _get_harness_profile, _HarnessProfile, _register_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -631,3 +633,92 @@ class TestModelNoneDeprecationWarning:
 
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 0
+
+
+class TestCompactionLayerWiring:
+    """Profile flag flips the context-management middleware at every wiring site."""
+
+    @staticmethod
+    def _collect_stacks(
+        profile: _HarnessProfile,
+        subagent_profile: _HarnessProfile | None = None,
+    ) -> tuple[list, list[list], list]:
+        """Build an agent under the given profile and capture each middleware stack.
+
+        Returns:
+            ``(general_purpose_stack, per_subagent_stacks, main_stack)`` — the
+            three points where `_build_compaction_layer` is invoked in
+            ``graph.py``.
+        """
+        original = dict(_HARNESS_PROFILES)
+        sub_stacks: list[list] = []
+        try:
+            _register_harness_profile("compprov", profile)
+            if subagent_profile is not None:
+                _register_harness_profile("subcompprov", subagent_profile)
+
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            def capture_subagent(*_args: Any, **kwargs: Any) -> MagicMock:
+                sub_stacks.extend(list(spec["middleware"]) for spec in (kwargs.get("subagents") or []) if "middleware" in spec)
+                return MagicMock()
+
+            subagents_kwarg: list[dict[str, Any]] = []
+            if subagent_profile is not None:
+                subagents_kwarg = [
+                    {
+                        "name": "sub",
+                        "description": "",
+                        "prompt": "",
+                        "model": "subcompprov:some-model",
+                    }
+                ]
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.FilesystemMiddleware", side_effect=lambda **_k: MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", side_effect=capture_subagent),
+                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="compprov:some-model",
+                    subagents=subagents_kwarg or None,
+                )
+
+            main_stack = list(mock_create.call_args.kwargs["middleware"])
+            # The general-purpose subagent is inserted as the first entry when no
+            # same-named override exists. Capture its middleware from the same
+            # SubAgentMiddleware kwargs we already collected.
+            gp_stack = sub_stacks[0] if sub_stacks else []
+            extra_sub_stacks = sub_stacks[1:] if len(sub_stacks) > 1 else []
+            return gp_stack, extra_sub_stacks, main_stack
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_codex_profile_swaps_summarization_for_compaction(self) -> None:
+        codex_like = _HarnessProfile(use_codex_compaction=True)
+        gp, subs, main = self._collect_stacks(codex_like, subagent_profile=codex_like)
+
+        for stack in (gp, *subs, main):
+            assert any(isinstance(m, CodexCompactionMiddleware) for m in stack), f"Expected CodexCompactionMiddleware in stack: {stack}"
+            assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in stack), (
+                "Top-level _DeepAgentsSummarizationMiddleware should be absent when compaction is on; "
+                "the compaction middleware owns its own inner instance."
+            )
+
+    def test_non_codex_profile_keeps_summarization(self) -> None:
+        default_profile = _HarnessProfile()
+        gp, subs, main = self._collect_stacks(default_profile, subagent_profile=default_profile)
+
+        for stack in (gp, *subs, main):
+            assert any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in stack), (
+                f"Expected _DeepAgentsSummarizationMiddleware in stack: {stack}"
+            )
+            assert not any(isinstance(m, CodexCompactionMiddleware) for m in stack), (
+                f"CodexCompactionMiddleware should not appear for a non-codex profile: {stack}"
+            )

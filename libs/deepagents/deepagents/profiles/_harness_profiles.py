@@ -114,6 +114,24 @@ class _HarnessProfile:
     performs better.
     """
 
+    use_codex_compaction: bool = False
+    """When ``True``, swap the default ``SummarizationMiddleware`` for
+    ``CodexCompactionMiddleware``, which uses the OpenAI Responses
+    ``/compact`` endpoint to compress prior turns into an opaque
+    ``encrypted_content`` item.
+
+    The compaction middleware composes the standard summarization middleware
+    internally and delegates arg truncation, offload, and cutoff logic to
+    it — so behaviors like tool-call argument truncation still fire. On
+    ``/compact`` API failure it transparently falls back to LLM-based
+    summarization via the inner middleware.
+
+    Only meaningful for OpenAI models that support the ``/compact`` endpoint
+    (currently the Codex family). A profile with this flag set on a
+    non-compatible model will raise at compaction time, not at agent
+    construction.
+    """
+
     excluded_tools: frozenset[str] = frozenset()
     """Tool names to remove from the tool set for this provider/model.
 
@@ -305,6 +323,7 @@ def _merge_profiles(base: _HarnessProfile, override: _HarnessProfile) -> _Harnes
         },
         tool_aliases={**base.tool_aliases, **override.tool_aliases},
         include_apply_patch=override.include_apply_patch or base.include_apply_patch,
+        use_codex_compaction=override.use_codex_compaction or base.use_codex_compaction,
         excluded_tools=base.excluded_tools | override.excluded_tools,
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
     )

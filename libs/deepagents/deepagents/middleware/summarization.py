@@ -208,7 +208,17 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
 
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
-    """Summarization middleware with backend for conversation history offloading."""
+    """Summarization middleware with backend for conversation history offloading.
+
+    !!! note
+
+        The Codex harness profile ships with ``use_codex_compaction=True`` and
+        wires [`CodexCompactionMiddleware`][deepagents.middleware.codex_compaction.CodexCompactionMiddleware]
+        in place of this class at the top level. The compaction middleware
+        composes a ``_DeepAgentsSummarizationMiddleware`` internally — so this
+        class is still the source of truth for arg truncation, offload,
+        partitioning, and the LLM-based fallback when ``/compact`` is unavailable.
+    """
 
     state_schema = SummarizationState
 

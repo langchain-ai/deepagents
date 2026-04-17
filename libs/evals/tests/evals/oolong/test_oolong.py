@@ -198,7 +198,6 @@ async def test_oolong(
                 "model": SUBAGENT_MODEL,
             }
         ],
-        enable_swarm=True,
         checkpointer=MemorySaver(),
         backend=sandbox_backend,
     )

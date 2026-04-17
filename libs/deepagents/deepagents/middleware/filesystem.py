@@ -358,26 +358,31 @@ def _apply_file_changes(
 ) -> str:
     """Apply parsed patch results to the backend synchronously."""
     msgs: list[str] = []
-    for path, content in changes.items():
-        if content is None:
-            msgs.append(f"Deleted '{path}' (manual removal may be needed)")
+    for raw_path, content in changes.items():
+        try:
+            safe = validate_path(raw_path)
+        except ValueError as e:
+            msgs.append(f"Error: {e}")
             continue
-        existing = backend.read(path, offset=0, limit=1)
+        if content is None:
+            msgs.append(f"Deleted '{safe}' (manual removal may be needed)")
+            continue
+        existing = backend.read(safe, offset=0, limit=1)
         has_file = not (isinstance(existing, str) or existing.error)
         if has_file:
-            raw = backend.read(path, offset=0, limit=999_999)
+            raw = backend.read(safe, offset=0, limit=999_999)
             old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
-            result = backend.edit(path, old, content)
+            result = backend.edit(safe, old, content)
             if result.error:
-                msgs.append(f"Error updating '{path}': {result.error}")
+                msgs.append(f"Error updating '{safe}': {result.error}")
             else:
-                msgs.append(f"Updated '{path}'")
+                msgs.append(f"Updated '{safe}'")
         else:
-            result = backend.write(path, content)
+            result = backend.write(safe, content)
             if result.error:
-                msgs.append(f"Error creating '{path}': {result.error}")
+                msgs.append(f"Error creating '{safe}': {result.error}")
             else:
-                msgs.append(f"Created '{path}'")
+                msgs.append(f"Created '{safe}'")
     return "\n".join(msgs)
 
 
@@ -387,26 +392,31 @@ async def _aapply_file_changes(
 ) -> str:
     """Apply parsed patch results to the backend asynchronously."""
     msgs: list[str] = []
-    for path, content in changes.items():
-        if content is None:
-            msgs.append(f"Deleted '{path}' (manual removal may be needed)")
+    for raw_path, content in changes.items():
+        try:
+            safe = validate_path(raw_path)
+        except ValueError as e:
+            msgs.append(f"Error: {e}")
             continue
-        existing = await backend.aread(path, offset=0, limit=1)
+        if content is None:
+            msgs.append(f"Deleted '{safe}' (manual removal may be needed)")
+            continue
+        existing = await backend.aread(safe, offset=0, limit=1)
         has_file = not (isinstance(existing, str) or existing.error)
         if has_file:
-            raw = await backend.aread(path, offset=0, limit=999_999)
+            raw = await backend.aread(safe, offset=0, limit=999_999)
             old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
-            result = await backend.aedit(path, old, content)
+            result = await backend.aedit(safe, old, content)
             if result.error:
-                msgs.append(f"Error updating '{path}': {result.error}")
+                msgs.append(f"Error updating '{safe}': {result.error}")
             else:
-                msgs.append(f"Updated '{path}'")
+                msgs.append(f"Updated '{safe}'")
         else:
-            result = await backend.awrite(path, content)
+            result = await backend.awrite(safe, content)
             if result.error:
-                msgs.append(f"Error creating '{path}': {result.error}")
+                msgs.append(f"Error creating '{safe}': {result.error}")
             else:
-                msgs.append(f"Created '{path}'")
+                msgs.append(f"Created '{safe}'")
     return "\n".join(msgs)
 
 
@@ -1004,6 +1014,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def _read_raw(backend: BackendProtocol, path: str) -> str | None:
             """Read raw file content from the backend (no line numbers)."""
+            path = validate_path(path)
             result = backend.read(path, offset=0, limit=999_999)
             if isinstance(result, str):
                 return result or None
@@ -1014,6 +1025,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def _aread_raw(backend: BackendProtocol, path: str) -> str | None:
             """Async variant of `_read_raw`."""
+            path = validate_path(path)
             result = await backend.aread(path, offset=0, limit=999_999)
             if isinstance(result, str):
                 return result or None
@@ -1033,7 +1045,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 changes = apply_patch(
                     patch, file_reader=lambda p: _read_raw(backend, p)
                 )
-            except PatchError as e:
+            except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 
             return _apply_file_changes(backend, changes)
@@ -1049,13 +1061,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             needed = _identify_files_needed(patch)
             file_cache: dict[str, str | None] = {}
             for p in needed:
-                file_cache[p] = await _aread_raw(backend, p)
+                try:
+                    validated = validate_path(p)
+                except ValueError as e:
+                    return f"Error applying patch: {e}"
+                file_cache[p] = await _aread_raw(backend, validated)
 
             try:
                 changes = apply_patch(
                     patch, file_reader=lambda p: file_cache.get(p, None)
                 )
-            except PatchError as e:
+            except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 
             return await _aapply_file_changes(backend, changes)

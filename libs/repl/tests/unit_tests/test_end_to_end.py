@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from deepagents.graph import create_deep_agent
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
@@ -131,6 +134,20 @@ def item_score(item_id: int) -> int:
     return item_id + 1
 
 
+@tool("runtime_marker")
+def runtime_marker(value: str, runtime: ToolRuntime) -> str:
+    """Return runtime metadata for testing ToolRuntime injection."""
+    return (
+        f"{value}:{runtime.tool_call_id}:{runtime.config['metadata']['langgraph_node']}"
+    )
+
+
+@tool("runtime_configurable")
+def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
+    """Return configurable runtime data for testing ToolRuntime context propagation."""
+    return f"{value}:{runtime.config['configurable']['user_id']}"
+
+
 def test_deepagent_with_repl_langchain_tool_multi_arg_foreign_function() -> None:
     """Verify the repl maps multiple positional args onto matching tool fields."""
     model = GenericFakeChatModel(
@@ -252,6 +269,83 @@ def test_deepagent_with_repl_langchain_tool_json_stringify_foreign_function() ->
     assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
 
 
+def test_repl_toolruntime_foreign_function() -> None:
+    """Verify REPL foreign tool calls inherit the enclosing repl ToolRuntime."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": 'print(runtime_marker("value"))'},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[ReplMiddleware(ptc=[runtime_marker])],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Use the repl to inspect the runtime")]}
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:call_1:tools"}
+    ]
+
+
+def test_repl_toolruntime_foreign_function_configurable() -> None:
+    """Verify REPL foreign tool calls receive configurable runtime context."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "repl",
+                            "args": {"code": 'print(runtime_configurable("value"))'},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=model,
+        middleware=[ReplMiddleware(ptc=[runtime_configurable])],
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Use the repl to inspect configurable runtime")
+            ]
+        },
+        config={"configurable": {"user_id": "user-123"}},
+    )
+
+    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+    assert tool_messages[0].content_blocks == [
+        {"type": "text", "text": "value:user-123"}
+    ]
+
+
 def test_deepagent_with_repl_parallel_following_get_chain() -> None:
     """Verify chained `get` values can feed parallel foreign function calls."""
     model = GenericFakeChatModel(
@@ -267,7 +361,7 @@ def test_deepagent_with_repl_parallel_following_get_chain() -> None:
 user_id = 43
 item_ids = favorite_item_ids(user_id)
 first_item_id = item_ids[0]
-print(parallel(item_name(first_item_id), item_score(first_item_id)))
+print(parallel([defer(item_name(first_item_id)), defer(item_score(first_item_id))]))
 """,
                             },
                             "id": "call_1",

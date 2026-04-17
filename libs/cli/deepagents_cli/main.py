@@ -657,6 +657,11 @@ def parse_args() -> argparse.Namespace:
         help="Check for and install updates, then exit",
     )
     parser.add_argument(
+        "--auto-update",
+        action="store_true",
+        help="Toggle automatic updates on or off, then exit",
+    )
+    parser.add_argument(
         "--acp",
         action="store_true",
         help="Run as an ACP server over stdio instead of launching the Textual UI",
@@ -1426,6 +1431,43 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        # Handle --auto-update flag (headless toggle: reads current state
+        # and inverts it, no session)
+        if args.auto_update:
+            try:
+                from deepagents_cli.config import _is_editable_install
+                from deepagents_cli.update_check import (
+                    is_auto_update_enabled,
+                    set_auto_update,
+                )
+
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "Auto-updates are not available for editable installs."
+                    )
+                    sys.exit(1)
+
+                currently_enabled = is_auto_update_enabled()
+                new_state = not currently_enabled
+                set_auto_update(new_state)
+                label = "enabled" if new_state else "disabled"
+                console.print(f"Auto-updates {label}.")
+            except OSError:
+                logger.warning("--auto-update failed: filesystem error", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            except Exception:
+                logger.warning("--auto-update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates."
+                )
+                sys.exit(1)
+            sys.exit(0)
+
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
             from deepagents_cli.model_config import clear_default_model
@@ -1702,25 +1744,31 @@ def cli_main() -> None:
             # Warn about available update on exit
             try:
                 if result.update_available[0]:
+                    from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
                         is_auto_update_enabled,
+                        mark_update_notified,
+                        should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    console.print()
-                    update_msg = Text("Update available: ", style="yellow bold")
-                    update_msg.append(f"v{latest}", style="yellow")
-                    console.print(update_msg)
-                    cmd_hint = Text("Run: ", style="dim")
-                    cmd_hint.append(upgrade_command(), style="cyan")
-                    console.print(cmd_hint)
-                    if not is_auto_update_enabled():
-                        auto_hint = Text("Enable auto-updates: ", style="dim")
-                        auto_hint.append("/auto-update", style="cyan")
-                        console.print(auto_hint)
+                    if latest and should_notify_update(latest):
+                        console.print()
+                        update_msg = Text("Update available: ", style="yellow bold")
+                        update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(f" (current: v{cli_version})", style="dim")
+                        console.print(update_msg)
+                        cmd_hint = Text("Run: ", style="dim")
+                        cmd_hint.append(upgrade_command(), style="cyan")
+                        console.print(cmd_hint)
+                        if not is_auto_update_enabled():
+                            auto_hint = Text("Enable auto-updates: ", style="dim")
+                            auto_hint.append("deepagents --auto-update", style="cyan")
+                            console.print(auto_hint)
+                        mark_update_notified(latest)
             except Exception:
-                logger.debug("Failed to display exit update banner", exc_info=True)
+                logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C — suppress ugly traceback.
         # `console` may not be bound if Ctrl+C arrives during config import.

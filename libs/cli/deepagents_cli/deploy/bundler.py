@@ -9,9 +9,16 @@ Reads the canonical project layout:
     .env             # optional — environment variables
     mcp.json         # optional — HTTP/SSE MCP servers
     skills/          # optional — auto-seeded into skills namespace
+    user/            # optional — per-user writable memory
+        AGENTS.md    # optional — seeded as empty if not provided
 ```
 
 ...and writes everything `langgraph deploy` needs to a build directory.
+
+AGENTS.md and skills are read-only at runtime.  When a ``user/``
+directory is present, a per-user ``AGENTS.md`` is seeded (from
+``user/AGENTS.md`` if provided, otherwise empty) and is writable
+at runtime.
 """
 
 from __future__ import annotations
@@ -20,18 +27,23 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 from deepagents_cli.deploy.config import (
     AGENTS_MD_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    USER_DIRNAME,
     DeployConfig,
+    SubAgentProject,
+    load_subagents,
 )
 from deepagents_cli.deploy.templates import (
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
     SANDBOX_BLOCKS,
+    SYNC_SUBAGENTS_TEMPLATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,15 +81,16 @@ def bundle(
     system_prompt = agents_md_path.read_text(encoding="utf-8")
 
     # 2. Build and write the seed payload: memory (AGENTS.md) + skills/.
-    seed = _build_seed(config, project_root, system_prompt)
+    seed = _build_seed(project_root, system_prompt)
     (build_dir / "_seed.json").write_text(
         json.dumps(seed, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     logger.info(
-        "Wrote _seed.json (memories: %d, skills: %d)",
+        "Wrote _seed.json (memories: %d, skills: %d, user_memories: %d)",
         len(seed["memories"]),
         len(seed["skills"]),
+        len(seed.get("user_memories", {})),
     )
 
     # 3. Copy mcp.json if present.
@@ -95,58 +108,110 @@ def bundle(
         shutil.copy2(env_src, build_dir / ".env")
         logger.info("Copied %s → .env", env_src)
 
-    # 4. Render deploy_graph.py.
+    # 4. Load subagents (needed for both deploy_graph.py and pyproject.toml).
+    sync_subagents = load_subagents(project_root)
+
+    # 5. Render deploy_graph.py.
+    has_user_memories = (project_root / USER_DIRNAME).is_dir()
+    has_sync_subagents = bool(sync_subagents)
     (build_dir / "deploy_graph.py").write_text(
-        _render_deploy_graph(config, mcp_present=mcp_present),
+        _render_deploy_graph(
+            config,
+            mcp_present=mcp_present,
+            has_user_memories=has_user_memories,
+            has_sync_subagents=has_sync_subagents,
+        ),
         encoding="utf-8",
     )
     logger.info("Generated deploy_graph.py")
 
-    # 5. Render langgraph.json.
+    # 6. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
         _render_langgraph_json(env_present=env_present),
         encoding="utf-8",
     )
 
-    # 6. Render pyproject.toml.
+    # 7. Render pyproject.toml.
+    subagent_model_providers: list[str] = []
+    has_subagent_mcp = False
+    for sa in sync_subagents.values():
+        model = sa.config.agent.model
+        if ":" in model:
+            subagent_model_providers.append(model.split(":", 1)[0])
+        if (sa.root / MCP_FILENAME).is_file():
+            has_subagent_mcp = True
+
     (build_dir / "pyproject.toml").write_text(
-        _render_pyproject(config, mcp_present=mcp_present),
+        _render_pyproject(
+            config,
+            mcp_present=mcp_present,
+            subagent_model_providers=subagent_model_providers,
+            has_subagent_mcp=has_subagent_mcp,
+        ),
         encoding="utf-8",
     )
 
     return build_dir
 
 
+def _build_subagent_seed(subagent: SubAgentProject) -> dict:
+    """Build the seed entry for a single sync subagent."""
+    sa_root = subagent.root
+    agent = subagent.config.agent
+
+    memories: dict[str, str] = {
+        f"/{AGENTS_MD_FILENAME}": (sa_root / AGENTS_MD_FILENAME).read_text(
+            encoding="utf-8"
+        ),
+    }
+
+    skills: dict[str, str] = {}
+    skills_dir = sa_root / SKILLS_DIRNAME
+    if skills_dir.is_dir():
+        for f in sorted(skills_dir.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                rel = f.relative_to(skills_dir).as_posix()
+                skills[f"/{rel}"] = f.read_text(encoding="utf-8")
+
+    mcp_path = sa_root / MCP_FILENAME
+    mcp = None
+    if mcp_path.is_file():
+        mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
+
+    return {
+        "config": {
+            "name": agent.name,
+            "description": agent.description,
+            "model": agent.model,
+        },
+        "memories": memories,
+        "skills": skills,
+        "mcp": mcp,
+    }
+
+
 def _build_seed(
-    config: DeployConfig,  # noqa: ARG001
     project_root: Path,
     system_prompt: str,
-) -> dict[str, dict[str, str]]:
+) -> dict:
     """Build the `_seed.json` payload.
 
-    Layout:
+    Layout::
 
-    ```txt
-    {
-        "memories": { "/AGENTS.md": "..." },
-        "skills":   { "/<skill>/SKILL.md": "...", ... }
-    }
-    ```
+        {
+            "memories":       { "/AGENTS.md": "..." },
+            "skills":         { "/<skill>/SKILL.md": "...", ... },
+            "user_memories":  { "/AGENTS.md": "..." }
+        }
 
-    `memories` always contains `/AGENTS.md` — the middleware loads it at
-    startup via `/memories/AGENTS.md`. Agent reads of `/memories/` and
-    `/skills/` are denied by `FilesystemPermission` rules.
-
-    `skills` walks `skills/` if present. Keys are paths relative to the
-    skills dir with a leading slash; the runtime namespace handles the
-    scoping.
+    ``memories`` and ``skills`` are read-only at runtime.
+    ``user_memories`` contains a single writable ``AGENTS.md`` mounted at
+    ``/memories/user/``, namespaced per user_id.  If the project has a
+    ``user/`` directory (even if empty), an ``AGENTS.md`` is always seeded.
     """
-    # Keys must match what CompositeBackend passes to the mounted
-    # StoreBackend after stripping the route prefix: for a read of
-    # /memories/AGENTS.md it calls store.read("/AGENTS.md").
-    # Seed with the same leading-slash convention.
     memories: dict[str, str] = {f"/{AGENTS_MD_FILENAME}": system_prompt}
     skills: dict[str, str] = {}
+    user_memories: dict[str, str] = {}
 
     skills_dir = project_root / SKILLS_DIRNAME
     if skills_dir.is_dir():
@@ -155,13 +220,38 @@ def _build_seed(
                 rel = f.relative_to(skills_dir).as_posix()
                 skills[f"/{rel}"] = f.read_text(encoding="utf-8")
 
-    return {"memories": memories, "skills": skills}
+    user_dir = project_root / USER_DIRNAME
+    if user_dir.is_dir():
+        user_agents_md = user_dir / AGENTS_MD_FILENAME
+        content = (
+            user_agents_md.read_text(encoding="utf-8")
+            if user_agents_md.is_file()
+            else ""
+        )
+        user_memories[f"/{AGENTS_MD_FILENAME}"] = content
+
+    seed: dict = {
+        "memories": memories,
+        "skills": skills,
+        "user_memories": user_memories,
+    }
+
+    # Sync subagents.
+    sync_subagents = load_subagents(project_root)
+    if sync_subagents:
+        seed["subagents"] = {
+            name: _build_subagent_seed(sa) for name, sa in sync_subagents.items()
+        }
+
+    return seed
 
 
 def _render_deploy_graph(
     config: DeployConfig,
     *,
     mcp_present: bool,
+    has_user_memories: bool = False,
+    has_sync_subagents: bool = False,
 ) -> str:
     """Render the generated `deploy_graph.py`."""
     provider = config.sandbox.provider
@@ -177,6 +267,16 @@ def _render_deploy_graph(
         mcp_tools_block = ""
         mcp_tools_load_call = "pass  # no MCP servers configured"
 
+    if has_sync_subagents:
+        sync_subagents_block = SYNC_SUBAGENTS_TEMPLATE
+        sync_subagents_load_call = (
+            "all_subagents.extend("
+            "await _build_sync_subagents(seed, store, assistant_id))"
+        )
+    else:
+        sync_subagents_block = ""
+        sync_subagents_load_call = "pass  # no sync subagents"
+
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
         sandbox_template=config.sandbox.template,
@@ -186,6 +286,9 @@ def _render_deploy_graph(
         mcp_tools_block=mcp_tools_block,
         mcp_tools_load_call=mcp_tools_load_call,
         default_assistant_id=config.agent.name,
+        has_user_memories=has_user_memories,
+        sync_subagents_block=sync_subagents_block,
+        sync_subagents_load_call=sync_subagents_load_call,
     )
 
 
@@ -201,7 +304,13 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
-def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
+def _render_pyproject(
+    config: DeployConfig,
+    *,
+    mcp_present: bool,
+    subagent_model_providers: list[str] | None = None,
+    has_subagent_mcp: bool = False,
+) -> str:
     """Render the deployment package's `pyproject.toml`.
 
     Deps are inferred — the user never writes them. We add:
@@ -218,7 +327,13 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
     if provider_prefix and provider_prefix in _MODEL_PROVIDER_DEPS:
         deps.append(_MODEL_PROVIDER_DEPS[provider_prefix])
 
-    if mcp_present:
+    # Add deps for subagent model providers.
+    for sp in subagent_model_providers or []:
+        dep = _MODEL_PROVIDER_DEPS.get(sp)
+        if dep and dep not in deps:
+            deps.append(dep)
+
+    if mcp_present or has_subagent_mcp:
         deps.append("langchain-mcp-adapters")
 
     _, partner_pkg = SANDBOX_BLOCKS.get(config.sandbox.provider, (None, None))
@@ -236,7 +351,7 @@ def _render_pyproject(config: DeployConfig, *, mcp_present: bool) -> str:
 def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     """Print a human-readable summary of what was bundled."""
     seed_path = build_dir / "_seed.json"
-    seed: dict[str, dict[str, str]] = {"memories": {}, "skills": {}}
+    seed: dict[str, Any] = {"memories": {}, "skills": {}}
     if seed_path.exists():
         try:
             seed = json.loads(seed_path.read_text(encoding="utf-8"))
@@ -256,6 +371,12 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
         for f in memory_files:
             print(f"    {f}")
 
+    user_memory_files = sorted(seed.get("user_memories", {}).keys())
+    if user_memory_files:
+        print(f"\n  User memory seed ({len(user_memory_files)} file(s)):")
+        for f in user_memory_files:
+            print(f"    {f}")
+
     skills_files = sorted(seed.get("skills", {}).keys())
     if skills_files:
         print(f"\n  Skills seed ({len(skills_files)} file(s)):")
@@ -264,6 +385,14 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     if (build_dir / "_mcp.json").exists():
         print("\n  MCP config: _mcp.json")
+
+    # Subagent summary.
+    sync_subagents = seed.get("subagents", {})
+    if sync_subagents:
+        print(f"\n  Subagents ({len(sync_subagents)}):")
+        for name, sa_data in sync_subagents.items():
+            desc = sa_data.get("config", {}).get("description", "")
+            print(f"    {name} \u2014 {desc}")
 
     print(f"\n  Sandbox: {config.sandbox.provider}")
     print(f"\n  Build directory: {build_dir}")

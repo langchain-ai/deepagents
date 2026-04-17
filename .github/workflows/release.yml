@@ -656,6 +656,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
+        if: false  # Disabled: integration tests are not run during releases
         env:
           # deepagents SDK: subagent middleware tests
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

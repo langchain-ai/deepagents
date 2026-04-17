@@ -5,3 +5,5 @@ __pycache__/
 session/
 media/
 .venv/
+cron/jobs.json
+cron/jobs.json.tmp

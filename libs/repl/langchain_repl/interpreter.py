@@ -152,7 +152,7 @@ class _Tokenizer:
                 char == "#" or (char == "/" and self._peek() == "/"),
                 self._skip_comment_token,
             ),
-            (char in "<>=!", self._read_operator_token),
+            (char in "<>=", self._read_operator_token),
             (char in "()+-[]{}:,.", self._read_punctuation_token),
             (char == '"', self._read_string),
             (
@@ -298,15 +298,14 @@ class OpCode(IntEnum):
     BUILD_DICT = 5
     BINARY_OP = 6
     GET_INDEX = 7
-    STORE_INDEX = 8
-    GET_ATTR = 9
-    CALL = 10
-    JUMP = 11
-    JUMP_IF_FALSE = 12
-    ITER_PREP = 13
-    ITER_NEXT = 14
-    RETURN_VALUE = 15
-    BUILD_TASK = 16
+    GET_ATTR = 8
+    CALL = 9
+    JUMP = 10
+    JUMP_IF_FALSE = 11
+    ITER_PREP = 12
+    ITER_NEXT = 13
+    RETURN_VALUE = 14
+    BUILD_TASK = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,30 +357,14 @@ class _ProgramCompiler:
         if token.kind == "FOR":
             self._compile_for()
             return
-        if token.kind == "NAME":
-            if self._peek().kind == "=":
-                name = str(self._advance().value)
-                self._expect("=")
-                self._compile_expression()
-                self._emit(OpCode.STORE_NAME, name)
-                self._emit(OpCode.SET_LAST)
-                return
-            if self._peek().kind == "[":
-                self._compile_index_assignment_statement()
-                return
+        if token.kind == "NAME" and self._peek().kind == "=":
+            name = str(self._advance().value)
+            self._expect("=")
+            self._compile_expression()
+            self._emit(OpCode.STORE_NAME, name)
+            self._emit(OpCode.SET_LAST)
+            return
         self._compile_expression()
-        self._emit(OpCode.SET_LAST)
-
-    def _compile_index_assignment_statement(self) -> None:
-        self._emit(OpCode.LOAD_NAME, str(self._advance().value))
-        self._expect("[")
-        self._skip_newlines()
-        self._compile_expression()
-        self._skip_newlines()
-        self._expect("]")
-        self._expect("=")
-        self._compile_expression()
-        self._emit(OpCode.STORE_INDEX)
         self._emit(OpCode.SET_LAST)
 
     def _compile_if(self) -> None:
@@ -422,10 +405,6 @@ class _ProgramCompiler:
             if self._match("=="):
                 self._compile_additive()
                 self._emit(OpCode.BINARY_OP, "==")
-                continue
-            if self._match("!="):
-                self._compile_additive()
-                self._emit(OpCode.BINARY_OP, "!=")
                 continue
             if self._match(">="):
                 self._compile_additive()
@@ -934,13 +913,6 @@ class Interpreter:
             target = state.stack.pop()
             state.stack.append(self._eval_index(target, index))
             return
-        if instruction.opcode == OpCode.STORE_INDEX:
-            value = state.stack.pop()
-            index = state.stack.pop()
-            target = state.stack.pop()
-            self._store_index(target, index, value)
-            state.stack.append(value)
-            return
         target = state.stack.pop()
         state.stack.append(self._resolve_member(target, instruction.arg))
 
@@ -1147,12 +1119,8 @@ class Interpreter:
         return value
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
-        if operator in {"==", "!="}:
-            comparisons = {
-                "==": lambda lhs, rhs: lhs == rhs,
-                "!=": lambda lhs, rhs: lhs != rhs,
-            }
-            return comparisons[operator](left, right)
+        if operator == "==":
+            return left == right
         if operator == "+" and isinstance(left, str) and isinstance(right, str):
             return left + right
         self._validate_numeric_operands(left, right)
@@ -1177,22 +1145,6 @@ class Interpreter:
         if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
             msg = "binary operations require numeric operands"
             raise TypeError(msg)
-
-    def _store_index(self, target: Any, index: Any, value: Any) -> None:
-        if isinstance(target, list):
-            if not isinstance(index, int):
-                msg = "list indexes must be integers"
-                raise TypeError(msg)
-            target[index] = value
-            return
-        if isinstance(target, dict):
-            if not isinstance(index, str):
-                msg = "dict indexes must be strings"
-                raise TypeError(msg)
-            target[index] = value
-            return
-        msg = f"'{type(target).__name__}' object does not support item assignment"
-        raise TypeError(msg)
 
     def _eval_index(self, target: Any, index: Any) -> Any:
         if isinstance(target, list):

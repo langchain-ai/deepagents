@@ -87,6 +87,7 @@ def test_system_prompt_includes_rendered_foreign_function_docs() -> None:
     assert "performs the full sequence of dependent calls" in prompt
     assert "trust it and chain the calls" in prompt
     assert "print it inside the same REPL program" in prompt
+    assert "Use the exact literal casing `True`, `False`, and `None`." in prompt
     assert "Example syntax only - this shows the language shape" in prompt
     assert 'items = lookup_fn("value")' in prompt
     assert "function find_users_by_name(name: string): UserLookup[]" in prompt

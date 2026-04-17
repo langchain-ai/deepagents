@@ -272,3 +272,114 @@ class TestRemoveJob:
 
     def test_missing_id_returns_false(self, jobs_path) -> None:
         assert remove_job(jobs_path, "nope", chat_id="111") is False
+
+
+from cron.jobs import advance_next_run, get_due_jobs, mark_job_run
+
+
+class TestMarkJobRun:
+    def test_one_shot_disables_after_success(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "1", "message_id": None})
+        mark_job_run(jobs_path, j["id"], success=True)
+        updated = get_job(jobs_path, j["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["last_error"] is None
+        assert updated["enabled"] is False
+        assert updated["repeat"]["completed"] == 1
+        assert updated["next_run_at"] is None
+
+    def test_error_recorded(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "1", "message_id": None})
+        mark_job_run(jobs_path, j["id"], success=False, error="boom")
+        updated = get_job(jobs_path, j["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "boom"
+
+    def test_interval_removes_after_repeat_limit(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 10m",
+                       origin={"chat_id": "1", "message_id": None}, repeat=2)
+        mark_job_run(jobs_path, j["id"], success=True)
+        assert get_job(jobs_path, j["id"])["repeat"]["completed"] == 1
+        mark_job_run(jobs_path, j["id"], success=True)
+        assert get_job(jobs_path, j["id"]) is None  # removed
+
+    def test_interval_forever_keeps_going(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 10m",
+                       origin={"chat_id": "1", "message_id": None})  # repeat=None
+        mark_job_run(jobs_path, j["id"], success=True)
+        updated = get_job(jobs_path, j["id"])
+        assert updated is not None
+        assert updated["enabled"] is True
+        assert updated["next_run_at"] is not None
+
+    def test_missing_id_is_a_noop(self, jobs_path) -> None:
+        # Should not raise
+        mark_job_run(jobs_path, "nope", success=True)
+
+
+class TestAdvanceNextRun:
+    def test_interval_advances(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 10m",
+                       origin={"chat_id": "1", "message_id": None})
+        first_next = j["next_run_at"]
+        changed = advance_next_run(jobs_path, j["id"])
+        assert changed is True
+        second_next = get_job(jobs_path, j["id"])["next_run_at"]
+        assert second_next != first_next
+
+    def test_one_shot_is_left_alone(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "1", "message_id": None})
+        first_next = j["next_run_at"]
+        changed = advance_next_run(jobs_path, j["id"])
+        assert changed is False
+        assert get_job(jobs_path, j["id"])["next_run_at"] == first_next
+
+
+class TestGetDueJobs:
+    def test_returns_only_enabled_and_past_due(self, jobs_path) -> None:
+        from datetime import datetime, timedelta
+        past = (_now_helper() - timedelta(minutes=5)).isoformat()
+        future = (_now_helper() + timedelta(minutes=5)).isoformat()
+
+        jobs = [
+            {"id": "a", "enabled": True, "next_run_at": past,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "interval", "minutes": 10},
+             "repeat": {"times": None, "completed": 0}},
+            {"id": "b", "enabled": True, "next_run_at": future,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "interval", "minutes": 10},
+             "repeat": {"times": None, "completed": 0}},
+            {"id": "c", "enabled": False, "next_run_at": past,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "interval", "minutes": 10},
+             "repeat": {"times": None, "completed": 0}},
+            {"id": "d", "enabled": True, "next_run_at": None,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "once", "run_at": past},
+             "repeat": {"times": 1, "completed": 0}},
+        ]
+        save_jobs(jobs_path, jobs)
+        due = get_due_jobs(jobs_path)
+        ids = [j["id"] for j in due]
+        assert ids == ["a"]  # b future, c disabled, d no next_run_at
+
+    def test_sorted_by_next_run_at(self, jobs_path) -> None:
+        from datetime import timedelta
+        t1 = (_now_helper() - timedelta(minutes=5)).isoformat()
+        t2 = (_now_helper() - timedelta(minutes=1)).isoformat()
+        jobs = [
+            {"id": "later", "enabled": True, "next_run_at": t2,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "interval", "minutes": 10},
+             "repeat": {"times": None, "completed": 0}},
+            {"id": "earlier", "enabled": True, "next_run_at": t1,
+             "origin": {"chat_id": "1"}, "schedule": {"kind": "interval", "minutes": 10},
+             "repeat": {"times": None, "completed": 0}},
+        ]
+        save_jobs(jobs_path, jobs)
+        assert [j["id"] for j in get_due_jobs(jobs_path)] == ["earlier", "later"]
+
+
+def _now_helper():
+    """Local helper mirroring cron.jobs._now_aware for test timestamps."""
+    from datetime import datetime
+    return datetime.now().astimezone()

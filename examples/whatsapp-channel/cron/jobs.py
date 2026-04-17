@@ -266,3 +266,87 @@ def remove_job(jobs_path: Path, job_id: str, *, chat_id: str) -> bool:
             save_jobs(jobs_path, jobs)
             return True
     return False
+
+
+def mark_job_run(
+    jobs_path: Path,
+    job_id: str,
+    *,
+    success: bool,
+    error: str | None = None,
+) -> None:
+    """Record the outcome of a run and compute the next ``next_run_at``.
+
+    For finite-repeat interval jobs, increments ``completed`` and removes the
+    job when ``completed >= times``. For one-shot jobs, sets ``enabled=False``
+    once ``next_run_at`` is ``None``. A job id that is not found is a no-op.
+    """
+    jobs = load_jobs(jobs_path)
+    for i, j in enumerate(jobs):
+        if j.get("id") != job_id:
+            continue
+        now = _now_aware().isoformat()
+        j["last_run_at"] = now
+        j["last_status"] = "ok" if success else "error"
+        j["last_error"] = None if success else error
+
+        repeat = j.setdefault("repeat", {"times": None, "completed": 0})
+        repeat["completed"] = repeat.get("completed", 0) + 1
+        times = repeat.get("times")
+        kind = j.get("schedule", {}).get("kind")
+        # Interval jobs with a finite repeat limit are removed when exhausted.
+        # One-shot jobs are kept but disabled so the record is preserved.
+        if kind == "interval" and times is not None and times > 0 and repeat["completed"] >= times:
+            jobs.pop(i)
+            save_jobs(jobs_path, jobs)
+            return
+
+        j["next_run_at"] = compute_next_run(j["schedule"], now)
+        if j["next_run_at"] is None:
+            j["enabled"] = False
+
+        save_jobs(jobs_path, jobs)
+        return
+    logger.warning("cron: mark_job_run: job %s not found", job_id)
+
+
+def advance_next_run(jobs_path: Path, job_id: str) -> bool:
+    """Advance ``next_run_at`` for an *interval* job to the next future tick.
+
+    Used before a run to give at-most-once semantics for recurring jobs — a
+    crash mid-run won't cause a re-fire. One-shot jobs are left unchanged so
+    they can retry on restart. Returns ``True`` if ``next_run_at`` was updated.
+    """
+    jobs = load_jobs(jobs_path)
+    for j in jobs:
+        if j.get("id") != job_id:
+            continue
+        kind = j.get("schedule", {}).get("kind")
+        if kind != "interval":
+            return False
+        new_next = compute_next_run(j["schedule"], _now_aware().isoformat())
+        if new_next and new_next != j.get("next_run_at"):
+            j["next_run_at"] = new_next
+            save_jobs(jobs_path, jobs)
+            return True
+        return False
+    return False
+
+
+def get_due_jobs(jobs_path: Path) -> list[dict[str, Any]]:
+    """Return enabled jobs whose ``next_run_at`` is at or before now, FIFO."""
+    now = _now_aware()
+    due: list[dict[str, Any]] = []
+    for j in load_jobs(jobs_path):
+        if not j.get("enabled", True):
+            continue
+        next_run = j.get("next_run_at")
+        if not next_run:
+            continue
+        dt = datetime.fromisoformat(next_run)
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        if dt <= now:
+            due.append(j)
+    due.sort(key=lambda j: j["next_run_at"])
+    return due

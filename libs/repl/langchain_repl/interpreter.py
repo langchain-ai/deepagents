@@ -414,17 +414,25 @@ class _ProgramCompiler:
             break
 
     def _compile_additive(self) -> None:
-        self._compile_postfix()
+        self._compile_unary()
         while True:
             if self._match("+"):
-                self._compile_postfix()
+                self._compile_unary()
                 self._emit(OpCode.BINARY_OP, "+")
                 continue
             if self._match("-"):
-                self._compile_postfix()
+                self._compile_unary()
                 self._emit(OpCode.BINARY_OP, "-")
                 continue
             break
+
+    def _compile_unary(self) -> None:
+        if self._match("-"):
+            self._emit(OpCode.LOAD_CONST, 0)
+            self._compile_unary()
+            self._emit(OpCode.BINARY_OP, "-")
+            return
+        self._compile_postfix()
 
     def _compile_postfix(self) -> None:
         self._compile_primary()
@@ -1070,7 +1078,11 @@ class Interpreter:
         return value
 
     def _eval_binary_operation(self, left: Any, operator: str, right: Any) -> Any:
-        if isinstance(left, bool) or isinstance(right, bool):
+        if operator == "==":
+            return left == right
+        if operator == "+" and isinstance(left, str) and isinstance(right, str):
+            return left + right
+        if type(left) is bool or type(right) is bool:
             msg = "binary operations require numeric operands"
             raise TypeError(msg)
         if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
@@ -1080,8 +1092,6 @@ class Interpreter:
             return left + right
         if operator == "-":
             return left - right
-        if operator == "==":
-            return left == right
         if operator == ">":
             return left > right
         if operator == "<":

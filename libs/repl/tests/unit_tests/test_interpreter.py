@@ -119,6 +119,28 @@ def test_comparison_operators_work_in_if_conditions() -> None:
     assert interpreter.env == {"count": 3}
 
 
+def test_string_equality_works_in_expressions_and_if_conditions() -> None:
+    interpreter = Interpreter()
+
+    result = interpreter.evaluate(
+        'status = "firing"\nmatches = status == "firing"\nif status == "resolved" then "no" else "yes" end'
+    )
+
+    assert result == "yes"
+    assert interpreter.env == {"status": "firing", "matches": True}
+
+
+def test_boolean_equality_works_in_expressions_and_if_conditions() -> None:
+    interpreter = Interpreter()
+
+    result = interpreter.evaluate(
+        'found = False\nmatches = found == False\nif found == False then "missing" else "present" end'
+    )
+
+    assert result == "missing"
+    assert interpreter.env == {"found": False, "matches": True}
+
+
 def test_calls_registered_functions_and_uses_variables() -> None:
     interpreter = Interpreter(functions={"add": lambda left, right: left + right})
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
@@ -210,6 +232,15 @@ def test_parses_float_and_boolean_literals() -> None:
     assert interpreter.env == {"ratio": 3.5, "enabled": True, "disabled": False}
 
 
+def test_supports_unary_negative_numbers() -> None:
+    interpreter = Interpreter()
+
+    result = interpreter.evaluate("x = -1\ny = -(1 + 2)\n[x, y, 4 + -3]")
+
+    assert result == [-1, -3, 1]
+    assert interpreter.env == {"x": -1, "y": -3}
+
+
 def test_print_formats_none_and_booleans() -> None:
     interpreter = Interpreter()
     interpreter.evaluate("print(None)")
@@ -250,7 +281,9 @@ def test_binary_operations_require_numeric_operands() -> None:
     with pytest.raises(TypeError, match="binary operations require numeric operands"):
         interpreter.evaluate('"hello" + 1')
     with pytest.raises(TypeError, match="binary operations require numeric operands"):
-        interpreter.evaluate('"hello" == "hello"')
+        interpreter.evaluate('1 + "hello"')
+    with pytest.raises(TypeError, match="binary operations require numeric operands"):
+        interpreter.evaluate("True + 1")
 
 
 def test_print_requires_exactly_one_argument() -> None:

@@ -227,3 +227,48 @@ class TestCreateJob:
                 schedule="0 9 * * *",
                 origin={"chat_id": "123", "message_id": None},
             )
+
+
+from cron.jobs import get_job, list_jobs_for_chat, remove_job
+
+
+class TestListJobsForChat:
+    def test_empty(self, jobs_path) -> None:
+        assert list_jobs_for_chat(jobs_path, "123") == []
+
+    def test_filters_by_chat(self, jobs_path) -> None:
+        create_job(jobs_path, prompt="a", schedule="30m",
+                   origin={"chat_id": "111", "message_id": None})
+        create_job(jobs_path, prompt="b", schedule="30m",
+                   origin={"chat_id": "222", "message_id": None})
+        rows_111 = list_jobs_for_chat(jobs_path, "111")
+        assert len(rows_111) == 1
+        assert rows_111[0]["prompt"] == "a"
+
+
+class TestGetJob:
+    def test_hit(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "123", "message_id": None})
+        assert get_job(jobs_path, j["id"])["id"] == j["id"]
+
+    def test_miss(self, jobs_path) -> None:
+        assert get_job(jobs_path, "does-not-exist") is None
+
+
+class TestRemoveJob:
+    def test_removes_when_chat_matches(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "111", "message_id": None})
+        assert remove_job(jobs_path, j["id"], chat_id="111") is True
+        assert load_jobs(jobs_path) == []
+
+    def test_refuses_when_chat_mismatches(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "111", "message_id": None})
+        assert remove_job(jobs_path, j["id"], chat_id="222") is False
+        # Job still present
+        assert len(load_jobs(jobs_path)) == 1
+
+    def test_missing_id_returns_false(self, jobs_path) -> None:
+        assert remove_job(jobs_path, "nope", chat_id="111") is False

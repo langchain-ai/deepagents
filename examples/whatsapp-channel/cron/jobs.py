@@ -233,3 +233,36 @@ def create_job(
     jobs.append(job)
     save_jobs(jobs_path, jobs)
     return job
+
+
+def list_jobs_for_chat(jobs_path: Path, chat_id: str) -> list[dict[str, Any]]:
+    """Return all jobs whose ``origin.chat_id`` matches *chat_id*."""
+    return [
+        j for j in load_jobs(jobs_path)
+        if j.get("origin", {}).get("chat_id") == chat_id
+    ]
+
+
+def get_job(jobs_path: Path, job_id: str) -> dict[str, Any] | None:
+    """Return the job with id *job_id*, or ``None``."""
+    for j in load_jobs(jobs_path):
+        if j.get("id") == job_id:
+            return j
+    return None
+
+
+def remove_job(jobs_path: Path, job_id: str, *, chat_id: str) -> bool:
+    """Remove the job with id *job_id* if it belongs to *chat_id*.
+
+    Returns ``True`` if removed, ``False`` if not found or owned by a
+    different chat. The caller cannot distinguish "not found" from
+    "belongs to another chat" — this is intentional so users in one chat
+    cannot probe for jobs in others.
+    """
+    jobs = load_jobs(jobs_path)
+    for i, j in enumerate(jobs):
+        if j.get("id") == job_id and j.get("origin", {}).get("chat_id") == chat_id:
+            jobs.pop(i)
+            save_jobs(jobs_path, jobs)
+            return True
+    return False

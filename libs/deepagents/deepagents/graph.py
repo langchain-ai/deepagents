@@ -43,6 +43,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.swarm import SwarmMiddleware
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
@@ -557,27 +558,34 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ]
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    subagent_middleware = SubAgentMiddleware(
+        backend=backend,
+        subagents=inline_subagents,
+        # Overrides the task tool description. Value should include
+        # {available_agents} — a format placeholder replaced with the
+        # subagent name/description list. Without it the model can't
+        # see which subagents exist. None (default) uses the built-in
+        # template. Stale keys silently no-op if the tool is renamed.
+        task_description=_profile.tool_description_overrides.get("task"),
+    )
     deepagent_middleware.extend(
         [
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
             ),
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-                # Overrides the task tool description. Value should include
-                # {available_agents} — a format placeholder replaced with the
-                # subagent name/description list. Without it the model can't
-                # see which subagents exist. None (default) uses the built-in
-                # template. Stale keys silently no-op if the tool is renamed.
-                task_description=_profile.tool_description_overrides.get("task"),
-                enable_swarm=enable_swarm,
-            ),
+            subagent_middleware,
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
     )
+    if enable_swarm:
+        deepagent_middleware.append(
+            SwarmMiddleware(
+                backend=backend,
+                subagent_specs=subagent_middleware.subagent_specs,
+            )
+        )
 
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.

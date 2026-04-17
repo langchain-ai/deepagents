@@ -58,6 +58,7 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.swarm import SwarmMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -71,5 +72,6 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "SwarmMiddleware",
     "create_summarization_tool_middleware",
 ]

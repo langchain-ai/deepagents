@@ -25,7 +25,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel, Field
 
-import deepagents.middleware.subagents as subagents_mod
+import deepagents.middleware.swarm as swarm_mod
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.store import StoreBackend
@@ -278,7 +278,7 @@ class TestSubAgents:
         assert results_by_id["bad"]["status"] == "failed"
 
     async def test_swarm_task_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(subagents_mod, "SWARM_TASK_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(swarm_mod, "SWARM_TASK_TIMEOUT_SECONDS", 0.1)
 
         backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
         tasks_jsonl = json.dumps({"id": "slow", "description": "hang", "subagent_type": "general-purpose"}) + "\n"

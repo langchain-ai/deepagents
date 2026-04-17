@@ -123,7 +123,9 @@ def test_string_equality_works_in_expressions_and_if_conditions() -> None:
     interpreter = Interpreter()
 
     result = interpreter.evaluate(
-        'status = "firing"\nmatches = status == "firing"\nif status == "resolved" then "no" else "yes" end'
+        'status = "firing"\n'
+        'matches = status == "firing"\n'
+        'if status == "resolved" then "no" else "yes" end'
     )
 
     assert result == "yes"
@@ -134,7 +136,9 @@ def test_boolean_equality_works_in_expressions_and_if_conditions() -> None:
     interpreter = Interpreter()
 
     result = interpreter.evaluate(
-        'found = False\nmatches = found == False\nif found == False then "missing" else "present" end'
+        "found = False\n"
+        "matches = found == False\n"
+        'if found == False then "missing" else "present" end'
     )
 
     assert result == "missing"
@@ -184,7 +188,11 @@ def test_parallel_calls_return_results_in_order() -> None:
     interpreter = Interpreter(functions={"slow_add": slow_add})
 
     result = interpreter.evaluate(
-        "parallel([task(slow_add(1, 2)), task(slow_add(10, 20)), task(slow_add(100, 200))])"
+        "parallel(["
+        "task(slow_add(1, 2)), "
+        "task(slow_add(10, 20)), "
+        "task(slow_add(100, 200))"
+        "])"
     )
 
     assert result == [3, 30, 300]
@@ -206,7 +214,12 @@ def test_parallel_allows_multiline_arguments() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
     result = interpreter.evaluate(
-        "results = parallel([\n    task(echo(1)),\n    task(echo(2)),\n    task(echo(3))\n])\nresults"
+        "results = parallel([\n"
+        "    task(echo(1)),\n"
+        "    task(echo(2)),\n"
+        "    task(echo(3))\n"
+        "])\n"
+        "results"
     )
 
     assert result == [1, 2, 3]

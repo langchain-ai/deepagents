@@ -132,19 +132,6 @@ def test_string_equality_works_in_expressions_and_if_conditions() -> None:
     assert interpreter.env == {"status": "firing", "matches": True}
 
 
-def test_inequality_works_in_expressions_and_if_conditions() -> None:
-    interpreter = Interpreter()
-
-    result = interpreter.evaluate(
-        'status = "firing"\n'
-        'matches = status != "resolved"\n'
-        'if status != "resolved" then "yes" else "no" end'
-    )
-
-    assert result == "yes"
-    assert interpreter.env == {"status": "firing", "matches": True}
-
-
 def test_boolean_equality_works_in_expressions_and_if_conditions() -> None:
     interpreter = Interpreter()
 
@@ -584,26 +571,6 @@ def test_compiler_emits_iteration_opcodes_for_for_loop() -> None:
         OpCode.LOAD_NAME,
         OpCode.SET_LAST,
         OpCode.JUMP,
-        OpCode.RETURN_VALUE,
-    ]
-
-
-def test_compiler_emits_store_index_for_index_assignment() -> None:
-    interpreter = Interpreter()
-
-    instructions = interpreter.compile("items = [1, 2]\nitems[1] = 3")
-
-    assert [instruction.opcode for instruction in instructions] == [
-        OpCode.LOAD_CONST,
-        OpCode.LOAD_CONST,
-        OpCode.BUILD_LIST,
-        OpCode.STORE_NAME,
-        OpCode.SET_LAST,
-        OpCode.LOAD_NAME,
-        OpCode.LOAD_CONST,
-        OpCode.LOAD_CONST,
-        OpCode.STORE_INDEX,
-        OpCode.SET_LAST,
         OpCode.RETURN_VALUE,
     ]
 

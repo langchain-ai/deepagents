@@ -100,6 +100,56 @@ def _sniff_image_mime(path: str) -> str:
     return "image/jpeg"
 
 
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def extract_markdown_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Strip ``![alt](path)`` references from *text* and return them in order.
+
+    Matches inside fenced ``` ``` blocks or inline `` ` `` backtick runs are
+    ignored (same mask-and-restore trick as :func:`format_message`). The
+    cleaned text has the image markdown removed, and runs of 3+ consecutive
+    newlines (a common artifact when an image lived on its own line) are
+    collapsed back to one blank line.
+    """
+    if not text:
+        return text, []
+
+    _FENCE_PH = "\x00MDFENCE"
+    fences: list[str] = []
+
+    def _save_fence(m: re.Match) -> str:
+        fences.append(m.group(0))
+        return f"{_FENCE_PH}{len(fences) - 1}\x00"
+
+    masked = re.sub(r"```[\s\S]*?```", _save_fence, text)
+
+    _CODE_PH = "\x00MDCODE"
+    codes: list[str] = []
+
+    def _save_code(m: re.Match) -> str:
+        codes.append(m.group(0))
+        return f"{_CODE_PH}{len(codes) - 1}\x00"
+
+    masked = re.sub(r"`[^`\n]+`", _save_code, masked)
+
+    refs: list[tuple[str, str]] = []
+
+    def _record(m: re.Match) -> str:
+        refs.append((m.group(1), m.group(2)))
+        return ""
+
+    cleaned = _MD_IMAGE_RE.sub(_record, masked)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+
+    for i, fence in enumerate(fences):
+        cleaned = cleaned.replace(f"{_FENCE_PH}{i}\x00", fence)
+    for i, code in enumerate(codes):
+        cleaned = cleaned.replace(f"{_CODE_PH}{i}\x00", code)
+
+    return cleaned, refs
+
+
 def _kill_port_process(port: int) -> None:
     """Kill any process listening on *port*."""
     try:

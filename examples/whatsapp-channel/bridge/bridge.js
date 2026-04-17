@@ -25,13 +25,22 @@ fs.mkdirSync(SESSION_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
 
-// Remove stale Chromium lock files left from previous runs/containers
-const lockFile = path.join(CHROME_PROFILE_DIR, "SingletonLock");
-try { fs.unlinkSync(lockFile); } catch (_) {}
-const socketFile = path.join(CHROME_PROFILE_DIR, "SingletonSocket");
-try { fs.unlinkSync(socketFile); } catch (_) {}
-const cookieLock = path.join(CHROME_PROFILE_DIR, "SingletonCookie");
-try { fs.unlinkSync(cookieLock); } catch (_) {}
+// Remove stale Chromium lock files left from previous runs/containers.
+// LocalAuth keeps its profile under SESSION_DIR/session/, so we recurse
+// rather than targeting a single known path.
+function cleanStaleLocks(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      cleanStaleLocks(full);
+    } else if (/^Singleton(Lock|Socket|Cookie)$/.test(entry.name)) {
+      try { fs.unlinkSync(full); } catch (_) {}
+    }
+  }
+}
+cleanStaleLocks(SESSION_DIR);
 
 // --- State ---
 let clientStatus = "disconnected"; // "disconnected" | "qr_pending" | "connected"

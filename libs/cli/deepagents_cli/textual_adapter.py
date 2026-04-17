@@ -918,6 +918,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
@@ -992,11 +993,24 @@ async def execute_task_textual(
                                 }
                                 any_rejected = True
                         elif result_type == "cancelled":
+                            # Esc cancelling an ask_user dialog should stop the
+                            # current turn instead of resuming generation.
+                            ask_user_cancelled = True
+
+                            tool_id = ask_req["tool_call_id"]
+                            if tool_id in adapter._current_tool_messages:
+                                tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg.set_rejected()
+                                adapter._current_tool_messages.pop(tool_id, None)
+
+                            # Keep a resume payload for completeness, but we
+                            # intentionally do not resume this turn.
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            break
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1019,6 +1033,9 @@ async def execute_task_textual(
                         }
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
+                    if ask_user_cancelled:
+                        break
+
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
@@ -1143,6 +1160,13 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
+                if ask_user_cancelled:
+                    await adapter._mount_message(
+                        AppMessage("Cancelled. Tell the agent what you'd like instead.")
+                    )
+                    turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    return turn_stats
+
                 if suppress_resumed_output and not pending_ask_user:
                     await adapter._mount_message(
                         AppMessage(

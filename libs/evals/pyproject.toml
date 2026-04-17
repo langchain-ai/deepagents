@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.5.0",
+    "deepagents-repl",
     "langchain>=1.2.13",
     "deepagents-cli",
     # Harbor runtime
@@ -104,6 +105,7 @@ override-dependencies = [
 [tool.uv.sources]
 deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
+deepagents-repl = { path = "../deepagents-repl", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

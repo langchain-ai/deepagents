@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1243,6 +1243,7 @@ dependencies = [
     { name = "datasets" },
     { name = "deepagents" },
     { name = "deepagents-cli" },
+    { name = "deepagents-repl" },
     { name = "dockerfile-parse" },
     { name = "harbor" },
     { name = "langchain" },
@@ -1288,6 +1289,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-cli", directory = "../cli" },
+    { name = "deepagents-repl", editable = "../deepagents-repl" },
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
     { name = "harbor", specifier = ">=0.1.12" },
     { name = "langchain", specifier = ">=1.2.13" },
@@ -1323,6 +1325,33 @@ test = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
+]
+
+[[package]]
+name = "deepagents-repl"
+version = "0.1.0"
+source = { editable = "../deepagents-repl" }
+dependencies = [
+    { name = "deepagents" },
+    { name = "langchain" },
+    { name = "langchain-core" },
+    { name = "quickjs-rs" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deepagents", editable = "../deepagents" },
+    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
+    { name = "quickjs-rs", editable = "../../../quickjs-wasm" },
+]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
+    { name = "ruff", specifier = ">=0.12.2,<0.16.0" },
 ]
 
 [[package]]
@@ -4409,6 +4438,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
 ]
+
+[[package]]
+name = "quickjs-rs"
+version = "0.3.0.dev0"
+source = { editable = "../../../quickjs-wasm" }
+
+[package.metadata]
+requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-codspeed", marker = "extra == 'bench'", specifier = ">=3.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev", "bench"]
 
 [[package]]
 name = "realtime"

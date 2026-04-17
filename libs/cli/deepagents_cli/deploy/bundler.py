@@ -187,7 +187,6 @@ def _build_subagent_seed(subagent: SubAgentProject) -> dict:
         "memories": memories,
         "skills": skills,
         "mcp": mcp,
-        "response_format": agent.response_format,
     }
 
 

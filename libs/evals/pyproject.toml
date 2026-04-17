@@ -49,6 +49,7 @@ dependencies = [
     "tiktoken>=0.8.0",
     "langchain-repl",
     "langchain-quickjs",
+    "langchain-monty",
 ]
 
 [project.optional-dependencies]
@@ -105,9 +106,10 @@ override-dependencies = [
 
 [tool.uv.sources]
 deepagents-cli = { path = "../cli" }
-deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-repl = { path = "../repl", editable = true }
+deepagents = { path = "../deepagents", editable = true }
+langchain-monty = { path = "../partners/langchain_monty", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

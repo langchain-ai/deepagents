@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import subprocess
-import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -125,16 +124,6 @@ class FilesystemBackend(BackendProtocol):
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         if virtual_mode is None:
-            warnings.warn(
-                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
-                "please specify virtual_mode explicitly. "
-                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
-                "it does not provide sandboxing or process isolation. "
-                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
-                "Consult the API reference for details.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
             virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024

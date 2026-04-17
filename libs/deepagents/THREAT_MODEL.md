@@ -29,7 +29,7 @@
 1. The project is used as a Python library — users control their own application code, model selection, deployment topology, and backend configuration.
 2. `StateBackend` (default) stores files in ephemeral LangGraph agent state; it does not persist data across threads unless the user also provides a `checkpointer`.
 3. `LocalShellBackend` is **not the default**; it must be explicitly provided by the user. It carries documented security warnings.
-4. `FilesystemBackend` without `virtual_mode=True` provides no path restriction; this is documented and expected for local dev use cases. The default (`virtual_mode=None`) is deprecated and will change to `True` in v0.5.0.
+4. `FilesystemBackend` without `virtual_mode=True` provides no path restriction; this is documented and expected for local dev use cases. The default is `virtual_mode=False`; callers who need path guardrails must opt in explicitly.
 5. Users who require isolation for untrusted workloads are expected to extend `BaseSandbox` or use container/VM-level sandboxing — the library does not provide OS-level process isolation.
 6. Memory and skill files are user-controlled artifacts loaded from user-specified paths; the library does not provide or vouch for their content.
 7. `AsyncSubAgentMiddleware` connects to user-configured remote LangGraph server URLs. Authentication relies on environment variables (`LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY`) read by the LangGraph SDK — the library does not manage authentication credentials.
@@ -299,7 +299,7 @@
 #### T9: FilesystemBackend `virtual_mode=None` Default
 
 - **Flow**: DF2, DF3 (backend reads)
-- **Description**: `FilesystemBackend` defaults to `virtual_mode=None` → `False`, which does not restrict file operation paths. The `virtual_mode` flag exists primarily to support `CompositeBackend` path routing (mapping path prefixes to different backends), not as a security boundary. A deprecation warning is issued; the default flips to `True` in v0.5.0.
+- **Description**: `FilesystemBackend` defaults to `virtual_mode=False`, which does not restrict file operation paths. The `virtual_mode` flag exists primarily to support `CompositeBackend` path routing (mapping path prefixes to different backends), not as a security boundary. Callers who want path guardrails must pass `virtual_mode=True` explicitly.
 - **Preconditions**: User opts into `FilesystemBackend` without specifying `virtual_mode=True`.
 
 ---

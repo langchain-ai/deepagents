@@ -97,6 +97,28 @@ def test_if_uses_truthiness_to_choose_branch() -> None:
     assert (truthy, falsy) == ("big", "small")
 
 
+def test_comparison_operators_return_booleans() -> None:
+    interpreter = Interpreter()
+
+    assert interpreter.evaluate("3 > 2") is True
+    assert interpreter.evaluate("2 < 3") is True
+    assert interpreter.evaluate("3 >= 3") is True
+    assert interpreter.evaluate("2 <= 3") is True
+    assert interpreter.evaluate("4 == 4") is True
+    assert interpreter.evaluate("4 == 5") is False
+
+
+def test_comparison_operators_work_in_if_conditions() -> None:
+    interpreter = Interpreter()
+
+    result = interpreter.evaluate(
+        'count = 3\nif count >= 3 then "enough" else "small" end'
+    )
+
+    assert result == "enough"
+    assert interpreter.env == {"count": 3}
+
+
 def test_calls_registered_functions_and_uses_variables() -> None:
     interpreter = Interpreter(functions={"add": lambda left, right: left + right})
     result = interpreter.evaluate("x = 10\ny = 20\nadd(x, y)\n")
@@ -227,6 +249,8 @@ def test_binary_operations_require_numeric_operands() -> None:
 
     with pytest.raises(TypeError, match="binary operations require numeric operands"):
         interpreter.evaluate('"hello" + 1')
+    with pytest.raises(TypeError, match="binary operations require numeric operands"):
+        interpreter.evaluate('"hello" == "hello"')
 
 
 def test_print_requires_exactly_one_argument() -> None:
@@ -348,6 +372,18 @@ def test_comments_and_blank_lines_are_ignored() -> None:
 
     result = interpreter.evaluate(
         "# setup\n\nx = 1\ny = 2  # trailing comment\n\nprint(x)\ny\n"
+    )
+
+    assert result == 2
+    assert interpreter.printed_lines == ["1"]
+    assert interpreter.env == {"x": 1, "y": 2}
+
+
+def test_slash_comments_and_blank_lines_are_ignored() -> None:
+    interpreter = Interpreter()
+
+    result = interpreter.evaluate(
+        "// setup\n\nx = 1\ny = 2  // trailing comment\n\nprint(x)\ny\n"
     )
 
     assert result == 2

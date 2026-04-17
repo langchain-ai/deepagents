@@ -142,10 +142,26 @@ class _Tokenizer:
                 append_token(Token("NEWLINE", "\n", self._line, self._column))
                 self._advance()
                 continue
-            if char == "#":
+            if char == "#" or (char == "/" and self._peek() == "/"):
                 self._skip_comment()
                 continue
-            if char in "()+-[]{}:,.=":
+            if char in "<>":
+                line = self._line
+                column = self._column
+                token_value = self._advance()
+                if self._index < self._length and self._source[self._index] == "=":
+                    token_value += self._advance()
+                append_token(Token(token_value, token_value, line, column))
+                continue
+            if char == "=":
+                line = self._line
+                column = self._column
+                token_value = self._advance()
+                if self._index < self._length and self._source[self._index] == "=":
+                    token_value += self._advance()
+                append_token(Token(token_value, token_value, line, column))
+                continue
+            if char in "()+-[]{}:,.":
                 append_token(Token(char, char, self._line, self._column))
                 self._advance()
                 continue
@@ -373,6 +389,31 @@ class _ProgramCompiler:
         self._expect("END")
 
     def _compile_expression(self) -> None:
+        self._compile_additive()
+        while True:
+            if self._match("=="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "==")
+                continue
+            if self._match(">="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, ">=")
+                continue
+            if self._match("<="):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "<=")
+                continue
+            if self._match(">"):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, ">")
+                continue
+            if self._match("<"):
+                self._compile_additive()
+                self._emit(OpCode.BINARY_OP, "<")
+                continue
+            break
+
+    def _compile_additive(self) -> None:
         self._compile_postfix()
         while True:
             if self._match("+"):
@@ -1039,6 +1080,16 @@ class Interpreter:
             return left + right
         if operator == "-":
             return left - right
+        if operator == "==":
+            return left == right
+        if operator == ">":
+            return left > right
+        if operator == "<":
+            return left < right
+        if operator == ">=":
+            return left >= right
+        if operator == "<=":
+            return left <= right
         msg = f"Unsupported binary operator: {operator}"
         raise ValueError(msg)
 

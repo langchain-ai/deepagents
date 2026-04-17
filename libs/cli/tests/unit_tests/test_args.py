@@ -332,6 +332,22 @@ class TestNoMcpArg:
         assert exc_info.value.code == 2
 
 
+class TestAutoUpdateArg:
+    """Tests for --auto-update argument parsing."""
+
+    def test_flag_parsed(self) -> None:
+        """Verify --auto-update sets auto_update=True."""
+        with patch.object(sys, "argv", ["deepagents", "--auto-update"]):
+            args = parse_args()
+        assert args.auto_update is True
+
+    def test_default_false(self) -> None:
+        """Verify auto_update defaults to False."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.auto_update is False
+
+
 def test_default_agent_name_matches_canonical() -> None:
     """Ensure the duplicated constant in main.py stays in sync with agent.py."""
     assert _DEFAULT_AGENT_NAME == DEFAULT_AGENT_NAME

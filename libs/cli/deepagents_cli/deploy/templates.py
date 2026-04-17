@@ -3,10 +3,13 @@
 These templates are rendered by the bundler with values from
 `~deepagents_cli.deploy.config.DeployConfig`.
 
-The generated `deploy_graph.py` uses a `CompositeBackend` with two
-`StoreBackend` routes (memories and skills) and the configured sandbox
-as the default writable backend.  Write access to `/memories/` and
-`/skills/` is denied via ``FilesystemPermission`` rules.
+The generated ``deploy_graph.py`` uses a ``CompositeBackend`` with all
+managed content under ``/memories/`` — ``/memories/AGENTS.md``,
+``/memories/skills/``, and ``/memories/user/`` (per-user templates) —
+backed by ``StoreBackend`` instances.  The configured sandbox is the
+default writable backend.  Write access is controlled via
+``FilesystemPermission`` rules derived from each file's YAML frontmatter
+``permissions`` field.
 
 There is no hub path and no custom Python tools.
 """
@@ -194,23 +197,125 @@ async def _load_mcp_tools():
 
 
 # ---------------------------------------------------------------------------
+# Sync subagents loader (only emitted when sync subagents are present)
+# ---------------------------------------------------------------------------
+
+SYNC_SUBAGENTS_TEMPLATE = '''\
+from deepagents.middleware.subagents import SubAgent
+
+
+async def _build_sync_subagents(seed, store, assistant_id):
+    """Build SubAgent dicts from seed data and seed their memories/skills."""
+    subagents_data = seed.get("subagents", {})
+    if not subagents_data:
+        return []
+
+    subagents = []
+    for name, data in subagents_data.items():
+        sa: SubAgent = {
+            "name": data["config"]["name"],
+            "description": data["config"]["description"],
+            "system_prompt": data["memories"]["/AGENTS.md"],
+        }
+        if data["config"].get("model"):
+            sa["model"] = data["config"]["model"]
+
+        # Seed subagent memories and skills into store under subagent namespace.
+        sa_ns = (assistant_id, "subagents", name)
+        if store is not None:
+            for path, content in data.get("memories", {}).items():
+                if await store.aget(sa_ns, path) is None:
+                    await store.aput(
+                        sa_ns,
+                        path,
+                        {"content": content, "encoding": "utf-8"},
+                    )
+            for path, content in data.get("skills", {}).items():
+                if await store.aget(sa_ns, path) is None:
+                    await store.aput(
+                        sa_ns,
+                        path,
+                        {"content": content, "encoding": "utf-8"},
+                    )
+
+        sa_prefix = f"/memories/subagents/{name}/"
+        if data.get("skills"):
+            sa["skills"] = [f"{sa_prefix}skills/"]
+
+        if data.get("mcp"):
+            sa["tools"] = await _load_subagent_mcp_tools(data["mcp"])
+
+        # Restrict filesystem access to the subagent's own namespace.
+        # Allow comes first (first-match wins); the deny rule blocks
+        # everything else under /memories/ — parent AGENTS.md, skills, etc.
+        sa["permissions"] = [
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=[f"{sa_prefix}**"],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=["/memories/**"],
+                mode="deny",
+            ),
+        ]
+
+        subagents.append(sa)
+    return subagents
+
+
+async def _load_subagent_mcp_tools(mcp_config):
+    """Load MCP tools for a subagent from its mcp config."""
+    servers = mcp_config.get("mcpServers", {})
+    connections = {}
+    for sname, cfg in servers.items():
+        transport = cfg.get("type", cfg.get("transport", "stdio"))
+        if transport in ("http", "sse"):
+            conn = {"transport": transport, "url": cfg["url"]}
+            if "headers" in cfg:
+                conn["headers"] = cfg["headers"]
+            connections[sname] = conn
+
+    if not connections:
+        return []
+
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        client = MultiServerMCPClient(connections)
+        return await client.get_tools()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load subagent MCP tools: %s", exc)
+        return []
+'''
+
+
+# ---------------------------------------------------------------------------
 # deploy_graph.py — the generated server entry point
 #
-# Store layout (CompositeBackend with sandbox default + two read-only routes):
+# Store layout (CompositeBackend with sandbox default + routed stores):
 #
-#   Mount          Namespace                         Writable
-#   -------------  --------------------------------  --------
-#   /memories/     (assistant_id, "memories")        no
-#   /skills/       (assistant_id, "skills")          no
-#   default        sandbox (per `[sandbox].scope`)    yes
+#   Mount              Namespace                                   Writable
+#   -----------------  ------------------------------------------  --------
+#   /memories/user/    (assistant_id, user_id)   yes  [user AGENTS.md]
+#   /memories/skills/  (assistant_id,)           no
+#   /memories/         (assistant_id,)           no   [AGENTS.md]
+#   default            sandbox (per scope)       yes
 #
 # `make_graph` takes the `RunnableConfig` at factory time, pulls
 # `assistant_id` from `config["configurable"]`, and uses it as the
 # top-level namespace component so different assistants built from the
 # same graph have isolated memories and skills.
 #
-# The bundler ships `_seed.json` containing both payloads; the factory
-# seeds each namespace once per (process, assistant_id).
+# User memories are namespaced per (assistant_id, user_id) so each
+# user gets their own copy.  Template files are seeded on first access
+# (only if not already present).  Write access is controlled per-file
+# via frontmatter ``permissions: read-write`` declarations.
+#
+# The bundler ships `_seed.json` containing all payloads; the factory
+# seeds each namespace once per (process, assistant_id) and user
+# memories once per (process, assistant_id, user_id).
 # ---------------------------------------------------------------------------
 
 DEPLOY_GRAPH_TEMPLATE = '''\
@@ -251,8 +356,13 @@ SANDBOX_TEMPLATE = {sandbox_template!r}
 SANDBOX_IMAGE = {sandbox_image!r}
 
 # Mount points inside the composite backend.
+# Everything lives under /memories/ — longest-prefix-first routing
+# ensures /memories/user/ and /memories/skills/ match before /memories/.
 MEMORIES_PREFIX = "/memories/"
-SKILLS_PREFIX = "/skills/"
+SKILLS_PREFIX = "/memories/skills/"
+USER_PREFIX = "/memories/user/"
+
+HAS_USER_MEMORIES = {has_user_memories!r}
 
 # What to seed into the store on first run.
 SEED_PATH = Path(__file__).parent / "_seed.json"
@@ -346,18 +456,21 @@ def _load_seed() -> dict:
     if _SEED_CACHE is not None:
         return _SEED_CACHE
     if not SEED_PATH.exists():
-        _SEED_CACHE = {{"memories": {{}}, "skills": {{}}}}
+        _SEED_CACHE = {{"memories": {{}}, "skills": {{}}, "user_memories": {{}}}}
         return _SEED_CACHE
     try:
         _SEED_CACHE = json.loads(SEED_PATH.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to parse _seed.json: %s", exc)
-        _SEED_CACHE = {{"memories": {{}}, "skills": {{}}}}
+        _SEED_CACHE = {{"memories": {{}}, "skills": {{}}, "user_memories": {{}}}}
     return _SEED_CACHE
 
 
 # Per-(process, assistant_id) gate.
 _SEEDED_ASSISTANTS: set[str] = set()
+
+# Per-(process, assistant_id, user_id) gate for user memories.
+_SEEDED_USERS: set[tuple[str, str]] = set()
 
 
 async def _seed_store_if_needed(store, assistant_id: str) -> None:
@@ -368,7 +481,7 @@ async def _seed_store_if_needed(store, assistant_id: str) -> None:
 
     seed = _load_seed()
 
-    memories_ns = (assistant_id, "memories")
+    memories_ns = (assistant_id,)
     for path, content in seed.get("memories", {{}}).items():
         if await store.aget(memories_ns, path) is None:
             await store.aput(
@@ -377,7 +490,7 @@ async def _seed_store_if_needed(store, assistant_id: str) -> None:
                 {{"content": content, "encoding": "utf-8"}},
             )
 
-    skills_ns = (assistant_id, "skills")
+    skills_ns = (assistant_id,)
     for path, content in seed.get("skills", {{}}).items():
         if await store.aget(skills_ns, path) is None:
             await store.aput(
@@ -387,15 +500,69 @@ async def _seed_store_if_needed(store, assistant_id: str) -> None:
             )
 
 
+async def _seed_user_memories_if_needed(
+    store, assistant_id: str, user_id: str,
+) -> None:
+    """Seed user memory templates once per (assistant_id, user_id).
+
+    Only writes entries that do not yet exist in the store, so
+    user-modified memories are never overwritten.
+    """
+    key = (assistant_id, user_id)
+    if key in _SEEDED_USERS:
+        return
+    _SEEDED_USERS.add(key)
+
+    seed = _load_seed()
+    user_memories = seed.get("user_memories", {{}})
+    if not user_memories:
+        return
+
+    user_ns = (assistant_id, user_id)
+    for path, content in user_memories.items():
+        if await store.aget(user_ns, path) is None:
+            await store.aput(
+                user_ns,
+                path,
+                {{"content": content, "encoding": "utf-8"}},
+            )
+    logger.info(
+        "Seeded %d user memory template(s) for user %s",
+        len(user_memories),
+        user_id,
+    )
+
+
 {sandbox_block}
 
 {mcp_tools_block}
 
+{sync_subagents_block}
 
-def _make_namespace_factory(assistant_id: str, section: str):
-    """Return a namespace factory closed over an assistant id + section."""
+
+def _make_namespace_factory(assistant_id: str, *extra: str):
+    """Return a namespace factory closed over an assistant id + extra."""
+    ns = (assistant_id, *extra)
     def _factory(ctx):  # noqa: ARG001
-        return (assistant_id, section)
+        return ns
+    return _factory
+
+
+def _make_user_namespace_factory(assistant_id: str):
+    """Return a namespace factory that includes the user_id.
+
+    Uses ``rt.server_info.user.identity`` from custom auth.  The platform
+    always injects user_id from auth, so no configurable fallback is needed.
+    """
+    def _factory(rt):
+        user = getattr(rt.server_info, "user", None) if rt.server_info else None
+        identity = getattr(user, "identity", None) if user else None
+        if not identity:
+            raise ValueError(
+                "user_id is required when user memories are enabled. "
+                "Set it via custom auth (runtime.user.identity)."
+            )
+        return (assistant_id, str(identity))
     return _factory
 
 
@@ -413,16 +580,32 @@ def _build_backend_factory(assistant_id: str):
             thread_id = get_config().get("configurable", {{}}).get("thread_id", "local")
             cache_key = f"thread:{{thread_id}}"
         sandbox_backend = _get_or_create_sandbox(cache_key)
+
+        routes = {{
+            MEMORIES_PREFIX: StoreBackend(
+                namespace=_make_namespace_factory(assistant_id),
+            ),
+            SKILLS_PREFIX: StoreBackend(
+                namespace=_make_namespace_factory(assistant_id),
+            ),
+        }}
+
+        if HAS_USER_MEMORIES:
+            routes[USER_PREFIX] = StoreBackend(
+                namespace=_make_user_namespace_factory(assistant_id),
+            )
+
+        # Add subagent store routes for seeded sync subagents.
+        seed = _load_seed()
+        for sa_name in seed.get("subagents", {{}}):
+            sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
+            routes[sa_prefix] = StoreBackend(
+                namespace=_make_namespace_factory(assistant_id, "subagents", sa_name),
+            )
+
         return CompositeBackend(
             default=sandbox_backend,
-            routes={{
-                MEMORIES_PREFIX: StoreBackend(
-                    namespace=_make_namespace_factory(assistant_id, "memories"),
-                ),
-                SKILLS_PREFIX: StoreBackend(
-                    namespace=_make_namespace_factory(assistant_id, "skills"),
-                ),
-            }},
+            routes=routes,
         )
     return _factory
 
@@ -430,36 +613,63 @@ def _build_backend_factory(assistant_id: str):
 async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     """Async graph factory.
 
-    Accepts the invocation's ``RunnableConfig`` so we can pull the
-    ``assistant_id`` out of ``configurable`` and scope all store reads
-    and writes under it. Seeds the memories + skills namespaces once per
-    (process, assistant_id), then assembles the deep agent graph.
+    Accepts the invocation's ``RunnableConfig`` for ``assistant_id`` and
+    the ``ServerRuntime`` for ``store`` and ``user.identity``.  Seeds
+    memories + skills once per (process, assistant_id), and user memories
+    once per (process, assistant_id, user_id).  Gracefully skips user
+    memory features when no user_id is available.
     """
     configurable = (config or {{}}).get("configurable", {{}}) or {{}}
     assistant_id = str(configurable.get("assistant_id") or {default_assistant_id!r})
 
     store = getattr(runtime, "store", None)
+    user_id = None
+    if HAS_USER_MEMORIES:
+        user = getattr(runtime, "user", None)
+        identity = getattr(user, "identity", None) if user else None
+        user_id = str(identity) if identity else None
+    if HAS_USER_MEMORIES and not user_id:
+        logger.warning(
+            "User memories are enabled but no user_id found "
+            "(runtime.user.identity is empty). User memory features "
+            "will be skipped for this invocation."
+        )
     if store is not None:
         await _seed_store_if_needed(store, assistant_id)
+        if HAS_USER_MEMORIES and user_id:
+            await _seed_user_memories_if_needed(store, assistant_id, user_id)
 
     tools: list = []
     {mcp_tools_load_call}
 
+    seed = _load_seed()
+    all_subagents: list = []
+    {sync_subagents_load_call}
+
     backend_factory = _build_backend_factory(assistant_id)
+
+    # Preload AGENTS.md + user memory into the agent's context.
+    memory_sources = [f"{{MEMORIES_PREFIX}}AGENTS.md"]
+    if HAS_USER_MEMORIES and user_id:
+        memory_sources.append(f"{{USER_PREFIX}}AGENTS.md")
+
+    # AGENTS.md and skills are read-only; user memories are writable.
+    permissions = [
+        FilesystemPermission(
+            operations=["write"],
+            paths=[f"{{MEMORIES_PREFIX}}AGENTS.md", f"{{SKILLS_PREFIX}}**"],
+            mode="deny",
+        ),
+    ]
 
     return create_deep_agent(
         model={model!r},
-        memory=[f"{{MEMORIES_PREFIX}}AGENTS.md"],
+        memory=memory_sources,
         skills=[SKILLS_PREFIX],
         tools=tools,
+        subagents=all_subagents or None,
         backend=backend_factory,
-        permissions=[
-            FilesystemPermission(
-                operations=["write"],
-                paths=["/memories/**", "/skills/**"],
-                mode="deny",
-            ),
-        ],
+        permissions=permissions,
         middleware=[
             SandboxSyncMiddleware(backend=backend_factory, sources=[SKILLS_PREFIX]),
         ],
@@ -480,7 +690,7 @@ name = {agent_name!r}
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents==0.5.2a2",
+    "deepagents==0.5.3",
 {extra_deps}]
 
 [tool.setuptools]

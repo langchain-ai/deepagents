@@ -12,21 +12,24 @@ from deepagents_cli.deploy.config import (
     DEFAULT_CONFIG_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    SUBAGENTS_DIRNAME,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
     DeployConfig,
     SandboxConfig,
+    SubAgentConfig,
+    SubAgentProject,
     _parse_config,
     _validate_mcp_for_deploy,
     _validate_model_credentials,
     _validate_sandbox_credentials,
     find_config,
     load_config,
+    load_subagents,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # AgentConfig
@@ -50,6 +53,14 @@ class TestAgentConfig:
     def test_whitespace_only_name_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):
             AgentConfig(name="   ")
+
+    def test_description_default(self) -> None:
+        cfg = AgentConfig(name="my-agent")
+        assert cfg.description == ""
+
+    def test_description_custom(self) -> None:
+        cfg = AgentConfig(name="my-agent", description="A helpful bot")
+        assert cfg.description == "A helpful bot"
 
     def test_frozen(self) -> None:
         cfg = AgentConfig(name="x")
@@ -172,6 +183,22 @@ class TestParseConfig:
                 }
             )
 
+    def test_description_parsed(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot", "description": "A bot"}})
+        assert cfg.agent.description == "A bot"
+
+    def test_description_optional(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot"}})
+        assert cfg.agent.description == ""
+
+    def test_async_subagents_section_raises(self) -> None:
+        data: dict[str, Any] = {
+            "agent": {"name": "bot"},
+            "async_subagents": [{"name": "x", "description": "d", "graph_id": "g"}],
+        }
+        with pytest.raises(ValueError, match="Unknown section"):
+            _parse_config(data)
+
     def test_defaults_come_from_dataclass(self) -> None:
         """Ensure _parse_config without optional keys uses dataclass defaults."""
         cfg = _parse_config({"agent": {"name": "x"}})
@@ -292,6 +319,126 @@ class TestValidateSandboxCredentials:
 # ---------------------------------------------------------------------------
 # Cross-module consistency
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# load_subagents
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSubagents:
+    @staticmethod
+    def _make_subagent(
+        parent: Path, name: str, *, description: str = "A subagent"
+    ) -> Path:
+        """Create a minimal valid subagent directory structure."""
+        sub_dir = parent / SUBAGENTS_DIRNAME / name
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        toml_content = f'[agent]\nname = "{name}"\ndescription = "{description}"\n'
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(toml_content, encoding="utf-8")
+        (sub_dir / AGENTS_MD_FILENAME).write_text(
+            "# Subagent instructions", encoding="utf-8"
+        )
+        return sub_dir
+
+    def test_no_subagents_dir(self, tmp_path: Path) -> None:
+        result = load_subagents(tmp_path)
+        assert result == {}
+
+    def test_empty_subagents_dir(self, tmp_path: Path) -> None:
+        (tmp_path / SUBAGENTS_DIRNAME).mkdir()
+        result = load_subagents(tmp_path)
+        assert result == {}
+
+    def test_single_subagent(self, tmp_path: Path) -> None:
+        self._make_subagent(tmp_path, "helper")
+        result = load_subagents(tmp_path)
+        assert len(result) == 1
+        assert "helper" in result
+        proj = result["helper"]
+        assert isinstance(proj, SubAgentProject)
+        assert isinstance(proj.config, SubAgentConfig)
+        assert proj.config.agent.name == "helper"
+        assert proj.config.agent.description == "A subagent"
+        assert proj.root == tmp_path / SUBAGENTS_DIRNAME / "helper"
+
+    def test_multiple_subagents(self, tmp_path: Path) -> None:
+        self._make_subagent(tmp_path, "alpha", description="First")
+        self._make_subagent(tmp_path, "beta", description="Second")
+        result = load_subagents(tmp_path)
+        assert len(result) == 2
+        assert result["alpha"].config.agent.description == "First"
+        assert result["beta"].config.agent.description == "Second"
+
+    def test_missing_agents_md_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n', encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match=r"(?i)AGENTS\.md.*required"):
+            load_subagents(tmp_path)
+
+    def test_missing_toml_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"(?i)deepagents\.toml.*required"):
+            load_subagents(tmp_path)
+
+    def test_missing_description_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "nodesc"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "nodesc"\n', encoding="utf-8"
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"(?i)description.*required"):
+            load_subagents(tmp_path)
+
+    def test_sandbox_section_rejected(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n\n'
+            '[sandbox]\nprovider = "none"\n',
+            encoding="utf-8",
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"sandbox.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_async_subagents_section_rejected(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n\n'
+            '[[async_subagents]]\nname = "x"\ndescription = "x"\ngraph_id = "x"\n',
+            encoding="utf-8",
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"async_subagents.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_nested_subagents_rejected(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "outer")
+        (sub_dir / SUBAGENTS_DIRNAME).mkdir()
+        with pytest.raises(ValueError, match=r"Nested.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_subagent_with_skills(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "skilled")
+        (sub_dir / SKILLS_DIRNAME).mkdir()
+        result = load_subagents(tmp_path)
+        assert "skilled" in result
+        assert result["skilled"].root == sub_dir
+
+    def test_subagent_mcp_validated(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "mcpbad")
+        mcp = {"mcpServers": {"local": {"type": "stdio", "command": "node"}}}
+        (sub_dir / MCP_FILENAME).write_text(json.dumps(mcp), encoding="utf-8")
+        with pytest.raises(ValueError, match="stdio"):
+            load_subagents(tmp_path)
 
 
 class TestCrossModuleConsistency:

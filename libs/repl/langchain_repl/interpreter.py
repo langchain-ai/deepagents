@@ -497,7 +497,7 @@ class _ProgramCompiler:
         if value == "parallel":
             self._emit(OpCode.LOAD_CONST, _PARALLEL_SENTINEL)
             return
-        if value == "task":
+        if value == "defer":
             self._expect("(")
             self._compile_task_invocation()
             return
@@ -525,7 +525,7 @@ class _ProgramCompiler:
     def _compile_task_target(self) -> None:
         token = self._current()
         if token.kind != "NAME":
-            msg = "task expects exactly one callable invocation"
+            msg = "defer expects exactly one callable invocation"
             raise ParseError(msg)
         self._emit(OpCode.LOAD_NAME, str(self._advance().value))
         while self._match("."):
@@ -983,7 +983,7 @@ class Interpreter:
     def _build_task(self, stack: list[Any], arg_count: int) -> Task:
         target, args = self._pop_call(stack, arg_count)
         if target is _PRINT_SENTINEL or target is _PARALLEL_SENTINEL:
-            msg = "task expects exactly one callable invocation"
+            msg = "defer expects exactly one callable invocation"
             raise ValueError(msg)
         return Task(target=target, args=args)
 

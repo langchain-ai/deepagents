@@ -189,9 +189,9 @@ def test_parallel_calls_return_results_in_order() -> None:
 
     result = interpreter.evaluate(
         "parallel(["
-        "task(slow_add(1, 2)), "
-        "task(slow_add(10, 20)), "
-        "task(slow_add(100, 200))"
+        "defer(slow_add(1, 2)), "
+        "defer(slow_add(10, 20)), "
+        "defer(slow_add(100, 200))"
         "])"
     )
 
@@ -203,7 +203,7 @@ def test_parallel_results_can_be_assigned() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
     result = interpreter.evaluate(
-        "results = parallel([task(echo(1)), task(echo(2)), task(echo(3))])\nresults"
+        "results = parallel([defer(echo(1)), defer(echo(2)), defer(echo(3))])\nresults"
     )
 
     assert result == [1, 2, 3]
@@ -215,9 +215,9 @@ def test_parallel_allows_multiline_arguments() -> None:
 
     result = interpreter.evaluate(
         "results = parallel([\n"
-        "    task(echo(1)),\n"
-        "    task(echo(2)),\n"
-        "    task(echo(3))\n"
+        "    defer(echo(1)),\n"
+        "    defer(echo(2)),\n"
+        "    defer(echo(3))\n"
         "])\n"
         "results"
     )
@@ -310,7 +310,7 @@ def test_parallel_expressions_use_isolated_variable_snapshots() -> None:
     interpreter = Interpreter(functions={"echo": lambda value: value})
 
     result = interpreter.evaluate(
-        "x = 10\nparallel([task(echo(x)), task(echo(x + 1))])"
+        "x = 10\nparallel([defer(echo(x)), defer(echo(x + 1))])"
     )
 
     assert result == [10, 11]
@@ -325,7 +325,7 @@ def test_parallel_propagates_function_errors() -> None:
     interpreter = Interpreter(functions={"fail": fail})
 
     with pytest.raises(RuntimeError, match="boom"):
-        interpreter.evaluate("parallel([task(fail())])")
+        interpreter.evaluate("parallel([defer(fail())])")
 
 
 def test_parallel_respects_max_concurrency() -> None:
@@ -346,7 +346,7 @@ def test_parallel_respects_max_concurrency() -> None:
     interpreter = Interpreter(functions={"block": block}, max_concurrency=1)
 
     result = interpreter.evaluate(
-        "parallel([task(block(1)), task(block(2)), task(block(3))])"
+        "parallel([defer(block(1)), defer(block(2)), defer(block(3))])"
     )
 
     assert result == [1, 2, 3]

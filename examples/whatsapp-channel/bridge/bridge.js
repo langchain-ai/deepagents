@@ -18,9 +18,20 @@ const SESSION_DIR = path.resolve(getArg("session", "./session"));
 const MEDIA_DIR = path.resolve(getArg("media-dir", "./media"));
 const SELF_ONLY = hasFlag("self-only");
 
+const CHROME_PROFILE_DIR = path.join(SESSION_DIR, "chromium-profile");
+
 // Ensure directories exist
 fs.mkdirSync(SESSION_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
+fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+
+// Remove stale Chromium lock files left from previous runs/containers
+const lockFile = path.join(CHROME_PROFILE_DIR, "SingletonLock");
+try { fs.unlinkSync(lockFile); } catch (_) {}
+const socketFile = path.join(CHROME_PROFILE_DIR, "SingletonSocket");
+try { fs.unlinkSync(socketFile); } catch (_) {}
+const cookieLock = path.join(CHROME_PROFILE_DIR, "SingletonCookie");
+try { fs.unlinkSync(cookieLock); } catch (_) {}
 
 // --- State ---
 let clientStatus = "disconnected"; // "disconnected" | "qr_pending" | "connected"
@@ -69,9 +80,8 @@ const puppeteerOpts = {
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-gpu",
-    // Use a temp dir for the Chromium profile so stale lock files
-    // on the session volume never block startup
-    `--user-data-dir=${fs.mkdtempSync(path.join(require("os").tmpdir(), "wa-chrome-"))}`,
+    // Persistent Chromium profile inside the session dir (stale locks cleaned above)
+    `--user-data-dir=${CHROME_PROFILE_DIR}`,
   ],
 };
 if (chromePath) {

@@ -44,8 +44,12 @@ RUN pip install --no-cache-dir /tmp/libs/deepagents && rm -rf /tmp/libs
 COPY examples/whatsapp-channel/pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
-# Copy application code
-COPY examples/whatsapp-channel/ .
+# Copy application code (explicit files to avoid copying host session/media dirs
+# — the .dockerignore in the example dir is ignored since the build context is repo root)
+COPY examples/whatsapp-channel/*.py .
+COPY examples/whatsapp-channel/bridge/bridge.js bridge/
+COPY examples/whatsapp-channel/.env.example .
+COPY examples/whatsapp-channel/README.md .
 
 # Session and media are stored on volumes
 VOLUME ["/app/session", "/app/media"]

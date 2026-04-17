@@ -624,7 +624,7 @@ def test_list_skills_from_backend_nonexistent_path(tmp_path: Path) -> None:
 
 
 def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
-    """Test that directories without SKILL.md are skipped."""
+    """Test that directories without SKILL.md and no nested skills are skipped."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a valid skill and an invalid one (missing SKILL.md)
@@ -1607,3 +1607,90 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+# -- Skill pack (nested directory) tests --
+
+
+def test_list_skills_from_backend_skill_pack(tmp_path: Path) -> None:
+    """Test that skills nested inside a skill pack directory are discovered."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    # Skill pack: a directory without SKILL.md containing skill subdirectories
+    pack_skill_a = str(skills_dir / "my-pack" / "skill-a" / "SKILL.md")
+    pack_skill_b = str(skills_dir / "my-pack" / "skill-b" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (pack_skill_a, make_skill_content("skill-a", "Skill A").encode("utf-8")),
+            (pack_skill_b, make_skill_content("skill-b", "Skill B").encode("utf-8")),
+        ]
+    )
+
+    skills = _list_skills(backend, str(skills_dir))
+
+    assert len(skills) == 2
+    skill_names = {s["name"] for s in skills}
+    assert skill_names == {"skill-a", "skill-b"}
+
+
+def test_list_skills_from_backend_mixed_direct_and_pack(tmp_path: Path) -> None:
+    """Test that direct skills and skill pack skills are both discovered."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    # Direct skill
+    direct_path = str(skills_dir / "direct-skill" / "SKILL.md")
+    # Skill pack
+    pack_path = str(skills_dir / "my-pack" / "pack-skill" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (direct_path, make_skill_content("direct-skill", "Direct").encode("utf-8")),
+            (pack_path, make_skill_content("pack-skill", "From pack").encode("utf-8")),
+        ]
+    )
+
+    skills = _list_skills(backend, str(skills_dir))
+
+    assert len(skills) == 2
+    skill_names = {s["name"] for s in skills}
+    assert skill_names == {"direct-skill", "pack-skill"}
+
+
+def test_list_skills_from_backend_pack_does_not_recurse_beyond_one_level(tmp_path: Path) -> None:
+    """Test that nesting beyond one extra level is not discovered."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    # Two levels deep — should NOT be found
+    deep_path = str(skills_dir / "outer" / "inner" / "deep-skill" / "SKILL.md")
+
+    backend.upload_files([(deep_path, make_skill_content("deep-skill", "Too deep").encode("utf-8"))])
+
+    skills = _list_skills(backend, str(skills_dir))
+    assert skills == []
+
+
+def test_list_skills_from_backend_dir_with_skill_md_not_treated_as_pack(tmp_path: Path) -> None:
+    """Test that a directory with SKILL.md is treated as a skill, not a pack."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    # Directory has both SKILL.md and a subdirectory with SKILL.md
+    parent_path = str(skills_dir / "parent-skill" / "SKILL.md")
+    child_path = str(skills_dir / "parent-skill" / "child-skill" / "SKILL.md")
+
+    backend.upload_files(
+        [
+            (parent_path, make_skill_content("parent-skill", "Parent").encode("utf-8")),
+            (child_path, make_skill_content("child-skill", "Child").encode("utf-8")),
+        ]
+    )
+
+    skills = _list_skills(backend, str(skills_dir))
+
+    # Only the parent should be found — it has SKILL.md so it's a skill, not a pack
+    assert len(skills) == 1
+    assert skills[0]["name"] == "parent-skill"

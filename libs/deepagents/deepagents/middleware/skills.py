@@ -401,57 +401,37 @@ def _format_skill_annotations(skill: SkillMetadata) -> str:
     return ", ".join(parts)
 
 
-def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
-    """List all skills from a backend source.
-
-    Scans backend for subdirectories containing `SKILL.md` files, downloads
-    their content, parses YAML frontmatter, and returns skill metadata.
-
-    Expected structure:
-
-    ```txt
-    source_path/
-    └── skill-name/
-        ├── SKILL.md   # Required
-        └── helper.py  # Optional
-    ```
+def _download_and_parse_skills(
+    backend: BackendProtocol,
+    dir_paths: list[str],
+) -> tuple[list[SkillMetadata], list[str]]:
+    """Download `SKILL.md` from each directory and parse metadata.
 
     Args:
-        backend: Backend instance to use for file operations
-        source_path: Path to the skills directory in the backend
+        backend: Backend instance to use for file operations.
+        dir_paths: List of directory paths to check for `SKILL.md`.
 
     Returns:
-        List of skill metadata from successfully parsed `SKILL.md` files
+        Tuple of (parsed skill metadata, directories that had no `SKILL.md`).
     """
-    skills: list[SkillMetadata] = []
-    ls_result = backend.ls(source_path)
-    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
-
-    # Find all skill directories (directories containing SKILL.md)
-    skill_dirs = []
-    for item in items or []:
-        if not item.get("is_dir"):
-            continue
-        skill_dirs.append(item["path"])
-
-    if not skill_dirs:
-        return []
-
-    # For each skill directory, check if SKILL.md exists and download it
-    skill_md_paths = []
-    for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+    skill_md_paths: list[tuple[str, str]] = []
+    for dir_path in dir_paths:
+        skill_dir = PurePosixPath(dir_path)
         skill_md_path = str(skill_dir / "SKILL.md")
-        skill_md_paths.append((skill_dir_path, skill_md_path))
+        skill_md_paths.append((dir_path, skill_md_path))
 
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
     responses = backend.download_files(paths_to_download)
 
-    # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+    skills: list[SkillMetadata] = []
+    no_skill_md: list[str] = []
+    for (dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
         if response.error:
-            # Skill doesn't have a SKILL.md, skip it
+            # Only treat "file_not_found" as a potential skill pack.
+            # Other errors (permission_denied, is_directory, invalid_path)
+            # indicate the directory itself is inaccessible.
+            if response.error == "file_not_found":
+                no_skill_md.append(dir_path)
             continue
 
         if response.content is None:
@@ -464,10 +444,7 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
             logger.warning("Error decoding %s: %s", skill_md_path, e)
             continue
 
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
+        directory_name = PurePosixPath(dir_path).name
         skill_metadata = _parse_skill_metadata(
             content=content,
             skill_path=skill_md_path,
@@ -476,7 +453,130 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
         if skill_metadata:
             skills.append(skill_metadata)
 
+    return skills, no_skill_md
+
+
+def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
+    """List all skills from a backend source.
+
+    Scans backend for subdirectories containing `SKILL.md` files, downloads
+    their content, parses YAML frontmatter, and returns skill metadata.
+
+    Also supports **skill packs** (one level of nesting): if a subdirectory
+    does not contain a `SKILL.md` file, its own subdirectories are scanned
+    for skills. This allows a single symlink to a skill collection
+    (e.g., `~/.agents/skills/superpowers → pack/skills/`) to expose all
+    skills within it.
+
+    Warning:
+        Skill pack support is experimental. The nesting heuristic and discovery
+        semantics may change in future versions.
+
+    Expected structures:
+
+    ```txt
+    source_path/
+    ├── skill-name/            # direct skill
+    │   ├── SKILL.md
+    │   └── helper.py
+    └── skill-pack/            # skill pack (no SKILL.md)
+        ├── nested-skill-a/
+        │   └── SKILL.md
+        └── nested-skill-b/
+            └── SKILL.md
+    ```
+
+    Args:
+        backend: Backend instance to use for file operations
+        source_path: Path to the skills directory in the backend
+
+    Returns:
+        List of skill metadata from successfully parsed `SKILL.md` files
+    """
+    ls_result = backend.ls(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
+
+    dir_paths = [item["path"] for item in (items or []) if item.get("is_dir")]
+    if not dir_paths:
+        return []
+
+    skills, pack_dirs = _download_and_parse_skills(backend, dir_paths)
+
+    # Experimental: scan one level deeper for skill packs (directories without a loadable SKILL.md)
+    for pack_dir in pack_dirs:
+        try:
+            nested_result = backend.ls(pack_dir)
+        except (OSError, NotImplementedError):
+            logger.warning("Failed to list pack directory %s", pack_dir, exc_info=True)
+            continue
+        nested_items = nested_result.entries if isinstance(nested_result, LsResult) else nested_result
+        nested_dirs = [item["path"] for item in (nested_items or []) if item.get("is_dir")]
+        nested_skills, _ = _download_and_parse_skills(backend, nested_dirs)
+        if nested_skills:
+            pack_name = PurePosixPath(pack_dir).name
+            logger.info(
+                "Discovered %d skill(s) from skill pack '%s' (experimental)",
+                len(nested_skills),
+                pack_name,
+            )
+        skills.extend(nested_skills)
+
     return skills
+
+
+async def _adownload_and_parse_skills(
+    backend: BackendProtocol,
+    dir_paths: list[str],
+) -> tuple[list[SkillMetadata], list[str]]:
+    """Async version of `_download_and_parse_skills`.
+
+    Args:
+        backend: Backend instance to use for file operations.
+        dir_paths: List of directory paths to check for `SKILL.md`.
+
+    Returns:
+        Tuple of (parsed skill metadata, directories that had no `SKILL.md`).
+    """
+    skill_md_paths: list[tuple[str, str]] = []
+    for dir_path in dir_paths:
+        skill_dir = PurePosixPath(dir_path)
+        skill_md_path = str(skill_dir / "SKILL.md")
+        skill_md_paths.append((dir_path, skill_md_path))
+
+    paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
+    responses = await backend.adownload_files(paths_to_download)
+
+    skills: list[SkillMetadata] = []
+    no_skill_md: list[str] = []
+    for (dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+        if response.error:
+            # Only treat "file_not_found" as a potential skill pack.
+            # Other errors (permission_denied, is_directory, invalid_path)
+            # indicate the directory itself is inaccessible.
+            if response.error == "file_not_found":
+                no_skill_md.append(dir_path)
+            continue
+
+        if response.content is None:
+            logger.warning("Downloaded skill file %s has no content", skill_md_path)
+            continue
+
+        try:
+            content = response.content.decode("utf-8")
+        except UnicodeDecodeError as e:
+            logger.warning("Error decoding %s: %s", skill_md_path, e)
+            continue
+
+        directory_name = PurePosixPath(dir_path).name
+        skill_metadata = _parse_skill_metadata(
+            content=content,
+            skill_path=skill_md_path,
+            directory_name=directory_name,
+        )
+        if skill_metadata:
+            skills.append(skill_metadata)
+
+    return skills, no_skill_md
 
 
 async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
@@ -485,13 +585,28 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Scans backend for subdirectories containing `SKILL.md` files, downloads
     their content, parses YAML frontmatter, and returns skill metadata.
 
-    Expected structure:
+    Also supports **skill packs** (one level of nesting): if a subdirectory
+    does not contain a `SKILL.md` file, its own subdirectories are scanned
+    for skills. This allows a single symlink to a skill collection
+    (e.g., `~/.agents/skills/superpowers → pack/skills/`) to expose all
+    skills within it.
+
+    Warning:
+        Skill pack support is experimental. The nesting heuristic and discovery
+        semantics may change in future versions.
+
+    Expected structures:
 
     ```txt
     source_path/
-    └── skill-name/
-        ├── SKILL.md   # Required
-        └── helper.py  # Optional
+    ├── skill-name/            # direct skill
+    │   ├── SKILL.md
+    │   └── helper.py
+    └── skill-pack/            # skill pack (no SKILL.md)
+        ├── nested-skill-a/
+        │   └── SKILL.md
+        └── nested-skill-b/
+            └── SKILL.md
     ```
 
     Args:
@@ -501,58 +616,33 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    skills: list[SkillMetadata] = []
     ls_result = await backend.als(source_path)
     items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
-    # Find all skill directories (directories containing SKILL.md)
-    skill_dirs = []
-    for item in items or []:
-        if not item.get("is_dir"):
-            continue
-        skill_dirs.append(item["path"])
-
-    if not skill_dirs:
+    dir_paths = [item["path"] for item in (items or []) if item.get("is_dir")]
+    if not dir_paths:
         return []
 
-    # For each skill directory, check if SKILL.md exists and download it
-    skill_md_paths = []
-    for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
-        skill_md_path = str(skill_dir / "SKILL.md")
-        skill_md_paths.append((skill_dir_path, skill_md_path))
+    skills, pack_dirs = await _adownload_and_parse_skills(backend, dir_paths)
 
-    paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
-    responses = await backend.adownload_files(paths_to_download)
-
-    # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
-
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
-
+    # Experimental: scan one level deeper for skill packs (directories without a loadable SKILL.md)
+    for pack_dir in pack_dirs:
         try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
+            nested_result = await backend.als(pack_dir)
+        except (OSError, NotImplementedError):
+            logger.warning("Failed to list pack directory %s", pack_dir, exc_info=True)
             continue
-
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
-            skills.append(skill_metadata)
+        nested_items = nested_result.entries if isinstance(nested_result, LsResult) else nested_result
+        nested_dirs = [item["path"] for item in (nested_items or []) if item.get("is_dir")]
+        nested_skills, _ = await _adownload_and_parse_skills(backend, nested_dirs)
+        if nested_skills:
+            pack_name = PurePosixPath(pack_dir).name
+            logger.info(
+                "Discovered %d skill(s) from skill pack '%s' (experimental)",
+                len(nested_skills),
+                pack_name,
+            )
+        skills.extend(nested_skills)
 
     return skills
 

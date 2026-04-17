@@ -8,9 +8,9 @@ and child agents.
 import dataclasses
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Sequence, TypedDict, Union
+from typing import Any, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,7 +18,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
-from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -49,6 +49,44 @@ description: {description}
 
 Instructions go here.
 """
+
+
+class _ScriptedChatModel(BaseChatModel):
+    """Fake chat model that returns a fixed scripted sequence of AIMessages.
+
+    Each call to ``_generate`` returns the next message in ``responses``;
+    once exhausted, it repeats the final response. This avoids StopIteration
+    bugs that arise with plain iterators under langgraph's generator runner.
+    """
+
+    responses: list[AIMessage] = []  # noqa: RUF012  # Pydantic field, per-instance
+    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = ()
+    _call_idx: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(
+        self,
+        messages: Sequence[Any],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        idx = min(self._call_idx, len(self.responses) - 1)
+        self._call_idx += 1
+        return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        self.tools = tools
+        return self
 
 
 class TestSubAgents:
@@ -2265,179 +2303,71 @@ class TestSubAgents:
         assert tool_messages[0].content == "Override response."
 
     def test_ls_agent_type_is_set_on_subagent_runnables(self) -> None:
-        """Test that ls_agent_type is set in the configurable for subagent runnables.
+        """Every subagent runnable must be bound with ``ls_agent_type: "subagent"``.
 
-        This test verifies that when subagents are invoked via the task tool,
-        the ls_agent_type: "subagent" is passed in the configurable.
-
-        This is important because ls_agent_type should be trace-only metadata that
-        helps identify subagent runs in LangSmith without polluting the streamed
-        callback metadata.
+        ``SubAgentMiddleware._get_subagents()`` calls
+        ``.with_config({"configurable": {"ls_agent_type": "subagent"}})`` on each
+        subagent runnable so downstream LangSmith tracing can distinguish
+        subagent runs from root-agent runs. This test asserts the binding is
+        present on every returned runnable.
         """
-        # Create a model that returns a fixed response (avoids iterator consumption by LangSmith tracing)
-        class FixedResponseModel(BaseChatModel):
-            response: str = "ok"
-            tools: Sequence = ()
-
-            @property
-            def _llm_type(self) -> str:
-                return "fixed"
-
-            def _generate(
-                self,
-                messages: Sequence[Any],
-                stop: list[str] | None = None,
-                run_manager: Any = None,
-                **kwargs: Any,
-            ) -> ChatResult:
-                return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.response))])
-
-            def bind_tools(
-                self,
-                tools: Sequence[Union[dict[str, Any], type, Callable, BaseTool]],
-                *,
-                tool_choice: str | None = None,
-                **kwargs: Any,
-            ) -> Runnable[LanguageModelInput, AIMessage]:
-                self.tools = tools
-                return self
-
-        # Capture metadata from callback handler
-        captured_metadata: list[dict[str, Any]] = []
-
-        class CaptureHandler(BaseCallbackHandler):
-            def on_chain_start(
-                self,
-                serialized: dict[str, Any],
-                inputs: dict[str, Any],
-                *,
-                run_id: str,
-                parent_run_id: str | None = None,
-                tags: list[str] | None = None,
-                metadata: dict[str, Any] | None = None,
-                **kwargs: Any,
-            ) -> None:
-                captured_metadata.append({"tags": tags, "metadata": metadata, "run_id": str(run_id)})
-
-        # Create the parent agent's chat model that will call the subagent
-        parent_chat_model = FixedResponseModel(response="")
-
-        # Override the _generate to return tool calls
-        def _generate_with_tool_call(
-            self,
-            messages: Sequence[Any],
-            stop: list[str] | None = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            if not hasattr(self, "_called"):
-                self._called = True
-                return ChatResult(
-                    generations=[
-                        ChatGeneration(
-                            message=AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {
-                                        "name": "task",
-                                        "args": {
-                                            "description": "Do some work",
-                                            "subagent_type": "test-worker",
-                                        },
-                                        "id": "call_test_worker",
-                                        "type": "tool_call",
-                                    }
-                                ],
-                            )
-                        )
-                    ]
-                )
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="Done."))])
-
-        parent_chat_model._generate = _generate_with_tool_call.__get__(parent_chat_model, FixedResponseModel)
-
-        # Create the parent agent with subagent support
-        parent_agent = create_deep_agent(
-            model=parent_chat_model,
-            checkpointer=InMemorySaver(),
+        subagent_names = ["alpha", "beta"]
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
             subagents=[
                 SubAgent(
-                    name="test-worker",
-                    description="A test worker subagent.",
-                    system_prompt="You are a test worker.",
-                    model=FixedResponseModel(response="Subagent completed the task."),
-                    tools=[],  # No tools needed for this test
+                    name=name,
+                    description=f"Subagent {name}.",
+                    system_prompt=f"You are {name}.",
+                    model=_ScriptedChatModel(responses=[AIMessage(content="ok")]),
+                    tools=[],
                 )
+                for name in subagent_names
             ],
         )
 
-        # Invoke the agent
-        parent_agent.invoke(
-            {"messages": [HumanMessage(content="Please do some work")]},
-            config={
-                "configurable": {"thread_id": "test_ls_agent_type_runnables"},
-                "callbacks": [CaptureHandler()],
-            },
-        )
+        specs = middleware._get_subagents()
+        assert [s["name"] for s in specs] == subagent_names
 
-        # Verify that the subagent was invoked with ls_agent_type in the metadata
-        assert len(captured_metadata) > 0, "Should have captured some metadata"
-
-        # Check that ls_agent_type is in the metadata for at least one run (the subagent)
-        found_ls_agent_type = False
-        for captured in captured_metadata:
-            metadata = captured.get("metadata") or {}
-            if metadata.get("ls_agent_type") == "subagent":
-                found_ls_agent_type = True
-                break
-
-        assert found_ls_agent_type, (
-            f"Expected to find ls_agent_type='subagent' in one of the captured metadata, "
-            f"but got: {[c.get('metadata', {}) for c in captured_metadata]}"
-        )
+        for spec in specs:
+            bound_configurable = spec["runnable"].config.get("configurable", {})
+            assert bound_configurable.get("ls_agent_type") == "subagent", (
+                f"Subagent {spec['name']!r} should have ls_agent_type='subagent' in its bound configurable, got: {bound_configurable}"
+            )
 
     def test_ls_agent_type_is_trace_only_metadata(self) -> None:
-        """Test that ls_agent_type is included in tracer metadata sent to LangSmith.
+        """``ls_agent_type`` must reach LangSmith but not streamed callback metadata.
 
-        This test verifies that ls_agent_type: "subagent" is included in the
-        tracer metadata (sent to LangSmith) for runs that occur inside a subagent.
-
-        Note: Due to how the underlying ``configurable`` flows through LangGraph,
-        ``ls_agent_type`` currently also appears in the streamed callback metadata
-        (alongside other configurable-derived keys like ``thread_id``). If that
-        behavior changes in the future to be strictly trace-only, this test should
-        be extended to assert its absence from streamed metadata as well.
+        Mirrors langchain's ``test_ls_agent_type_is_trace_only_metadata``. Relies
+        on langgraph's ``_PROPAGATE_TO_METADATA`` allowlist (1.1.7+), which only
+        promotes a fixed set of ``configurable`` keys to streamed metadata;
+        ``ls_agent_type`` is not in that allowlist, so it stays trace-only.
         """
-        # Create a model that returns a fixed response (avoids iterator consumption by LangSmith tracing)
-        class FixedResponseModel(BaseChatModel):
-            response: str = "ok"
-            tools: Sequence = ()
+        # Root model: first call emits a task tool call that dispatches to the
+        # subagent; subsequent calls return a final response.
+        root_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Do some work",
+                                "subagent_type": "test-worker",
+                            },
+                            "id": "call_test_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        subagent_model = _ScriptedChatModel(responses=[AIMessage(content="Subagent completed the task.")])
 
-            @property
-            def _llm_type(self) -> str:
-                return "fixed"
-
-            def _generate(
-                self,
-                messages: Sequence[Any],
-                stop: list[str] | None = None,
-                run_manager: Any = None,
-                **kwargs: Any,
-            ) -> ChatResult:
-                return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.response))])
-
-            def bind_tools(
-                self,
-                tools: Sequence[Union[dict[str, Any], type, Callable, BaseTool]],
-                *,
-                tool_choice: str | None = None,
-                **kwargs: Any,
-            ) -> Runnable[LanguageModelInput, AIMessage]:
-                self.tools = tools
-                return self
-
-        # Capture metadata from regular callback handler (simulates streamed metadata)
-        captured_callback_metadata: list[dict[str, Any]] = []
+        # Capture streamed callback metadata per-run.
+        captured_callbacks: list[dict[str, Any]] = []
 
         class CaptureHandler(BaseCallbackHandler):
             def on_chain_start(
@@ -2451,68 +2381,32 @@ class TestSubAgents:
                 metadata: dict[str, Any] | None = None,
                 **kwargs: Any,
             ) -> None:
-                captured_callback_metadata.append({"tags": tags, "metadata": metadata})
+                captured_callbacks.append(
+                    {
+                        "name": kwargs.get("name") or (serialized or {}).get("name"),
+                        "metadata": metadata or {},
+                    }
+                )
 
-        # Create a mock client to capture what gets sent to LangSmith
         mock_session = MagicMock()
         mock_client = Client(session=mock_session, api_key="test", auto_batch_tracing=False)
 
-        # Create the parent agent's chat model that will call the subagent
-        parent_chat_model = FixedResponseModel(
-            response="",
-        )
-        # Override the _generate to return tool calls
-        def _generate_with_tool_call(
-            self,
-            messages: Sequence[Any],
-            stop: list[str] | None = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            if not hasattr(self, "_called"):
-                self._called = True
-                return ChatResult(
-                    generations=[
-                        ChatGeneration(
-                            message=AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {
-                                        "name": "task",
-                                        "args": {
-                                            "description": "Do some work",
-                                            "subagent_type": "test-worker",
-                                        },
-                                        "id": "call_test_worker",
-                                        "type": "tool_call",
-                                    }
-                                ],
-                            )
-                        )
-                    ]
-                )
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="Done."))])
-
-        parent_chat_model._generate = _generate_with_tool_call.__get__(parent_chat_model, FixedResponseModel)
-
-        # Create the parent agent with subagent support
-        parent_agent = create_deep_agent(
-            model=parent_chat_model,
+        agent = create_deep_agent(
+            model=root_model,
             checkpointer=InMemorySaver(),
             subagents=[
                 SubAgent(
                     name="test-worker",
                     description="A test worker subagent.",
                     system_prompt="You are a test worker.",
-                    model=FixedResponseModel(response="Subagent completed the task."),
-                    tools=[],  # No tools needed for this test
+                    model=subagent_model,
+                    tools=[],
                 )
             ],
         )
 
-        # Use tracing_context to enable tracing with the mock client
         with tracing_context(client=mock_client, enabled=True):
-            parent_agent.invoke(
+            agent.invoke(
                 {"messages": [HumanMessage(content="Please do some work")]},
                 config={
                     "configurable": {"thread_id": "test_ls_agent_type"},
@@ -2520,29 +2414,31 @@ class TestSubAgents:
                 },
             )
 
-        # Verify we actually exercised the subagent path (captured callbacks during the run).
-        assert len(captured_callback_metadata) > 0, "Should have captured some callback metadata"
+        # The subagent path must have run (otherwise the trace-only check below
+        # is trivially true).
+        subagent_callback = next((c for c in captured_callbacks if c["name"] == "test-worker"), None)
+        assert subagent_callback is not None, f"Expected a 'test-worker' subagent callback, got names: {[c['name'] for c in captured_callbacks]}"
 
-        # Verify that ls_agent_type IS in the tracer metadata (sent to LangSmith)
-        # Get the POST requests to the LangSmith API
-        posts = []
+        # (1) ls_agent_type must not leak into any streamed callback metadata.
+        for captured in captured_callbacks:
+            assert "ls_agent_type" not in captured["metadata"], (
+                f"ls_agent_type leaked into callback metadata for run {captured['name']!r}: {captured['metadata']}"
+            )
+
+        # (2) ls_agent_type='subagent' must reach the LangSmith tracer.
+        posts: list[dict[str, Any]] = []
         for call in mock_session.request.mock_calls:
             if call.args and call.args[0] == "POST":
                 body = json.loads(call.kwargs["data"])
-                if "post" in body:
-                    posts.extend(body["post"])
-                else:
-                    posts.append(body)
+                posts.extend(body.get("post", []) if "post" in body else [body])
 
-        assert len(posts) >= 1, "Should have at least one POST request to LangSmith"
-
-        # Find a run that has ls_agent_type in metadata (the subagent run)
-        subagent_posts = [
-            post
+        subagent_tracer_metadatas = [
+            post.get("extra", {}).get("metadata", {})
             for post in posts
             if post.get("extra", {}).get("metadata", {}).get("ls_agent_type") == "subagent"
         ]
-        assert len(subagent_posts) >= 1, (
-            f"Should have at least one subagent run with ls_agent_type='subagent' in tracer metadata. "
-            f"Got posts: {[post.get('extra', {}).get('metadata', {}) for post in posts]}"
+        assert subagent_tracer_metadatas, (
+            f"Expected at least one LangSmith post with ls_agent_type='subagent'. "
+            f"Got tracer metadatas: "
+            f"{[p.get('extra', {}).get('metadata', {}) for p in posts]}"
         )

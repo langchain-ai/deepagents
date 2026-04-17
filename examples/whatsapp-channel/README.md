@@ -70,6 +70,7 @@ The bridge runs as a Node.js subprocess managed by the Python adapter. Messages 
 - Typing indicators
 - Message chunking for long responses
 - Automatic text extraction from document attachments
+- **Image support (inbound and outbound)** — photos sent by the user are forwarded to the LLM as multimodal content (up to 5 MB per image). The agent can attach images in its replies by writing `![description](/absolute/path/to/file.png)` in its final message; the adapter strips those refs from the text and sends each as a WhatsApp media attachment with the alt text as the caption. Supported formats: PNG, JPEG, GIF, WebP; size limit 16 MB per outbound file.
 
 ## Scheduled tasks (cron)
 

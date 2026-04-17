@@ -38,6 +38,8 @@ let clientStatus = "disconnected"; // "disconnected" | "qr_pending" | "connected
 let botId = null;
 const messageQueue = [];
 const sentMessageIds = new Set(); // track IDs we sent to avoid reply loops
+const sentMessages = new Map(); // messageId -> Message object (for editing)
+const MAX_CACHED_MESSAGES = 200;
 
 // --- Detect system Chrome/Chromium ---
 function findChrome() {
@@ -204,6 +206,12 @@ app.post("/send", async (req, res) => {
     if (replyTo) options.quotedMessageId = replyTo;
     const sent = await client.sendMessage(chatId, message, options);
     sentMessageIds.add(sent.id._serialized);
+    sentMessages.set(sent.id._serialized, sent);
+    // Evict oldest cached message to prevent memory leaks
+    if (sentMessages.size > MAX_CACHED_MESSAGES) {
+      const oldest = sentMessages.keys().next().value;
+      sentMessages.delete(oldest);
+    }
     res.json({ messageId: sent.id._serialized });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -247,9 +255,12 @@ app.post("/edit", async (req, res) => {
     return res.status(400).json({ error: "chatId, messageId, and message required" });
   }
   try {
-    // whatsapp-web.js doesn't have a direct edit API on the client;
-    // we need the original message object. For prototype, return not-supported.
-    res.status(501).json({ error: "edit not supported by whatsapp-web.js" });
+    const msg = sentMessages.get(messageId);
+    if (!msg) {
+      return res.status(404).json({ error: "Message not found in sent cache" });
+    }
+    await msg.edit(message);
+    res.json({ ok: true, messageId });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

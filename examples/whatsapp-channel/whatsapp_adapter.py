@@ -636,9 +636,19 @@ class WhatsAppAdapter:
         message_id: str,
         content: str,
     ) -> SendResult:
-        """Edit a previously sent message."""
+        """Edit a previously sent message.
+
+        Applies the same bot-header and formatting as :meth:`send`.
+        Content is truncated (not chunked) if it exceeds the max length,
+        because an edit cannot span multiple messages.
+        """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
+
+        formatted = format_message(f"**deepagents bot**\n{content}")
+        if len(formatted) > self.MAX_MESSAGE_LENGTH:
+            formatted = formatted[: self.MAX_MESSAGE_LENGTH - 3] + "..."
+
         try:
             import aiohttp
             async with self._http_session.post(
@@ -646,7 +656,7 @@ class WhatsAppAdapter:
                 json={
                     "chatId": chat_id,
                     "messageId": message_id,
-                    "message": content,
+                    "message": formatted,
                 },
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:

@@ -24,10 +24,13 @@ from typing import TYPE_CHECKING
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends import LangSmithSandbox
+from deepagents.graph import build_subagents
 from deepagents.middleware.subagents import (
     DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
     DEFAULT_SUBAGENT_PROMPT,
+    SubAgent,
 )
+from deepagents_repl import REPLMiddleware
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 from langsmith.sandbox import SandboxClient
@@ -187,16 +190,32 @@ async def test_oolong(
         [("/context.txt", task.context_window_text.encode("utf-8"))]
     )
 
+    # Compile subagents once — same runnables are shared between the
+    # `task` tool (via SubAgentMiddleware inside create_deep_agent) and
+    # the REPL's `swarm()` global (via REPLMiddleware). build_subagents
+    # applies the same default middleware stack create_deep_agent would,
+    # so subagents behave identically regardless of which path dispatched
+    # them.
+    subagent_specs: list[SubAgent] = [
+        {
+            "name": "general-purpose",
+            "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+            "system_prompt": DEFAULT_SUBAGENT_PROMPT,
+            "model": SUBAGENT_MODEL,
+        }
+    ]
+    compiled_subagents = build_subagents(
+        subagent_specs,
+        model=model,
+        backend=sandbox_backend,
+    )
+
     agent = create_deep_agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
-        subagents=[
-            {
-                "name": "general-purpose",
-                "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
-                "system_prompt": DEFAULT_SUBAGENT_PROMPT,
-                "model": SUBAGENT_MODEL,
-            }
+        subagents=compiled_subagents,
+        middleware=[
+            REPLMiddleware(backend=sandbox_backend, subagents=compiled_subagents),
         ],
         checkpointer=MemorySaver(),
         backend=sandbox_backend,
@@ -205,6 +224,7 @@ async def test_oolong(
     trajectory = await run_agent_async(
         agent,
         model=model,
+        # query=task.question + " Make sure to use the `swarm()` global to dispatch subagents for counting and classification as needed.",
         query=task.question,
         scorer=TrajectoryScorer().success(OolongCorrect(gold_answer=gold)),
         eval_metadata={

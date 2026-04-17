@@ -14,6 +14,8 @@ from deepagents import create_deep_agent
 from langchain.agents.middleware.types import ToolCallRequest, wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException, tool
+from langchain_repl.middleware import ReplMiddleware
+from langchain_quickjs.middleware import QuickJSMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -763,8 +765,12 @@ async def _incident_graph_tool_error_middleware(
 def _create_agent(model: BaseChatModel):
     return create_deep_agent(
         model=model,
-        tools=INCIDENT_GRAPH_TOOLS,
-        middleware=[_incident_graph_tool_error_middleware],
+        # tools=INCIDENT_GRAPH_TOOLS,
+        middleware=[
+            _incident_graph_tool_error_middleware,
+            # QuickJSMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True),
+            ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True),
+        ],
     )
 
 
@@ -854,7 +860,7 @@ async def test_multi_question_current_incident_service_and_incident_oncall(
             final_text_contains("Cara Singh"),
         )
         .expect(
-            agent_steps=6,
+            agent_steps=5,
             tool_call_requests=7,
             tool_calls=[
                 tool_call(name="get_current_incident_id"),

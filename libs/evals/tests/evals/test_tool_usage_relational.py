@@ -17,10 +17,13 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+from langchain_repl.middleware import ReplMiddleware
+
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
     run_agent,
+    run_agent_async,
     tool_call,
 )
 
@@ -435,7 +438,7 @@ def _create_agent(model: BaseChatModel):
     """Create agent."""
     return create_deep_agent(
         model=model,
-        tools=RELATIONAL_TOOLS,
+        middleware=[ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)],
     )
 
 
@@ -747,10 +750,10 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
+async def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
     """Agent finds Frank The Cat -> fav foods -> food name + calories (parallel)."""
     agent = _create_agent(model)
-    run_agent(
+    await run_agent_async(
         agent,
         model=model,
         query=(
@@ -782,6 +785,9 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
             ],
         ),
     )
+    import time
+
+    time.sleep(5)
 
 
 @pytest.mark.eval_tier("baseline")

@@ -211,12 +211,13 @@ class TestToolDescriptionOverrides:
 
 
 class TestDefaultModelProfile:
-    """Tests for default model=None getting the default profile."""
+    """Tests for default model=None getting the Anthropic provider profile."""
 
-    def test_default_model_gets_default_profile(self) -> None:
-        """model=None resolves to default profile (no Anthropic-specific registration)."""
+    def test_default_model_gets_anthropic_profile(self) -> None:
+        """model=None resolves to Anthropic; profile carries the provider suffix."""
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+        assert profile.system_prompt_suffix is not None
+        assert "<parallel_tool_calls>" in profile.system_prompt_suffix
 
 
 class TestToolDescriptionOverrideWiring:

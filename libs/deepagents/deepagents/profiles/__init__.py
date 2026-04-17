@@ -11,9 +11,24 @@ internal consumers can import from `deepagents.profiles` directly.
 
 # Provider modules register their profiles as a side effect of import.
 # _openrouter registration fires via the `from` import below.
-from deepagents.profiles import _anthropic as _anthropic, _openai as _openai
+# _anthropic_opus registers the model-level Opus 4.6 overlay.
+# _anthropic_opus47 registers the model-level Opus 4.7 overlay.
+from deepagents.profiles import (
+    _anthropic as _anthropic,
+    _anthropic_opus as _anthropic_opus,
+    _anthropic_opus47 as _anthropic_opus47,
+    _openai as _openai,
+)
 from deepagents.profiles._anthropic import (
     _ANTHROPIC_SYSTEM_PROMPT_SUFFIX,
+)
+from deepagents.profiles._anthropic_opus import (
+    _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX,
+    _OPUS_SYSTEM_PROMPT_SUFFIX,
+)
+from deepagents.profiles._anthropic_opus47 import (
+    _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX,
+    _OPUS_47_SYSTEM_PROMPT_SUFFIX,
 )
 from deepagents.profiles._harness_profiles import (
     _HARNESS_PROFILES,
@@ -32,10 +47,14 @@ from deepagents.profiles._openrouter import (
 
 __all__ = [
     "OPENROUTER_MIN_VERSION",
+    "_ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX",
+    "_ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX",
     "_ANTHROPIC_SYSTEM_PROMPT_SUFFIX",
     "_HARNESS_PROFILES",
     "_OPENROUTER_APP_TITLE",
     "_OPENROUTER_APP_URL",
+    "_OPUS_47_SYSTEM_PROMPT_SUFFIX",
+    "_OPUS_SYSTEM_PROMPT_SUFFIX",
     "_HarnessProfile",
     "_get_harness_profile",
     "_merge_profiles",

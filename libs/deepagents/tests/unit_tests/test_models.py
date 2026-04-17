@@ -15,10 +15,14 @@ from deepagents._models import (
     resolve_model,
 )
 from deepagents.profiles import (
+    _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX,
+    _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX,
     _ANTHROPIC_SYSTEM_PROMPT_SUFFIX,
     _HARNESS_PROFILES,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
+    _OPUS_47_SYSTEM_PROMPT_SUFFIX,
+    _OPUS_SYSTEM_PROMPT_SUFFIX,
     OPENROUTER_MIN_VERSION,
     _get_harness_profile,
     _HarnessProfile,
@@ -593,6 +597,112 @@ class TestBuiltInProfiles:
         assert profile.pre_init is None
         assert profile.init_kwargs_factory is None
         assert profile.extra_middleware == ()
+
+    def test_opus_profile_registered(self) -> None:
+        """Opus 4.6 model profile is registered at import time."""
+        assert "anthropic:claude-opus-4-6" in _HARNESS_PROFILES
+
+    def test_opus_suffix_includes_provider_sections(self) -> None:
+        """Opus suffix includes all four Anthropic provider prompt sections."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-6")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<parallel_tool_calls>",
+            "<grounded_responses>",
+            "<tool_result_reflection>",
+            "<decisive_execution>",
+        ):
+            assert tag in suffix
+
+    def test_opus_suffix_includes_opus_sections(self) -> None:
+        """Opus suffix includes the three Opus-specific prompt sections."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-6")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<minimal_changes>",
+            "<subagent_discipline>",
+            "<focused_exploration>",
+        ):
+            assert tag in suffix
+
+    def test_opus_profile_merges_with_provider(self) -> None:
+        """Opus model profile merges with the Anthropic provider profile."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-6")
+        assert profile.system_prompt_suffix == _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX
+        assert profile.init_kwargs == {}
+        assert profile.extra_middleware == ()
+
+    def test_opus_suffix_is_provider_plus_overlay(self) -> None:
+        """Opus suffix equals the Anthropic suffix concatenated with the overlay."""
+        assert _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX == (_ANTHROPIC_SYSTEM_PROMPT_SUFFIX + "\n\n" + _OPUS_SYSTEM_PROMPT_SUFFIX)
+
+    def test_non_opus_anthropic_unaffected(self) -> None:
+        """Non-Opus Anthropic models still get the plain provider suffix."""
+        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        assert profile.system_prompt_suffix == _ANTHROPIC_SYSTEM_PROMPT_SUFFIX
+
+    def test_opus_47_profile_registered(self) -> None:
+        """Opus 4.7 model profile is registered at import time."""
+        assert "anthropic:claude-opus-4-7" in _HARNESS_PROFILES
+
+    def test_opus_47_suffix_includes_provider_sections(self) -> None:
+        """Opus 4.7 suffix includes all four Anthropic provider prompt sections."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<parallel_tool_calls>",
+            "<grounded_responses>",
+            "<tool_result_reflection>",
+            "<decisive_execution>",
+        ):
+            assert tag in suffix
+
+    def test_opus_47_suffix_includes_opus_47_sections(self) -> None:
+        """Opus 4.7 suffix includes the two Opus 4.7-specific prompt sections."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<tool_usage>",
+            "<subagent_usage>",
+        ):
+            assert tag in suffix
+
+    def test_opus_47_suffix_excludes_opus_46_sections(self) -> None:
+        """Opus 4.7 must not inherit the Opus 4.6 overlay sections.
+
+        The 4.6 sections (`<minimal_changes>`, `<subagent_discipline>`,
+        `<focused_exploration>`) would reinforce 4.7's native tendencies in the
+        wrong direction per the migration guide.
+        """
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<minimal_changes>",
+            "<subagent_discipline>",
+            "<focused_exploration>",
+        ):
+            assert tag not in suffix
+
+    def test_opus_47_profile_merges_with_provider(self) -> None:
+        """Opus 4.7 model profile merges with the Anthropic provider profile."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        assert profile.system_prompt_suffix == _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX
+        assert profile.init_kwargs == {}
+        assert profile.extra_middleware == ()
+
+    def test_opus_47_suffix_is_provider_plus_overlay(self) -> None:
+        """Opus 4.7 suffix equals the Anthropic suffix concatenated with the 4.7 overlay."""
+        assert _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX == (_ANTHROPIC_SYSTEM_PROMPT_SUFFIX + "\n\n" + _OPUS_47_SYSTEM_PROMPT_SUFFIX)
+
+    def test_opus_46_and_47_have_distinct_suffixes(self) -> None:
+        """Opus 4.6 and 4.7 profiles diverge on the overlay content."""
+        assert _OPUS_SYSTEM_PROMPT_SUFFIX != _OPUS_47_SYSTEM_PROMPT_SUFFIX
+        assert _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX != _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX
 
 
 class TestResolveModelWithProfiles:

@@ -56,6 +56,7 @@ Do NOT assume variables, functions, or helper values from prior `repl` calls are
 - Use indexing like `items[0]` and `user["id"]`.
 - Use `if cond then ... else ... end` for branching.
 - Use `for item in items do ... end` for loops.
+- Use the exact literal casing `True`, `False`, and `None`.
 - Use `print(value)` to emit output. The tool returns printed lines joined with newlines.
 - The final expression value is returned only if nothing was printed.
 - Use `parallel([defer(call1(...)), defer(call2(...))])` only for independent callable invocations that can run concurrently.

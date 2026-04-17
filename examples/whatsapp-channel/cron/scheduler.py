@@ -164,3 +164,36 @@ async def _tick_once(
             executed += 1
 
     return executed
+
+
+def start_ticker(
+    jobs_path: Path,
+    adapter: Any,
+    agent: Any,
+    chat_locks: dict[str, asyncio.Lock],
+    *,
+    tick_interval: float = 60.0,
+) -> asyncio.Task:
+    """Launch the cron ticker as an asyncio task on the running loop.
+
+    The returned task runs ``_tick_once`` every *tick_interval* seconds. Any
+    exception raised by a tick (corrupt jobs file, unexpected error) is logged
+    and swallowed so the loop keeps running. Cancel the task on shutdown.
+    """
+    async def _loop() -> None:
+        logger.info("cron: ticker started (interval=%ss, path=%s)",
+                    tick_interval, jobs_path)
+        try:
+            while True:
+                try:
+                    await _tick_once(jobs_path, adapter, agent, chat_locks)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("cron: tick failed")
+                await asyncio.sleep(tick_interval)
+        except asyncio.CancelledError:
+            logger.info("cron: ticker cancelled")
+            raise
+
+    return asyncio.create_task(_loop(), name="whatsapp-cron-ticker")

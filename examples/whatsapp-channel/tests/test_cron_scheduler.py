@@ -17,6 +17,7 @@ from cron.scheduler import (
     _run_job,
     _tick_once,
 )
+from cron.scheduler import start_ticker
 
 
 class TestBuildPrompt:
@@ -253,3 +254,48 @@ def _force_due(jobs_path, job_id) -> None:
 def _now_helper():
     from datetime import datetime
     return datetime.now().astimezone()
+
+
+class TestStartTicker:
+    async def test_fires_due_job_then_cancels_cleanly(self, jobs_path) -> None:
+        j = db_create_job(jobs_path, prompt="p", schedule="30m",
+                          origin={"chat_id": "chat1", "message_id": None})
+        _force_due(jobs_path, j["id"])
+
+        adapter = FakeAdapter()
+        agent = FakeAgent("done")
+        # Very short tick interval for the test
+        task = start_ticker(
+            jobs_path, adapter, agent, chat_locks={}, tick_interval=0.05,
+        )
+
+        # Wait up to 1s for the send
+        for _ in range(40):
+            if adapter.sent:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(adapter.sent) == 1
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_swallows_tick_errors_and_keeps_running(
+        self, jobs_path, caplog,
+    ) -> None:
+        """A corrupt jobs.json should not kill the ticker."""
+        jobs_path.parent.mkdir(parents=True, exist_ok=True)
+        jobs_path.write_text("{not json")
+
+        adapter = FakeAdapter()
+        agent = FakeAgent("x")
+        task = start_ticker(
+            jobs_path, adapter, agent, chat_locks={}, tick_interval=0.05,
+        )
+        await asyncio.sleep(0.15)
+        assert task.done() is False  # still running despite the error
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

@@ -138,3 +138,10 @@ def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "deepagents_cli.widgets.chat_input._default_history_path",
         lambda: tmp_path / "history.jsonl",
     )
+
+
+@pytest.fixture
+def fake_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Redirect `~/.deepagents/` into a per-test tmp dir."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path

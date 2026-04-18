@@ -1959,3 +1959,79 @@ class TestLoadToolsFromConfigHeaders:
 
         sent_headers = captured["connections"]["linear"]["headers"]
         assert sent_headers == {"Authorization": "Bearer tok-123"}
+
+
+class TestLoadToolsFromConfigOAuth:
+    @pytest.mark.asyncio
+    async def test_missing_tokens_raise_login_instruction(
+        self,
+        fake_home: Path,
+    ) -> None:
+        from deepagents_cli.mcp_tools import _load_tools_from_config
+
+        config = {
+            "mcpServers": {
+                "notion": {
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth": "oauth",
+                }
+            }
+        }
+        with patch(
+            "deepagents_cli.mcp_tools._check_remote_server",
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="deepagents mcp login notion"):
+                await _load_tools_from_config(config)
+
+    @pytest.mark.asyncio
+    async def test_existing_tokens_attach_oauth_provider(
+        self,
+        fake_home: Path,
+        mock_mcp_client: tuple[MagicMock, AsyncMock],
+    ) -> None:
+        from mcp.client.auth import OAuthClientProvider
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_cli.mcp_auth import FileTokenStorage
+        from deepagents_cli.mcp_tools import _load_tools_from_config
+
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(OAuthToken(access_token="at", token_type="Bearer"))
+
+        mock_client, _ = mock_mcp_client
+        captured: dict = {}
+
+        def _capture(connections: dict) -> MagicMock:
+            captured["connections"] = connections
+            return mock_client
+
+        with (
+            patch(
+                "langchain_mcp_adapters.client.MultiServerMCPClient",
+                side_effect=_capture,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "langchain_mcp_adapters.tools.load_mcp_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            config = {
+                "mcpServers": {
+                    "notion": {
+                        "transport": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                        "auth": "oauth",
+                    }
+                }
+            }
+            _, mgr, _ = await _load_tools_from_config(config)
+            await mgr.cleanup()
+
+        conn = captured["connections"]["notion"]
+        assert isinstance(conn.get("auth"), OAuthClientProvider)

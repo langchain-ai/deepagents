@@ -31,10 +31,9 @@ from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -2302,46 +2301,16 @@ class TestSubAgents:
         assert len(tool_messages) == 1
         assert tool_messages[0].content == "Override response."
 
-    def test_ls_agent_type_is_set_on_subagent_runnables(self) -> None:
-        """Every subagent runnable must be bound with ``ls_agent_type: "subagent"``.
-
-        ``SubAgentMiddleware._get_subagents()`` calls
-        ``.with_config({"configurable": {"ls_agent_type": "subagent"}})`` on each
-        subagent runnable so downstream LangSmith tracing can distinguish
-        subagent runs from root-agent runs. This test asserts the binding is
-        present on every returned runnable.
-        """
-        subagent_names = ["alpha", "beta"]
-        middleware = SubAgentMiddleware(
-            backend=StateBackend(),
-            subagents=[
-                SubAgent(
-                    name=name,
-                    description=f"Subagent {name}.",
-                    system_prompt=f"You are {name}.",
-                    model=_ScriptedChatModel(responses=[AIMessage(content="ok")]),
-                    tools=[],
-                )
-                for name in subagent_names
-            ],
-        )
-
-        specs = middleware._get_subagents()
-        assert [s["name"] for s in specs] == subagent_names
-
-        for spec in specs:
-            bound_configurable = spec["runnable"].config.get("configurable", {})
-            assert bound_configurable.get("ls_agent_type") == "subagent", (
-                f"Subagent {spec['name']!r} should have ls_agent_type='subagent' in its bound configurable, got: {bound_configurable}"
-            )
-
     def test_ls_agent_type_is_trace_only_metadata(self) -> None:
         """``ls_agent_type`` must reach LangSmith but not streamed callback metadata.
 
-        Mirrors langchain's ``test_ls_agent_type_is_trace_only_metadata``. Relies
-        on langgraph's ``_PROPAGATE_TO_METADATA`` allowlist (1.1.7+), which only
-        promotes a fixed set of ``configurable`` keys to streamed metadata;
-        ``ls_agent_type`` is not in that allowlist, so it stays trace-only.
+        The task tool wraps each subagent invocation in a langsmith
+        ``tracing_context`` with ``metadata={"ls_agent_type": "subagent"}`` so
+        downstream LangSmith tracing can distinguish subagent runs from
+        root-agent runs. Because this metadata is set via langsmith's tracing
+        contextvar (not via RunnableConfig), it only reaches the
+        ``LangChainTracer`` — it is not added to the callback manager's
+        metadata and therefore does not leak into streamed callback events.
         """
         # Root model: first call emits a task tool call that dispatches to the
         # subagent; subsequent calls return a final response.
@@ -2426,6 +2395,106 @@ class TestSubAgents:
             )
 
         # (2) ls_agent_type='subagent' must reach the LangSmith tracer.
+        posts: list[dict[str, Any]] = []
+        for call in mock_session.request.mock_calls:
+            if call.args and call.args[0] == "POST":
+                body = json.loads(call.kwargs["data"])
+                posts.extend(body.get("post", []) if "post" in body else [body])
+
+        subagent_tracer_metadatas = [
+            post.get("extra", {}).get("metadata", {})
+            for post in posts
+            if post.get("extra", {}).get("metadata", {}).get("ls_agent_type") == "subagent"
+        ]
+        assert subagent_tracer_metadatas, (
+            f"Expected at least one LangSmith post with ls_agent_type='subagent'. "
+            f"Got tracer metadatas: "
+            f"{[p.get('extra', {}).get('metadata', {}) for p in posts]}"
+        )
+
+    async def test_ls_agent_type_is_trace_only_metadata_async(self) -> None:
+        """Async variant of ``test_ls_agent_type_is_trace_only_metadata``.
+
+        Exercises the async ``atask`` code path in ``_build_task_tool`` to
+        ensure the tracing-context tagging works identically for
+        ``ainvoke``-driven subagent calls.
+        """
+        root_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Do some work",
+                                "subagent_type": "test-worker",
+                            },
+                            "id": "call_test_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        subagent_model = _ScriptedChatModel(responses=[AIMessage(content="Subagent completed the task.")])
+
+        captured_callbacks: list[dict[str, Any]] = []
+
+        class CaptureHandler(BaseCallbackHandler):
+            def on_chain_start(
+                self,
+                serialized: dict[str, Any],
+                inputs: dict[str, Any],
+                *,
+                run_id: str,
+                parent_run_id: str | None = None,
+                tags: list[str] | None = None,
+                metadata: dict[str, Any] | None = None,
+                **kwargs: Any,
+            ) -> None:
+                captured_callbacks.append(
+                    {
+                        "name": kwargs.get("name") or (serialized or {}).get("name"),
+                        "metadata": metadata or {},
+                    }
+                )
+
+        mock_session = MagicMock()
+        mock_client = Client(session=mock_session, api_key="test", auto_batch_tracing=False)
+
+        agent = create_deep_agent(
+            model=root_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="test-worker",
+                    description="A test worker subagent.",
+                    system_prompt="You are a test worker.",
+                    model=subagent_model,
+                    tools=[],
+                )
+            ],
+        )
+
+        with tracing_context(client=mock_client, enabled=True):
+            await agent.ainvoke(
+                {"messages": [HumanMessage(content="Please do some work")]},
+                config={
+                    "configurable": {"thread_id": "test_ls_agent_type_async"},
+                    "callbacks": [CaptureHandler()],
+                },
+            )
+
+        subagent_callback = next((c for c in captured_callbacks if c["name"] == "test-worker"), None)
+        assert subagent_callback is not None, f"Expected a 'test-worker' subagent callback, got names: {[c['name'] for c in captured_callbacks]}"
+
+        for captured in captured_callbacks:
+            assert "ls_agent_type" not in captured["metadata"], (
+                f"ls_agent_type leaked into callback metadata for run {captured['name']!r}: {captured['metadata']}"
+            )
+
         posts: list[dict[str, Any]] = []
         for call in mock_session.request.mock_calls:
             if call.args and call.args[0] == "POST":

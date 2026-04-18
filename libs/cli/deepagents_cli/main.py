@@ -1594,10 +1594,13 @@ def cli_main() -> None:
             if args.mcp_command == "login":
                 from deepagents_cli.mcp_commands import run_mcp_login
 
+                # Subcommand-scoped `--config` wins over the global
+                # `--mcp-config` if both are set.
+                config_path = args.config_path or getattr(args, "mcp_config", None)
                 exit_code = asyncio.run(
                     run_mcp_login(
                         server=args.server,
-                        config_path=args.config_path,
+                        config_path=config_path,
                     )
                 )
                 sys.exit(exit_code)

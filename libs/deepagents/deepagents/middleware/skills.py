@@ -191,6 +191,18 @@ class SkillMetadata(TypedDict):
     - Space-delimited list of tool names
     """
 
+    module: NotRequired[str | None]
+    """Path to a JS/TS entrypoint file for a QuickJS REPL module, relative to the skill directory.
+
+    Warning: this is experimental.
+
+    When present, consumers of this metadata (notably `deepagents-repl`'s
+    `REPLMiddleware`) may install the skill as a dynamic-importable ES
+    module. The string is a POSIX path like `./index.ts` pointing at a
+    file inside the skill dir. This middleware only parses and validates
+    the field — it does not load or execute any JavaScript.
+    """
+
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
@@ -341,6 +353,8 @@ def _parse_skill_metadata(  # noqa: C901
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
+    module_path = _validate_module_path(frontmatter_data.get("module"), skill_path)
+
     return SkillMetadata(
         name=str(name),
         description=description_str,
@@ -349,7 +363,68 @@ def _parse_skill_metadata(  # noqa: C901
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
+        module=module_path,
     )
+
+
+_MODULE_EXTENSIONS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx")
+
+
+def _validate_module_path(raw: object, skill_path: str) -> str | None:  # noqa: PLR0911
+    """Validate the `module` frontmatter key and return a normalized path.
+
+    The value is an optional POSIX path, relative to the skill directory,
+    pointing at a JS/TS entrypoint file. Returns the normalized path on
+    success, or None when the key is absent or invalid — invalid values
+    are logged but do not fail the parse, so a malformed `module` key
+    degrades the skill to prose-only rather than hiding it entirely.
+
+    Args:
+        raw: Raw value from `frontmatter_data.get("module")`.
+        skill_path: Path to the `SKILL.md` file (for warning messages).
+
+    Returns:
+        A POSIX path string like `"index.ts"` or `"lib/entry.js"`, or
+        `None` if the key is absent or fails validation.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        logger.warning(
+            "Ignoring non-string 'module' in %s (got %s)",
+            skill_path,
+            type(raw).__name__,
+        )
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    # Normalize `./x` → `x` for consistency with how the loader will key
+    # files in the installed ModuleScope. Leave `lib/util.js` untouched.
+    normalized = stripped.removeprefix("./")
+    # Reject absolute paths and any attempt to escape the skill dir.
+    # POSIX normalization happens later in the loader; here we just
+    # catch the obvious wrong shapes at parse time so invalid skills
+    # never make it into `skills_metadata`.
+    if normalized.startswith("/"):
+        logger.warning("Ignoring absolute 'module' path %r in %s", raw, skill_path)
+        return None
+    if normalized.startswith("../") or "/../" in normalized or normalized == "..":
+        logger.warning(
+            "Ignoring 'module' path %r in %s: escapes skill directory",
+            raw,
+            skill_path,
+        )
+        return None
+    if not normalized.endswith(_MODULE_EXTENSIONS):
+        logger.warning(
+            "Ignoring 'module' path %r in %s: extension must be one of %s",
+            raw,
+            skill_path,
+            ", ".join(_MODULE_EXTENSIONS),
+        )
+        return None
+    return normalized
 
 
 def _validate_metadata(

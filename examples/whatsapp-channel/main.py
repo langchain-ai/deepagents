@@ -282,7 +282,41 @@ async def main() -> None:
                                 f"_(couldn't attach: {name})_"
                             )
 
-                    if actions:
+                    if valid_images:
+                        # Combine: first image carries the response text as
+                        # its caption (single chat bubble). Extra images
+                        # follow up with their alt as caption. Status msg
+                        # is finalized to a brief "Done" since we can't
+                        # edit a text bubble into a media attachment.
+                        if status_msg_id:
+                            await adapter.edit_message(
+                                chat_id, status_msg_id,
+                                _build_status_text(actions, done=True),
+                            )
+
+                        first_alt, first_path = valid_images[0]
+                        first_caption = text_to_send or first_alt or None
+                        first_result = await adapter.send_media(
+                            chat_id, first_path, "image",
+                            caption=first_caption,
+                        )
+                        if not first_result.success:
+                            logger.warning(
+                                "send_media failed for %s: %s",
+                                first_path, first_result.error,
+                            )
+
+                        for alt, img_path in valid_images[1:]:
+                            media_result = await adapter.send_media(
+                                chat_id, img_path, "image",
+                                caption=alt or None,
+                            )
+                            if not media_result.success:
+                                logger.warning(
+                                    "send_media failed for %s: %s",
+                                    img_path, media_result.error,
+                                )
+                    elif actions:
                         # Tools were used: update status to "Done", then send
                         # the response as a separate message.
                         if status_msg_id:
@@ -294,8 +328,8 @@ async def main() -> None:
                         if not send_result.success:
                             logger.error("Failed to send: %s", send_result.error)
                     else:
-                        # No tools — edit the status message into the response
-                        # so only one message is visible.
+                        # No tools, no images — edit the status message into
+                        # the response so only one message is visible.
                         sent = False
                         if status_msg_id:
                             edit_result = await adapter.edit_message(
@@ -308,20 +342,8 @@ async def main() -> None:
                                 reply_to=event.message_id,
                             )
 
-                    # Send each valid image as a follow-up media message.
                     # History stores the original response_text (refs intact)
                     # so the agent sees its own markdown on the next turn.
-                    for alt, img_path in valid_images:
-                        media_result = await adapter.send_media(
-                            chat_id, img_path, "image",
-                            caption=alt or None,
-                        )
-                        if not media_result.success:
-                            logger.warning(
-                                "send_media failed for %s: %s",
-                                img_path, media_result.error,
-                            )
-
                     history.append(AIMessage(content=response_text))
                 else:
                     logger.warning(

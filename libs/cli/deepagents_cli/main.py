@@ -1592,8 +1592,6 @@ def cli_main() -> None:
                 show_threads_help()
         elif args.command == "mcp":
             if args.mcp_command == "login":
-                import asyncio
-
                 from deepagents_cli.mcp_commands import run_mcp_login
 
                 exit_code = asyncio.run(

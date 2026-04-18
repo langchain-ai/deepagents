@@ -590,11 +590,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Unconditional prompt caching (see general-purpose subagent comment).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
+        # MemoryMiddleware applies the cache_control breakpoint only when the
+        # request model is Anthropic, making it safe to enable unconditionally.
         deepagent_middleware.append(
             MemoryMiddleware(
                 backend=backend,
                 sources=memory,
-                add_cache_control=isinstance(model, ChatAnthropic),
+                add_cache_control=True,
             )
         )
     if interrupt_on is not None:

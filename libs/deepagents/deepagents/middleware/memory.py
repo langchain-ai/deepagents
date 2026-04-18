@@ -51,7 +51,7 @@ Common sections include:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -71,7 +71,8 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.messages import SystemMessage
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import ContentBlock, SystemMessage
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -191,9 +192,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 Display names are automatically derived from the paths.
 
                 Sources are loaded in order.
-            add_cache_control: Whether to tag the memory content block with
-                `cache_control: {"type": "ephemeral"}` for Anthropic
-                prompt caching.
+            add_cache_control: If `True`, tag the last system-message
+                content block with `cache_control: {"type": "ephemeral"}`
+                when the request model is `ChatAnthropic`.
+
+                This creates a second prompt-cache breakpoint that pairs with
+                `AnthropicPromptCachingMiddleware`'s breakpoint on the static
+                system prompt, keeping the memory block boundary cached across
+                turns (memory content would otherwise shift after every update
+                and invalidate the prefix cache).
+
+                No-ops on non-Anthropic models; Bedrock and Vertex wrappers do
+                not qualify.
         """
         self._backend = backend
         self.sources = sources
@@ -325,9 +335,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         new_system_message = append_to_system_message(request.system_message, agent_memory)
 
-        if self._add_cache_control and new_system_message.content_blocks:
-            blocks: list[Any] = list(new_system_message.content_blocks)
-            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+        # Runtime check uses `request.model` (not a flag captured at init) so
+        # the breakpoint correctly follows middleware-level model overrides.
+        if self._add_cache_control and isinstance(request.model, ChatAnthropic) and new_system_message.content_blocks:
+            blocks: list[ContentBlock] = list(new_system_message.content_blocks)
+            last = blocks[-1]
+            base = last if isinstance(last, dict) else {}
+            # Merged dict is structurally a ContentBlock with an extra
+            # provider-specific key; ty can't discriminate the union.
+            blocks[-1] = {**base, "cache_control": {"type": "ephemeral"}}  # ty: ignore[invalid-assignment]
             new_system_message = SystemMessage(content_blocks=blocks)
 
         return request.override(system_message=new_system_message)

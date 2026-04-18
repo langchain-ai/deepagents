@@ -290,7 +290,7 @@ class LangSmithEnvironment(BaseEnvironment):
         dataplane daemon's cwd, not the image's `WORKDIR`. Terminal-bench
         verifier scripts rely on `WORKDIR` (e.g. `/app`) — many include
         `if [ "$PWD" = "/" ]; then exit 1; fi` as a guard and abort without
-        writing ``/logs/verifier/reward.txt`` when this assumption is violated.
+        writing `/logs/verifier/reward.txt` when this assumption is violated.
 
         PID 1 (the container entrypoint) inherits the image's ``WORKDIR`` as
         its cwd, so ``readlink /proc/1/cwd`` yields the correct directory

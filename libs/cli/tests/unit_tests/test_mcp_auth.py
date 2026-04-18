@@ -160,3 +160,64 @@ class TestFileTokenStorage:
         got_b = await b.get_tokens()
         assert got_a is not None and got_a.access_token == "a-tok"
         assert got_b is not None and got_b.access_token == "b-tok"
+
+
+import io
+
+
+class TestBuildOAuthProvider:
+    def test_returns_oauth_client_provider(self, fake_home: Path) -> None:
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_cli.mcp_auth import FileTokenStorage, build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        assert isinstance(provider, OAuthClientProvider)
+
+    @pytest.mark.asyncio
+    async def test_redirect_handler_prints_url(
+        self, fake_home: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_cli.mcp_auth import _make_paste_back_handlers
+
+        redirect, _ = _make_paste_back_handlers()
+        await redirect("https://issuer.example.com/authorize?x=1")
+        captured = capsys.readouterr()
+        assert "https://issuer.example.com/authorize?x=1" in captured.out
+
+    @pytest.mark.asyncio
+    async def test_callback_handler_parses_code_and_state(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_cli import mcp_auth
+
+        _, callback = mcp_auth._make_paste_back_handlers()
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(
+                "http://localhost/callback?code=ABC&state=XYZ\n"
+            ),
+        )
+        code, state = await callback()
+        assert code == "ABC"
+        assert state == "XYZ"
+
+    @pytest.mark.asyncio
+    async def test_callback_handler_rejects_missing_code(
+        self, fake_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import mcp_auth
+
+        _, callback = mcp_auth._make_paste_back_handlers()
+        monkeypatch.setattr(
+            "sys.stdin", io.StringIO("http://localhost/callback\n")
+        )
+        with pytest.raises(RuntimeError, match="code"):
+            await callback()

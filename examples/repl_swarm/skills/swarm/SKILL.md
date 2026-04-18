@@ -6,7 +6,7 @@ module: ./index.ts
 
 # Swarm
 
-Fan out a list of tasks to Deep Agents subagents with bounded
+Fan out a list of tasks to subagents with bounded
 concurrency, collect results, and return a compact summary.
 
 ## When to use

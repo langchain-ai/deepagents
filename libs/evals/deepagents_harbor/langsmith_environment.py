@@ -383,7 +383,7 @@ class LangSmithEnvironment(BaseEnvironment):
         When `cwd` is not provided, defaults to the container's
         `WORKDIR` (resolved at `start()`) rather than LangSmith's
         dataplane default of `/`. This preserves the semantics that
-        terminal-bench verifier scripts assume when they probe ``$PWD``.
+        terminal-bench verifier scripts assume when they probe `$PWD`.
 
         Args:
             command: Shell command string to execute.

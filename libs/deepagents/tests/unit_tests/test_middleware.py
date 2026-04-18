@@ -40,7 +40,7 @@ from deepagents.middleware.filesystem import (
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
-    _supports_execution,
+    supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
@@ -61,7 +61,7 @@ def _make_backend(files=None):
                     "modified_at": fdata.get("modified_at", ""),
                 },
             )
-    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     return backend, mem_store
 
 
@@ -72,7 +72,7 @@ def _runtime(tool_call_id=""):
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -86,10 +86,10 @@ class TestAddMiddleware:
         middleware = [
             SubAgentMiddleware(
                 backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             )
         ]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
@@ -97,10 +97,10 @@ class TestAddMiddleware:
             FilesystemMiddleware(),
             SubAgentMiddleware(
                 backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             ),
         ]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -171,7 +171,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
-        assert result == str(["/test.txt", "/test2.txt"])
+        assert result.content == str(["/test.txt", "/test2.txt"])
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -205,7 +205,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
@@ -246,7 +246,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
@@ -287,7 +287,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
 
@@ -318,7 +318,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
@@ -351,7 +351,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
@@ -383,7 +383,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        result = result_raw
+        result = result_raw.content
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
@@ -405,7 +405,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result == str([])
+        assert result.content == str([])
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
@@ -457,7 +457,7 @@ class TestFilesystemMiddleware:
         )
 
         # Result should be truncated
-        result = result_raw
+        result = result_raw.content
         assert isinstance(result, str)
         assert len(result.split(", ")) < 2000  # Should be truncated to fewer files
         # Last element should be the truncation message
@@ -491,9 +491,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/helper.txt" in result
-        assert "/main.py" not in result
+        assert "/test.py" in result.content
+        assert "/helper.txt" in result.content
+        assert "/main.py" not in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -513,9 +513,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "1: import os" in result
-        assert "2: import sys" in result
-        assert "print" not in result
+        assert "1: import os" in result.content
+        assert "2: import sys" in result.content
+        assert "print" not in result.content
 
     def test_grep_search_shortterm_count_mode(self):
         files = {
@@ -540,8 +540,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py:2" in result or "/test.py: 2" in result
-        assert "/main.py:1" in result or "/main.py: 1" in result
+        assert "/test.py:2" in result.content or "/test.py: 2" in result.content
+        assert "/main.py:1" in result.content or "/main.py: 1" in result.content
 
     def test_grep_search_shortterm_with_include(self):
         files = {
@@ -566,8 +566,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.txt" not in result.content
 
     def test_grep_search_shortterm_with_path(self):
         files = {
@@ -592,8 +592,8 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/tests/test.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/tests/test.py" not in result.content
 
     def test_grep_search_shortterm_regex_pattern(self):
         """Test grep with literal pattern (not regex)."""
@@ -615,9 +615,9 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "1: def hello():" in result
-        assert "2: def world():" in result
-        assert "x = 5" not in result
+        assert "1: def hello():" in result.content
+        assert "2: def world():" in result.content
+        assert "x = 5" not in result.content
 
     def test_grep_search_shortterm_no_matches(self):
         files = {
@@ -636,7 +636,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result == "No matches found"
+        assert result.content == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
         """Test grep with special characters (literal search, not regex)."""
@@ -657,7 +657,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert "No matches found" in result
+        assert "No matches found" in result.content
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""
@@ -1078,7 +1078,7 @@ class TestFilesystemMiddleware:
     def test_single_text_block_extracts_text_directly(self, file_format):
         """Test that single text block extracts text content directly, not stringified structure."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_single")
 
@@ -1106,7 +1106,7 @@ class TestFilesystemMiddleware:
     def test_multiple_text_blocks_joins_text(self, file_format):
         """Test that multiple text blocks are joined, not stringified."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_multi")
 
@@ -1135,7 +1135,7 @@ class TestFilesystemMiddleware:
     def test_mixed_content_blocks_preserves_non_text(self, file_format):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_mixed")
 
@@ -1463,8 +1463,8 @@ class TestFilesystemMiddleware:
         assert "Very long output..." in result
         assert "truncated" in result
 
-    def test_supports_execution_helper_with_composite_backend(self):
-        """Test _supports_execution correctly identifies CompositeBackend capabilities."""
+    def testsupports_execution_helper_with_composite_backend(self):
+        """Test supports_execution correctly identifies CompositeBackend capabilities."""
 
         # Mock sandbox backend
         class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
@@ -1487,19 +1487,19 @@ class TestFilesystemMiddleware:
 
         # StateBackend doesn't support execution
         state_backend = StateBackend()
-        assert not _supports_execution(state_backend)
+        assert not supports_execution(state_backend)
 
         # TestSandboxBackend supports execution
         sandbox_backend = TestSandboxBackend()
-        assert _supports_execution(sandbox_backend)
+        assert supports_execution(sandbox_backend)
 
         # CompositeBackend with sandbox default supports execution
         comp_with_sandbox = CompositeBackend(default=sandbox_backend, routes={})
-        assert _supports_execution(comp_with_sandbox)
+        assert supports_execution(comp_with_sandbox)
 
         # CompositeBackend with non-sandbox default doesn't support execution
         comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
-        assert not _supports_execution(comp_without_sandbox)
+        assert not supports_execution(comp_without_sandbox)
 
     def test_intercept_truncates_content_sample_lines(self):
         """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""
@@ -1694,15 +1694,7 @@ class TestPatchToolCallsMiddleware:
         ]
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
-        assert len(patched_messages) == 2
-        assert patched_messages[0].type == "system"
-        assert patched_messages[0].content == "You are a helpful assistant."
-        assert patched_messages[1].type == "human"
-        assert patched_messages[1].content == "Hello, how are you?"
-        assert patched_messages[1].id == "2"
+        assert state_update is None
 
     def test_missing_tool_call(self) -> None:
         input_messages = [
@@ -1750,23 +1742,7 @@ class TestPatchToolCallsMiddleware:
         ]
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
-        assert len(patched_messages) == 5
-        assert patched_messages[0].type == "system"
-        assert patched_messages[0].content == "You are a helpful assistant."
-        assert patched_messages[1].type == "human"
-        assert patched_messages[1].content == "Hello, how are you?"
-        assert patched_messages[2].type == "ai"
-        assert len(patched_messages[2].tool_calls) == 1
-        assert patched_messages[2].tool_calls[0]["id"] == "123"
-        assert patched_messages[2].tool_calls[0]["name"] == "get_events_for_days"
-        assert patched_messages[2].tool_calls[0]["args"] == {"date_str": "2025-01-01"}
-        assert patched_messages[3].type == "tool"
-        assert patched_messages[3].tool_call_id == "123"
-        assert patched_messages[4].type == "human"
-        assert patched_messages[4].content == "What is the weather in Tokyo?"
+        assert state_update is None
 
     def test_two_missing_tool_calls(self) -> None:
         input_messages = [

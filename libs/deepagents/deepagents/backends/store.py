@@ -44,14 +44,65 @@ if TYPE_CHECKING:
 
 @dataclass
 class BackendContext(Generic[StateT, ContextT]):
-    """Context passed to namespace factory functions."""
+    """Context passed to namespace factory functions.
+
+    Deprecated: `BackendContext` will be removed in version 0.7.0.
+    Namespace factories now receive a `Runtime` instance directly.
+    Migrate from `lambda ctx: (ctx.runtime.context.user_id, "fs")`
+    to `lambda rt: (rt.server_info.user.identity, "fs")`.
+    """
 
     state: StateT
     runtime: "Runtime[ContextT]"
 
 
-# Type alias for namespace factory functions
-NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
+class _NamespaceRuntimeCompat:
+    """Wrapper that duck-types as both Runtime and BackendContext.
+
+    Allows old-style namespace factories (accessing ``.runtime`` / ``.state``)
+    to work alongside new-style factories (accessing ``Runtime`` attrs directly).
+
+    Will be removed in v0.7.
+    """
+
+    def __init__(self, runtime: "Runtime[Any] | None", state: object = None) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    @property
+    def runtime(self) -> "Runtime[Any] | None":
+        warnings.warn(
+            "Accessing .runtime on the namespace factory argument is deprecated. "
+            "The argument is now a Runtime instance — use its attributes directly "
+            "(e.g. `rt.context` instead of `ctx.runtime.context`). "
+            "This will be removed in v0.7.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._runtime
+
+    @property
+    def state(self) -> object:
+        warnings.warn(
+            "Accessing .state on the namespace factory argument is deprecated. "
+            "Namespace resolution should not depend on state. "
+            "This will be removed in v0.7.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._state
+
+    def __getattr__(self, name: str) -> object:
+        if self._runtime is None:
+            msg = f"Runtime is not available (running outside graph execution), cannot access '.{name}'"
+            raise AttributeError(msg)
+        return getattr(self._runtime, name)
+
+
+# Type alias for namespace factory functions.
+# Accepts Runtime directly. Old-style BackendContext callables still work
+# via _NamespaceRuntimeCompat but are deprecated (removed in v0.7).
+NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
 # common in user IDs (hyphen, underscore, dot, @, +, colon, tilde).
@@ -126,15 +177,13 @@ class StoreBackend(BackendProtocol):
                 is used directly.  When ``None`` (the default), the store is
                 obtained at call time via ``get_store()``, which requires
                 a LangGraph graph execution context.
-            namespace: Optional callable that takes a BackendContext and returns
-                a namespace tuple. This provides full flexibility for namespace resolution.
-                We forbid * which is a wild card for now.
-                If None, uses legacy assistant_id detection from metadata (deprecated).
+            namespace: Optional callable that receives a ``Runtime`` and returns
+                a namespace tuple for scoping store operations.
+                Wildcards (``*``) are forbidden.
+                If ``None``, uses legacy assistant_id detection from metadata (deprecated).
 
-                !!! Note:
-                    This parameter will be **required** in version 0.5.0.
-                !!!! Warning:
-                    This API is subject to change in a minor version.
+                Old-style callables that accept ``BackendContext`` still work
+                but are deprecated and will be removed in v0.7.
 
             file_format: Storage format version. `"v1"` (default) stores
                 content as `list[str]` (lines split on `\\n`) without an
@@ -142,7 +191,7 @@ class StoreBackend(BackendProtocol):
                 with an `encoding` field.
 
         Example:
-                    namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
+                    namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
         """
         if runtime is not None:
             warnings.warn(
@@ -178,16 +227,17 @@ class StoreBackend(BackendProtocol):
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
-        If namespace was provided at init, calls it with a BackendContext.
+        If namespace was provided at init, calls it with a ``_NamespaceRuntimeCompat``
+        wrapper that duck-types as both ``Runtime`` (new) and ``BackendContext`` (legacy).
         Otherwise, uses legacy assistant_id detection from metadata (deprecated).
         """
         if self._namespace is not None:
             try:
                 runtime = get_runtime()
-            except RuntimeError:
+            except (RuntimeError, KeyError):
                 runtime = None
-            ctx = BackendContext(state=None, runtime=runtime)  # type: ignore[arg-type]
-            return _validate_namespace(self._namespace(ctx))
+            compat = _NamespaceRuntimeCompat(runtime)
+            return _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]
 
         return self._get_namespace_legacy()
 
@@ -219,7 +269,7 @@ class StoreBackend(BackendProtocol):
             assistant_id = None
 
         if assistant_id:
-            return (assistant_id, namespace)
+            return _validate_namespace((assistant_id, namespace))
         return (namespace,)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:

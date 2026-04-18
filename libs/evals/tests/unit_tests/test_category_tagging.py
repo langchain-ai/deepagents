@@ -20,6 +20,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_tool_selection",
         "test_tool_usage_relational",
         "test_todos",
+        "test_tool_usage_incident_graph",
         "test_external_benchmarks",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],

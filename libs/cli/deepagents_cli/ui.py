@@ -63,6 +63,15 @@ def show_help() -> None:
         "  deepagents update                              Check for and install updates"
     )
     console.print()
+    console.print("[bold]Deploy (beta):[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  deepagents init [NAME]                  Scaffold a new deploy project"
+    )
+    console.print(
+        "  deepagents dev    --config deepagents.toml  Run a local dev server"
+    )
+    console.print("  deepagents deploy --config deepagents.toml  Bundle and deploy")
+    console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print(
@@ -115,6 +124,9 @@ def show_help() -> None:
     console.print("  --clear-default-model      Clear the default model")
     console.print(
         "  --update                   Check for and install updates, then exit"
+    )
+    console.print(
+        "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show deepagents CLI and SDK versions")

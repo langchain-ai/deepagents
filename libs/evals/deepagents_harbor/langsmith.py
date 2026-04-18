@@ -29,6 +29,24 @@ from langsmith import Client
 from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+"""Base URL for LangSmith API requests, overridable via `LANGSMITH_ENDPOINT`."""
+
+_API_KEY_ENV_VARS = ("LANGSMITH_SANDBOX_API_KEY", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+"""Environment variables checked (in priority order) when resolving an API key."""
+
+
+def resolve_langsmith_api_key() -> tuple[str, str] | None:
+    """Resolve the LangSmith API key from environment variables.
+
+    Checks, in order: `LANGSMITH_SANDBOX_API_KEY`, `LANGSMITH_API_KEY`,
+    `LANGCHAIN_API_KEY`. Returns a `(value, env_var_name)` tuple for the
+    first non-empty value, or `None`.
+    """
+    for var in _API_KEY_ENV_VARS:
+        value = os.getenv(var)
+        if value:
+            return value, var
+    return None
 
 
 def _get_git_remote_url() -> str:
@@ -57,13 +75,23 @@ def _get_git_remote_url() -> str:
     return raw
 
 
-def _headers() -> dict[str, str | None]:
+def _headers() -> dict[str, str]:
     """Build request headers with the current API key.
 
     Reading the env var at call time (not import time) avoids stale `None`
     values when `dotenv.load_dotenv()` runs after this module is imported.
+
+    Raises:
+        ValueError: If no API key is found in the environment.
     """
-    return {"x-api-key": os.getenv("LANGSMITH_API_KEY")}
+    result = resolve_langsmith_api_key()
+    if not result:
+        msg = (
+            "No LangSmith API key found. Set one of: "
+            "LANGSMITH_SANDBOX_API_KEY, LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
+        )
+        raise ValueError(msg)
+    return {"x-api-key": result[0]}
 
 
 # ============================================================================

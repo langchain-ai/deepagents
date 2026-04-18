@@ -2,21 +2,34 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import stat
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider, TokenStorage
-from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+from mcp.shared.auth import (
+    AnyUrl,
+    OAuthClientInformationFull,
+    OAuthClientMetadata,
+    OAuthToken,
+)
 
+if TYPE_CHECKING:
+    import httpx
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _STORAGE_VERSION = 1
+
+# Cap HTTP response bodies (and replays) shown in error messages so a
+# misconfigured server can't flood the user's terminal with MBs of HTML.
+_BODY_TRUNCATE_AT = 2000
 
 
 # Slack's MCP server rejects Dynamic Client Registration — every client must
@@ -51,6 +64,9 @@ def _prompt_slack_team() -> str | None:
     Returns:
         The entered team ID (e.g., ``T01234567``), or ``None`` if the user
         left the prompt blank.
+
+    Raises:
+        RuntimeError: If the entered ID isn't a valid Slack team ID format.
     """
     raw = input(
         "Slack team ID to install the app into "
@@ -77,10 +93,14 @@ def resolve_headers(
     `$${VAR}` is the escape form and collapses to the literal `${VAR}` with no
     lookup. A dollar sign not followed by `{` or `$` is left untouched.
 
+    Returns:
+        A new dict with all env-var references resolved to their current values.
+
     Raises:
         TypeError: If a header value is not a string.
-        RuntimeError: If a `${VAR}` references an unset environment variable.
-    """
+        RuntimeError: If a `${VAR}` references an unset environment variable
+            (propagated from the inner `_interpolate` helper).
+    """  # noqa: DOC502 — RuntimeError is raised via `_interpolate`
     resolved: dict[str, str] = {}
     for name, value in headers.items():
         if not isinstance(value, str):
@@ -142,6 +162,9 @@ def _tokens_dir() -> Path:
     Re-reads `$HOME` on every call so tests that override it via
     `monkeypatch.setenv("HOME", ...)` transparently redirect token files.
     Falls back to the module-level `DEFAULT_CONFIG_DIR` when `$HOME` is unset.
+
+    Returns:
+        Absolute path to the per-user mcp-tokens directory.
     """
     home_override = os.environ.get("HOME")
     if home_override:
@@ -159,6 +182,7 @@ class FileTokenStorage(TokenStorage):
     """
 
     def __init__(self, server_name: str) -> None:
+        """Bind this storage to *server_name* under `~/.deepagents/mcp-tokens/`."""
         self._server_name = server_name
 
     @property
@@ -166,6 +190,7 @@ class FileTokenStorage(TokenStorage):
         return _tokens_dir() / f"{self._server_name}.json"
 
     async def get_tokens(self) -> OAuthToken | None:
+        """Return the stored `OAuthToken`, or `None` if none is persisted."""
         data = self._read()
         if data is None:
             return None
@@ -175,12 +200,14 @@ class FileTokenStorage(TokenStorage):
         return OAuthToken.model_validate(raw)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
+        """Persist *tokens* to disk, merging with any existing client_info."""
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
         self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
+        """Return the stored client registration, or `None` if none is persisted."""
         data = self._read()
         if data is None:
             return None
@@ -190,11 +217,10 @@ class FileTokenStorage(TokenStorage):
         return OAuthClientInformationFull.model_validate(raw)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        """Persist *client_info* to disk, merging with any existing tokens."""
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
-        data["client_info"] = json.loads(
-            client_info.model_dump_json(exclude_none=True)
-        )
+        data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
         self._write(data)
 
     def _read(self) -> dict | None:
@@ -226,26 +252,20 @@ class FileTokenStorage(TokenStorage):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Tighten directory perms on POSIX (best effort on Windows).
         if hasattr(os, "chmod"):
-            try:
-                os.chmod(path.parent, stat.S_IRWXU)  # 0o700
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                Path(path.parent).chmod(stat.S_IRWXU)  # 0o700
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         try:
-            os.replace(tmp, path)
+            Path(tmp).replace(path)
         except Exception:
             # Clean up the tmp file so no partial state leaks at the final path.
-            try:
+            with contextlib.suppress(OSError):
                 tmp.unlink()
-            except OSError:
-                pass
             raise
         if hasattr(os, "chmod"):
-            try:
-                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                Path(path).chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
 
 
 RedirectHandler = Callable[[str], Awaitable[None]]
@@ -269,7 +289,7 @@ def _make_paste_back_handlers(
     """
     extras = dict(extra_auth_params or {})
 
-    async def redirect(auth_url: str) -> None:
+    async def redirect(auth_url: str) -> None:  # noqa: RUF029 — MCP SDK requires async handler
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
         print(  # noqa: T201 - intentional user-facing prompt
             "\nOpen this URL in a browser, approve access, then paste the full "
@@ -277,8 +297,8 @@ def _make_paste_back_handlers(
             f"\n  {final_url}\n"
         )
 
-    async def callback() -> tuple[str, str | None]:
-        url = input("Callback URL: ").strip()
+    async def callback() -> tuple[str, str | None]:  # noqa: RUF029 — MCP SDK requires async handler
+        url = input("Callback URL: ").strip()  # noqa: ASYNC250 — interactive paste-back is intentional
         params = parse_qs(urlparse(url).query)
         if "code" not in params or not params["code"]:
             msg = "Callback URL is missing the 'code' parameter."
@@ -337,7 +357,7 @@ def build_oauth_provider(
             redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
-            token_endpoint_auth_method="none",
+            token_endpoint_auth_method="none",  # noqa: S106 — OAuth method literal, not a password
         )
     else:
         metadata = OAuthClientMetadata(
@@ -372,19 +392,22 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
             redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
-            token_endpoint_auth_method="none",
+            token_endpoint_auth_method="none",  # noqa: S106 — OAuth method literal, not a password
         )
     )
 
 
-def _find_http_status_error(exc: BaseException) -> Any:
-    """Recursively search *exc* (and any ExceptionGroup it wraps) for an
-    `httpx.HTTPStatusError`.
+def _find_http_status_error(exc: BaseException) -> httpx.HTTPStatusError | None:
+    """Find the first `httpx.HTTPStatusError` wrapped inside *exc*.
 
-    The MCP streamable-HTTP client runs inside an anyio `TaskGroup`, so HTTP
-    errors from `raise_for_status` arrive wrapped in one or more
-    `BaseExceptionGroup` layers. Returns the innermost `HTTPStatusError` or
-    `None` if the exception tree doesn't contain one.
+    Recursively searches *exc* and any `BaseExceptionGroup` / chained
+    `__cause__` / `__context__` it wraps. The MCP streamable-HTTP client runs
+    inside an anyio `TaskGroup`, so HTTP errors from `raise_for_status` arrive
+    wrapped in one or more `BaseExceptionGroup` layers.
+
+    Returns:
+        The innermost `httpx.HTTPStatusError` found, or `None` if the
+        exception tree doesn't contain one.
     """
     import httpx
 
@@ -403,7 +426,8 @@ def _find_http_status_error(exc: BaseException) -> Any:
 
 
 async def _drive_handshake(
-    connections: dict, storage: FileTokenStorage
+    connections: dict,
+    storage: FileTokenStorage,  # noqa: ARG001 — documents caller contract; SDK writes via the provider
 ) -> None:
     """Open a one-shot MCP session to trigger the OAuth handshake.
 
@@ -415,6 +439,11 @@ async def _drive_handshake(
     response body almost always carries the real reason (invalid_scope,
     missing_team, etc.). We unwrap the ExceptionGroup-wrapped error so that
     body gets surfaced to the user instead of being swallowed.
+
+    Raises:
+        RuntimeError: If the MCP server rejects the initialize request with
+            an HTTP error; the message includes status line, headers, and the
+            response body when recoverable.
     """
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -442,19 +471,21 @@ async def _drive_handshake(
                 body = reader()
                 if body:
                     break
-            except Exception:  # noqa: BLE001 — best-effort diagnostic
+            except Exception:  # noqa: BLE001, S112 — best-effort diagnostic, swallow and try next
                 continue
         if not body:
             try:
                 await response.aread()
                 body = response.text
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 — best-effort diagnostic, body stays empty
                 pass
 
         lines = [
             f"MCP server '{server_name}' rejected the initialize request:",
-            f"  HTTP {response.status_code} {response.reason_phrase} "
-            f"from {request.method} {request.url}",
+            (
+                f"  HTTP {response.status_code} {response.reason_phrase} "
+                f"from {request.method} {request.url}"
+            ),
         ]
         content_type = response.headers.get("content-type")
         if content_type:
@@ -467,17 +498,19 @@ async def _drive_handshake(
             lines.append(f"  WWW-Authenticate: {www_auth}")
 
         if body:
-            truncated = body if len(body) <= 2000 else body[:2000] + "…[truncated]"
-            lines.append("\nResponse body:")
-            lines.append(truncated)
+            truncated = (
+                body
+                if len(body) <= _BODY_TRUNCATE_AT
+                else body[:_BODY_TRUNCATE_AT] + "…[truncated]"
+            )
+            lines.extend(("\nResponse body:", truncated))
         else:
             # Streamed responses in the MCP SDK are consumed by raise_for_status
             # before we can read the body. Replay the request manually as a
             # non-streaming POST so we can see what the server actually said.
             replay = await _replay_request_for_body(request)
             if replay is not None:
-                lines.append("\n[Replayed request to capture response body]")
-                lines.append(replay)
+                lines.extend(("\n[Replayed request to capture response body]", replay))
             else:
                 lines.append(
                     "\n(Response body was empty on both the original request "
@@ -488,7 +521,7 @@ async def _drive_handshake(
         raise RuntimeError("\n".join(lines)) from status_error
 
 
-async def _replay_request_for_body(request: Any) -> str | None:
+async def _replay_request_for_body(request: httpx.Request) -> str | None:
     """Resend *request* as a non-streaming POST so we can read the body.
 
     The MCP SDK streams responses, which makes failed 4xx/5xx bodies
@@ -496,8 +529,9 @@ async def _replay_request_for_body(request: Any) -> str | None:
     same request outside of streaming mode is the simplest way to recover
     the body for diagnostics.
 
-    Returns a human-readable summary (status line + body, truncated) or
-    ``None`` if the replay itself failed.
+    Returns:
+        A human-readable summary (status line + body, truncated) or ``None``
+        if the replay itself failed.
     """
     import httpx
 
@@ -511,8 +545,8 @@ async def _replay_request_for_body(request: Any) -> str | None:
                 headers=dict(request.headers),
             )
         preview = resp.text
-        if len(preview) > 2000:  # noqa: PLR2004 — inline truncation threshold
-            preview = preview[:2000] + "…[truncated]"
+        if len(preview) > _BODY_TRUNCATE_AT:
+            preview = preview[:_BODY_TRUNCATE_AT] + "…[truncated]"
         return (
             f"HTTP {resp.status_code} {resp.reason_phrase}\n"
             f"Content-Type: {resp.headers.get('content-type', '(none)')}\n\n"
@@ -540,7 +574,7 @@ async def login(
     if server_config.get("auth") != "oauth":
         msg = (
             f"Server '{server_name}' does not use OAuth "
-            "(set \"auth\": \"oauth\" in mcpServers)."
+            '(set "auth": "oauth" in mcpServers).'
         )
         raise ValueError(msg)
     transport = server_config.get("type") or server_config.get("transport", "stdio")
@@ -572,7 +606,7 @@ async def login(
         storage=storage,
         extra_auth_params=extra_auth_params or None,
     )
-    conn: dict
+    conn: StreamableHttpConnection | SSEConnection
     if transport == "http":
         conn = StreamableHttpConnection(
             transport="streamable_http", url=server_config["url"], auth=provider
@@ -582,6 +616,5 @@ async def login(
 
     await _drive_handshake({server_name: conn}, storage)
     print(  # noqa: T201 - user-facing confirmation
-        f"Logged in to MCP server '{server_name}'. "
-        f"Tokens saved to {storage._path}."
+        f"Logged in to MCP server '{server_name}'. Tokens saved to {storage._path}."
     )

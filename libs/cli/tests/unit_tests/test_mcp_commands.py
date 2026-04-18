@@ -34,9 +34,7 @@ class TestSetupMCPParsers:
 
 
 class TestRunMCPLogin:
-    async def test_happy_path(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_happy_path(self, tmp_path: Path) -> None:
         from deepagents_cli.mcp_commands import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
@@ -54,13 +52,13 @@ class TestRunMCPLogin:
             )
         assert exit_code == 0
         mocked.assert_awaited_once()
-        kwargs = mocked.await_args.kwargs
+        await_args = mocked.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
         assert kwargs["server_name"] == "notion"
         assert kwargs["server_config"]["url"] == "https://mcp.notion.com/mcp"
 
-    async def test_server_not_in_config(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_server_not_in_config(self, tmp_path: Path) -> None:
         from deepagents_cli.mcp_commands import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
@@ -68,7 +66,5 @@ class TestRunMCPLogin:
             '{"mcpServers":{"linear":{"transport":"http",'
             '"url":"https://mcp.linear.app/mcp","auth":"oauth"}}}'
         )
-        exit_code = await run_mcp_login(
-            server="notion", config_path=str(config_path)
-        )
+        exit_code = await run_mcp_login(server="notion", config_path=str(config_path))
         assert exit_code != 0

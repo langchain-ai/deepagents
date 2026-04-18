@@ -466,17 +466,16 @@ class MCPSessionManager:
         per-server `AsyncExitStack` so individual entries can be invalidated
         without closing unrelated sessions.
 
+        Any error from `create_session` / `initialize` (including
+        `CancelledError`) propagates after the partial stack is rolled back,
+        so the cache is left in a clean state on failure.
+
         Args:
             server_name: Identifier used as the cache key.
             connection: Adapter connection config (stdio / http / sse).
 
         Returns:
             An initialized `ClientSession` bound to the current event loop.
-
-        Raises:
-            Exception: Propagates any error from `create_session` /
-                `initialize`; the partial stack is rolled back so the cache is
-                left in a clean state on failure.
         """
         existing = self._sessions.get(server_name)
         if existing is not None:
@@ -579,7 +578,7 @@ def _best_effort_shutdown() -> None:
     original loop — so this is a best-effort hook, not a correctness guarantee.
     Child subprocesses are reaped when the parent process exits regardless.
     """
-    if _DEFAULT_MANAGER is None or not _DEFAULT_MANAGER._stacks:  # noqa: SLF001
+    if _DEFAULT_MANAGER is None or not _DEFAULT_MANAGER._stacks:
         return
     try:
         loop = asyncio.new_event_loop()
@@ -658,6 +657,14 @@ async def _discover_tools(session: ClientSession) -> list[Any]:
     that private helper so this module does not silently break on an adapter
     refactor. Caps pagination at 1000 pages to match the adapter's guard
     against a misbehaving server returning infinite cursors.
+
+    Returns:
+        The full flat list of `mcp.types.Tool` objects returned across all
+        pages.
+
+    Raises:
+        RuntimeError: If pagination does not terminate within 1000 pages,
+            indicating a misbehaving server that keeps returning cursors.
     """
     cursor: str | None = None
     tools: list[Any] = []
@@ -699,7 +706,9 @@ def _build_cached_mcp_tool(
         A `StructuredTool` wrapping the remote MCP tool.
     """
     from langchain_core.tools import StructuredTool, ToolException
-    from langchain_mcp_adapters.tools import _convert_call_tool_result
+    from langchain_mcp_adapters.tools import (
+        _convert_call_tool_result,  # noqa: PLC2701 — adapter's private helper is the only path to materialize a CallToolResult as a LangChain ToolMessage
+    )
 
     original_tool_name = mcp_tool.name
     lc_tool_name = (

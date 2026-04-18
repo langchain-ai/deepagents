@@ -87,7 +87,7 @@ class TestMCPViewerScreen:
         async with app.run_test() as pilot:
             dismissed = False
 
-            def on_dismiss(result: None) -> None:  # noqa: ARG001
+            def on_dismiss(result: None) -> None:
                 nonlocal dismissed
                 dismissed = True
 

@@ -28,6 +28,7 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
     ".jpeg": "image",
     ".jpg": "image",
     ".webp": "image",
+    ".gif": "image",
     ".heic": "image",
     ".heif": "image",
     # Video (https://ai.google.dev/gemini-api/docs/video-understanding)
@@ -192,11 +193,14 @@ def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
         `modified_at` timestamps.  No `encoding` key.
     """
     content = file_data["content"]
-    return {
+    result: dict[str, Any] = {
         "content": content.split("\n"),
-        "created_at": file_data["created_at"],
-        "modified_at": file_data["modified_at"],
     }
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        result["modified_at"] = file_data["modified_at"]
+    return result
 
 
 def file_data_to_string(file_data: FileData) -> str:
@@ -248,12 +252,14 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     """
     now = datetime.now(UTC).isoformat()
 
-    return {
-        "content": content,
-        "encoding": file_data.get("encoding", "utf-8"),
-        "created_at": file_data["created_at"],
-        "modified_at": now,
-    }
+    result = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    result["modified_at"] = now
+    return result
 
 
 def slice_read_response(
@@ -379,6 +385,30 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
+def to_posix_path(path: str) -> str:
+    r"""Normalize backslash separators to forward slashes for `PurePosixPath` use.
+
+    Backends running on Windows return OS-native paths using backslashes.
+    `PurePosixPath` treats backslashes as literal filename characters,
+    so `PurePosixPath(r"C:\a\b").name` yields the full string instead
+    of `"b"`. Normalize before constructing a `PurePosixPath`.
+
+    This is best-effort: a POSIX directory literally named with a backslash
+    will also be rewritten. That trade-off is accepted because such filenames
+    are vanishingly rare in practice and the alternative (gating on `os.sep`)
+    fails when a Windows-style path is handed to a non-Windows process.
+
+    Args:
+        path: Path string that may use backslash separators.
+
+    Returns:
+        The same path with every `\\` replaced by `/`.
+
+            Inputs that already use forward slashes are returned unchanged.
+    """
+    return path.replace("\\", "/")
+
+
 def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
     r"""Validate and normalize file path for security.
 
@@ -417,7 +447,7 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
     """
     # Check for traversal as a path component (not substring) to avoid
     # false-positive rejection of legitimate filenames like "foo..bar.txt"
-    parts = PurePosixPath(path.replace("\\", "/")).parts
+    parts = PurePosixPath(to_posix_path(path)).parts
     if ".." in parts or path.startswith("~"):
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)

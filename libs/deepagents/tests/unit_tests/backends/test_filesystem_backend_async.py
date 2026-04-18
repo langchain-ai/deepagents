@@ -32,7 +32,7 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
     assert str(f2) not in paths  # File in subdirectory should NOT be listed
-    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    assert (str(root / "dir") + "/") in paths  # Directory should be listed
 
     # aread, aedit, awrite
     read_result = await be.aread(str(f1))
@@ -221,7 +221,7 @@ async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Pa
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)  # noqa: ARG005  # Lambda signature matches backend factory pattern
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")

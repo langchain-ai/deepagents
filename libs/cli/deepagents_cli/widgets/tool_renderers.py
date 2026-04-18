@@ -16,7 +16,13 @@ if TYPE_CHECKING:
 
 
 class ToolRenderer:
-    """Base renderer for tool approval widgets."""
+    """Strategy for building a tool's HITL approval widget.
+
+    Each renderer maps a tool name to a `(widget_class, data)` pair that
+    controls what the user sees in the approval box. Tools not registered
+    in `_RENDERER_REGISTRY` fall through to the default, which dumps all
+    args as `key: value` lines via `GenericApprovalWidget`.
+    """
 
     @staticmethod
     def get_approval_widget(
@@ -55,6 +61,16 @@ class WriteFileRenderer(ToolRenderer):
             "file_extension": file_extension,
         }
         return WriteFileApprovalWidget, data
+
+
+class TaskRenderer(ToolRenderer):
+    """Renderer for task tool — interrupt description provides full context."""
+
+    @staticmethod
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
+        tool_args: dict[str, Any],  # noqa: ARG004  # Unused; interrupt description already formats task args
+    ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
+        return GenericApprovalWidget, {}
 
 
 class EditFileRenderer(ToolRenderer):
@@ -107,12 +123,16 @@ class EditFileRenderer(ToolRenderer):
         return diff_list[2:] if len(diff_list) > 2 else diff_list  # noqa: PLR2004  # Column count threshold
 
 
-# Registry mapping tool names to renderers
-# Note: bash/shell use minimal approval (no renderer) - see ApprovalMenu._MINIMAL_TOOLS
 _RENDERER_REGISTRY: dict[str, type[ToolRenderer]] = {
+    "task": TaskRenderer,
     "write_file": WriteFileRenderer,
     "edit_file": EditFileRenderer,
 }
+"""Registry mapping tool names to renderers
+
+Note: bash/shell/execute use minimal approval (no renderer) — see
+ApprovalMenu._MINIMAL_TOOLS
+"""
 
 
 def get_renderer(tool_name: str) -> ToolRenderer:

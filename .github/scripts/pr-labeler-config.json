@@ -46,18 +46,31 @@
     "breaking": "breaking"
   },
   "scopeToLabel": {
-    "deepagents": "deepagents",
-    "sdk": "deepagents",
-    "deepagents-cli": "cli",
-    "cli": "cli",
-    "harbor": "evals",
-    "evals": "evals",
     "acp": "acp",
-    "docs": "documentation",
-    "infra": "infra",
+    "ci": "infra",
+    "cli": "cli",
+    "cli-gha": "github_actions",
+    "daytona": "daytona",
+    "deepagents": "deepagents",
+    "deepagents-acp": "acp",
+    "deepagents-cli": "cli",
     "deps": "dependencies",
+    "docs": "documentation",
+    "evals": "evals",
     "examples": "examples",
-    "daytona": "daytona"
+    "harbor": "harbor",
+    "infra": "infra",
+    "langchain-daytona": "daytona",
+    "langchain-modal": "modal",
+    "langchain-quickjs": "quickjs",
+    "langchain-repl": "repl",
+    "langchain-runloop": "runloop",
+    "langsmith-sandbox": "langsmith-sandbox",
+    "modal": "modal",
+    "quickjs": "quickjs",
+    "repl": "repl",
+    "runloop": "runloop",
+    "sdk": "deepagents"
   },
   "fileRules": [
     {
@@ -79,6 +92,44 @@
       "label": "evals",
       "prefix": "libs/evals/",
       "skipExcludedFiles": true
+    },
+    {
+      "label": "daytona",
+      "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "modal",
+      "prefix": "libs/partners/modal/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "quickjs",
+      "prefix": "libs/partners/quickjs/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "repl",
+      "prefix": "libs/repl/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "runloop",
+      "prefix": "libs/partners/runloop/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "harbor",
+      "prefix": "libs/harbor/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cli",
+      "exact": "action.yml"
+    },
+    {
+      "label": "github_actions",
+      "exact": "action.yml"
     },
     {
       "label": "github_actions",

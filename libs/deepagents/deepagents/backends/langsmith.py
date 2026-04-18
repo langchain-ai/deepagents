@@ -9,6 +9,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    WriteResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
 
@@ -65,6 +66,28 @@ class LangSmithSandbox(BaseSandbox):
             exit_code=result.exit_code,
             truncated=False,
         )
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        """Write content using the LangSmith SDK to avoid ARG_MAX.
+
+        `BaseSandbox.write()` sends the full content in a shell command, which
+        can exceed ARG_MAX for large content. This override uses the SDK's
+        native `write()`, which sends content in the HTTP body.
+
+        Args:
+            file_path: Destination path inside the sandbox.
+            content: Text content to write.
+
+        Returns:
+            `WriteResult` with the written path on success, or an error message.
+        """
+        from langsmith.sandbox import SandboxClientError  # noqa: PLC0415
+
+        try:
+            self._sandbox.write(file_path, content.encode("utf-8"))
+            return WriteResult(path=file_path)
+        except SandboxClientError as e:
+            return WriteResult(error=f"Failed to write file '{file_path}': {e}")
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.

@@ -252,6 +252,38 @@ function init(github, owner, repo, config, core) {
     return tierLabel;
   }
 
+  // ── Full PR labeling (title + file + size) ───────────────────────
+
+  async function labelPR(prNumber, { title } = {}) {
+    if (!prNumber) {
+      throw new Error('labelPR() requires a valid prNumber');
+    }
+    const toAdd = new Set();
+
+    const prTitle = title ?? (await github.rest.pulls.get({
+      owner, repo, pull_number: prNumber,
+    })).data.title;
+
+    // Title-based labels
+    for (const l of matchTitleLabels(prTitle).labels) toAdd.add(l);
+
+    // File-based labels + size
+    const files = await github.paginate(github.rest.pulls.listFiles, {
+      owner, repo, pull_number: prNumber, per_page: 100,
+    });
+    toAdd.add(computeSize(files).sizeLabel);
+    for (const l of matchFileLabels(files)) toAdd.add(l);
+
+    for (const name of toAdd) await ensureLabel(name);
+    const labels = [...toAdd];
+    if (labels.length) {
+      await github.rest.issues.addLabels({
+        owner, repo, issue_number: prNumber, labels,
+      });
+    }
+    return labels;
+  }
+
   return {
     ensureLabel,
     getSizeLabel,
@@ -259,6 +291,7 @@ function init(github, owner, repo, config, core) {
     buildFileRules,
     matchFileLabels,
     matchTitleLabels,
+    labelPR,
     allTypeLabels,
     checkMembership,
     getContributorInfo,

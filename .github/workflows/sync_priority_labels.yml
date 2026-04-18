@@ -1,0 +1,499 @@
+# Sync priority labels (p0–p3) from linked issues to PRs.
+#
+# Triggers:
+# 1. PR opened/edited — parse issue links, copy priority label from issue(s)
+# 2. Issue labeled/unlabeled — find open PRs that reference the issue, update
+# 3. Manual dispatch — backfill open PRs (up to max_items)
+#
+# Priority labels are mutually exclusive on a PR. When a PR links to multiple
+# issues with different priorities, the highest wins (p0 > p1 > p2 > p3).
+
+name: Sync Priority Labels
+
+on:
+  # pull_request_target is safe here: we never check out or execute the
+  # PR's code — only read the PR body and manage labels.
+  # NEVER CHECK OUT UNTRUSTED CODE FROM A PR's HEAD IN A pull_request_target JOB.
+  # Doing so would allow attackers to execute arbitrary code in the context of your repository.
+  pull_request_target:
+    types: [opened, edited]
+  issues:
+    types: [labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      max_items:
+        description: "Maximum number of open PRs to process"
+        default: "200"
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize per PR (on PR events), per issue (on issue events), or
+# globally (backfill). Note: two different issues that both link to the
+# same PR may still race; both jobs re-derive the full correct state, so
+# last-writer-wins converges.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request_target'
+        && format('pr-{0}', github.event.pull_request.number)
+        || github.event_name == 'issues'
+        && format('issue-{0}', github.event.issue.number)
+        || 'backfill'
+    }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  # ── PR opened/edited: copy priority from linked issue(s) ──────────────
+  sync-from-issue:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Sync priority label to PR
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body = context.payload.pull_request.body || '';
+
+            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
+
+            // ── Helpers ──
+
+            function parseIssueNumbers(text) {
+              return [...new Set(
+                [...text.matchAll(LINK_RE)].map(m => parseInt(m[1], 10)),
+              )];
+            }
+
+            async function getIssueLabels(num) {
+              try {
+                const { data } = await github.rest.issues.get({
+                  owner, repo, issue_number: num,
+                });
+                return data.labels.map(l => l.name);
+              } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
+              }
+            }
+
+            function highestPriority(labelSets) {
+              let best = null;
+              for (const labels of labelSets) {
+                if (!labels) continue;
+                const idx = PRIORITY_LABELS.findIndex(p => labels.includes(p));
+                if (idx !== -1 && (best === null || idx < best)) best = idx;
+              }
+              return best;
+            }
+
+            async function getPrLabelNames(num) {
+              return (await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: num, per_page: 100 },
+              )).map(l => l.name);
+            }
+
+            async function removeLabel(num, name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: num, name,
+                });
+                console.log(`Removed '${name}' from PR #${num}`);
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                try {
+                  await github.rest.issues.createLabel({
+                    owner, repo, name, color: 'b76e79',
+                  });
+                } catch (createErr) {
+                  if (createErr.status !== 422) throw createErr;
+                }
+              }
+            }
+
+            async function syncPrLabels(prNum, targetLabel) {
+              const prLabels = await getPrLabelNames(prNum);
+
+              // Remove stale priority labels
+              for (const p of PRIORITY_LABELS) {
+                if (prLabels.includes(p) && p !== targetLabel) {
+                  await removeLabel(prNum, p);
+                }
+              }
+
+              if (!targetLabel) return;
+              if (prLabels.includes(targetLabel)) {
+                console.log(`PR #${prNum} already has '${targetLabel}'`);
+                return;
+              }
+
+              await ensureLabel(targetLabel);
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNum, labels: [targetLabel],
+              });
+              console.log(`Applied '${targetLabel}' to PR #${prNum}`);
+            }
+
+            // ── Main ──
+
+            const issueNumbers = parseIssueNumbers(body);
+            if (issueNumbers.length === 0) {
+              console.log('No issue links found in PR body');
+              return;
+            }
+            console.log(`Found linked issues: ${issueNumbers.map(n => '#' + n).join(', ')}`);
+
+            const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
+            const best = highestPriority(labelSets);
+            const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+
+            if (targetLabel) {
+              console.log(`Highest priority across linked issues: ${targetLabel}`);
+            } else {
+              console.log('No priority labels found on linked issues');
+            }
+
+            await syncPrLabels(prNumber, targetLabel);
+
+  # ── Issue labeled/unlabeled: propagate to PRs that link to it ─────────
+  sync-to-prs:
+    if: >-
+      github.event_name == 'issues' &&
+      contains(fromJSON('["p0","p1","p2","p3"]'), github.event.label.name)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Propagate priority label to linked PRs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issueNumber = context.payload.issue.number;
+            const action = context.payload.action;
+
+            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
+
+            console.log(`Issue #${issueNumber} ${action} with '${context.payload.label.name}'`);
+
+            // ── Helpers ──
+
+            function parseIssueNumbers(text) {
+              return [...new Set(
+                [...text.matchAll(LINK_RE)].map(m => parseInt(m[1], 10)),
+              )];
+            }
+
+            async function getIssueLabels(num) {
+              try {
+                const { data } = await github.rest.issues.get({
+                  owner, repo, issue_number: num,
+                });
+                return data.labels.map(l => l.name);
+              } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
+              }
+            }
+
+            function highestPriority(labelSets) {
+              let best = null;
+              for (const labels of labelSets) {
+                if (!labels) continue;
+                const idx = PRIORITY_LABELS.findIndex(p => labels.includes(p));
+                if (idx !== -1 && (best === null || idx < best)) best = idx;
+              }
+              return best;
+            }
+
+            async function getPrLabelNames(num) {
+              return (await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: num, per_page: 100 },
+              )).map(l => l.name);
+            }
+
+            async function removeLabel(num, name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: num, name,
+                });
+                console.log(`Removed '${name}' from PR #${num}`);
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                try {
+                  await github.rest.issues.createLabel({
+                    owner, repo, name, color: 'b76e79',
+                  });
+                } catch (createErr) {
+                  if (createErr.status !== 422) throw createErr;
+                }
+              }
+            }
+
+            async function syncPrLabels(prNum, targetLabel) {
+              const prLabels = await getPrLabelNames(prNum);
+
+              for (const p of PRIORITY_LABELS) {
+                if (prLabels.includes(p) && p !== targetLabel) {
+                  await removeLabel(prNum, p);
+                }
+              }
+
+              if (!targetLabel) {
+                console.log(`No priority label remaining for PR #${prNum}`);
+                return;
+              }
+              if (prLabels.includes(targetLabel)) {
+                console.log(`PR #${prNum} already has '${targetLabel}'`);
+                return;
+              }
+
+              await ensureLabel(targetLabel);
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNum, labels: [targetLabel],
+              });
+              console.log(`Applied '${targetLabel}' to PR #${prNum}`);
+            }
+
+            // ── Find open PRs that reference this issue ──
+            // GitHub search treats the quoted number as a substring match
+            // across title, body, and comments — low issue numbers (e.g. #1)
+            // may return false positives. The specificLinkRe filter below
+            // prunes them, but legitimate PRs could be pushed out of the
+            // result page for very popular low numbers.
+
+            const specificLinkRe = new RegExp(
+              `(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s*#${issueNumber}\\b`,
+              'i',
+            );
+
+            let prs;
+            try {
+              const result = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${owner}/${repo} is:pr is:open "${issueNumber}"`,
+                per_page: 100,
+              });
+              prs = result.data.items;
+            } catch (e) {
+              if (e.status === 422) {
+                core.warning(`Search for PRs linking to #${issueNumber} returned 422 — skipping`);
+                return;
+              }
+              throw e;
+            }
+
+            const linkedPRs = prs.filter(pr => specificLinkRe.test(pr.body || ''));
+            if (linkedPRs.length === 0) {
+              console.log(`No open PRs link to issue #${issueNumber}`);
+              return;
+            }
+            console.log(`Found ${linkedPRs.length} PR(s) linking to #${issueNumber}: ${linkedPRs.map(p => '#' + p.number).join(', ')}`);
+
+            // Pre-fetch the triggering issue's labels (post-event state)
+            const triggeringLabels = await getPrLabelNames(issueNumber);
+
+            // ── Resolve and sync each linked PR ──
+
+            let failures = 0;
+            for (const pr of linkedPRs) {
+              try {
+                // A PR may link to multiple issues — re-derive the correct
+                // priority by checking all linked issues.
+                const allIssueNumbers = parseIssueNumbers(pr.body || '');
+
+                const labelSets = await Promise.all(
+                  allIssueNumbers.map(num =>
+                    num === issueNumber
+                      ? Promise.resolve(triggeringLabels)
+                      : getIssueLabels(num),
+                  ),
+                );
+
+                const best = highestPriority(labelSets);
+                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+                await syncPrLabels(pr.number, targetLabel);
+              } catch (e) {
+                failures++;
+                core.warning(`Failed to sync PR #${pr.number}: ${e.message}`);
+              }
+            }
+
+            if (failures > 0) {
+              core.setFailed(`${failures} PR(s) failed to sync — check warnings above`);
+            }
+
+  # ── Manual backfill: sync priority labels on open PRs (up to max_items)
+  backfill:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Backfill priority labels on open PRs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const rawMax = '${{ inputs.max_items }}';
+            const maxItems = parseInt(rawMax, 10);
+            if (isNaN(maxItems) || maxItems <= 0) {
+              core.setFailed(`Invalid max_items: "${rawMax}" — must be a positive integer`);
+              return;
+            }
+
+            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
+
+            // ── Helpers ──
+
+            function parseIssueNumbers(text) {
+              return [...new Set(
+                [...text.matchAll(LINK_RE)].map(m => parseInt(m[1], 10)),
+              )];
+            }
+
+            async function getIssueLabels(num) {
+              try {
+                const { data } = await github.rest.issues.get({
+                  owner, repo, issue_number: num,
+                });
+                return data.labels.map(l => l.name);
+              } catch (e) {
+                if (e.status === 404) return null;
+                throw e;
+              }
+            }
+
+            function highestPriority(labelSets) {
+              let best = null;
+              for (const labels of labelSets) {
+                if (!labels) continue;
+                const idx = PRIORITY_LABELS.findIndex(p => labels.includes(p));
+                if (idx !== -1 && (best === null || idx < best)) best = idx;
+              }
+              return best;
+            }
+
+            async function getPrLabelNames(num) {
+              return (await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: num, per_page: 100 },
+              )).map(l => l.name);
+            }
+
+            async function removeLabel(num, name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: num, name,
+                });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                try {
+                  await github.rest.issues.createLabel({
+                    owner, repo, name, color: 'b76e79',
+                  });
+                } catch (createErr) {
+                  if (createErr.status !== 422) throw createErr;
+                }
+              }
+            }
+
+            // ── Main ──
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+
+            let processed = 0;
+            let updated = 0;
+            let failures = 0;
+
+            for (const pr of prs) {
+              if (processed >= maxItems) break;
+              processed++;
+
+              try {
+                const issueNumbers = parseIssueNumbers(pr.body || '');
+                if (issueNumbers.length === 0) continue;
+
+                const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
+                const best = highestPriority(labelSets);
+                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+
+                const prLabels = await getPrLabelNames(pr.number);
+                const currentPriority = PRIORITY_LABELS.find(p => prLabels.includes(p)) || null;
+
+                if (currentPriority === targetLabel) {
+                  console.log(`PR #${pr.number}: already correct (${targetLabel || 'none'})`);
+                  continue;
+                }
+
+                // Remove stale priority labels
+                for (const p of PRIORITY_LABELS) {
+                  if (prLabels.includes(p) && p !== targetLabel) {
+                    await removeLabel(pr.number, p);
+                  }
+                }
+
+                // Apply correct label
+                if (targetLabel) {
+                  await ensureLabel(targetLabel);
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: pr.number, labels: [targetLabel],
+                  });
+                }
+
+                if (currentPriority && targetLabel) {
+                  console.log(`PR #${pr.number}: ${currentPriority} → ${targetLabel}`);
+                } else if (currentPriority) {
+                  console.log(`PR #${pr.number}: ${currentPriority} → (removed)`);
+                } else {
+                  console.log(`PR #${pr.number}: (none) → ${targetLabel}`);
+                }
+                updated++;
+              } catch (e) {
+                failures++;
+                core.warning(`Failed to process PR #${pr.number}: ${e.message}`);
+              }
+            }
+
+            console.log(`\nBackfill complete. Scanned ${processed} PRs, updated ${updated}, ${failures} failures.`);
+            if (failures > 0) {
+              core.setFailed(`${failures} PR(s) failed to process — check warnings above`);
+            }

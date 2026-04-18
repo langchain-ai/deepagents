@@ -15,14 +15,14 @@ class TestPatchToolCallsMiddlewareNoPatchingNeeded:
     def test_returns_none_when_messages_is_empty(self) -> None:
         """Test that empty messages list returns None."""
         middleware = PatchToolCallsMiddleware()
-        result = middleware.before_agent({"messages": []}, None)  # type: ignore
+        result = middleware.before_agent({"messages": []}, None)  # type: ignore[arg-type]
 
         assert result is None
 
     def test_returns_none_when_messages_is_none(self) -> None:
         """Test that None messages returns None."""
         middleware = PatchToolCallsMiddleware()
-        result = middleware.before_agent({"messages": None}, None)  # type: ignore
+        result = middleware.before_agent({"messages": None}, None)  # type: ignore[arg-type]
 
         assert result is None
 
@@ -35,7 +35,7 @@ class TestPatchToolCallsMiddlewareNoPatchingNeeded:
             HumanMessage(content="How are you?"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is None
 
@@ -62,7 +62,7 @@ class TestPatchToolCallsMiddlewareNoPatchingNeeded:
             AIMessage(content="Here's the file content"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is None
 
@@ -73,7 +73,7 @@ class TestPatchToolCallsMiddlewareNoPatchingNeeded:
             AIMessage(content="No tools", tool_calls=[]),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is None
 
@@ -84,7 +84,7 @@ class TestPatchToolCallsMiddlewareNoPatchingNeeded:
             AIMessage(content="Just a regular response"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is None
 
@@ -110,7 +110,7 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
             HumanMessage(content="Never mind"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is not None
         assert "messages" in result
@@ -143,7 +143,7 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
             # Both tool calls are dangling
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is not None
         patched_messages = result["messages"].value
@@ -172,7 +172,7 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
             HumanMessage(content="msg2"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is not None
         patched_messages = result["messages"].value
@@ -203,7 +203,7 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
             HumanMessage(content="Thanks"),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is not None
         patched_messages = result["messages"].value
@@ -212,18 +212,12 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
         assert len(patched_messages) == 5
 
         # Find synthetic ToolMessage (contains "cancelled")
-        synthetic_messages = [
-            m for m in patched_messages if m.type == "tool" and "cancelled" in m.content
-        ]
+        synthetic_messages = [m for m in patched_messages if m.type == "tool" and "cancelled" in m.content]
         assert len(synthetic_messages) == 1
         assert synthetic_messages[0].tool_call_id == "call_1"
 
         # Verify original ToolMessage for call_2 is still there
-        original_messages = [
-            m
-            for m in patched_messages
-            if m.type == "tool" and m.content == "File written successfully"
-        ]
+        original_messages = [m for m in patched_messages if m.type == "tool" and m.content == "File written successfully"]
         assert len(original_messages) == 1
         assert original_messages[0].tool_call_id == "call_2"
 
@@ -239,12 +233,12 @@ class TestPatchToolCallsMiddlewareDanglingToolCalls:
             ),
         ]
 
-        result = middleware.before_agent({"messages": messages}, None)  # type: ignore
+        result = middleware.before_agent({"messages": messages}, None)  # type: ignore[arg-type]
 
         assert result is not None
         patched_messages = result["messages"].value
 
-        tool_message = [m for m in patched_messages if m.type == "tool"][0]
+        tool_message = next(m for m in patched_messages if m.type == "tool")
         assert "special_tool" in tool_message.content
         assert "unique_call_id_xyz" in tool_message.content
         assert tool_message.name == "special_tool"

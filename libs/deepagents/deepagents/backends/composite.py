@@ -10,8 +10,7 @@ Examples:
     from deepagents.backends.state import StateBackend
     from deepagents.backends.store import StoreBackend
 
-    runtime = make_runtime()
-    composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime)})
+    composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
 
     composite.write("/temp.txt", "ephemeral")
     composite.write("/memories/note.md", "persistent")
@@ -127,10 +126,12 @@ class CompositeBackend(BackendProtocol):
         default: Backend for paths that don't match any route.
         routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
         sorted_routes: Routes sorted by length (longest first) for correct matching.
+        artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
+            Defaults to `"/"`.
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime), "/cache/": StoreBackend(runtime)})
+        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
 
         composite.write("/temp.txt", "data")
         composite.write("/memories/note.txt", "data")
@@ -141,6 +142,8 @@ class CompositeBackend(BackendProtocol):
         self,
         default: BackendProtocol | StateBackend,
         routes: dict[str, BackendProtocol],
+        *,
+        artifacts_root: str = "/",
     ) -> None:
         """Initialize composite backend.
 
@@ -148,6 +151,8 @@ class CompositeBackend(BackendProtocol):
             default: Backend for paths that don't match any route.
             routes: Map of path prefixes to backends. Prefixes must start with "/"
                 and should end with "/" (e.g., "/memories/").
+            artifacts_root: Root path for artifacts, such as messages offloaded
+                by middleware. Defaults to `"/"`.
         """
         # Default backend
         self.default = default
@@ -157,6 +162,8 @@ class CompositeBackend(BackendProtocol):
 
         # Sort routes by length (longest first) for correct prefix matching
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+
+        self.artifacts_root = artifacts_root
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(
@@ -476,17 +483,6 @@ class CompositeBackend(BackendProtocol):
         res = backend.write(stripped_key, content)
         if res.path is not None:
             res = replace(res, path=file_path)
-        # If this is a state-backed update and default has state, merge so listings reflect changes
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
         return res
 
     async def awrite(
@@ -499,17 +495,6 @@ class CompositeBackend(BackendProtocol):
         res = await backend.awrite(stripped_key, content)
         if res.path is not None:
             res = replace(res, path=file_path)
-        # If this is a state-backed update and default has state, merge so listings reflect changes
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
         return res
 
     def edit(
@@ -534,16 +519,6 @@ class CompositeBackend(BackendProtocol):
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res = replace(res, path=file_path)
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
         return res
 
     async def aedit(
@@ -558,16 +533,6 @@ class CompositeBackend(BackendProtocol):
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res = replace(res, path=file_path)
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
         return res
 
     def execute(

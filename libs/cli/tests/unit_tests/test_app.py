@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from deepagents_cli.sessions import ThreadInfo
 
 import pytest
@@ -22,6 +24,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
@@ -68,6 +71,66 @@ class TestInitialPromptOnMount:
             await pilot.pause()
 
         assert submitted == ["hello world"]
+
+    async def test_initial_skill_triggers_invoke_skill(self) -> None:
+        """When `--skill` is set, startup should invoke that skill."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_prompt="  keep leading whitespace",
+            initial_skill="code-review",
+        )
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == [("code-review", "  keep leading whitespace", None)]
+
+    async def test_initial_skill_runs_after_server_ready(self) -> None:
+        """Deferred startup should invoke the requested skill after connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="review this diff",
+            initial_skill="code-review",
+        )
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        submitted: list[tuple[str, str, str | None]] = []
+
+        async def capture(  # noqa: RUF029
+            skill_name: str,
+            args: str = "",
+            *,
+            command: str | None = None,
+        ) -> None:
+            submitted.append((skill_name, args, command))
+
+        app._invoke_skill = capture  # type: ignore[assignment]
+
+        app.on_deep_agents_app_server_ready(
+            app.ServerReady(
+                agent=MagicMock(),
+                server_proc=None,
+                mcp_server_info=[],
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert submitted == [("code-review", "review this diff", None)]
 
 
 class TestAppCSSValidation:
@@ -156,21 +219,21 @@ class TestAppBindings:
         assert ctrl_c.action == "quit_or_interrupt"
         assert ctrl_c.priority is True
 
-    def test_toggle_tool_output_has_ctrl_e_binding(self) -> None:
-        """Ctrl+E should be bound to toggle_tool_output with priority."""
+    def test_toggle_tool_output_has_ctrl_o_binding(self) -> None:
+        """Ctrl+O should be bound to toggle_tool_output with priority."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        ctrl_e = bindings_by_key.get("ctrl+e")
+        ctrl_o = bindings_by_key.get("ctrl+o")
 
-        assert ctrl_e is not None
-        assert ctrl_e.action == "toggle_tool_output"
-        assert ctrl_e.priority is True
+        assert ctrl_o is not None
+        assert ctrl_o.action == "toggle_tool_output"
+        assert ctrl_o.priority is True
 
-    def test_ctrl_o_not_bound_to_toggle_tool_output(self) -> None:
-        """Ctrl+O should not exist (replaced by Ctrl+E)."""
+    def test_ctrl_e_not_bound(self) -> None:
+        """Ctrl+E must not be bound — it shadows TextArea cursor_line_end."""
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
-        assert "ctrl+o" not in bindings_by_key
+        assert "ctrl+e" not in bindings_by_key
 
 
 class TestITerm2CursorGuide:
@@ -478,6 +541,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+D again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -531,6 +595,7 @@ class TestModalScreenCtrlDHandling:
                     notify_mock.assert_called_once_with(
                         "Press Ctrl+C again to quit",
                         timeout=3,
+                        markup=False,
                     )
                     assert app._quit_pending is True
                     exit_mock.assert_not_called()
@@ -678,6 +743,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -715,6 +781,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -758,6 +825,7 @@ class TestModalScreenCtrlCHandling:
                 notify_mock.assert_called_once_with(
                     "Press Ctrl+C again to quit",
                     timeout=3,
+                    markup=False,
                 )
                 assert app._quit_pending is True
                 exit_mock.assert_not_called()
@@ -929,13 +997,12 @@ class TestMessageQueue:
             assert app._pending_messages[0].text == "first"
             assert app._pending_messages[1].text == "second"
 
-    async def test_queue_cleared_on_interrupt(self) -> None:
-        """Interrupt should clear the message queue."""
+    async def test_escape_pops_last_queued_message(self) -> None:
+        """Escape should pop the last queued message (LIFO), not nuke all."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
-            # Simulate a worker so action_interrupt has something to cancel
             mock_worker = MagicMock()
             app._agent_worker = mock_worker
 
@@ -946,12 +1013,122 @@ class TestMessageQueue:
 
             assert len(app._pending_messages) == 2
 
-            # Interrupt (escape key handler)
+            # First ESC pops the last queued message
             app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "msg1"
+            mock_worker.cancel.assert_not_called()
 
+            # Second ESC pops the remaining message
+            app.action_interrupt()
             assert len(app._pending_messages) == 0
-            assert len(app._queued_widgets) == 0
+            mock_worker.cancel.assert_not_called()
+
+            # Third ESC interrupts the agent
+            app.action_interrupt()
             mock_worker.cancel.assert_called_once()
+
+    async def test_escape_restores_text_to_empty_input(self) -> None:
+        """Popped message text is restored to chat input when input is empty."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("restore me", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input is empty — text should be restored
+            chat.value = ""
+            app.action_interrupt()
+            assert chat.value == "restore me"
+
+    async def test_escape_preserves_existing_input_text(self) -> None:
+        """Popped message text is discarded when chat input already has content."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            app.post_message(ChatInput.Submitted("queued msg", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+
+            chat = app._chat_input
+            assert chat is not None
+            # Input has content — should NOT be overwritten
+            chat.value = "draft text"
+            app.action_interrupt()
+            assert chat.value == "draft text"
+            assert len(app._pending_messages) == 0
+
+    async def test_escape_pop_shows_toast(self) -> None:
+        """Popping a queued message shows a differentiated toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Queue a message and pop with empty input — "moved to input"
+            app._pending_messages.append(QueuedMessage(text="a", mode="normal"))
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message moved to input", timeout=2
+                )
+
+            # Queue another and pop with non-empty input — "discarded"
+            app._pending_messages.append(QueuedMessage(text="b", mode="normal"))
+            chat.value = "existing"
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+                mock_notify.assert_called_once_with(
+                    "Queued message discarded (input not empty)", timeout=3
+                )
+
+    async def test_escape_pop_single_then_interrupt(self) -> None:
+        """Single queued message is popped, then next ESC interrupts agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            app._pending_messages.append(QueuedMessage(text="only", mode="normal"))
+            app._queued_widgets.append(MagicMock())
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            mock_worker.cancel.assert_not_called()
+
+            app.action_interrupt()
+            mock_worker.cancel.assert_called_once()
+
+    async def test_escape_pop_handles_widget_desync(self) -> None:
+        """Pop completes gracefully when _queued_widgets is empty but messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+
+            # Messages without corresponding widgets (desync scenario)
+            app._pending_messages.append(QueuedMessage(text="orphan", mode="normal"))
+            assert len(app._queued_widgets) == 0
+
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            # No crash — method handled the desync
 
     async def test_interrupt_dismisses_completion_without_stopping_agent(self) -> None:
         """Esc should dismiss completion popup without interrupting the agent."""
@@ -1106,6 +1283,87 @@ class TestAskUserLifecycle:
             widget.remove.assert_awaited_once()
 
 
+class TestLoadingSpinnerLifecycle:
+    """Tests for loading spinner timer cleanup in app flows."""
+
+    async def test_hide_stops_spinner_before_remove_completes(self) -> None:
+        """Hiding the spinner should stop animation before DOM removal finishes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.25)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                hide_task = asyncio.create_task(app._set_spinner(None))
+                await asyncio.sleep(0.25)
+                assert widget._spinner._position == frozen_position
+                await hide_task
+
+            assert app._loading_widget is None
+
+    async def test_reposition_stops_spinner_before_remove_completes(self) -> None:
+        """Repositioning should stop animation before delayed removal completes."""
+        app = DeepAgentsApp()
+        original_remove = Widget.remove
+
+        def delayed_remove(widget: Widget) -> Awaitable[None]:
+            async def do_remove() -> None:
+                await asyncio.sleep(0.3)
+                await original_remove(widget)
+
+            return do_remove()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+
+            messages = app.query_one("#messages", Container)
+            queued_widget = QueuedUserMessage("queued")
+            await messages.mount(queued_widget, before=widget)
+            app._queued_widgets.append(queued_widget)
+
+            before_tick = widget._spinner._position
+            await asyncio.sleep(0.25)
+            assert widget._spinner._position != before_tick
+
+            frozen_position = widget._spinner._position
+            with patch.object(Widget, "remove", new=delayed_remove):
+                reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
+                await asyncio.sleep(0.25)
+                assert widget._spinner._position == frozen_position
+                await reposition_task
+
+            children = list(messages.children)
+            assert children.index(widget) == children.index(queued_widget) - 1
+
+            await pilot.pause()
+            new_widget = app._loading_widget
+            assert new_widget is not None
+            assert new_widget._animation_timer is not None
+
+
 class TestTraceCommand:
     """Test /trace slash command."""
 
@@ -1181,13 +1439,62 @@ class TestTraceCommand:
                 patch(
                     "deepagents_cli.app.webbrowser.open",
                     side_effect=webbrowser.Error("no browser"),
+                ) as mock_open,
+                patch("deepagents_cli.app.logger") as mock_logger,
+            ):
+                await app._handle_trace_command("/trace")
+                # Give the executor thread time to run and fail
+                await pilot.pause()
+                await asyncio.sleep(0.1)
+
+            # Browser was attempted
+            mock_open.assert_called_once()
+            # Exception was logged, not silently dropped
+            mock_logger.debug.assert_called()
+            calls = mock_logger.debug.call_args_list
+            assert any("Could not open browser" in str(c) for c in calls)
+            # Link still rendered despite browser failure
+            app_msgs = app.query(AppMessage)
+            assert any(
+                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
+                for w in app_msgs
+            )
+
+    async def test_trace_defers_output_when_busy(self) -> None:
+        """Should defer chat output when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent_running = True
+
+            with (
+                patch(
+                    "deepagents_cli.config.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/t/test-thread-123",
                 ),
+                patch("deepagents_cli.app.webbrowser.open"),
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
 
+            # A QueuedUserMessage should be mounted as a placeholder
+            queued = app.query(QueuedUserMessage)
+            assert len(queued) == 1
+
+            # A deferred action should be queued
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "chat_output"
+
+            # Execute the deferred action (simulates drain after agent finishes)
+            await action.execute()
+            await pilot.pause()
+
+            # Queued widget replaced by real UserMessage + AppMessage with link
+            assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
+            assert any(
                 "https://smith.langchain.com/t/test-thread-123" in str(w._content)
                 for w in app_msgs
             )
@@ -1666,6 +1973,66 @@ class TestShellCommandInterrupt:
             mock_worker.cancel.assert_called_once()
 
 
+class TestAppArgumentHints:
+    """Full-app regressions for slash-command argument hints."""
+
+    async def test_hint_clears_after_command_submission(self) -> None:
+        """Submitting a slash command clears the inline argument hint."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+            assert chat._text_area.argument_hint == ""
+
+    async def test_hint_clears_after_backspace_mode_exit(self) -> None:
+        """Backspace mode exit clears the hint in the mounted app."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await pilot.pause()
+            await pilot.pause()
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.argument_hint == "[context]"
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            for _ in "remember ":
+                await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.argument_hint == ""
+
+
 class TestInterruptApprovalPriority:
     """Tests for escape interrupt priority when HITL approval is pending."""
 
@@ -1687,8 +2054,8 @@ class TestInterruptApprovalPriority:
         approval.action_select_reject.assert_called_once()
         worker.cancel.assert_not_called()
 
-    async def test_escape_cancels_worker_when_no_approval_pending(self) -> None:
-        """Escape cancels active worker and clears queued messages when no approval."""
+    async def test_escape_pops_queue_before_cancelling_worker(self) -> None:
+        """Escape pops queued messages (LIFO) before cancelling the worker."""
         app = DeepAgentsApp()
         worker = MagicMock()
         queued_w1 = MagicMock()
@@ -1700,17 +2067,28 @@ class TestInterruptApprovalPriority:
             app._pending_approval_widget = None
             app._agent_running = True
             app._agent_worker = worker
-            app._pending_messages.append(QueuedMessage(text="q", mode="normal"))
+            app._pending_messages.append(QueuedMessage(text="q1", mode="normal"))
+            app._pending_messages.append(QueuedMessage(text="q2", mode="normal"))
             app._queued_widgets.append(queued_w1)
             app._queued_widgets.append(queued_w2)
 
+            # First ESC pops last queued message, does not cancel worker
             app.action_interrupt()
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "q1"
+            queued_w2.remove.assert_called_once()
+            queued_w1.remove.assert_not_called()
+            worker.cancel.assert_not_called()
 
-        worker.cancel.assert_called_once()
-        queued_w1.remove.assert_called_once()
-        queued_w2.remove.assert_called_once()
-        assert len(app._pending_messages) == 0
-        assert len(app._queued_widgets) == 0
+            # Second ESC pops remaining message
+            app.action_interrupt()
+            assert len(app._pending_messages) == 0
+            queued_w1.remove.assert_called_once()
+            worker.cancel.assert_not_called()
+
+            # Third ESC finally cancels the worker
+            app.action_interrupt()
+            worker.cancel.assert_called_once()
 
     async def test_escape_rejects_approval_when_no_worker(self) -> None:
         """Approval rejection works even without an active agent worker."""
@@ -2227,15 +2605,15 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
 
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-        result = await app._fetch_thread_history_data("t-1")
+        payload = await app._fetch_thread_history_data("t-1")
 
-        assert len(result) == 2
-        assert isinstance(result[0], MessageData)
-        assert result[0].type == MessageType.USER
-        assert result[0].content == "hello"
-        assert isinstance(result[1], MessageData)
-        assert result[1].type == MessageType.ASSISTANT
-        assert result[1].content == "Hi there!"
+        assert len(payload.messages) == 2
+        assert isinstance(payload.messages[0], MessageData)
+        assert payload.messages[0].type == MessageType.USER
+        assert payload.messages[0].content == "hello"
+        assert isinstance(payload.messages[1], MessageData)
+        assert payload.messages[1].type == MessageType.ASSISTANT
+        assert payload.messages[1].content == "Hi there!"
 
     async def test_server_mode_falls_back_to_checkpointer(self) -> None:
         """When the server returns empty state, read SQLite checkpointer directly."""
@@ -2264,13 +2642,43 @@ class TestFetchThreadHistoryData:
             "_read_channel_values_from_checkpointer",
             return_value={"messages": checkpointer_msgs},
         ):
-            result = await app._fetch_thread_history_data("t-1")
+            payload = await app._fetch_thread_history_data("t-1")
 
-        assert len(result) == 2
-        assert result[0].type == MessageType.USER
-        assert result[0].content == "hello"
-        assert result[1].type == MessageType.ASSISTANT
-        assert result[1].content == "world"
+        assert len(payload.messages) == 2
+        assert payload.messages[0].type == MessageType.USER
+        assert payload.messages[0].content == "hello"
+        assert payload.messages[1].type == MessageType.ASSISTANT
+        assert payload.messages[1].content == "world"
+
+    async def test_server_mode_fallback_includes_context_tokens(self) -> None:
+        """Server-mode fallback should merge `_context_tokens` from the checkpointer."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_cli.remote_client import RemoteAgent
+        from deepagents_cli.widgets.message_store import MessageType
+
+        empty_state = MagicMock()
+        empty_state.values = {}
+
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aget_state = AsyncMock(return_value=empty_state)
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        checkpointer_data = {
+            "messages": [HumanMessage(content="hi", id="h1")],
+            "_context_tokens": 5000,
+        }
+        with patch.object(
+            DeepAgentsApp,
+            "_read_channel_values_from_checkpointer",
+            return_value=checkpointer_data,
+        ):
+            payload = await app._fetch_thread_history_data("t-1")
+
+        assert payload.context_tokens == 5000
+        assert len(payload.messages) == 1
+        assert payload.messages[0].type == MessageType.USER
 
 
 class TestRemoteAgent:
@@ -2491,8 +2899,13 @@ class TestBypassFrozensetDrift:
     these tests.
     """
 
-    @staticmethod
-    def _handled_commands() -> set[str]:
+    # Dynamic namespace prefixes handled via startswith() rather than
+    # static command dispatch.  These are not registered in COMMANDS and
+    # should be excluded from the drift check.
+    _DYNAMIC_PREFIXES = frozenset({"/skill:"})
+
+    @classmethod
+    def _handled_commands(cls) -> set[str]:
         """Extract slash-command literals from `_handle_command` source."""
         import ast
         import inspect
@@ -2507,7 +2920,13 @@ class TestBypassFrozensetDrift:
                 val = node.value.strip()
                 if val.startswith("/") and len(val) > 1:
                     handled.add(val)
-        return handled
+        # Exclude dynamic namespace prefixes (e.g. /skill:*) and their
+        # derivatives (e.g. /skill:<name> from help text).
+        return {
+            cmd
+            for cmd in handled
+            if not any(cmd.startswith(p) for p in cls._DYNAMIC_PREFIXES)
+        }
 
     def test_all_bypass_commands_are_handled(self) -> None:
         """Every command in a bypass frozenset must appear in _handle_command."""
@@ -2643,6 +3062,20 @@ class TestDeferredActions:
             )
 
             assert len(app._deferred_actions) == 0
+
+    async def test_server_failure_stores_error(self) -> None:
+        """Server startup error should be stored for _send_to_agent fallback."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("exit code 3"))
+            )
+
+            assert app._server_startup_error == "RuntimeError: exit code 3"
+            assert app._connecting is False
 
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
@@ -2797,3 +3230,143 @@ class TestDeferredActions:
 
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
+
+
+class TestServerStartupError:
+    """Test error messages when the server fails to start."""
+
+    async def test_send_to_agent_shows_server_error(self) -> None:
+        """_send_to_agent should show the server startup error as an ErrorMessage."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_startup_error = (
+                "RuntimeError: Server process exited with code 3"
+            )
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(ErrorMessage)
+            assert len(msgs) == 1
+            assert "Server failed to start" in str(msgs[0]._content)
+            assert "exited with code 3" in str(msgs[0]._content)
+
+    async def test_send_to_agent_shows_generic_when_no_server_error(self) -> None:
+        """_send_to_agent should show the generic AppMessage when no server error."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert msgs[0]._content == "Agent not configured for this session."
+
+
+class TestHasConversationMessages:
+    """Tests for _has_conversation_messages guard."""
+
+    async def test_returns_false_when_no_agent(self) -> None:
+        """Should return False when the agent is not initialised."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            assert app._agent is None
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_state_empty(self) -> None:
+        """Should return False when state has no values."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_only_system_messages(self) -> None:
+        """Should return False when messages list has no HumanMessage."""
+        from langchain_core.messages import SystemMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [SystemMessage(content="sys")]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_true_when_human_message_present(self) -> None:
+        """Should return True when at least one HumanMessage exists."""
+        from langchain_core.messages import HumanMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [HumanMessage(content="hi")]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_true_on_aget_state_exception(self) -> None:
+        """Should return True on transient errors so /remember is not blocked."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(side_effect=RuntimeError("connection lost"))
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_false_when_state_values_is_none(self) -> None:
+        """Should return False when state.values is None."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = None
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+
+            assert await app._has_conversation_messages() is False
+
+
+class TestRememberRequiresMessages:
+    """Ensure /remember early-returns when no conversation exists."""
+
+    async def test_remember_no_messages_shows_early_return(self) -> None:
+        """/remember should mount an AppMessage and skip the skill."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "_has_conversation_messages", return_value=False):
+                await app._handle_command("/remember")
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert "Nothing to remember yet" in str(msgs[0]._content)
+
+    async def test_remember_with_messages_delegates_to_skill(self) -> None:
+        """/remember should delegate to _handle_skill_command when messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "_has_conversation_messages", return_value=True),
+                patch.object(app, "_handle_skill_command") as mock_skill,
+            ):
+                await app._handle_command("/remember")
+                await pilot.pause()
+
+            mock_skill.assert_called_once_with("/skill:remember")

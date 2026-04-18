@@ -72,6 +72,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
@@ -93,7 +94,7 @@ def create_sandbox(
     provider abstraction.
 
     Args:
-        provider: Sandbox provider (`'daytona'`, `'langsmith'`,
+        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
@@ -155,7 +156,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name (`'daytona'`, `'langsmith'`,
+        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
 
     Returns:
@@ -221,16 +222,31 @@ class _LangSmithProvider(SandboxProvider):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key (defaults to `LANGSMITH_API_KEY` env var)
+            api_key: LangSmith API key (defaults to `LANGSMITH_SANDBOX_API_KEY`,
+                then `LANGSMITH_API_KEY` env var).
 
         Raises:
-            ValueError: If `LANGSMITH_API_KEY` environment variable not set
+            ValueError: If no LangSmith API key is found.
         """
         from langsmith.sandbox import SandboxClient
 
-        self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
+        from deepagents_cli.model_config import resolve_env_var
+
+        sandbox_key = resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
+        if sandbox_key:
+            logger.debug("Using LangSmith API key from LANGSMITH_SANDBOX_API_KEY")
+        self._api_key: str | None = (
+            api_key
+            or sandbox_key
+            or resolve_env_var("LANGSMITH_API_KEY")
+            or resolve_env_var("LANGCHAIN_API_KEY")
+        )
         if not self._api_key:
-            msg = "LANGSMITH_API_KEY environment variable not set"
+            msg = (
+                "No LangSmith sandbox API key found. Set "
+                "LANGSMITH_API_KEY, LANGCHAIN_API_KEY, or LANGSMITH_SANDBOX_API_KEY "
+                "(or the DEEPAGENTS_CLI_-prefixed equivalents)."
+            )
             raise ValueError(msg)
         self._client: SandboxClient = SandboxClient(api_key=self._api_key)
 
@@ -379,14 +395,19 @@ class _DaytonaProvider(SandboxProvider):
             package="langchain-daytona",
         )
 
-        api_key = os.environ.get("DAYTONA_API_KEY")
+        from deepagents_cli.model_config import resolve_env_var
+
+        api_key = resolve_env_var("DAYTONA_API_KEY")
         if not api_key:
-            msg = "DAYTONA_API_KEY environment variable not set"
+            msg = (
+                "No Daytona API key found. Set DAYTONA_API_KEY "
+                "or DEEPAGENTS_CLI_DAYTONA_API_KEY."
+            )
             raise ValueError(msg)
         self._client = daytona_module.Daytona(
             daytona_module.DaytonaConfig(
                 api_key=api_key,
-                api_url=os.environ.get("DAYTONA_API_URL"),
+                api_url=resolve_env_var("DAYTONA_API_URL"),
             )
         )
 
@@ -459,10 +480,40 @@ class _ModalProvider(SandboxProvider):
             package="langchain-modal",
         )
 
-        self._app = self._modal.App.lookup(
-            name="deepagents-sandbox",
-            create_if_missing=True,
-        )
+        from deepagents_cli.model_config import resolve_env_var
+
+        token_id = resolve_env_var("MODAL_TOKEN_ID")
+        token_secret = resolve_env_var("MODAL_TOKEN_SECRET")
+        if token_id and token_secret:
+            try:
+                self._client = self._modal.Client.from_credentials(
+                    token_id, token_secret
+                )
+            except Exception as exc:
+                msg = (
+                    "Failed to authenticate with Modal using "
+                    "MODAL_TOKEN_ID / MODAL_TOKEN_SECRET "
+                    "(or the DEEPAGENTS_CLI_-prefixed equivalents). "
+                    "Verify your credentials are valid."
+                )
+                raise ValueError(msg) from exc
+        elif token_id or token_secret:
+            logger.warning(
+                "Only one of MODAL_TOKEN_ID / MODAL_TOKEN_SECRET is set; "
+                "both are required for explicit credential auth. "
+                "Falling back to default Modal authentication.",
+            )
+            self._client = None
+        else:
+            self._client = None
+
+        lookup_kwargs: dict[str, Any] = {
+            "name": "deepagents-sandbox",
+            "create_if_missing": True,
+        }
+        if self._client is not None:
+            lookup_kwargs["client"] = self._client
+        self._app = self._modal.App.lookup(**lookup_kwargs)
 
     def get_or_create(
         self,
@@ -490,13 +541,20 @@ class _ModalProvider(SandboxProvider):
             package="langchain-modal",
         )
 
+        client_kwargs: dict[str, Any] = {}
+        if self._client is not None:
+            client_kwargs["client"] = self._client
+
         if sandbox_id:
             sandbox = self._modal.Sandbox.from_id(
                 sandbox_id=sandbox_id,
                 app=self._app,
+                **client_kwargs,
             )
         else:
-            sandbox = self._modal.Sandbox.create(app=self._app, workdir="/workspace")
+            sandbox = self._modal.Sandbox.create(
+                app=self._app, workdir="/workspace", **client_kwargs
+            )
             last_exc: Exception | None = None
             for _ in range(timeout // 2):
                 if sandbox.poll() is not None:
@@ -520,7 +578,10 @@ class _ModalProvider(SandboxProvider):
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Terminate a Modal sandbox by id."""
-        sandbox = self._modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self._app)
+        del_kwargs: dict[str, Any] = {"sandbox_id": sandbox_id, "app": self._app}
+        if self._client is not None:
+            del_kwargs["client"] = self._client
+        sandbox = self._modal.Sandbox.from_id(**del_kwargs)
         sandbox.terminate()
 
 
@@ -534,9 +595,14 @@ class _RunloopProvider(SandboxProvider):
             package="langchain-runloop",
         )
 
-        api_key = os.environ.get("RUNLOOP_API_KEY")
+        from deepagents_cli.model_config import resolve_env_var
+
+        api_key = resolve_env_var("RUNLOOP_API_KEY")
         if not api_key:
-            msg = "RUNLOOP_API_KEY environment variable not set"
+            msg = (
+                "No Runloop API key found. Set RUNLOOP_API_KEY "
+                "or DEEPAGENTS_CLI_RUNLOOP_API_KEY."
+            )
             raise ValueError(msg)
         self._client = runloop_module.Runloop(bearer_token=api_key)
 
@@ -598,11 +664,138 @@ class _RunloopProvider(SandboxProvider):
         self._client.devboxes.shutdown(id=sandbox_id)
 
 
+class _AgentCoreProvider(SandboxProvider):
+    """AgentCore Code Interpreter sandbox provider.
+
+    Manages AgentCore session lifecycle. Sessions cannot be reconnected after
+    the CLI exits — the `sandbox_id` parameter is not supported.
+    """
+
+    def __init__(self, region: str | None = None) -> None:
+        """Initialize AgentCore provider.
+
+        Args:
+            region: AWS region (defaults to `AWS_REGION` /
+                `AWS_DEFAULT_REGION` / `us-west-2`).
+
+        Raises:
+            ValueError: If boto3 is installed and AWS credentials cannot
+                be resolved.
+        """
+        self._region = region or os.environ.get(
+            "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+        )
+
+        # Validate AWS credentials early for a clear error message.
+        try:
+            import boto3  # ty: ignore[unresolved-import]
+
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if credentials is None:
+                msg = (
+                    "AWS credentials not found. Configure via "
+                    "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN, "
+                    "~/.aws/credentials, or an IAM role."
+                )
+                raise ValueError(msg)  # noqa: TRY301  # intentional raise for early credential validation
+        except ImportError:
+            logger.debug("boto3 not installed; skipping credential pre-check")
+        except ValueError:
+            raise
+        except Exception:
+            logger.warning(
+                "AWS credential pre-validation failed — the session may "
+                "fail to start. Check your AWS configuration.",
+                exc_info=True,
+            )
+
+        self._active_interpreters: dict[str, Any] = {}
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        **kwargs: Any,  # noqa: ARG002  # required by SandboxProvider interface
+    ) -> SandboxBackendProtocol:
+        """Create a new AgentCore Code Interpreter session.
+
+        Args:
+            sandbox_id: Not supported — raises `NotImplementedError`
+                if provided.
+            **kwargs: Additional parameters (unused).
+
+        Returns:
+            `AgentCoreSandbox` instance wrapping the started interpreter.
+
+        Raises:
+            NotImplementedError: If `sandbox_id` is provided.
+        """
+        if sandbox_id:
+            msg = (
+                "AgentCore does not support reconnecting to existing sessions. "
+                "Remove the --sandbox-id option."
+            )
+            raise NotImplementedError(msg)
+
+        agentcore_module = _import_provider_module(
+            "bedrock_agentcore.tools.code_interpreter_client",
+            provider="agentcore",
+            package="langchain-agentcore-codeinterpreter",
+        )
+        agentcore_backend = _import_provider_module(
+            "langchain_agentcore_codeinterpreter",
+            provider="agentcore",
+            package="langchain-agentcore-codeinterpreter",
+        )
+
+        interpreter = agentcore_module.CodeInterpreter(
+            region=self._region,
+            integration_source="deepagents-cli",
+        )
+        try:
+            interpreter.start()
+        except Exception:
+            with contextlib.suppress(Exception):
+                interpreter.stop()
+            raise
+
+        backend = agentcore_backend.AgentCoreSandbox(interpreter=interpreter)
+        self._active_interpreters[backend.id] = interpreter
+        return backend
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # required by SandboxProvider interface
+        """Stop an AgentCore session.
+
+        Args:
+            sandbox_id: Session ID to stop.
+            **kwargs: Additional parameters (unused).
+        """
+        interpreter = self._active_interpreters.pop(sandbox_id, None)
+        if interpreter:
+            try:
+                interpreter.stop()
+                logger.info("AgentCore session %s stopped", sandbox_id)
+            except Exception:
+                logger.warning(
+                    "Failed to stop AgentCore session %s — the session may "
+                    "still be running and incurring costs. Check the AWS "
+                    "console to verify.",
+                    sandbox_id,
+                    exc_info=True,
+                )
+        else:
+            logger.info(
+                "AgentCore session %s not tracked (may have already expired)",
+                sandbox_id,
+            )
+
+
 def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider (`'daytona'`, `'langsmith'`,
+        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
 
     Returns:
@@ -611,6 +804,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     Raises:
         ValueError: If `provider_name` is unknown.
     """
+    if provider_name == "agentcore":
+        return _AgentCoreProvider()
     if provider_name == "daytona":
         return _DaytonaProvider()
     if provider_name == "langsmith":
@@ -647,6 +842,7 @@ def verify_sandbox_deps(provider: str) -> None:
     # Only the backend module is checked because the underlying SDK is a
     # transitive dependency of the backend package.
     backend_modules: dict[str, tuple[str, str]] = {
+        "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
         "daytona": ("langchain_daytona", "daytona"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),

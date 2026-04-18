@@ -6,10 +6,12 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
@@ -35,6 +38,7 @@ from deepagents.middleware.skills import (
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
+    _skill_metadata_from_response,
     _validate_metadata,
     _validate_skill_name,
 )
@@ -546,14 +550,14 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
 
     # Create skill using backend's upload_files interface
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
     skill_content = make_skill_content("my-skill", "My test skill")
 
     responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -629,8 +633,8 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
 
     # Create a valid skill and an invalid one (missing SKILL.md)
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_dir_file = str(skills_dir / "invalid-skill" / "readme.txt")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_dir_file = (skills_dir / "invalid-skill" / "readme.txt").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
@@ -642,7 +646,7 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -662,8 +666,8 @@ def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_skill_path = str(skills_dir / "invalid-skill" / "SKILL.md")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_skill_path = (skills_dir / "invalid-skill" / "SKILL.md").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
     invalid_content = """---
@@ -682,7 +686,7 @@ Content
     )
 
     # Should only get the valid skill
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -703,8 +707,8 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
 
     # Create a skill with helper files
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
-    helper_path = str(skills_dir / "my-skill" / "helper.py")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
+    helper_path = (skills_dir / "my-skill" / "helper.py").as_posix()
 
     skill_content = make_skill_content("my-skill", "My test skill")
     helper_content = "def helper(): pass"
@@ -717,7 +721,7 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -730,6 +734,138 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "allowed_tools": [],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("skill_dir_path", "source_path"),
+    [
+        ("C:\\Users\\project\\skills\\my-skill\\", "C:\\Users\\project\\skills\\"),
+        ("C:\\Users\\project\\skills\\my-skill", "C:\\Users\\project\\skills"),
+        ("C:\\Users\\project\\skills\\my-skill/", "C:\\Users\\project\\skills/"),
+        ("\\\\server\\share\\skills\\my-skill\\", "\\\\server\\share\\skills\\"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "mixed-separators", "unc-path"],
+)
+def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
+    r"""Skills load correctly when the backend returns Windows-style paths.
+
+    Regression: `PurePosixPath` treats `\` as a literal filename char, so
+    `_list_skills` must normalize before extracting the directory name and
+    appending `SKILL.md`. Without normalization, the requested download
+    path would be e.g. `C:\...\my-skill\SKILL.md\SKILL.md` (or would fail
+    name validation entirely).
+    """
+    skill_content = make_skill_content("my-skill", "My test skill")
+    expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
+
+    backend = MagicMock()
+    backend.ls = MagicMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
+    backend.download_files = MagicMock(
+        return_value=[
+            FileDownloadResponse(
+                path=expected_skill_md_path,
+                content=skill_content.encode("utf-8"),
+                error=None,
+            )
+        ]
+    )
+
+    skills = _list_skills(backend, source_path)
+
+    # Pins the whole fix: the normalized POSIX path must be what gets requested.
+    backend.download_files.assert_called_once_with([expected_skill_md_path])
+    assert len(skills) == 1
+    assert skills[0]["name"] == "my-skill"
+    assert skills[0]["description"] == "My test skill"
+    assert skills[0]["path"] == expected_skill_md_path
+
+
+class TestSkillMetadataFromResponseLogging:
+    """`_skill_metadata_from_response` must warn on non-`file_not_found` errors.
+
+    `file_not_found` is the expected miss when a subdirectory isn't a skill,
+    so it stays silent. Every other error (most importantly `is_directory`
+    from `FilesystemBackend.download_files` for a path that happens to be a
+    directory) must surface in logs so operators can debug missing skills
+    without resorting to backend introspection.
+    """
+
+    def test_is_directory_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/my-skill/SKILL.md",
+            content=None,
+            error="is_directory",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/my-skill",
+                skill_md_path="/skills/my-skill/SKILL.md",
+            )
+        assert result is None
+        assert any(
+            record.levelname == "WARNING" and "is_directory" in record.getMessage() and "/skills/my-skill/SKILL.md" in record.getMessage()
+            for record in caplog.records
+        ), f"Expected is_directory warning, got records: {[r.getMessage() for r in caplog.records]}"
+
+    def test_file_not_found_error_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/not-a-skill/SKILL.md",
+            content=None,
+            error="file_not_found",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/not-a-skill",
+                skill_md_path="/skills/not-a-skill/SKILL.md",
+            )
+        assert result is None
+        assert caplog.records == []
+
+    def test_permission_denied_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/locked/SKILL.md",
+            content=None,
+            error="permission_denied",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/locked",
+                skill_md_path="/skills/locked/SKILL.md",
+            )
+        assert result is None
+        assert any("permission_denied" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "C:\\Users\\project\\skills\\",
+        "C:\\Users\\project\\skills",
+        "\\\\server\\share\\skills\\",
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "unc-path"],
+)
+def test_format_skills_locations_with_windows_path(source_path: str) -> None:
+    r"""Derive the trailing directory name from Windows-style source paths.
+
+    Without backslash normalization, `.name` on the resulting `PurePosixPath`
+    returns the raw backslashed string (or the empty string for UNC paths
+    where `\\\\server\\share\\skills` has no POSIX-delimited final component),
+    not the intended directory label.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[source_path],
+    )
+
+    result = middleware._format_skills_locations()
+    # Pin the full marker so either a silently wrong directory name or a
+    # capitalization regression trips the assertion.
+    assert "**Skills Skills**:" in result
+    assert source_path in result
 
 
 def test_format_skills_locations_single_registry() -> None:
@@ -993,8 +1129,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
-    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
-    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+    base_skill_path = (base_dir / "shared-skill" / "SKILL.md").as_posix()
+    user_skill_path = (user_dir / "shared-skill" / "SKILL.md").as_posix()
 
     base_content = make_skill_content("shared-skill", "Base description")
     user_content = make_skill_content("shared-skill", "User description")
@@ -1007,8 +1143,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     )
 
     sources = [
-        str(base_dir),
-        str(user_dir),
+        base_dir.as_posix(),
+        user_dir.as_posix(),
     ]
     middleware = SkillsMiddleware(
         backend=backend,

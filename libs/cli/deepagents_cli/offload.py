@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         SummarizationEvent,
         SummarizationMiddleware,
     )
+    from langchain_core.messages import AnyMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,12 @@ async def perform_offload(
 
     Args:
         messages: Current conversation messages from agent state.
+
+            May be LangChain message objects or serialized dicts (the latter
+            when read from a remote HTTP state snapshot).
         prior_event: Existing `_summarization_event` if any.
+
+            In server mode `summary_message` may be a serialized message dict.
         thread_id: Thread identifier for backend storage.
         model_spec: Model specification string (e.g. "openai:gpt-4").
         profile_overrides: Optional profile overrides from CLI flags.
@@ -242,6 +248,31 @@ async def perform_offload(
         SummarizationMiddleware,
         compute_summarization_defaults,
     )
+
+    # Remote HTTP state snapshots may surface serialized message dicts instead
+    # of LangChain message objects. Normalize them before passing state into
+    # summarization middleware helpers. `any(...)` rather than checking index
+    # 0 guards against heterogeneous lists (e.g. a snapshot with a streamed
+    # append).
+    needs_message_conversion = any(isinstance(m, dict) for m in messages)
+    needs_summary_conversion = prior_event is not None and isinstance(
+        prior_event.get("summary_message"), dict
+    )
+    if needs_message_conversion or needs_summary_conversion:
+        from langchain_core.messages.utils import convert_to_messages
+
+        if needs_message_conversion:
+            messages = cast("list[AnyMessage]", convert_to_messages(messages))
+        if needs_summary_conversion and prior_event is not None:
+            converted_summary = cast(
+                "HumanMessage",
+                convert_to_messages([prior_event["summary_message"]])[0],
+            )
+            prior_event = {
+                "cutoff_index": prior_event["cutoff_index"],
+                "summary_message": converted_summary,
+                "file_path": prior_event["file_path"],
+            }
 
     try:
         result = create_model(model_spec, profile_overrides=profile_overrides)

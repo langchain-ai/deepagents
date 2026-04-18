@@ -23,6 +23,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, GlobResult, GrepResult, LsResult
 from deepagents.backends.utils import (
     format_grep_matches,
+    to_posix_path,
     truncate_if_too_long,
     validate_path,
 )
@@ -80,7 +81,7 @@ class FilesystemPermission:
             if not path.startswith("/"):
                 msg = f"Permission path must start with '/': {path!r}"
                 raise ValueError(msg)
-            parts = PurePosixPath(path.replace("\\", "/")).parts
+            parts = PurePosixPath(to_posix_path(path)).parts
             if ".." in parts:
                 msg = f"Permission path must not contain '..': {path!r}"
                 raise ValueError(msg)

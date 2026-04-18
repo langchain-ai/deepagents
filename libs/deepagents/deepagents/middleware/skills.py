@@ -118,7 +118,8 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.prebuilt import ToolRuntime
 
-from deepagents.backends.protocol import LsResult
+from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
+from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -401,6 +402,68 @@ def _format_skill_annotations(skill: SkillMetadata) -> str:
     return ", ".join(parts)
 
 
+def _skill_metadata_from_response(
+    response: FileDownloadResponse,
+    skill_dir_path: str,
+    skill_md_path: str,
+) -> SkillMetadata | None:
+    """Decode a `SKILL.md` download response into `SkillMetadata` (or `None`).
+
+    Logs a warning on any non-expected failure so that a silently dropped
+    skill (parse error, invalid name, unreadable bytes) surfaces in logs
+    instead of vanishing from the system prompt without explanation.
+
+    Args:
+        response: The backend's download response for `skill_md_path`.
+        skill_dir_path: Backend path of the skill directory (used to derive
+            the expected `name` for validation).
+        skill_md_path: Backend path of the `SKILL.md` file (used in log
+            messages so operators can locate the offending skill).
+
+    Returns:
+        Parsed `SkillMetadata` on success, or `None` when the response carries
+            an error, the content is missing/non-UTF8, or frontmatter
+            parsing / name validation fails. All `None` returns except an
+            expected `file_not_found` emit a warning.
+    """
+    if response.error:
+        # `file_not_found` is the only expected miss (not every subdirectory
+        # is a skill). Everything else -- notably `is_directory` as returned
+        # by `FilesystemBackend.download_files` when the SKILL.md path is a
+        # directory, plus `permission_denied` / backend-specific errors --
+        # indicates a malformed or inaccessible skill and must surface.
+        if response.error != FILE_NOT_FOUND:
+            logger.warning(
+                "Cannot load SKILL.md at %s: %s; skipping",
+                skill_md_path,
+                response.error,
+            )
+        return None
+
+    if response.content is None:
+        logger.warning("Downloaded skill file %s has no content", skill_md_path)
+        return None
+
+    try:
+        content = response.content.decode("utf-8")
+    except UnicodeDecodeError as e:
+        logger.warning("Error decoding %s: %s", skill_md_path, e)
+        return None
+
+    directory_name = PurePosixPath(to_posix_path(skill_dir_path)).name
+    skill_metadata = _parse_skill_metadata(
+        content=content,
+        skill_path=skill_md_path,
+        directory_name=directory_name,
+    )
+    if skill_metadata is None:
+        logger.warning(
+            "Skill at %s failed metadata parse or name validation; skipping",
+            skill_md_path,
+        )
+    return skill_metadata
+
+
 def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
@@ -440,40 +503,16 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(to_posix_path(skill_dir_path))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
     responses = backend.download_files(paths_to_download)
 
-    # Parse each downloaded SKILL.md
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
-
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
-
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
-
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        if skill_metadata is not None:
             skills.append(skill_metadata)
 
     return skills
@@ -518,40 +557,16 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(to_posix_path(skill_dir_path))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
     responses = await backend.adownload_files(paths_to_download)
 
-    # Parse each downloaded SKILL.md
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
-
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
-
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
-
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        if skill_metadata is not None:
             skills.append(skill_metadata)
 
     return skills
@@ -574,7 +589,8 @@ You have access to a skills library that provides specialized capabilities and d
 Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
+2. **Read the skill's full instructions**: Use `read_file` on the path shown in the skill list above.
+   Pass `limit=1000` since the default of 100 lines is too small for most skill files.
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
@@ -591,7 +607,7 @@ Skills may contain Python scripts or other executable files. Always use absolute
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
+2. Read the full skill file: `read_file(path, limit=1000)`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
@@ -677,7 +693,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         locations = []
 
         for i, source_path in enumerate(self.sources):
-            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
+            name = PurePosixPath(to_posix_path(source_path).rstrip("/")).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
 

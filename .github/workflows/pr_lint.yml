@@ -27,9 +27,10 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deepagents-acp, deps,
-#   evals, examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl,
-#   runloop, sdk
+#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-acp, deepagents-cli, deps,
+#   deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
+#   langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox, modal,
+#   quickjs, repl, runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -93,14 +94,19 @@ jobs:
             cli-gha
             daytona
             deepagents
-            deepagents-cli
             deepagents-acp
+            deepagents-cli
             deps
             deps-dev
             evals
             examples
             harbor
             infra
+            langchain-daytona
+            langchain-modal
+            langchain-quickjs
+            langchain-repl
+            langchain-runloop
             langsmith-sandbox
             modal
             quickjs

@@ -221,6 +221,45 @@ class TestRenderDeployGraph:
             result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
+    def test_langsmith_block_uses_snapshot_api(self) -> None:
+        """Generated langsmith block must reference the snapshot API surface.
+
+        Catches drift between the `sandbox_snapshot` bundler variable and the
+        `SANDBOX_SNAPSHOT` reference inside the generated block, as well as
+        silent removal of the snapshot env vars.
+        """
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        # Snapshot API symbols must appear (not the old template API).
+        assert "SANDBOX_SNAPSHOT" in result
+        assert "list_snapshots()" in result
+        assert "create_snapshot(" in result
+        assert "snapshot_id=snapshot_id" in result
+        assert "LANGSMITH_SANDBOX_SNAPSHOT_ID" in result
+        assert "LANGSMITH_SANDBOX_SNAPSHOT_NAME" in result
+
+        # Legacy template API must be gone.
+        assert "SANDBOX_TEMPLATE" not in result
+        assert "template_name=" not in result
+        assert "get_template(" not in result
+
+    def test_langsmith_block_wraps_errors_with_runtime_error(self) -> None:
+        """Generated langsmith block must wrap SDK calls in RuntimeError.
+
+        Mirrors `_LangSmithProvider._ensure_snapshot` so deployed agents
+        surface actionable errors instead of raw SDK tracebacks.
+        """
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert "Failed to list snapshots" in result
+        assert "Failed to build snapshot" in result
+        assert "Failed to create sandbox from snapshot" in result
+        # API-key fallback must not raise KeyError on missing env vars.
+        assert 'os.environ["LANGCHAIN_API_KEY"]' not in result
+        assert "No LangSmith sandbox API key found" in result
+
     def test_skills_prefix_under_memories(self) -> None:
         config = _minimal_config()
         result = _render_deploy_graph(config, mcp_present=False)

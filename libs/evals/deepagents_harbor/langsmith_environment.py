@@ -286,7 +286,7 @@ class LangSmithEnvironment(BaseEnvironment):
     async def _detect_workdir(sandbox: AsyncSandbox) -> str:
         """Resolve the container's Dockerfile ``WORKDIR`` at runtime.
 
-        LangSmith's ``sandbox.run(cwd=None)`` spawns each command from the
+        LangSmith's `sandbox.run(cwd=None)` spawns each command from the
         dataplane daemon's cwd, not the image's ``WORKDIR``. Terminal-bench
         verifier scripts rely on ``WORKDIR`` (e.g. ``/app``) — many include
         ``if [ "$PWD" = "/" ]; then exit 1; fi`` as a guard and abort without

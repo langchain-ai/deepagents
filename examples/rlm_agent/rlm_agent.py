@@ -1,4 +1,4 @@
-"""Recursive REPL Mode (RLM) — `create_deep_agent` with a compiled general-purpose chain.
+"""Recursive Agents (RLM style) — `create_deep_agent` with a compiled general-purpose chain.
 
 `create_rlm_agent` builds a Deep Agent whose own middleware stack
 includes `REPLMiddleware(ptc=True)`, and — for `max_depth > 0` —
@@ -41,9 +41,8 @@ from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
 )
-from langchain_core.tools import BaseTool, tool
-
 from deepagents_repl import REPLMiddleware
+from langchain_core.tools import BaseTool, tool
 
 _MAX_DEPTH_LIMIT = 8  # guard against typos that would build thousands of agents
 

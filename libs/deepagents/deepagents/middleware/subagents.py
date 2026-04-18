@@ -352,8 +352,8 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
 
     Sets `ls_agent_type` on the langsmith tracing context `metadata`, which is
-    propagated to LangSmith runs but not to streamed callback metadata. This
-    mirrors langchain's `ls_agent_type="root"` tagging behavior.
+    propagated to LangSmith runs. This mirrors
+    langchain's `ls_agent_type="root"` tagging behavior.
 
     Forwards all other current tracing-context fields (parent, client, tags,
     etc.) unchanged so this wrapper does not clobber the enclosing context.

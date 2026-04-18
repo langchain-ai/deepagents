@@ -53,8 +53,8 @@ Instructions go here.
 class _ScriptedChatModel(BaseChatModel):
     """Fake chat model that returns a fixed scripted sequence of AIMessages.
 
-    Each call to ``_generate`` returns the next message in ``responses``;
-    once exhausted, it repeats the final response. This avoids StopIteration
+    Each call to `_generate` returns the next message in `responses`;
+    once exhausted, it repeats the final response. This avoids `StopIteration`
     bugs that arise with plain iterators under langgraph's generator runner.
     """
 
@@ -2305,11 +2305,11 @@ class TestSubAgents:
         """``ls_agent_type`` must reach LangSmith but not streamed callback metadata.
 
         The task tool wraps each subagent invocation in a langsmith
-        ``tracing_context`` with ``metadata={"ls_agent_type": "subagent"}`` so
+        `tracing_context` with `metadata={"ls_agent_type": "subagent"}` so
         downstream LangSmith tracing can distinguish subagent runs from
         root-agent runs. Because this metadata is set via langsmith's tracing
         contextvar (not via RunnableConfig), it only reaches the
-        ``LangChainTracer`` — it is not added to the callback manager's
+        `LangChainTracer` — it is not added to the callback manager's
         metadata and therefore does not leak into streamed callback events.
         """
         # Root model: first call emits a task tool call that dispatches to the
@@ -2413,11 +2413,11 @@ class TestSubAgents:
         )
 
     async def test_ls_agent_type_is_trace_only_metadata_async(self) -> None:
-        """Async variant of ``test_ls_agent_type_is_trace_only_metadata``.
+        """Async variant of `test_ls_agent_type_is_trace_only_metadata`.
 
-        Exercises the async ``atask`` code path in ``_build_task_tool`` to
+        Exercises the async `atask` code path in `_build_task_tool` to
         ensure the tracing-context tagging works identically for
-        ``ainvoke``-driven subagent calls.
+        `ainvoke`-driven subagent calls.
         """
         root_model = _ScriptedChatModel(
             responses=[

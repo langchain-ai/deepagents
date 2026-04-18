@@ -307,9 +307,7 @@ class LangSmithEnvironment(BaseEnvironment):
         try:
             result = await sandbox.run("readlink /proc/1/cwd", timeout=15)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Failed to probe /proc/1/cwd; falling back to '/app'", exc_info=True
-            )
+            logger.warning("Failed to probe /proc/1/cwd; falling back to '/app'", exc_info=True)
             return "/app"
 
         candidate = (result.stdout or "").strip()

@@ -577,9 +577,7 @@ class TestWorkdirDetection:
         ) -> _FakeExecResult:
             sandbox._run_calls.append((command, timeout, cwd, env))
             if "readlink /proc/1/cwd" in command:
-                return _FakeExecResult(
-                    stdout=readlink_stdout, exit_code=readlink_exit_code
-                )
+                return _FakeExecResult(stdout=readlink_stdout, exit_code=readlink_exit_code)
             if "-d /app" in command:
                 return _FakeExecResult(stdout=dir_probe_stdout)
             return _FakeExecResult()

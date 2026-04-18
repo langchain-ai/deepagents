@@ -268,8 +268,13 @@ class _LangSmithProvider(SandboxProvider):
         Args:
             sandbox_id: Optional existing sandbox name to reuse.
             timeout: Timeout in seconds for sandbox startup.
-            snapshot: Snapshot name to boot from. Resolved to a snapshot ID,
-                creating the snapshot from `snapshot_image` if missing.
+            snapshot: Snapshot name to boot from.
+
+                Resolved to a snapshot ID, creating the snapshot from
+                `snapshot_image` if missing. Overridden by the env vars
+                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything)
+                and `LANGSMITH_SANDBOX_SNAPSHOT_NAME` (name, wins over this
+                kwarg).
             snapshot_image: Docker image used when building the snapshot.
             fs_capacity_bytes: Filesystem capacity when building the snapshot.
             **kwargs: Additional LangSmith-specific parameters.
@@ -353,14 +358,20 @@ class _LangSmithProvider(SandboxProvider):
         """Resolve a snapshot by name, building it from `image` if missing.
 
         The LangSmith API exposes snapshots by ID, so we list and filter by
-        name. When the snapshot does not exist, we build it with
+        name. Only snapshots with `status == "ready"` are returned; a
+        matching-name snapshot in a non-ready state (`"building"`,
+        `"failed"`, etc.) raises rather than triggering a duplicate build,
+        which would mask the in-flight/failed snapshot.
+
+        When no matching snapshot exists at all, we build one with
         `create_snapshot`, which blocks until the snapshot is ready.
 
         Returns:
             The snapshot ID ready to be passed to `create_sandbox`.
 
         Raises:
-            RuntimeError: If listing or building the snapshot fails.
+            RuntimeError: If listing or building the snapshot fails, or if
+                a matching-name snapshot exists but is not ready.
         """
         try:
             snapshots = self._client.list_snapshots()
@@ -368,9 +379,21 @@ class _LangSmithProvider(SandboxProvider):
             msg = f"Failed to list snapshots: {e}"
             raise RuntimeError(msg) from e
 
+        non_ready_status: str | None = None
         for snap in snapshots:
-            if snap.name == snapshot_name and snap.status == "ready":
+            if snap.name != snapshot_name:
+                continue
+            if snap.status == "ready":
                 return snap.id
+            non_ready_status = snap.status
+
+        if non_ready_status is not None:
+            msg = (
+                f"Snapshot '{snapshot_name}' exists but is in state "
+                f"'{non_ready_status}'. Wait for it to finish building, or "
+                f"delete it to rebuild."
+            )
+            raise RuntimeError(msg)
 
         try:
             snapshot = self._client.create_snapshot(

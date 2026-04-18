@@ -3,13 +3,13 @@
 These templates are rendered by the bundler with values from
 `~deepagents_cli.deploy.config.DeployConfig`.
 
-The generated ``deploy_graph.py`` uses a ``CompositeBackend`` with all
-managed content under ``/memories/`` — ``/memories/AGENTS.md``,
-``/memories/skills/``, and ``/memories/user/`` (per-user templates) —
-backed by ``StoreBackend`` instances.  The configured sandbox is the
+The generated `deploy_graph.py` uses a `CompositeBackend` with all
+managed content under `/memories/` — `/memories/AGENTS.md`,
+`/memories/skills/`, and `/memories/user/` (per-user templates) —
+backed by `StoreBackend` instances.  The configured sandbox is the
 default writable backend.  Write access is controlled via
-``FilesystemPermission`` rules derived from each file's YAML frontmatter
-``permissions`` field.
+`FilesystemPermission` rules derived from each file's YAML frontmatter
+`permissions` field.
 
 There is no hub path and no custom Python tools.
 """
@@ -33,7 +33,12 @@ _SANDBOX_FS_CAPACITY_BYTES = 16 * 1024**3
 
 
 def _get_or_create_sandbox(cache_key):
-    """Get or create a LangSmith sandbox cached by ``cache_key``."""
+    """Get or create a LangSmith sandbox cached by `cache_key`.
+
+    Uses raw `os.environ` (not the CLI's `resolve_env_var`) because the
+    deployed bundle cannot import `deepagents_cli` internals;
+    `DEEPAGENTS_CLI_`-prefixed vars are not honored here.
+    """
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
@@ -42,8 +47,13 @@ def _get_or_create_sandbox(cache_key):
     api_key = (
         os.environ.get("LANGSMITH_SANDBOX_API_KEY")
         or os.environ.get("LANGSMITH_API_KEY")
-        or os.environ["LANGCHAIN_API_KEY"]
+        or os.environ.get("LANGCHAIN_API_KEY")
     )
+    if not api_key:
+        raise RuntimeError(
+            "No LangSmith sandbox API key found. Set "
+            "LANGSMITH_SANDBOX_API_KEY, LANGSMITH_API_KEY, or LANGCHAIN_API_KEY."
+        )
     client = SandboxClient(api_key=api_key)
 
     snapshot_id = os.environ.get("LANGSMITH_SANDBOX_SNAPSHOT_ID")
@@ -51,23 +61,46 @@ def _get_or_create_sandbox(cache_key):
         snapshot_name = (
             os.environ.get("LANGSMITH_SANDBOX_SNAPSHOT_NAME") or SANDBOX_SNAPSHOT
         )
-        snapshot_id = next(
-            (
-                snap.id
-                for snap in client.list_snapshots()
-                if snap.name == snapshot_name and snap.status == "ready"
-            ),
-            None,
-        )
+        try:
+            snapshots = client.list_snapshots()
+        except Exception as e:
+            raise RuntimeError(f"Failed to list snapshots: {e}") from e
+
+        snapshot_id = None
+        non_ready_status = None
+        for snap in snapshots:
+            if snap.name != snapshot_name:
+                continue
+            if snap.status == "ready":
+                snapshot_id = snap.id
+                break
+            non_ready_status = snap.status
+
         if snapshot_id is None:
-            snapshot = client.create_snapshot(
-                name=snapshot_name,
-                docker_image=SANDBOX_IMAGE,
-                fs_capacity_bytes=_SANDBOX_FS_CAPACITY_BYTES,
-            )
+            if non_ready_status is not None:
+                raise RuntimeError(
+                    f"Snapshot {snapshot_name!r} exists but is "
+                    f"in state {non_ready_status!r}. Wait for it to finish "
+                    "building, or delete it to rebuild."
+                )
+            try:
+                snapshot = client.create_snapshot(
+                    name=snapshot_name,
+                    docker_image=SANDBOX_IMAGE,
+                    fs_capacity_bytes=_SANDBOX_FS_CAPACITY_BYTES,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to build snapshot {snapshot_name!r}: {e}"
+                ) from e
             snapshot_id = snapshot.id
 
-    sandbox = client.create_sandbox(snapshot_id=snapshot_id)
+    try:
+        sandbox = client.create_sandbox(snapshot_id=snapshot_id)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to create sandbox from snapshot {snapshot_id!r}: {e}"
+        ) from e
     backend = LangSmithSandbox(sandbox)
     _SANDBOXES[cache_key] = backend
     logger.info(
@@ -77,6 +110,7 @@ def _get_or_create_sandbox(cache_key):
     )
     return backend
 '''
+"""Sandbox creation block for the LangSmith provider."""
 
 SANDBOX_BLOCK_DAYTONA = '''\
 from langchain_daytona import DaytonaSandbox
@@ -85,7 +119,7 @@ _SANDBOXES: dict = {}
 
 
 def _get_or_create_sandbox(cache_key):
-    """Get or create a Daytona sandbox cached by ``cache_key``."""
+    """Get or create a Daytona sandbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
@@ -98,6 +132,7 @@ def _get_or_create_sandbox(cache_key):
     logger.info("Created Daytona sandbox %s for cache_key %s", sandbox.id, cache_key)
     return backend
 '''
+"""Sandbox creation block for the Daytona provider."""
 
 SANDBOX_BLOCK_MODAL = '''\
 from langchain_modal import ModalSandbox
@@ -106,7 +141,7 @@ _SANDBOXES: dict = {}
 
 
 def _get_or_create_sandbox(cache_key):
-    """Get or create a Modal sandbox cached by ``cache_key``."""
+    """Get or create a Modal sandbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
@@ -119,6 +154,7 @@ def _get_or_create_sandbox(cache_key):
     logger.info("Created Modal sandbox for cache_key %s", cache_key)
     return backend
 '''
+"""Sandbox creation block for the Modal provider."""
 
 SANDBOX_BLOCK_RUNLOOP = '''\
 from langchain_runloop import RunloopSandbox
@@ -127,7 +163,7 @@ _SANDBOXES: dict = {}
 
 
 def _get_or_create_sandbox(cache_key):
-    """Get or create a Runloop devbox cached by ``cache_key``."""
+    """Get or create a Runloop devbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
@@ -140,6 +176,7 @@ def _get_or_create_sandbox(cache_key):
     logger.info("Created Runloop devbox %s for cache_key %s", devbox.id, cache_key)
     return backend
 '''
+"""Sandbox creation block for the Runloop provider."""
 
 SANDBOX_BLOCK_NONE = '''\
 from deepagents.backends.state import StateBackend
@@ -154,6 +191,7 @@ def _get_or_create_sandbox(cache_key):  # noqa: ARG001
         _STATE_BACKEND = StateBackend()
     return _STATE_BACKEND
 '''
+"""Fallback block used when no sandbox provider is configured."""
 
 SANDBOX_BLOCKS = {
     "langsmith": (SANDBOX_BLOCK_LANGSMITH, None),
@@ -162,7 +200,7 @@ SANDBOX_BLOCKS = {
     "runloop": (SANDBOX_BLOCK_RUNLOOP, "langchain-runloop"),
     "none": (SANDBOX_BLOCK_NONE, None),
 }
-"""Map of provider -> (sandbox_block, requires_partner_package)."""
+"""Map of `provider -> (sandbox_block, requires_partner_package)`."""
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +366,7 @@ async def _load_subagent_mcp_tools(mcp_config):
 # User memories are namespaced per (assistant_id, user_id) so each
 # user gets their own copy.  Template files are seeded on first access
 # (only if not already present).  Write access is controlled per-file
-# via frontmatter ``permissions: read-write`` declarations.
+# via frontmatter `permissions: read-write` declarations.
 #
 # The bundler ships `_seed.json` containing all payloads; the factory
 # seeds each namespace once per (process, assistant_id) and user
@@ -491,7 +529,7 @@ _SEEDED_USERS: set[tuple[str, str]] = set()
 
 
 async def _seed_store_if_needed(store, assistant_id: str) -> None:
-    """Seed memories + skills under ``assistant_id`` once per process."""
+    """Seed memories + skills under `assistant_id` once per process."""
     if assistant_id in _SEEDED_ASSISTANTS:
         return
     _SEEDED_ASSISTANTS.add(assistant_id)
@@ -568,7 +606,7 @@ def _make_namespace_factory(assistant_id: str, *extra: str):
 def _make_user_namespace_factory(assistant_id: str):
     """Return a namespace factory that includes the user_id.
 
-    Uses ``rt.server_info.user.identity`` from custom auth.  The platform
+    Uses `rt.server_info.user.identity` from custom auth.  The platform
     always injects user_id from auth, so no configurable fallback is needed.
     """
     def _factory(rt):
@@ -630,8 +668,8 @@ def _build_backend_factory(assistant_id: str):
 async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     """Async graph factory.
 
-    Accepts the invocation's ``RunnableConfig`` for ``assistant_id`` and
-    the ``ServerRuntime`` for ``store`` and ``user.identity``.  Seeds
+    Accepts the invocation's `RunnableConfig` for `assistant_id` and
+    the `ServerRuntime` for `store` and `user.identity`.  Seeds
     memories + skills once per (process, assistant_id), and user memories
     once per (process, assistant_id, user_id).  Gracefully skips user
     memory features when no user_id is available.
@@ -695,6 +733,7 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
 
 graph = make_graph
 '''
+"""Generated `deploy_graph.py` source — the server entry point."""
 
 
 # ---------------------------------------------------------------------------
@@ -713,3 +752,4 @@ dependencies = [
 [tool.setuptools]
 py-modules = []
 """
+"""Generated `pyproject.toml` source for the deployed bundle."""

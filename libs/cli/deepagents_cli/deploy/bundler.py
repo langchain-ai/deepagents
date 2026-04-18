@@ -15,9 +15,9 @@ Reads the canonical project layout:
 
 ...and writes everything `langgraph deploy` needs to a build directory.
 
-AGENTS.md and skills are read-only at runtime.  When a ``user/``
-directory is present, a per-user ``AGENTS.md`` is seeded (from
-``user/AGENTS.md`` if provided, otherwise empty) and is writable
+AGENTS.md and skills are read-only at runtime.  When a `user/`
+directory is present, a per-user `AGENTS.md` is seeded (from
+`user/AGENTS.md` if provided, otherwise empty) and is writable
 at runtime.
 """
 
@@ -204,10 +204,10 @@ def _build_seed(
             "user_memories":  { "/AGENTS.md": "..." }
         }
 
-    ``memories`` and ``skills`` are read-only at runtime.
-    ``user_memories`` contains a single writable ``AGENTS.md`` mounted at
-    ``/memories/user/``, namespaced per user_id.  If the project has a
-    ``user/`` directory (even if empty), an ``AGENTS.md`` is always seeded.
+    `memories` and `skills` are read-only at runtime.
+    `user_memories` contains a single writable `AGENTS.md` mounted at
+    `/memories/user/`, namespaced per user_id.  If the project has a
+    `user/` directory (even if empty), an `AGENTS.md` is always seeded.
     """
     memories: dict[str, str] = {f"/{AGENTS_MD_FILENAME}": system_prompt}
     skills: dict[str, str] = {}

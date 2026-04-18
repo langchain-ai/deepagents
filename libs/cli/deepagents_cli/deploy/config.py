@@ -82,19 +82,33 @@ class SandboxConfig:
     The whole section is optional. When omitted (or `provider = "none"`)
     the runtime falls back to an in-process `StateBackend` and tools
     like `execute` become no-ops.
-
-    `scope` controls how the sandbox cache keys are built:
-
-    - `"thread"` (default): one sandbox per thread. Different threads
-        get different sandboxes, same thread reuses across turns.
-    - `"assistant"`: one sandbox per assistant. All threads of the
-        same assistant share a single sandbox and its filesystem.
     """
 
     provider: SandboxProvider = "none"
+    """Sandbox backend identifier (`"none"` disables the sandbox)."""
+
     template: str = "deepagents-deploy"
+    """LangSmith snapshot name the deployed graph boots from.
+
+    The TOML key is kept as `template` for backward compatibility with
+    existing `deepagents.toml` files — LangSmith's API renamed "template"
+    to "snapshot" in 0.7.32, but this field name did not. The default
+    `"deepagents-deploy"` is distinct from the interactive CLI default
+    (`deepagents-cli`) so production deployments can be rebuilt
+    independently of local-CLI snapshots.
+    """
+
     image: str = "python:3"
+    """Docker image used to build the snapshot when it does not yet exist."""
+
     scope: SandboxScope = "thread"
+    """How sandbox cache keys are built.
+
+    - `"thread"` (default): one sandbox per thread. Different threads get
+        different sandboxes; the same thread reuses across turns.
+    - `"assistant"`: one sandbox per assistant. All threads of the same
+        assistant share a single sandbox and its filesystem.
+    """
 
 
 @dataclass(frozen=True)
@@ -102,7 +116,10 @@ class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
     agent: AgentConfig
+    """Parsed `[agent]` section — core agent identity (name + model)."""
+
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -238,9 +255,9 @@ def _parse_subagent_config(data: dict[str, Any], subagent_dir: Path) -> SubAgent
 
 
 def load_subagents(project_root: Path) -> dict[str, SubAgentProject]:
-    """Discover and load subagent projects from ``subagents/``.
+    """Discover and load subagent projects from `subagents/`.
 
-    Returns a dict keyed by subagent name. If the ``subagents/`` directory
+    Returns a dict keyed by subagent name. If the `subagents/` directory
     does not exist or is empty, returns an empty dict.
 
     Raises:

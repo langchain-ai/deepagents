@@ -377,7 +377,9 @@ class TestLangSmithSnapshotResolution:
         monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
         monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "custom-snap")
 
-        existing = MagicMock(name="custom-snap", id="snap-xyz", status="ready")
+        # `MagicMock(name=...)` sets the mock's repr, not `.name` — the
+        # explicit assignment below is load-bearing for the filter to match.
+        existing = MagicMock(id="snap-xyz", status="ready")
         existing.name = "custom-snap"
         mock_client.list_snapshots.return_value = [existing]
 
@@ -429,7 +431,7 @@ class TestLangSmithSnapshotResolution:
         mock_client: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """With no env vars, falls back to `deepagents-cli` snapshot name."""
+        """With no env vars, falls back to `deepagents-cli` + 16 GiB."""
         monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
         monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", raising=False)
         mock_client.list_snapshots.return_value = []
@@ -437,4 +439,67 @@ class TestLangSmithSnapshotResolution:
 
         provider.get_or_create()
 
-        assert mock_client.create_snapshot.call_args.kwargs["name"] == "deepagents-cli"
+        kwargs = mock_client.create_snapshot.call_args.kwargs
+        assert kwargs["name"] == "deepagents-cli"
+        assert kwargs["docker_image"] == "python:3"
+        assert kwargs["fs_capacity_bytes"] == 16 * 1024**3
+
+    def test_list_snapshots_failure_raises_runtime_error(
+        self,
+        provider,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SDK failure during `list_snapshots` is wrapped in `RuntimeError`."""
+        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
+        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", raising=False)
+        mock_client.list_snapshots.side_effect = Exception("network down")
+
+        with pytest.raises(RuntimeError, match="Failed to list snapshots"):
+            provider.get_or_create()
+
+        mock_client.create_snapshot.assert_not_called()
+        mock_client.create_sandbox.assert_not_called()
+
+    def test_create_snapshot_failure_raises_runtime_error(
+        self,
+        provider,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SDK failure during `create_snapshot` is wrapped with name context."""
+        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
+        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "broken-snap")
+        mock_client.list_snapshots.return_value = []
+        mock_client.create_snapshot.side_effect = Exception("quota exceeded")
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Failed to build snapshot 'broken-snap'",
+        ):
+            provider.get_or_create()
+
+        mock_client.create_sandbox.assert_not_called()
+
+    def test_non_ready_matching_snapshot_raises_instead_of_rebuilding(
+        self,
+        provider,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Matching-name snapshot in non-ready state must not silently rebuild."""
+        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
+        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "in-flight")
+
+        building = MagicMock(id="snap-build-1", status="building")
+        building.name = "in-flight"
+        mock_client.list_snapshots.return_value = [building]
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Snapshot 'in-flight' exists but is in state 'building'",
+        ):
+            provider.get_or_create()
+
+        mock_client.create_snapshot.assert_not_called()
+        mock_client.create_sandbox.assert_not_called()

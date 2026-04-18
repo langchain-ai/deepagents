@@ -169,7 +169,7 @@ class LangSmithEnvironment(BaseEnvironment):
 
         LangSmith requires names that start with a lowercase letter, contain
         only lowercase letters, numbers, and hyphens, and do not end with a
-        hyphen.  Max 63 characters.
+        hyphen. Max 63 characters.
         """
         name = raw.lower()
         name = re.sub(r"[^a-z0-9-]", "-", name)
@@ -185,8 +185,8 @@ class LangSmithEnvironment(BaseEnvironment):
     def _build_template_name(image: str, session_id: str) -> str:
         """Build a unique LangSmith template name within the 63-char limit.
 
-        Previous implementation concatenated ``harbor-{image}-{session}`` and
-        truncated to 63 characters.  When the image name was long the unique
+        Previous implementation concatenated `harbor-{image}-{session}` and
+        truncated to 63 characters. When the image name was long the unique
         session suffix was silently chopped off, causing name collisions across
         concurrent matrix jobs.
 
@@ -195,12 +195,12 @@ class LangSmithEnvironment(BaseEnvironment):
         image-name length.
 
         Args:
-            image: Container image reference (e.g. ``alexgshaw/foo:tag``).
+            image: Container image reference (e.g. `alexgshaw/foo:tag`).
             session_id: Unique trial session identifier.
 
         Returns:
             A sanitized name of at most 63 characters, guaranteed unique per
-            ``session_id``.
+                `session_id`.
         """
         sanitized_image = LangSmithEnvironment._sanitize_name(image)
         session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[:_SESSION_HASH_LEN]
@@ -211,7 +211,7 @@ class LangSmithEnvironment(BaseEnvironment):
 
     # -- Lifecycle -------------------------------------------------------------
 
-    async def start(self, force_build: bool) -> None:
+    async def start(self, force_build: bool) -> None:  # noqa: ARG002  # required by BaseEnvironment interface
         """Provision a LangSmith sandbox from the task's Dockerfile image.
 
         Args:

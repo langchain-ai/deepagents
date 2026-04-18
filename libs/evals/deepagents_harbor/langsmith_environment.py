@@ -292,7 +292,7 @@ class LangSmithEnvironment(BaseEnvironment):
         `if [ "$PWD" = "/" ]; then exit 1; fi` as a guard and abort without
         writing `/logs/verifier/reward.txt` when this assumption is violated.
 
-        PID 1 (the container entrypoint) inherits the image's ``WORKDIR`` as
+        PID 1 (the container entrypoint) inherits the image's `WORKDIR` as
         its cwd, so ``readlink /proc/1/cwd`` yields the correct directory
         without requiring access to the image metadata. Falls back to ``/app``
         (terminal-bench convention) when the probe is inconclusive.

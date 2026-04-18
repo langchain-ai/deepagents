@@ -65,7 +65,14 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
             return 2
         config_path = str(found[-1])  # highest-precedence file
 
-    config = load_mcp_config(config_path)
+    try:
+        config = load_mcp_config(config_path)
+    except (FileNotFoundError, TypeError, ValueError, RuntimeError) as exc:
+        print(  # noqa: T201
+            f"Failed to load MCP config {config_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     servers = config.get("mcpServers", {})
     if server not in servers:
         print(  # noqa: T201

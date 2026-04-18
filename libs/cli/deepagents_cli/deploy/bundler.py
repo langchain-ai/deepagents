@@ -279,7 +279,7 @@ def _render_deploy_graph(
 
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
-        sandbox_template=config.sandbox.template,
+        sandbox_snapshot=config.sandbox.template,
         sandbox_image=config.sandbox.image,
         sandbox_scope=config.sandbox.scope,
         sandbox_block=sandbox_block,

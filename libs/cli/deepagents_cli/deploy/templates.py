@@ -29,6 +29,7 @@ SANDBOX_BLOCK_LANGSMITH = '''\
 from deepagents.backends.langsmith import LangSmithSandbox
 
 _SANDBOXES: dict = {}
+_SANDBOX_FS_CAPACITY_BYTES = 4 * 1024**3
 
 
 def _get_or_create_sandbox(cache_key):
@@ -36,7 +37,7 @@ def _get_or_create_sandbox(cache_key):
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
-    from langsmith.sandbox import ResourceNotFoundError, SandboxClient
+    from langsmith.sandbox import SandboxClient
 
     api_key = (
         os.environ.get("LANGSMITH_SANDBOX_API_KEY")
@@ -45,12 +46,23 @@ def _get_or_create_sandbox(cache_key):
     )
     client = SandboxClient(api_key=api_key)
 
-    try:
-        client.get_template(SANDBOX_TEMPLATE)
-    except ResourceNotFoundError:
-        client.create_template(name=SANDBOX_TEMPLATE, image=SANDBOX_IMAGE)
+    snapshot_id = next(
+        (
+            snap.id
+            for snap in client.list_snapshots()
+            if snap.name == SANDBOX_SNAPSHOT and snap.status == "ready"
+        ),
+        None,
+    )
+    if snapshot_id is None:
+        snapshot = client.create_snapshot(
+            name=SANDBOX_SNAPSHOT,
+            docker_image=SANDBOX_IMAGE,
+            fs_capacity_bytes=_SANDBOX_FS_CAPACITY_BYTES,
+        )
+        snapshot_id = snapshot.id
 
-    sandbox = client.create_sandbox(template_name=SANDBOX_TEMPLATE)
+    sandbox = client.create_sandbox(snapshot_id=snapshot_id)
     backend = LangSmithSandbox(sandbox)
     _SANDBOXES[cache_key] = backend
     logger.info(
@@ -352,7 +364,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SANDBOX_TEMPLATE = {sandbox_template!r}
+SANDBOX_SNAPSHOT = {sandbox_snapshot!r}
 SANDBOX_IMAGE = {sandbox_image!r}
 
 # Mount points inside the composite backend.

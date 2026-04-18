@@ -9,20 +9,30 @@ on:
         required: true
         type: string
         description: "From which folder this pipeline executes"
-      python-version:
+      python-versions:
         required: true
         type: string
-        description: "Python version to use"
+        description: "JSON array of Python versions (must be quoted strings; e.g. '[\"3.11\",\"3.12\"]' — NOT '[3.11, 3.12]') to test on the primary OS"
       os:
         required: false
         type: string
         default: "ubuntu-latest"
-        description: "Runner OS (e.g. ubuntu-latest or windows-latest)"
-      coverage:
+        description: "Primary runner OS (e.g. ubuntu-latest); paired with every python-versions entry"
+      extra-configurations:
         required: false
-        type: boolean
-        default: true
-        description: "Collect coverage (disable to speed up non-primary matrix legs)"
+        type: string
+        default: "[]"
+        description: "JSON array of additional {python-version, os} legs (e.g. '[{\"python-version\":\"3.13\",\"os\":\"windows-latest\"}]')"
+      coverage-python-version:
+        required: false
+        type: string
+        default: ""
+        description: "Python version of the leg on which to collect coverage; empty disables coverage for all legs"
+      coverage-os:
+        required: false
+        type: string
+        default: ""
+        description: "Runner OS of the coverage leg; empty defaults to the primary 'os' input"
 
 permissions:
   contents: read
@@ -32,22 +42,67 @@ env:
   UV_FROZEN: "true"
 
 jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: "🔍 Validate matrix inputs and coverage leg"
+        shell: bash
+        env:
+          VERSIONS: ${{ inputs.python-versions }}
+          EXTRAS: ${{ inputs.extra-configurations }}
+          PRIMARY_OS: ${{ inputs.os }}
+          COV_PY: ${{ inputs.coverage-python-version }}
+          COV_OS: ${{ inputs.coverage-os || inputs.os }}
+        run: |
+          if ! echo "$VERSIONS" | jq -e 'type == "array" and all(.[]; type == "string")' > /dev/null; then
+            echo "::error::python-versions must be a JSON array of quoted strings (got: $VERSIONS)"
+            exit 1
+          fi
+          if ! echo "$EXTRAS" | jq -e 'type == "array" and all(.[]; has("python-version") and has("os") and (.["python-version"] | type == "string") and (.os | type == "string"))' > /dev/null; then
+            echo "::error::extra-configurations must be a JSON array of objects each with string 'python-version' and 'os' keys (got: $EXTRAS)"
+            exit 1
+          fi
+          if [ -z "$COV_PY" ]; then
+            echo "coverage-python-version is empty; coverage disabled for all legs"
+            exit 0
+          fi
+          LEGS=$(jq -nc \
+            --argjson versions "$VERSIONS" \
+            --arg primary_os "$PRIMARY_OS" \
+            --argjson extras "$EXTRAS" \
+            '($versions | map({"python-version": ., "os": $primary_os})) + $extras')
+          if ! echo "$LEGS" | jq -e --arg py "$COV_PY" --arg os "$COV_OS" \
+            'any(.[]; .["python-version"] == $py and .os == $os)' > /dev/null; then
+            echo "::error::coverage leg (python=$COV_PY, os=$COV_OS) is not among configured legs: $LEGS"
+            exit 1
+          fi
+          echo "Coverage will be collected on Python $COV_PY / $COV_OS"
+
   build:
+    needs: validate-inputs
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    name: "Python ${{ inputs.python-version }}"
+    strategy:
+      matrix:
+        python-version: ${{ fromJSON(inputs.python-versions) }}
+        os:
+          - ${{ inputs.os }}
+        include: ${{ fromJSON(inputs.extra-configurations) }}
+      fail-fast: false
+    name: "Python ${{ matrix.python-version }} (${{ matrix.os }})"
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: "🐍 Set up Python ${{ inputs.python-version }} + UV"
+      - name: "🐍 Set up Python ${{ matrix.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ matrix.python-version }}
           cache-suffix: test-${{ inputs.working-directory }}
           working-directory: ${{ inputs.working-directory }}
 
@@ -60,11 +115,16 @@ jobs:
         shell: bash
         env:
           RUN_SANDBOX_TESTS: "true"
+          PY: ${{ matrix.python-version }}
+          PY_OS: ${{ matrix.os }}
+          COV_PY: ${{ inputs.coverage-python-version }}
+          COV_OS: ${{ inputs.coverage-os || inputs.os }}
         run: |
-          if [ "${{ inputs.coverage }}" = "false" ]; then
-            make test COV_ARGS= PYTEST_EXTRA=-q
-          else
+          if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
             make test PYTEST_EXTRA=-q
+          else
+            echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
+            make test COV_ARGS= PYTEST_EXTRA=-q
           fi
 
       # Windows cannot run `make test` because `LocalShellBackend` requires POSIX
@@ -76,11 +136,17 @@ jobs:
       - name: "🧪 Run Unit Tests (Windows)"
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          PY: ${{ matrix.python-version }}
+          PY_OS: ${{ matrix.os }}
+          COV_PY: ${{ inputs.coverage-python-version }}
+          COV_OS: ${{ inputs.coverage-os || inputs.os }}
         run: |
-          if [ "${{ inputs.coverage }}" = "false" ]; then
-            uv run --group test pytest -n auto -vvv tests/unit_tests/
-          else
+          if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
             uv run --group test pytest -n auto -vvv tests/unit_tests/ --cov=deepagents --cov-report=term-missing
+          else
+            echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
+            uv run --group test pytest -n auto -vvv tests/unit_tests/
           fi
 
       - name: "🧹 Verify Clean Working Directory"

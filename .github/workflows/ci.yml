@@ -282,20 +282,6 @@ jobs:
       os: "windows-latest"
       coverage: false
 
-  test-quickjs:
-    name: "🧪 Test quickjs"
-    needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
-    uses: ./.github/workflows/_test.yml
-    with:
-      working-directory: "libs/partners/quickjs"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
-
   test-repl:
     name: "🧪 Test repl"
     needs: changes
@@ -366,7 +352,6 @@ jobs:
       - test-modal
       - test-runloop
       - test-repl
-      - test-quickjs
       - benchmark-deepagents
       - benchmark-cli
       - check-release-options

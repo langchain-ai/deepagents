@@ -18,6 +18,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from tools import fetch_url, http_request, web_search
 from cron import build_cron_tools, origin_ctx, start_ticker
+from mcp_tools import MCPSessionManager, get_mcp_tools
 from whatsapp_adapter import (
     MessageEvent,
     WhatsAppAdapter,
@@ -96,6 +97,19 @@ def _build_config() -> dict:
     }
 
 
+def _parse_skill_sources() -> list[str]:
+    """Parse SKILLS_DIRS into a list of skill source paths."""
+    raw = os.getenv("SKILLS_DIRS", "").strip()
+    if not raw:
+        return []
+    sep = ";" if ";" in raw else os.pathsep
+    return [
+        str(Path(part).expanduser().resolve())
+        for part in raw.split(sep)
+        if part.strip()
+    ]
+
+
 async def main() -> None:
     # --- Model setup ---
     model_name = os.getenv("AGENT_MODEL", "claude-sonnet-4-6")
@@ -107,11 +121,32 @@ async def main() -> None:
         os.getenv("WHATSAPP_CRON_PATH", "./cron/jobs.json"),
     ).expanduser().resolve()
 
+    # --- MCP tools (optional; follows the CLI's loader pattern) ---
+    mcp_session_manager: MCPSessionManager | None = None
+    mcp_extra_tools: list = []
+    mcp_config_path = os.getenv("MCP_CONFIG", "").strip()
+    if mcp_config_path:
+        print(f"[main] Loading MCP tools from {mcp_config_path}")
+        mcp_extra_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)
+        print(f"[main] Loaded {len(mcp_extra_tools)} MCP tool(s)")
+
+    # --- Skills sources (optional) ---
+    skill_sources = _parse_skill_sources()
+    if skill_sources:
+        print(f"[main] Skills sources: {skill_sources}")
+
     # --- Agent setup ---
     agent = create_deep_agent(
         model=model,
         backend=LocalShellBackend(virtual_mode=False),
-        tools=[http_request, web_search, fetch_url, *build_cron_tools(jobs_path)],
+        tools=[
+            http_request,
+            web_search,
+            fetch_url,
+            *build_cron_tools(jobs_path),
+            *mcp_extra_tools,
+        ],
+        skills=skill_sources or None,
         system_prompt=_IMAGE_ATTACH_INSTRUCTIONS,
     )
 
@@ -409,6 +444,11 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     await adapter.disconnect()
+    if mcp_session_manager is not None:
+        try:
+            await mcp_session_manager.cleanup()
+        except Exception:
+            logger.warning("MCP session cleanup failed", exc_info=True)
     print("[main] Done.")
 
 

@@ -52,6 +52,38 @@ All configuration is via environment variables (see `.env.example`):
 | `WHATSAPP_REPLY_PREFIX` | | Prefix for bot responses |
 | `LANGSMITH_API_KEY` | | LangSmith tracing key |
 | `LANGSMITH_TRACING` | `false` | Enable tracing |
+| `SKILLS_DIRS` | | Skill source dirs (see "Skills" below) |
+| `MCP_CONFIG` | | Path to a Claude-Desktop-style MCP config JSON |
+
+## Skills and MCP tools
+
+The agent can optionally load [Agent Skills](https://agentskills.io/specification) and [MCP](https://modelcontextprotocol.io/) tools.
+
+**Skills** — set `SKILLS_DIRS` to one or more directories containing skill sub-folders (each with a `SKILL.md`). Separate multiple paths with `;` (or `:` on Linux/macOS). Later entries override earlier ones:
+
+```
+SKILLS_DIRS=/home/me/.deepagents/skills;./skills
+```
+
+**MCP tools** — point `MCP_CONFIG` at a Claude-Desktop-style JSON config file. Both stdio and remote (`sse`, `http`) servers are supported. Follows the same loader pattern as the `deepagents` CLI.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/shared"]
+    },
+    "my-remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/",
+      "headers": {"Authorization": "Bearer ..."}
+    }
+  }
+}
+```
+
+Stdio sessions are kept alive for the lifetime of the process and cleaned up on shutdown.
 
 ## Architecture
 

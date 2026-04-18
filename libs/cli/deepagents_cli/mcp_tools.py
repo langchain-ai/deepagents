@@ -102,6 +102,14 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         if headers is not None and not isinstance(headers, dict):
             error_msg = f"Server '{server_name}' 'headers' must be a dictionary"
             raise TypeError(error_msg)
+
+        # Fail fast on unset env-var references in header values.
+        # We discard the resolved result; real resolution happens at
+        # connection time (see _load_tools_from_config).
+        if headers is not None:
+            from deepagents_cli.mcp_auth import resolve_headers
+
+            resolve_headers(headers, server_name=server_name)
     elif server_type == "stdio":
         # stdio server validation
         if "command" not in server_config:

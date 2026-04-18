@@ -446,6 +446,48 @@ class TestLoadMCPConfig:
         ):
             load_mcp_config(path)
 
+    def test_load_config_header_with_missing_env_var_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        write_config: Callable[..., str],
+    ) -> None:
+        monkeypatch.delenv("DA_MISSING", raising=False)
+        config_data = {
+            "mcpServers": {
+                "linear": {
+                    "transport": "http",
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"Authorization": "Bearer ${DA_MISSING}"},
+                }
+            }
+        }
+        path = write_config(config_data)
+        with pytest.raises(RuntimeError, match="DA_MISSING"):
+            load_mcp_config(path)
+
+    def test_load_config_header_with_present_env_var_ok(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        write_config: Callable[..., str],
+    ) -> None:
+        monkeypatch.setenv("DA_PRESENT", "tok")
+        config_data = {
+            "mcpServers": {
+                "linear": {
+                    "transport": "http",
+                    "url": "https://mcp.linear.app/mcp",
+                    "headers": {"Authorization": "Bearer ${DA_PRESENT}"},
+                }
+            }
+        }
+        path = write_config(config_data)
+        config = load_mcp_config(path)
+        # The raw config is preserved; substitution happens at connection time.
+        assert (
+            config["mcpServers"]["linear"]["headers"]["Authorization"]
+            == "Bearer ${DA_PRESENT}"
+        )
+
 
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""

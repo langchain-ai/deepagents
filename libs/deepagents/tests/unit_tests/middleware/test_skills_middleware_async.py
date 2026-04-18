@@ -6,11 +6,12 @@ This module contains async versions of skills middleware tests.
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import FileDownloadResponse, FileInfo
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -408,28 +409,33 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
     assert "No skills available" in content
 
 
-async def test_alist_skills_with_windows_style_paths() -> None:
-    """Test that skills load correctly even when backend returns Windows-style backslash paths."""
+@pytest.mark.parametrize(
+    ("skill_dir_path", "source_path"),
+    [
+        ("C:\\Users\\project\\skills\\my-skill\\", "C:\\Users\\project\\skills\\"),
+        ("C:\\Users\\project\\skills\\my-skill", "C:\\Users\\project\\skills"),
+        ("C:\\Users\\project\\skills\\my-skill/", "C:\\Users\\project\\skills/"),
+        ("\\\\server\\share\\skills\\my-skill\\", "\\\\server\\share\\skills\\"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "mixed-separators", "unc-path"],
+)
+async def test_alist_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
+    """Async counterpart of `test_list_skills_with_windows_style_paths`."""
     skill_content = make_skill_content("my-skill", "My test skill")
 
-    # Simulate FilesystemBackend on Windows returning backslash paths
     backend = MagicMock()
-    backend.als_info = AsyncMock(
-        return_value=[
-            FileInfo(path="C:\\Users\\project\\skills\\my-skill\\", is_dir=True),
-        ]
-    )
+    backend.als = AsyncMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
     backend.adownload_files = AsyncMock(
         return_value=[
             FileDownloadResponse(
-                path="C:\\Users\\project\\skills\\my-skill/SKILL.md",
+                path=skill_dir_path,
                 content=skill_content.encode("utf-8"),
                 error=None,
             )
         ]
     )
 
-    skills = await _alist_skills(backend, "C:\\Users\\project\\skills\\")
+    skills = await _alist_skills(backend, source_path)
 
     assert len(skills) == 1
     assert skills[0]["name"] == "my-skill"

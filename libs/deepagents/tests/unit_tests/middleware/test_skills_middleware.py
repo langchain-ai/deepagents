@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import FileDownloadResponse, FileInfo
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
@@ -734,32 +735,66 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     ]
 
 
-def test_list_skills_with_windows_style_paths() -> None:
-    """Test that skills load correctly even when backend returns Windows-style backslash paths."""
+@pytest.mark.parametrize(
+    ("skill_dir_path", "source_path"),
+    [
+        ("C:\\Users\\project\\skills\\my-skill\\", "C:\\Users\\project\\skills\\"),
+        ("C:\\Users\\project\\skills\\my-skill", "C:\\Users\\project\\skills"),
+        ("C:\\Users\\project\\skills\\my-skill/", "C:\\Users\\project\\skills/"),
+        ("\\\\server\\share\\skills\\my-skill\\", "\\\\server\\share\\skills\\"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "mixed-separators", "unc-path"],
+)
+def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
+    r"""Skills load correctly when the backend returns Windows-style paths.
+
+    Regression: `PurePosixPath` treats `\` as a literal filename char, so
+    `_list_skills` must normalize before extracting the directory name.
+    """
     skill_content = make_skill_content("my-skill", "My test skill")
 
-    # Simulate FilesystemBackend on Windows returning backslash paths
     backend = MagicMock()
-    backend.ls_info = MagicMock(
-        return_value=[
-            FileInfo(path="C:\\Users\\project\\skills\\my-skill\\", is_dir=True),
-        ]
-    )
+    backend.ls = MagicMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
     backend.download_files = MagicMock(
         return_value=[
             FileDownloadResponse(
-                path="C:\\Users\\project\\skills\\my-skill/SKILL.md",
+                path=skill_dir_path,
                 content=skill_content.encode("utf-8"),
                 error=None,
             )
         ]
     )
 
-    skills = _list_skills(backend, "C:\\Users\\project\\skills\\")
+    skills = _list_skills(backend, source_path)
 
     assert len(skills) == 1
     assert skills[0]["name"] == "my-skill"
     assert skills[0]["description"] == "My test skill"
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "C:\\Users\\project\\skills\\",
+        "C:\\Users\\project\\skills",
+        "\\\\server\\share\\skills\\",
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "unc-path"],
+)
+def test_format_skills_locations_with_windows_path(source_path: str) -> None:
+    """Derive the trailing directory name from Windows-style source paths.
+
+    Without backslash normalization, `_format_skills_locations` would emit
+    the entire raw path capitalized instead of just the directory label.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[source_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "Skills Skills" in result
+    assert source_path in result
 
 
 def test_format_skills_locations_single_registry() -> None:

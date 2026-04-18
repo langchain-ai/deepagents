@@ -66,6 +66,8 @@ class LocalSubprocessSandbox(BaseSandbox):
         """Map virtual sandbox paths in commands to a real test directory."""
         if self._real_root == self._virtual_root:
             return command
+        # Use a lambda replacement so that Windows paths (containing `\`) in
+        # `self._real_root` are not interpreted as regex backreferences.
         return re.sub(r"/tmp/+test_sandbox_ops", lambda _: self._real_root, command)
 
     def _translate_output_paths(self, output: str) -> str:
@@ -78,6 +80,7 @@ class LocalSubprocessSandbox(BaseSandbox):
         """Translate a virtual test path to its real on-disk location."""
         if self._real_root == self._virtual_root:
             return path
+        # See `_translate_command_paths` for why a lambda is used.
         return re.sub(r"/tmp/+test_sandbox_ops", lambda _: self._real_root, path)
 
     def _to_virtual_path(self, value: str) -> str:

@@ -265,6 +265,7 @@ def parse_args() -> argparse.Namespace:
     from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
+    from deepagents_cli.mcp_commands import setup_mcp_parsers
 
     # Factory that builds an argparse Action whose __call__ invokes the
     # supplied *help_fn* instead of argparse's default help text.  Each
@@ -391,6 +392,8 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
     )
+
+    setup_mcp_parsers(subparsers, make_help_action=_make_help_action)
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -1587,6 +1590,25 @@ def cli_main() -> None:
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
+        elif args.command == "mcp":
+            if args.mcp_command == "login":
+                import asyncio
+
+                from deepagents_cli.mcp_commands import run_mcp_login
+
+                exit_code = asyncio.run(
+                    run_mcp_login(
+                        server=args.server,
+                        config_path=args.config_path,
+                    )
+                )
+                sys.exit(exit_code)
+            else:
+                console.print(
+                    "[bold red]Error:[/bold red] "
+                    "Unknown mcp subcommand. Try: deepagents mcp login <server>"
+                )
+                sys.exit(2)
         elif args.non_interactive_message:
             # Check for optional tools before running agent (stderr so
             # --quiet piped output stays clean)

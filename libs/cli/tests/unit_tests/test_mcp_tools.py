@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable, Generator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,9 +22,46 @@ from deepagents_cli.mcp_tools import (
     load_mcp_config,
     load_mcp_config_lenient,
     merge_mcp_configs,
+    reset_default_session_manager_for_testing,
     resolve_and_load_mcp_tools,
 )
 from deepagents_cli.project_utils import ProjectContext
+
+
+def _make_mcp_tool(
+    name: str, description: str = "", input_schema: dict | None = None
+) -> MagicMock:
+    """Build a mock MCP `Tool` object suitable for proxy-tool construction."""
+    mock = MagicMock(
+        spec=["name", "description", "inputSchema", "annotations", "meta"]
+    )
+    mock.name = name
+    mock.description = description
+    mock.inputSchema = input_schema or {"type": "object", "properties": {}}
+    mock.annotations = None
+    mock.meta = None
+    return mock
+
+
+def _make_tool_page(tools: list[MagicMock], next_cursor: str | None = None) -> MagicMock:
+    """Build a mock `list_tools` page result."""
+    page = MagicMock(spec=["tools", "nextCursor"])
+    page.tools = tools
+    page.nextCursor = next_cursor
+    return page
+
+
+@pytest.fixture(autouse=True)
+def _reset_mcp_singleton() -> Generator[None]:
+    """Clear the process-wide MCP session cache between tests.
+
+    The singleton accumulates cached sessions across calls; tests that
+    exercise the cache must start from a clean slate so they see exactly
+    the `create_session` invocations they expect.
+    """
+    reset_default_session_manager_for_testing()
+    yield
+    reset_default_session_manager_for_testing()
 
 # Test Fixtures
 
@@ -55,38 +93,39 @@ def write_config(tmp_path: Path) -> Callable[..., str]:
 
 
 @pytest.fixture
-def mock_mcp_session():
-    """Fixture for creating a mock MCP session context manager."""
+def fake_create_session() -> Generator[tuple[AsyncMock, list]]:
+    """Patch `langchain_mcp_adapters.sessions.create_session`.
+
+    Yields `(mock_session, recorded_connections)` where `mock_session` is the
+    shared `ClientSession` mock returned by every `async with create_session`
+    block, and `recorded_connections` is an append-only list of the
+    `Connection` dict passed on each invocation.
+
+    Tests that need per-server behavior can inspect or replace
+    `mock_session.list_tools.side_effect`.
+    """
     mock_session = AsyncMock()
-    mock_session_cm = MagicMock()
-    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
-    return mock_session, mock_session_cm
+    mock_session.initialize = AsyncMock()
+    mock_session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+
+    recorded: list = []
+
+    @asynccontextmanager
+    async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        recorded.append(connection)
+        yield mock_session
+
+    with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        yield mock_session, recorded
 
 
 @pytest.fixture
-def mock_mcp_client(
-    mock_mcp_session: tuple[AsyncMock, MagicMock],
-) -> tuple[MagicMock, AsyncMock]:
-    """Fixture for creating a mock MultiServerMCPClient."""
-    mock_session, mock_session_cm = mock_mcp_session
-    mock_client = MagicMock()
-    mock_client.session = MagicMock(return_value=mock_session_cm)
-    return mock_client, mock_session
-
-
-@pytest.fixture
-def mock_tools():
-    """Fixture providing mock tool objects."""
-    mock_tool1 = MagicMock()
-    mock_tool1.name = "read_file"
-    mock_tool1.description = "Read a file"
-
-    mock_tool2 = MagicMock()
-    mock_tool2.name = "write_file"
-    mock_tool2.description = "Write a file"
-
-    return [mock_tool1, mock_tool2]
+def mock_tools() -> list[MagicMock]:
+    """Fixture providing mock MCP tool metadata objects."""
+    return [
+        _make_mcp_tool("read_file", "Read a file"),
+        _make_mcp_tool("write_file", "Write a file"),
+    ]
 
 
 class TestLoadMCPConfig:
@@ -569,185 +608,104 @@ class TestGetMCPTools:
         ):
             yield
 
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_success(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
         valid_config_data: dict,
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
         mock_tools: list,
     ) -> None:
         """Test successful loading of MCP tools."""
         path = write_config(valid_config_data)
-
-        # Setup mocks
-        mock_client, mock_session = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = mock_tools
+        mock_session, recorded = fake_create_session
+        mock_session.list_tools = AsyncMock(return_value=_make_tool_page(mock_tools))
 
         tools, manager, server_infos = await get_mcp_tools(path)
 
-        # Verify client was initialized with correct connection config
-        mock_client_class.assert_called_once()
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["filesystem"]["command"] == "npx"
-        assert connections["filesystem"]["transport"] == "stdio"
-        assert connections["filesystem"]["args"] == [
+        # Verify connection passed to create_session
+        assert len(recorded) == 1
+        conn = recorded[0]
+        assert conn["command"] == "npx"
+        assert conn["transport"] == "stdio"
+        assert conn["args"] == [
             "-y",
             "@modelcontextprotocol/server-filesystem",
             "/tmp",
         ]
 
-        # Verify session was created and tools were loaded
-        mock_client.session.assert_called_once_with("filesystem")
-        mock_load_tools.assert_called_once_with(
-            mock_session, server_name="filesystem", tool_name_prefix=True
-        )
+        # Discovery session lifecycle
+        mock_session.initialize.assert_awaited_once()
+        mock_session.list_tools.assert_awaited_once()
+
+        # Proxy tools prefixed with server name and sorted by name
         assert len(tools) == 2
-        assert tools[0].name == "read_file"
-        assert tools[1].name == "write_file"
+        assert tools[0].name == "filesystem_read_file"
+        assert tools[1].name == "filesystem_write_file"
         assert isinstance(manager, MCPSessionManager)
 
-        # Verify server_infos
+        # server_infos reflects proxy tool names/descriptions
         assert len(server_infos) == 1
         assert server_infos[0].name == "filesystem"
         assert server_infos[0].transport == "stdio"
-        assert len(server_infos[0].tools) == 2
-        assert server_infos[0].tools[0] == MCPToolInfo(
-            name="read_file", description="Read a file"
-        )
-        assert server_infos[0].tools[1] == MCPToolInfo(
-            name="write_file", description="Write a file"
-        )
+        assert server_infos[0].tools == [
+            MCPToolInfo(name="filesystem_read_file", description="Read a file"),
+            MCPToolInfo(name="filesystem_write_file", description="Write a file"),
+        ]
 
-        # Clean up
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
-    async def test_get_mcp_tools_server_spawn_failure(
-        self, mock_client_class: MagicMock, write_config: Callable[..., str]
-    ) -> None:
-        """Test handling of MCP server spawn failure."""
-        path = write_config(
-            {
-                "mcpServers": {
-                    "filesystem": {
-                        "command": "nonexistent-command",
-                        "args": [],
-                        "env": {},
-                    }
-                }
-            }
-        )
-
-        # Setup mock client to raise an exception
-        mock_client_class.side_effect = Exception("Command not found")
-
-        with pytest.raises(
-            RuntimeError, match=r"Failed to initialize MCP client.*Command not found"
-        ):
-            await get_mcp_tools(path)
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
-    async def test_get_mcp_tools_get_tools_failure(
+    async def test_get_mcp_tools_discovery_failure(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
         valid_config_data: dict,
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test handling of failure during load_mcp_tools call."""
+        """Discovery errors surface as RuntimeError wrapping the original cause."""
         path = write_config(valid_config_data)
-
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.side_effect = Exception("Server protocol error")
+        mock_session, _ = fake_create_session
+        mock_session.initialize = AsyncMock(side_effect=Exception("handshake failed"))
 
         with pytest.raises(
             RuntimeError,
-            match=r"Failed to load tools from MCP server.*Server protocol error",
+            match=r"Failed to load tools from MCP server.*handshake failed",
         ):
             await get_mcp_tools(path)
 
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
-    async def test_get_mcp_tools_cleanup_called_on_client_init_failure(
-        self, mock_client_class: MagicMock, write_config: Callable[..., str]
-    ) -> None:
-        """Test that manager.cleanup() is called when client init fails."""
-        path = write_config(
-            {"mcpServers": {"fs": {"command": "npx", "args": [], "env": {}}}}
-        )
-        mock_client_class.side_effect = Exception("init boom")
-
-        with patch.object(
-            MCPSessionManager, "cleanup", new_callable=AsyncMock
-        ) as mock_cleanup:
-            with pytest.raises(RuntimeError, match="Failed to initialize MCP client"):
-                await get_mcp_tools(path)
-            mock_cleanup.assert_awaited_once()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
-    async def test_get_mcp_tools_cleanup_called_on_tool_load_failure(
+    async def test_get_mcp_tools_list_tools_failure(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
         valid_config_data: dict,
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that manager.cleanup() is called when tool loading fails."""
+        """`list_tools` errors surface as RuntimeError."""
         path = write_config(valid_config_data)
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.side_effect = Exception("tool boom")
+        mock_session, _ = fake_create_session
+        mock_session.list_tools = AsyncMock(side_effect=Exception("protocol error"))
 
-        with patch.object(
-            MCPSessionManager, "cleanup", new_callable=AsyncMock
-        ) as mock_cleanup:
-            with pytest.raises(RuntimeError, match="Failed to load tools"):
-                await get_mcp_tools(path)
-            mock_cleanup.assert_awaited_once()
+        with pytest.raises(
+            RuntimeError,
+            match=r"Failed to load tools from MCP server.*protocol error",
+        ):
+            await get_mcp_tools(path)
 
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_empty_env_dict_coerced_to_none(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that `"env": {}` is coerced to None (inherit parent env)."""
+        """`"env": {}` is coerced to None (inherit parent env)."""
         path = write_config(
             {"mcpServers": {"fs": {"command": "npx", "args": [], "env": {}}}}
         )
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        _, recorded = fake_create_session
 
-        _, manager, _ = await get_mcp_tools(path)
+        await get_mcp_tools(path)
 
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["fs"]["env"] is None
+        assert recorded[0]["env"] is None
 
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_multiple_servers(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
     ) -> None:
-        """Test loading tools from multiple MCP servers."""
+        """Discovery opens one session per server; proxy tools collate sorted."""
         path = write_config(
             {
                 "mcpServers": {
@@ -769,73 +727,49 @@ class TestGetMCPTools:
             }
         )
 
-        # Create mock tools from different servers.
-        # Note: MagicMock(name=...) sets the internal _mock_name, not a .name
-        # attribute. Set .name explicitly so tools can be sorted by name.
-        tool_read = MagicMock()
-        tool_read.name = "read_file"
-        tool_write = MagicMock()
-        tool_write.name = "write_file"
-        tool_search = MagicMock()
-        tool_search.name = "web_search"
-        mock_tools_fs = [tool_read, tool_write]
-        mock_tools_search = [tool_search]
+        # Build per-server tool pages that the shared mock session returns in
+        # order on each discovery pass.
+        fs_tools = [_make_mcp_tool("read_file"), _make_mcp_tool("write_file")]
+        search_tools = [_make_mcp_tool("web_search")]
+        page_fs = _make_tool_page(fs_tools)
+        page_search = _make_tool_page(search_tools)
 
-        # Setup mock client with session support
-        mock_session_fs = AsyncMock()
-        mock_session_search = AsyncMock()
+        recorded: list = []
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        # side_effect yields pages in call order — servers are processed in
+        # insertion order, so fs first, then brave-search.
+        mock_session.list_tools = AsyncMock(side_effect=[page_fs, page_search])
 
-        # Mock session context managers for both servers
-        def mock_session_cm(server_name: str) -> MagicMock:
-            session = (
-                mock_session_fs if server_name == "filesystem" else mock_session_search
-            )
-            cm = MagicMock()
-            cm.__aenter__ = AsyncMock(return_value=session)
-            cm.__aexit__ = AsyncMock(return_value=None)
-            return cm
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            recorded.append(connection)
+            yield mock_session
 
-        mock_client = MagicMock()
-        mock_client.session.side_effect = mock_session_cm
-        mock_client_class.return_value = mock_client
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, server_infos = await get_mcp_tools(path)
 
-        # Mock load_mcp_tools to return different tools for each session
-        def mock_load_side_effect(
-            session: AsyncMock, **_kwargs: object
-        ) -> list[MagicMock]:
-            if session == mock_session_fs:
-                return mock_tools_fs
-            return mock_tools_search
+        # Two discovery sessions opened, one per server
+        assert len(recorded) == 2
+        assert {c["command"] for c in recorded} == {"npx"}
+        brave_connection = next(
+            c for c in recorded if (c.get("env") or {}).get("BRAVE_API_KEY")
+        )
+        assert brave_connection["env"]["BRAVE_API_KEY"] == "test-key"
 
-        mock_load_tools.side_effect = mock_load_side_effect
+        # All three proxy tools present, sorted by prefixed name
+        assert [t.name for t in tools] == [
+            "brave-search_web_search",
+            "filesystem_read_file",
+            "filesystem_write_file",
+        ]
+        assert isinstance(manager, MCPSessionManager)
 
-        tools, manager, server_infos = await get_mcp_tools(path)
-
-        # Verify both servers were registered
-        call_kwargs = mock_client_class.call_args.kwargs
-        connections = call_kwargs["connections"]
-        assert len(connections) == 2
-        assert "filesystem" in connections
-        assert "brave-search" in connections
-        assert connections["brave-search"]["env"]["BRAVE_API_KEY"] == "test-key"
-
-        # Verify sessions were created for both servers
-        assert mock_client.session.call_count == 2
-
-        # Verify tools from all servers were returned
-        assert len(tools) == 3
-
-        # Verify server_infos for multiple servers
         assert len(server_infos) == 2
-        assert server_infos[0].name == "filesystem"
-        assert server_infos[0].transport == "stdio"
-        assert len(server_infos[0].tools) == 2
-        assert server_infos[1].name == "brave-search"
-        assert server_infos[1].transport == "stdio"
-        assert len(server_infos[1].tools) == 1
-
-        # Clean up
-        await manager.cleanup()
+        infos_by_name = {info.name: info for info in server_infos}
+        assert set(infos_by_name) == {"filesystem", "brave-search"}
+        assert len(infos_by_name["filesystem"].tools) == 2
+        assert len(infos_by_name["brave-search"].tools) == 1
 
     async def test_get_mcp_tools_invalid_config(
         self, write_config: Callable[..., str]
@@ -855,16 +789,12 @@ class TestGetMCPTools:
         with pytest.raises(ValueError, match="missing required 'command' field"):
             await get_mcp_tools(path)
 
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_env_variables_passed(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that environment variables are correctly passed to MCP client."""
+        """Env variables flow through to the stdio `Connection`."""
         path = write_config(
             {
                 "mcpServers": {
@@ -879,66 +809,36 @@ class TestGetMCPTools:
                 }
             }
         )
+        _, recorded = fake_create_session
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        await get_mcp_tools(path)
 
-        _, manager, _ = await get_mcp_tools(path)
+        assert recorded[0]["env"] == {
+            "GITHUB_TOKEN": "ghp_test123",
+            "GITHUB_API_URL": "https://api.github.com",
+        }
 
-        # Verify env variables were passed correctly
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["github"]["env"]["GITHUB_TOKEN"] == "ghp_test123"
-        assert (
-            connections["github"]["env"]["GITHUB_API_URL"] == "https://api.github.com"
-        )
-
-        # Clean up
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_env_none_when_not_provided(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that env is None (inherit parent env) when not provided in config."""
+        """`env` defaults to None (inherit parent env) when not in config."""
         path = write_config(
-            {
-                "mcpServers": {
-                    "simple": {
-                        "command": "simple-server",
-                    }
-                }
-            }
+            {"mcpServers": {"simple": {"command": "simple-server"}}}
         )
+        _, recorded = fake_create_session
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        await get_mcp_tools(path)
 
-        _, manager, _ = await get_mcp_tools(path)
+        assert recorded[0]["env"] is None
 
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["simple"]["env"] is None
-
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_headers_passed_for_sse(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that headers are correctly passed to SSE MCP client."""
+        """SSE server headers flow through to the `Connection`."""
         path = write_config(
             {
                 "mcpServers": {
@@ -953,33 +853,23 @@ class TestGetMCPTools:
                 }
             }
         )
+        _, recorded = fake_create_session
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        await get_mcp_tools(path)
 
-        _, manager, _ = await get_mcp_tools(path)
+        conn = recorded[0]
+        assert conn["transport"] == "sse"
+        assert conn["headers"] == {
+            "Authorization": "Bearer token123",
+            "X-API-Key": "key456",
+        }
 
-        # Verify headers were passed correctly
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["api"]["transport"] == "sse"
-        assert connections["api"]["headers"]["Authorization"] == "Bearer token123"
-        assert connections["api"]["headers"]["X-API-Key"] == "key456"
-
-        # Clean up
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_headers_passed_for_http(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that headers are correctly passed to HTTP MCP client."""
+        """HTTP server headers flow through to the `Connection`."""
         path = write_config(
             {
                 "mcpServers": {
@@ -991,32 +881,20 @@ class TestGetMCPTools:
                 }
             }
         )
+        _, recorded = fake_create_session
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        await get_mcp_tools(path)
 
-        _, manager, _ = await get_mcp_tools(path)
+        conn = recorded[0]
+        assert conn["transport"] == "streamable_http"
+        assert conn["headers"] == {"Authorization": "Bearer secret"}
 
-        # Verify headers were passed and transport is correct
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["api"]["transport"] == "streamable_http"
-        assert connections["api"]["headers"]["Authorization"] == "Bearer secret"
-
-        # Clean up
-        await manager.cleanup()
-
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_no_headers_when_not_provided(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
-        mock_mcp_client: tuple,
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Test that headers key is not added when not provided in config."""
+        """`headers` key is omitted when not provided in config."""
         path = write_config(
             {
                 "mcpServers": {
@@ -1027,20 +905,11 @@ class TestGetMCPTools:
                 }
             }
         )
+        _, recorded = fake_create_session
 
-        # Setup mocks
-        mock_client, _ = mock_mcp_client
-        mock_client_class.return_value = mock_client
-        mock_load_tools.return_value = []
+        await get_mcp_tools(path)
 
-        _, manager, _ = await get_mcp_tools(path)
-
-        # Verify headers key is not present
-        connections = mock_client_class.call_args.kwargs["connections"]
-        assert "headers" not in connections["api"]
-
-        # Clean up
-        await manager.cleanup()
+        assert "headers" not in recorded[0]
 
 
 class TestDiscoverMcpConfigs:
@@ -1683,32 +1552,39 @@ class TestCheckRemoteServer:
 class TestHealthCheckIntegration:
     """Tests for health check integration in _load_tools_from_config."""
 
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_stdio_health_check_failure_skips_session(
         self,
-        mock_client_class: MagicMock,
         write_config: Callable[..., str],
     ) -> None:
-        """Health check failure cleans up and does not call client.session()."""
+        """Health check failure raises before any session is opened."""
         path = write_config(
             {"mcpServers": {"fs": {"command": "missing-cmd", "args": []}}}
         )
-        mock_client = MagicMock()
-        mock_client_class.return_value = mock_client
+        fake_session = AsyncMock()
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            yield fake_session
 
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            patch(
+                "langchain_mcp_adapters.sessions.create_session", _fake
+            ) as patched,
             pytest.raises(RuntimeError, match="Pre-flight health check"),
         ):
             await get_mcp_tools(path)
 
-        # session() should never be called — health check fails first
-        mock_client.session.assert_not_called()
+        # create_session is the ContextDecorator itself; just assert no call
+        # reached `initialize` / `list_tools`.
+        fake_session.initialize.assert_not_called()
+        fake_session.list_tools.assert_not_called()
+        # patched is the raw asynccontextmanager function, not a Mock; the
+        # underlying mock assertions above already cover the invariant.
+        del patched
 
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_remote_health_check_failure_skips_session(
         self,
-        mock_client_class: MagicMock,
         write_config: Callable[..., str],
     ) -> None:
         """Remote health check failure prevents session creation."""
@@ -1717,8 +1593,11 @@ class TestHealthCheckIntegration:
         path = write_config(
             {"mcpServers": {"api": {"type": "sse", "url": "http://down:9999"}}}
         )
-        mock_client = MagicMock()
-        mock_client_class.return_value = mock_client
+        fake_session = AsyncMock()
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            yield fake_session
 
         mock_http = AsyncMock()
         mock_http.head.side_effect = httpx.TransportError("refused")
@@ -1727,16 +1606,15 @@ class TestHealthCheckIntegration:
 
         with (
             patch("httpx.AsyncClient", return_value=mock_http),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
             pytest.raises(RuntimeError, match="Pre-flight health check"),
         ):
             await get_mcp_tools(path)
 
-        mock_client.session.assert_not_called()
+        fake_session.initialize.assert_not_called()
 
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_multi_server_collects_all_failures(
         self,
-        mock_client_class: MagicMock,
         write_config: Callable[..., str],
     ) -> None:
         """All server failures are reported in a single error."""
@@ -1748,11 +1626,15 @@ class TestHealthCheckIntegration:
                 }
             }
         )
-        mock_client = MagicMock()
-        mock_client_class.return_value = mock_client
+        fake_session = AsyncMock()
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            yield fake_session
 
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
             pytest.raises(RuntimeError) as exc_info,
         ):
             await get_mcp_tools(path)
@@ -1760,12 +1642,10 @@ class TestHealthCheckIntegration:
         error_msg = str(exc_info.value)
         assert "missing-a" in error_msg
         assert "missing-b" in error_msg
-        mock_client.session.assert_not_called()
+        fake_session.initialize.assert_not_called()
 
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_mixed_stdio_and_remote_checks(
         self,
-        mock_client_class: MagicMock,
         write_config: Callable[..., str],
     ) -> None:
         """Both stdio and remote health checks run for mixed configs."""
@@ -1779,8 +1659,6 @@ class TestHealthCheckIntegration:
                 }
             }
         )
-        mock_client = MagicMock()
-        mock_client_class.return_value = mock_client
 
         mock_http = AsyncMock()
         mock_http.head.side_effect = httpx.TransportError("refused")
@@ -1794,7 +1672,6 @@ class TestHealthCheckIntegration:
         ):
             await get_mcp_tools(path)
 
-        # Both failures appear in the error message
         error_msg = str(exc_info.value)
         assert "missing-cmd" in error_msg
         assert "down:9999" in error_msg
@@ -1815,54 +1692,32 @@ class TestToolOrdering:
         ):
             yield
 
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_tools_sorted_alphabetically_by_name(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Tools from MCP servers are sorted by name for stable prompt caches."""
+        """Tools from a single server are sorted by prefixed name."""
         path = write_config(
-            {
-                "mcpServers": {
-                    "srv": {"command": "node", "args": ["server.js"]},
-                }
-            }
+            {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
+        )
+        mock_session, _ = fake_create_session
+        mock_session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [
+                    _make_mcp_tool("zeta"),
+                    _make_mcp_tool("alpha"),
+                    _make_mcp_tool("mu"),
+                ]
+            )
         )
 
-        # Return tools in non-alphabetical order
-        zeta = MagicMock()
-        zeta.name = "srv_zeta"
-        zeta.description = "z"
-        alpha = MagicMock()
-        alpha.name = "srv_alpha"
-        alpha.description = "a"
-        mu = MagicMock()
-        mu.name = "srv_mu"
-        mu.description = "m"
-        mock_load_tools.return_value = [zeta, alpha, mu]
-
-        mock_session = AsyncMock()
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=mock_session)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        mock_client = MagicMock()
-        mock_client.session.return_value = cm
-        mock_client_class.return_value = mock_client
-
-        tools, manager, _ = await get_mcp_tools(path)
+        tools, _, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
-        await manager.cleanup()
 
-    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
-    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_tools_sorted_across_multiple_servers(
         self,
-        mock_client_class: MagicMock,
-        mock_load_tools: AsyncMock,
         write_config: Callable[..., str],
     ) -> None:
         """Tools from multiple servers are interleaved alphabetically."""
@@ -1875,40 +1730,24 @@ class TestToolOrdering:
             }
         )
 
-        tool_b = MagicMock()
-        tool_b.name = "beta_write"
-        tool_b.description = "w"
-        tool_a = MagicMock()
-        tool_a.name = "alpha_read"
-        tool_a.description = "r"
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        # Order matters: servers are iterated in config insertion order.
+        mock_session.list_tools = AsyncMock(
+            side_effect=[
+                _make_tool_page([_make_mcp_tool("write")]),
+                _make_tool_page([_make_mcp_tool("read")]),
+            ]
+        )
 
-        mock_session_a = AsyncMock()
-        mock_session_b = AsyncMock()
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            yield mock_session
 
-        def mock_load_side_effect(
-            session: AsyncMock, **_kwargs: object
-        ) -> list[MagicMock]:
-            if session == mock_session_b:
-                return [tool_b]
-            return [tool_a]
-
-        mock_load_tools.side_effect = mock_load_side_effect
-
-        def mock_session_cm(server_name: str) -> MagicMock:
-            session = mock_session_b if server_name == "beta" else mock_session_a
-            cm = MagicMock()
-            cm.__aenter__ = AsyncMock(return_value=session)
-            cm.__aexit__ = AsyncMock(return_value=None)
-            return cm
-
-        mock_client = MagicMock()
-        mock_client.session.side_effect = mock_session_cm
-        mock_client_class.return_value = mock_client
-
-        tools, manager, _ = await get_mcp_tools(path)
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["alpha_read", "beta_write"]
-        await manager.cleanup()
 
 
 class TestLoadToolsFromConfigHeaders:
@@ -1916,33 +1755,28 @@ class TestLoadToolsFromConfigHeaders:
     async def test_headers_are_resolved_before_connection(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        mock_mcp_client: tuple[MagicMock, AsyncMock],
     ) -> None:
         """Env-var references in headers are resolved before being passed to
-        MultiServerMCPClient."""
+        `create_session` as part of the Connection config."""
         from deepagents_cli.mcp_tools import _load_tools_from_config
 
         monkeypatch.setenv("DA_TOKEN", "tok-123")
 
-        mock_client, _ = mock_mcp_client
-        captured: dict = {}
+        recorded: list = []
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=_make_tool_page([]))
 
-        def _capture(connections: dict) -> MagicMock:
-            captured["connections"] = connections
-            return mock_client
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            recorded.append(connection)
+            yield mock_session
 
         with (
-            patch(
-                "langchain_mcp_adapters.client.MultiServerMCPClient",
-                side_effect=_capture,
-            ),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
             patch(
                 "deepagents_cli.mcp_tools._check_remote_server",
                 new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "langchain_mcp_adapters.tools.load_mcp_tools",
-                new=AsyncMock(return_value=[]),
             ),
         ):
             config = {
@@ -1954,11 +1788,9 @@ class TestLoadToolsFromConfigHeaders:
                     }
                 }
             }
-            _, mgr, _ = await _load_tools_from_config(config)
-            await mgr.cleanup()
+            await _load_tools_from_config(config)
 
-        sent_headers = captured["connections"]["linear"]["headers"]
-        assert sent_headers == {"Authorization": "Bearer tok-123"}
+        assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
 
 
 class TestLoadToolsFromConfigOAuth:
@@ -1989,7 +1821,6 @@ class TestLoadToolsFromConfigOAuth:
     async def test_existing_tokens_attach_oauth_provider(
         self,
         fake_home: Path,
-        mock_mcp_client: tuple[MagicMock, AsyncMock],
     ) -> None:
         from mcp.client.auth import OAuthClientProvider
         from mcp.shared.auth import OAuthToken
@@ -2000,25 +1831,21 @@ class TestLoadToolsFromConfigOAuth:
         storage = FileTokenStorage("notion")
         await storage.set_tokens(OAuthToken(access_token="at", token_type="Bearer"))
 
-        mock_client, _ = mock_mcp_client
-        captured: dict = {}
+        recorded: list = []
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=_make_tool_page([]))
 
-        def _capture(connections: dict) -> MagicMock:
-            captured["connections"] = connections
-            return mock_client
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            recorded.append(connection)
+            yield mock_session
 
         with (
-            patch(
-                "langchain_mcp_adapters.client.MultiServerMCPClient",
-                side_effect=_capture,
-            ),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
             patch(
                 "deepagents_cli.mcp_tools._check_remote_server",
                 new=AsyncMock(return_value=None),
-            ),
-            patch(
-                "langchain_mcp_adapters.tools.load_mcp_tools",
-                new=AsyncMock(return_value=[]),
             ),
         ):
             config = {
@@ -2030,8 +1857,238 @@ class TestLoadToolsFromConfigOAuth:
                     }
                 }
             }
-            _, mgr, _ = await _load_tools_from_config(config)
-            await mgr.cleanup()
+            await _load_tools_from_config(config)
 
-        conn = captured["connections"]["notion"]
-        assert isinstance(conn.get("auth"), OAuthClientProvider)
+        assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+
+
+class TestCachedSessionProxy:
+    """Proxy tools route through MCPSessionManager with retry semantics."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        """Bypass pre-flight health checks for all tests in this class."""
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+        ):
+            yield
+
+    @staticmethod
+    def _fake_call_tool_result(text: str = "ok") -> MagicMock:
+        """Build a mock `CallToolResult` compatible with `_convert_call_tool_result`."""
+        from mcp.types import CallToolResult, TextContent
+
+        return CallToolResult(content=[TextContent(type="text", text=text)])
+
+    async def test_first_call_opens_cached_session(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """First proxy-tool call opens a session in the manager and caches it."""
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        sessions: list[AsyncMock] = []
+        session_ctx_entries = 0
+
+        def _new_session() -> AsyncMock:
+            s = AsyncMock()
+            s.initialize = AsyncMock()
+            s.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            s.call_tool = AsyncMock(return_value=self._fake_call_tool_result("hello"))
+            sessions.append(s)
+            return s
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            nonlocal session_ctx_entries
+            session_ctx_entries += 1
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
+            assert [t.name for t in tools] == ["srv_echo"]
+
+            # Invoke the proxy tool — should open a second session (first was
+            # the throwaway discovery session).
+            content = await tools[0].ainvoke({})
+
+        assert session_ctx_entries == 2, (
+            "expected one discovery session + one cached runtime session"
+        )
+        # The runtime session had call_tool invoked with the right tool name.
+        runtime_session = sessions[1]
+        runtime_session.call_tool.assert_awaited_once_with("echo", {})
+        assert "hello" in str(content)
+
+    async def test_second_call_reuses_cached_session(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Back-to-back proxy-tool calls share one runtime session."""
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        sessions: list[AsyncMock] = []
+
+        def _new_session() -> AsyncMock:
+            s = AsyncMock()
+            s.initialize = AsyncMock()
+            s.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            s.call_tool = AsyncMock(return_value=self._fake_call_tool_result())
+            sessions.append(s)
+            return s
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
+            await tools[0].ainvoke({})
+            await tools[0].ainvoke({})
+
+        # discovery + one runtime session — NOT two runtime sessions.
+        assert len(sessions) == 2
+        runtime_session = sessions[1]
+        assert runtime_session.call_tool.await_count == 2
+
+    async def test_transient_error_invalidates_and_retries(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """A transient transport error triggers invalidate + retry-once."""
+        from anyio import ClosedResourceError
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        all_sessions: list[AsyncMock] = []
+
+        def _new_session(*, dead: bool = False) -> AsyncMock:
+            s = AsyncMock()
+            s.initialize = AsyncMock()
+            s.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            if dead:
+                s.call_tool = AsyncMock(side_effect=ClosedResourceError())
+            else:
+                s.call_tool = AsyncMock(return_value=self._fake_call_tool_result())
+            all_sessions.append(s)
+            return s
+
+        call_counter = {"n": 0}
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            call_counter["n"] += 1
+            # discovery (#1), first runtime session is dead (#2), retry opens
+            # a fresh session (#3)
+            yield _new_session(dead=(call_counter["n"] == 2))
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
+            await tools[0].ainvoke({})
+
+        assert call_counter["n"] == 3, (
+            "discovery + dead runtime + retry = 3 sessions opened"
+        )
+        # The retry used a live session that succeeded.
+        assert all_sessions[2].call_tool.await_count == 1
+
+    async def test_repeated_transient_error_surfaces_tool_exception(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Second failure after invalidate converts to a `ToolException`."""
+        from anyio import ClosedResourceError
+        from langchain_core.tools import ToolException
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        def _new_session(*, dead: bool) -> AsyncMock:
+            s = AsyncMock()
+            s.initialize = AsyncMock()
+            s.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            s.call_tool = AsyncMock(
+                side_effect=ClosedResourceError() if dead else None
+            )
+            return s
+
+        call_counter = {"n": 0}
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            call_counter["n"] += 1
+            # discovery session is "alive" so list_tools succeeds; both runtime
+            # sessions (post-discovery) fail with ClosedResourceError.
+            yield _new_session(dead=(call_counter["n"] >= 2))
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
+            with pytest.raises(ToolException, match="failed after one retry"):
+                await tools[0].ainvoke({})
+
+    async def test_logical_tool_exception_is_not_retried(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """A `ToolException` from the MCP server propagates without retry."""
+        from langchain_core.tools import ToolException
+        from mcp.types import CallToolResult, TextContent
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+
+        call_counter = {"n": 0}
+        runtime_session: AsyncMock | None = None
+
+        def _new_session() -> AsyncMock:
+            nonlocal runtime_session
+            s = AsyncMock()
+            s.initialize = AsyncMock()
+            s.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            # Return isError=True; _convert_call_tool_result turns that into
+            # a ToolException.
+            s.call_tool = AsyncMock(
+                return_value=CallToolResult(
+                    content=[TextContent(type="text", text="boom")], isError=True
+                )
+            )
+            if call_counter["n"] >= 1:
+                runtime_session = s
+            return s
+
+        @asynccontextmanager
+        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+            call_counter["n"] += 1
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, _, _ = await get_mcp_tools(path)
+            with pytest.raises(ToolException, match="boom"):
+                await tools[0].ainvoke({})
+
+        # Only discovery + one runtime session — NO retry.
+        assert call_counter["n"] == 2
+        assert runtime_session is not None
+        assert runtime_session.call_tool.await_count == 1

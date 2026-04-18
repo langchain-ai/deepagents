@@ -27,8 +27,9 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deps, evals,
-#   examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl, runloop, sdk
+#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-cli, deepagents-acp, deps,
+#   evals, examples, harbor, infra, langsmith-sandbox, modal, quickjs, repl,
+#   runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -49,7 +50,7 @@ permissions:
 
 on:
   pull_request:
-    types: [opened, edited, synchronize]
+    types: [ opened, edited, synchronize ]
 
 jobs:
   # Validates that PR title follows Conventional Commits 1.0.0 specification
@@ -93,6 +94,7 @@ jobs:
             daytona
             deepagents
             deepagents-cli
+            deepagents-acp
             deps
             deps-dev
             evals

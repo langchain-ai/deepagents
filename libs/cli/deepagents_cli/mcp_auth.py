@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import stat
+from pathlib import Path
+
+from mcp.client.auth import TokenStorage
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_STORAGE_VERSION = 1
 
 
 def resolve_headers(
@@ -76,3 +84,115 @@ def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+def _tokens_dir() -> Path:
+    """Resolve the mcp-tokens directory.
+
+    Re-reads `$HOME` on every call so tests that override it via
+    `monkeypatch.setenv("HOME", ...)` transparently redirect token files.
+    Falls back to the module-level `DEFAULT_CONFIG_DIR` when `$HOME` is unset.
+    """
+    home_override = os.environ.get("HOME")
+    if home_override:
+        return Path(home_override) / ".deepagents" / "mcp-tokens"
+    from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
+
+    return DEFAULT_CONFIG_DIR / "mcp-tokens"
+
+
+class FileTokenStorage(TokenStorage):
+    """File-backed `TokenStorage` under `~/.deepagents/mcp-tokens/<server>.json`.
+
+    Atomic-write via tmp-file + `os.replace` + chmod(0o600). Directory is
+    created with mode 0o700. Permission bits are POSIX-only.
+    """
+
+    def __init__(self, server_name: str) -> None:
+        self._server_name = server_name
+
+    @property
+    def _path(self) -> Path:
+        return _tokens_dir() / f"{self._server_name}.json"
+
+    async def get_tokens(self) -> OAuthToken | None:
+        data = self._read()
+        if data is None:
+            return None
+        raw = data.get("tokens")
+        if raw is None:
+            return None
+        return OAuthToken.model_validate(raw)
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        data = self._read() or {}
+        data["version"] = _STORAGE_VERSION
+        data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
+        self._write(data)
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        data = self._read()
+        if data is None:
+            return None
+        raw = data.get("client_info")
+        if raw is None:
+            return None
+        return OAuthClientInformationFull.model_validate(raw)
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        data = self._read() or {}
+        data["version"] = _STORAGE_VERSION
+        data["client_info"] = json.loads(
+            client_info.model_dump_json(exclude_none=True)
+        )
+        self._write(data)
+
+    def _read(self) -> dict | None:
+        path = self._path
+        if not path.exists():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            msg = (
+                f"Failed to read MCP token file {path}: {exc}. "
+                "Delete the file and re-run `deepagents mcp login "
+                f"{self._server_name}` if it is corrupt."
+            )
+            raise RuntimeError(msg) from exc
+        if data.get("version") != _STORAGE_VERSION:
+            msg = (
+                f"MCP token file {path} has unsupported version "
+                f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
+                "Delete it and re-run `deepagents mcp login "
+                f"{self._server_name}`."
+            )
+            raise RuntimeError(msg)
+        return data
+
+    def _write(self, data: dict) -> None:
+        path = self._path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Tighten directory perms on POSIX (best effort on Windows).
+        if hasattr(os, "chmod"):
+            try:
+                os.chmod(path.parent, stat.S_IRWXU)  # 0o700
+            except OSError:
+                pass
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        try:
+            os.replace(tmp, path)
+        except Exception:
+            # Clean up the tmp file so no partial state leaks at the final path.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        if hasattr(os, "chmod"):
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
+            except OSError:
+                pass

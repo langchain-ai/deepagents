@@ -23,6 +23,7 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
+    ModuleScope,
     Runtime,
 )
 from quickjs_rs import (
@@ -30,10 +31,13 @@ from quickjs_rs import (
 )
 
 from deepagents_repl._ptc import to_camel_case
+from deepagents_repl._skills import LoadedSkill, SkillLoadError, aload_skill
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.skills import SkillMetadata
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -425,9 +429,7 @@ class _ThreadREPL:
         # ``undefined`` sidesteps the MarshalError on object returns
         # (same trick as the console install).
         if target_names:
-            pairs = ", ".join(
-                f"{camel}: __tools_{camel}" for camel in target_names
-            )
+            pairs = ", ".join(f"{camel}: __tools_{camel}" for camel in target_names)
             ctx.eval(f"globalThis.tools = {{ {pairs} }}; undefined")
         else:
             ctx.eval("globalThis.tools = {}; undefined")
@@ -579,9 +581,7 @@ class _ThreadREPL:
 
     async def _describe_via_handle_async(self, code: str) -> str:
         try:
-            handle = await self._ctx.eval_handle_async(
-                code, timeout=self._per_call_timeout
-            )
+            handle = await self._ctx.eval_handle_async(code, timeout=self._per_call_timeout)
         except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
             return _HANDLE_PLACEHOLDER
         try:
@@ -591,6 +591,19 @@ class _ThreadREPL:
 
     def close(self) -> None:
         self._ctx.close()
+
+
+@dataclass
+class _SkillInstall:
+    """Install-cache entry for one skill on a Runtime.
+
+    Either ``loaded`` is set (install succeeded) or ``error`` is set
+    (install failed; subsequent references fail fast without re-hitting
+    the backend). Never both.
+    """
+
+    loaded: LoadedSkill | None = None
+    error: SkillLoadError | None = None
 
 
 @dataclass
@@ -608,6 +621,15 @@ class _Registry:
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
     _init_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Per-Runtime skill install cache. `ModuleScope` storage is per-
+    # Runtime in quickjs-rs v0.4 (see src/runtime.rs:132-146), and
+    # ``ctx.install`` is additive — re-install of a bare specifier
+    # after first import is a silent no-op. So we only need to install
+    # each skill *once* per Runtime, even if multiple threads reference
+    # it. Successes go under ``loaded``; failures are cached too so a
+    # broken skill doesn't re-hit the backend every eval.
+    _skill_installs: dict[str, _SkillInstall] = field(default_factory=dict)
+    _skill_install_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         # Double-checked lock on the runtime; then a bare check on the per-
@@ -631,11 +653,63 @@ class _Registry:
                     self._repls[thread_id] = repl
         return repl
 
+    async def aensure_skills_installed(
+        self,
+        referenced: frozenset[str],
+        metadata: dict[str, SkillMetadata],
+        backend: BackendProtocol,
+        ctx: Context,
+    ) -> list[SkillLoadError]:
+        """Install any referenced skills not yet on this Runtime.
+
+        Returns a list of errors for skills that either (a) were in the
+        referenced set but have no metadata entry, or (b) failed to
+        load — present or newly-cached. The caller surfaces these as a
+        pre-eval failure.
+
+        The lock is held around the whole install pass rather than per
+        skill so we don't cold-fetch the same skill twice on a race.
+        Install is additive and idempotent, so cross-thread racing is
+        safe; serialising here just avoids wasted I/O.
+        """
+        errors: list[SkillLoadError] = []
+        async with self._skill_install_lock:
+            for name in referenced:
+                cached = self._skill_installs.get(name)
+                if cached is not None:
+                    if cached.error is not None:
+                        errors.append(cached.error)
+                    continue
+                meta = metadata.get(name)
+                if meta is None:
+                    err = SkillLoadError(
+                        f"skill {name!r} referenced but not available on this agent"
+                    )
+                    # Don't cache unavailability — the set of installed
+                    # SkillsMiddleware sources may differ per call, and
+                    # a skill that's absent now could be present later.
+                    errors.append(err)
+                    continue
+                try:
+                    loaded = await aload_skill(meta, backend)
+                except SkillLoadError as exc:
+                    self._skill_installs[name] = _SkillInstall(error=exc)
+                    errors.append(exc)
+                    continue
+                # Install under the bare specifier. Additive — any
+                # previously-installed scope for a different specifier
+                # is untouched. Re-install of the same specifier after
+                # first import is a silent no-op (spec §5).
+                ctx.install(ModuleScope({loaded.specifier: loaded.scope}))
+                self._skill_installs[name] = _SkillInstall(loaded=loaded)
+        return errors
+
     def close(self) -> None:
         # Runtime.close() walks its own context list, so we don't need to
         # close each _ThreadREPL individually. Drop our handles first so we
         # don't touch already-freed contexts.
         self._repls.clear()
+        self._skill_installs.clear()
         if self._runtime is not None:
             self._runtime.close()
             self._runtime = None

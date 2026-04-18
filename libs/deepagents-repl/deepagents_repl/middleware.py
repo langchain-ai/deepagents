@@ -18,7 +18,7 @@ the full design rationale.
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
@@ -34,12 +34,17 @@ from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:
+    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.skills import SkillMetadata
+
 from deepagents_repl._ptc import (
     PTCOption,
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
 from deepagents_repl._repl import _Registry, format_outcome
+from deepagents_repl._skills import scan_skill_references
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +151,23 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
         ptc: PTCOption = False,
+        skills_backend: "BackendProtocol | None" = None,
     ) -> None:
+        """See the class docstring for parameter details.
+
+        Args:
+            skills_backend: Optional ``BackendProtocol`` the REPL reads
+                skill source files from. When set and a paired
+                ``SkillsMiddleware`` populates ``skills_metadata`` in
+                state, skills with a ``module`` frontmatter key become
+                dynamic-importable from the REPL as
+                ``await import("@/skills/<name>")``. When ``None``,
+                skill modules are not installed (``import(...)`` fails
+                at the resolver). This must be the same backend
+                ``SkillsMiddleware`` uses — the REPL treats skill file
+                paths relative to SKILL.md as coming from the same
+                store.
+        """
         super().__init__()
         self._memory_limit = memory_limit
         self._timeout = timeout
@@ -154,6 +175,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
         self._ptc = ptc
+        self._skills_backend = skills_backend
         self._registry = _Registry(
             memory_limit=memory_limit,
             timeout=timeout,
@@ -180,6 +202,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         registry = self._registry
         max_chars = self._max_result_chars
         fallback_id = self._fallback_thread_id
+        middleware = self
 
         def _run(outcome_fn: Any, code: str, tool_call_id: str) -> ToolMessage:
             content = format_outcome(outcome_fn(code), max_result_chars=max_chars)
@@ -209,6 +232,18 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ],
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
+            # Install any referenced skills before eval. If install
+            # fails (bad skill, unknown name, backend error) we short-
+            # circuit with a formatted error so the model sees a clean
+            # "skill unavailable" message instead of the raw
+            # ReferenceError quickjs-rs's resolver would produce.
+            install_error = await middleware._ensure_skills_for_eval(runtime, code, repl)
+            if install_error is not None:
+                return ToolMessage(
+                    content=install_error,
+                    tool_call_id=runtime.tool_call_id,
+                    name=tool_name,
+                )
             # Capture the outer runtime so PTC bridges can forward
             # state/store/context into tool calls during this eval. Clear
             # after so a stale runtime can't bleed into a later call on
@@ -238,6 +273,40 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             infer_schema=False,
             args_schema=EvalSchema,
         )
+
+    async def _ensure_skills_for_eval(
+        self,
+        runtime: ToolRuntime[None, Any],
+        code: str,
+        repl: Any,  # _ThreadREPL — Any to avoid a cross-module type cycle
+    ) -> str | None:
+        """Install any ``@/skills/<name>`` specifiers the code references.
+
+        Returns a preformatted error string if install failed for any
+        referenced skill; ``None`` if everything is ready to eval.
+        Skill install is a no-op when ``skills_backend`` is ``None`` or
+        no literal specifiers appear in the source.
+        """
+        if self._skills_backend is None:
+            return None
+        referenced = scan_skill_references(code)
+        if not referenced:
+            return None
+        metadata_list = runtime.state.get("skills_metadata", []) if runtime.state else []
+        metadata: dict[str, SkillMetadata] = {m["name"]: m for m in metadata_list}
+        errors = await self._registry.aensure_skills_installed(
+            referenced,
+            metadata,
+            self._skills_backend,
+            repl._ctx,
+        )
+        if not errors:
+            return None
+        # Each error is a SkillLoadError subclass with a readable
+        # message. Surface all of them joined so the model sees every
+        # broken skill, not just the first.
+        rendered = "; ".join(str(e) for e in errors)
+        return f'<error type="SkillNotAvailable">{rendered}</error>'
 
     def wrap_model_call(
         self,

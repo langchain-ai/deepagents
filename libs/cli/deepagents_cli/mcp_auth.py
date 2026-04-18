@@ -264,3 +264,71 @@ def build_oauth_provider(
         redirect_handler=redirect,
         callback_handler=callback,
     )
+
+
+async def _drive_handshake(
+    connections: dict, storage: FileTokenStorage
+) -> None:
+    """Open a one-shot MCP session to trigger the OAuth handshake.
+
+    The MCP SDK's `OAuthClientProvider` hooks into session startup and runs
+    discovery → DCR → paste-back handlers → token exchange. Tokens land in
+    `storage` via `set_tokens` before this returns.
+    """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    client = MultiServerMCPClient(connections=connections)
+    server_name = next(iter(connections))
+    async with client.session(server_name):
+        # Entering the session drives the full flow.
+        pass
+
+
+async def login(
+    *,
+    server_name: str,
+    server_config: dict,
+) -> None:
+    """Drive OAuth login for `server_name`, persisting tokens on success.
+
+    Raises:
+        ValueError: If `server_config` isn't an OAuth http/sse server.
+    """
+    from langchain_mcp_adapters.sessions import (
+        SSEConnection,
+        StreamableHttpConnection,
+    )
+
+    if server_config.get("auth") != "oauth":
+        msg = (
+            f"Server '{server_name}' does not use OAuth "
+            "(set \"auth\": \"oauth\" in mcpServers)."
+        )
+        raise ValueError(msg)
+    transport = server_config.get("type") or server_config.get("transport", "stdio")
+    if transport not in {"http", "sse"}:
+        msg = (
+            f"Server '{server_name}' uses {transport!r} transport; "
+            "OAuth login is only valid for http/sse."
+        )
+        raise ValueError(msg)
+
+    storage = FileTokenStorage(server_name)
+    provider = build_oauth_provider(
+        server_name=server_name,
+        server_url=server_config["url"],
+        storage=storage,
+    )
+    conn: dict
+    if transport == "http":
+        conn = StreamableHttpConnection(
+            transport="streamable_http", url=server_config["url"], auth=provider
+        )
+    else:
+        conn = SSEConnection(transport="sse", url=server_config["url"], auth=provider)
+
+    await _drive_handshake({server_name: conn}, storage)
+    print(  # noqa: T201 - user-facing confirmation
+        f"Logged in to MCP server '{server_name}'. "
+        f"Tokens saved to {storage._path}."
+    )

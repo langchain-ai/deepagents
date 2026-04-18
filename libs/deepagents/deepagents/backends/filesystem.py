@@ -379,7 +379,9 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # newline="" disables Windows CRLF translation so callers that
+            # pass LF-only content get LF-only bytes on disk.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
 
             return WriteResult(path=file_path)
@@ -438,7 +440,7 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
             return EditResult(path=file_path, occurrences=int(occurrences))

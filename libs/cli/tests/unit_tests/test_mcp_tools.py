@@ -488,6 +488,71 @@ class TestLoadMCPConfig:
             == "Bearer ${DA_PRESENT}"
         )
 
+    def test_load_config_auth_oauth_http_ok(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        config_data = {
+            "mcpServers": {
+                "notion": {
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth": "oauth",
+                }
+            }
+        }
+        path = write_config(config_data)
+        config = load_mcp_config(path)
+        assert config["mcpServers"]["notion"]["auth"] == "oauth"
+
+    def test_load_config_auth_unknown_value_rejected(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        config_data = {
+            "mcpServers": {
+                "notion": {
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth": "saml",
+                }
+            }
+        }
+        path = write_config(config_data)
+        with pytest.raises(ValueError, match="auth"):
+            load_mcp_config(path)
+
+    def test_load_config_auth_oauth_on_stdio_rejected(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        config_data = {
+            "mcpServers": {
+                "local": {
+                    "command": "npx",
+                    "args": [],
+                    "auth": "oauth",
+                }
+            }
+        }
+        path = write_config(config_data)
+        with pytest.raises(ValueError, match="stdio.*oauth|oauth.*stdio"):
+            load_mcp_config(path)
+
+    def test_load_config_auth_oauth_with_authorization_header_rejected(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        config_data = {
+            "mcpServers": {
+                "notion": {
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth": "oauth",
+                    "headers": {"Authorization": "Bearer x"},
+                }
+            }
+        }
+        path = write_config(config_data)
+        with pytest.raises(ValueError, match="Authorization"):
+            load_mcp_config(path)
+
 
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""

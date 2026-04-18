@@ -131,6 +131,30 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         )
         raise ValueError(error_msg)
 
+    # Validate the optional `auth` field.
+    auth = server_config.get("auth")
+    if auth is not None:
+        if auth != "oauth":
+            msg = (
+                f"Server '{server_name}' has unsupported auth value "
+                f"{auth!r}. Only 'oauth' is supported."
+            )
+            raise ValueError(msg)
+        if server_type == "stdio":
+            msg = (
+                f"Server '{server_name}' uses stdio transport; "
+                "'auth: oauth' is only valid for http/sse transports."
+            )
+            raise ValueError(msg)
+        # Can't drive both OAuth and a static Authorization header.
+        header_names = {k.lower() for k in (server_config.get("headers") or {})}
+        if "authorization" in header_names:
+            msg = (
+                f"Server '{server_name}' cannot combine 'auth: oauth' "
+                "with an 'Authorization' header."
+            )
+            raise ValueError(msg)
+
 
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from JSON file.

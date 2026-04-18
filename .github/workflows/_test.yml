@@ -67,6 +67,12 @@ jobs:
             make test PYTEST_EXTRA=-q
           fi
 
+      # Windows cannot run `make test` because `LocalShellBackend` requires POSIX
+      # `sh`, so the sandbox matrix is skipped here (`RUN_SANDBOX_TESTS` is
+      # unset) and pytest is invoked directly instead of via the Makefile.
+      # Non-sandbox unit tests must still pass cross-platform; any new flags
+      # added to `make test` should be mirrored here if they are expected to
+      # apply on Windows.
       - name: "🧪 Run Unit Tests (Windows)"
         if: runner.os == 'Windows'
         shell: bash

@@ -3,7 +3,7 @@
 This module contains async versions of skills middleware tests.
 """
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -422,13 +422,14 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
 async def test_alist_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
     """Async counterpart of `test_list_skills_with_windows_style_paths`."""
     skill_content = make_skill_content("my-skill", "My test skill")
+    expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
 
     backend = MagicMock()
     backend.als = AsyncMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
     backend.adownload_files = AsyncMock(
         return_value=[
             FileDownloadResponse(
-                path=skill_dir_path,
+                path=expected_skill_md_path,
                 content=skill_content.encode("utf-8"),
                 error=None,
             )
@@ -437,6 +438,8 @@ async def test_alist_skills_with_windows_style_paths(skill_dir_path: str, source
 
     skills = await _alist_skills(backend, source_path)
 
+    backend.adownload_files.assert_awaited_once_with([expected_skill_md_path])
     assert len(skills) == 1
     assert skills[0]["name"] == "my-skill"
     assert skills[0]["description"] == "My test skill"
+    assert skills[0]["path"] == expected_skill_md_path

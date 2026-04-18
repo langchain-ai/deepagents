@@ -6,7 +6,7 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -38,6 +38,7 @@ from deepagents.middleware.skills import (
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
+    _skill_metadata_from_response,
     _validate_metadata,
     _validate_skill_name,
 )
@@ -749,16 +750,20 @@ def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: 
     r"""Skills load correctly when the backend returns Windows-style paths.
 
     Regression: `PurePosixPath` treats `\` as a literal filename char, so
-    `_list_skills` must normalize before extracting the directory name.
+    `_list_skills` must normalize before extracting the directory name and
+    appending `SKILL.md`. Without normalization, the requested download
+    path would be e.g. `C:\...\my-skill\SKILL.md\SKILL.md` (or would fail
+    name validation entirely).
     """
     skill_content = make_skill_content("my-skill", "My test skill")
+    expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
 
     backend = MagicMock()
     backend.ls = MagicMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
     backend.download_files = MagicMock(
         return_value=[
             FileDownloadResponse(
-                path=skill_dir_path,
+                path=expected_skill_md_path,
                 content=skill_content.encode("utf-8"),
                 error=None,
             )
@@ -767,9 +772,71 @@ def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: 
 
     skills = _list_skills(backend, source_path)
 
+    # Pins the whole fix: the normalized POSIX path must be what gets requested.
+    backend.download_files.assert_called_once_with([expected_skill_md_path])
     assert len(skills) == 1
     assert skills[0]["name"] == "my-skill"
     assert skills[0]["description"] == "My test skill"
+    assert skills[0]["path"] == expected_skill_md_path
+
+
+class TestSkillMetadataFromResponseLogging:
+    """`_skill_metadata_from_response` must warn on non-`file_not_found` errors.
+
+    `file_not_found` is the expected miss when a subdirectory isn't a skill,
+    so it stays silent. Every other error (most importantly `is_directory`
+    from `FilesystemBackend.download_files` for a path that happens to be a
+    directory) must surface in logs so operators can debug missing skills
+    without resorting to backend introspection.
+    """
+
+    def test_is_directory_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/my-skill/SKILL.md",
+            content=None,
+            error="is_directory",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/my-skill",
+                skill_md_path="/skills/my-skill/SKILL.md",
+            )
+        assert result is None
+        assert any(
+            record.levelname == "WARNING" and "is_directory" in record.getMessage() and "/skills/my-skill/SKILL.md" in record.getMessage()
+            for record in caplog.records
+        ), f"Expected is_directory warning, got records: {[r.getMessage() for r in caplog.records]}"
+
+    def test_file_not_found_error_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/not-a-skill/SKILL.md",
+            content=None,
+            error="file_not_found",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/not-a-skill",
+                skill_md_path="/skills/not-a-skill/SKILL.md",
+            )
+        assert result is None
+        assert caplog.records == []
+
+    def test_permission_denied_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/locked/SKILL.md",
+            content=None,
+            error="permission_denied",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/locked",
+                skill_md_path="/skills/locked/SKILL.md",
+            )
+        assert result is None
+        assert any("permission_denied" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -782,10 +849,12 @@ def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: 
     ids=["trailing-backslash", "no-trailing-sep", "unc-path"],
 )
 def test_format_skills_locations_with_windows_path(source_path: str) -> None:
-    """Derive the trailing directory name from Windows-style source paths.
+    r"""Derive the trailing directory name from Windows-style source paths.
 
-    Without backslash normalization, `_format_skills_locations` would emit
-    the entire raw path capitalized instead of just the directory label.
+    Without backslash normalization, `.name` on the resulting `PurePosixPath`
+    returns the raw backslashed string (or the empty string for UNC paths
+    where `\\\\server\\share\\skills` has no POSIX-delimited final component),
+    not the intended directory label.
     """
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore[arg-type]
@@ -793,7 +862,9 @@ def test_format_skills_locations_with_windows_path(source_path: str) -> None:
     )
 
     result = middleware._format_skills_locations()
-    assert "Skills Skills" in result
+    # Pin the full marker so either a silently wrong directory name or a
+    # capitalization regression trips the assertion.
+    assert "**Skills Skills**:" in result
     assert source_path in result
 
 

@@ -13,6 +13,10 @@ from pathlib import Path
 import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     BackendProtocol,
     EditResult,
     FileData,
@@ -721,7 +725,7 @@ class FilesystemBackend(BackendProtocol):
             try:
                 resolved_path = self._resolve_path(path)
                 if resolved_path.is_dir():
-                    responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
+                    responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
                     continue
                 # Use flags to optionally prevent symlink following if
                 # supported by the OS
@@ -751,13 +755,13 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
         A `FileOperationError` literal, or `None` if unrecognized.
     """
     if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
+        return FILE_NOT_FOUND
     if isinstance(exc, PermissionError):
-        return "permission_denied"
+        return PERMISSION_DENIED
     if isinstance(exc, IsADirectoryError):
-        return "is_directory"
+        return IS_DIRECTORY
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return "invalid_path"
+        return INVALID_PATH
     if isinstance(exc, ValueError):
-        return "invalid_path"
+        return INVALID_PATH
     return None

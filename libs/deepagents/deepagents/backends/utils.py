@@ -397,6 +397,14 @@ def to_posix_path(path: str) -> str:
     will also be rewritten. That trade-off is accepted because such filenames
     are vanishingly rare in practice and the alternative (gating on `os.sep`)
     fails when a Windows-style path is handed to a non-Windows process.
+
+    Args:
+        path: Path string that may use backslash separators.
+
+    Returns:
+        The same path with every `\\` replaced by `/`.
+
+            Inputs that already use forward slashes are returned unchanged.
     """
     return path.replace("\\", "/")
 

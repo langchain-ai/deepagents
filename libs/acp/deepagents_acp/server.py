@@ -15,6 +15,7 @@ from acp import (
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     run_agent as run_acp_agent,
+    schema as _acp_schema,
     start_edit_tool_call,
     start_tool_call,
     text_block,
@@ -38,6 +39,7 @@ from acp.schema import (
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
+    SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionModeState,
@@ -47,25 +49,11 @@ from acp.schema import (
     ToolCallUpdate,
     ToolKind,
 )
-
-try:
-    from acp.schema import SessionConfigOption
-except ImportError:
-    # agent-client-protocol >=0.9.0 removed the SessionConfigOption wrapper;
-    # config options are now bare SessionConfigOptionSelect instances.
-    SessionConfigOption = None  # type: ignore[assignment,misc]
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from acp.interfaces import Client
-    from deepagents.graph import Checkpointer
-    from langchain_core.runnables import RunnableConfig
 
 from deepagents_acp.utils import (
     contains_dangerous_patterns,
@@ -78,6 +66,18 @@ from deepagents_acp.utils import (
     format_execute_result,
     truncate_execute_command_for_display,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from acp.interfaces import Client
+    from deepagents.graph import Checkpointer
+    from langchain_core.runnables import RunnableConfig
+
+# agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
+# options are now bare SessionConfigOptionSelect instances. Resolve dynamically
+# so the module imports cleanly under both v0.8.x and v0.9+.
+SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,14 +144,14 @@ class AgentServerACP(ACPAgent):
     def _build_config_options(
         self,
         session_id: str,
-    ) -> list[SessionConfigOptionSelect]:
+    ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
         """Build the list of session configuration options.
 
         Returns a list combining mode and model selectors if available.
         Modes are mapped to config options with category='mode'.
         Models are exposed as config options with category='model'.
         """
-        config_options: list[SessionConfigOptionSelect] = []
+        config_options: list[SessionConfigOptionSelect | SessionConfigOptionBoolean] = []
 
         # Add mode selector if modes are configured
         if self._modes is not None:
@@ -275,7 +275,7 @@ class AgentServerACP(ACPAgent):
         self,
         config_id: str,
         session_id: str,
-        value: str,
+        value: str | bool,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
         """Update a configuration option for the session.
@@ -283,6 +283,11 @@ class AgentServerACP(ACPAgent):
         Handles both mode and model switching. When switching models,
         the agent is reset to use the new model.
         """
+        # Only select-type options (mode, model) are supported; reject boolean values.
+        if not isinstance(value, str):
+            msg = f"Config option {config_id!r} expects a string value, got {type(value).__name__}"
+            raise RequestError(-32602, msg)
+
         if config_id == "mode":
             # Handle mode switching
             if self._modes is not None and session_id in self._session_mode_states:
@@ -592,6 +597,7 @@ class AgentServerACP(ACPAgent):
             | EmbeddedResourceContentBlock
         ],
         session_id: str,
+        message_id: str | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
         """Process a user prompt and stream the agent response."""

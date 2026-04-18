@@ -485,6 +485,54 @@ class TestLoadMCPConfig:
         ):
             load_mcp_config(path)
 
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "../evil",
+            "../../etc/passwd",
+            "a/b",
+            "a\\b",
+            "",
+            ".",
+            "..",
+            "foo bar",
+            "foo\x00bar",
+            "foo.json",
+        ],
+    )
+    def test_load_config_rejects_unsafe_server_name(
+        self, write_config: Callable[..., str], bad_name: str
+    ) -> None:
+        """Server names must be path-safe — they're used in token file paths."""
+        config_data = {
+            "mcpServers": {
+                bad_name: {"command": "echo"},
+            }
+        }
+        path = write_config(config_data)
+
+        with pytest.raises(ValueError, match="server name"):
+            load_mcp_config(path)
+
+    @pytest.mark.parametrize(
+        "ok_name",
+        ["filesystem", "brave-search", "linear_v2", "Notion", "gh-123"],
+    )
+    def test_load_config_accepts_safe_server_name(
+        self, write_config: Callable[..., str], ok_name: str
+    ) -> None:
+        """Alphanumeric, hyphens, and underscores are allowed server names."""
+        config_data = {
+            "mcpServers": {
+                ok_name: {"command": "echo"},
+            }
+        }
+        path = write_config(config_data)
+
+        config = load_mcp_config(path)
+
+        assert ok_name in config["mcpServers"]
+
     def test_load_config_header_with_missing_env_var_raises(
         self,
         monkeypatch: pytest.MonkeyPatch,

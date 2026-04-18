@@ -446,11 +446,24 @@ class ServerProcess:
         self._process = None
 
         if self._log_file is not None:
+            log_path = Path(self._log_file.name)
             try:
                 self._log_file.close()
-                Path(self._log_file.name).unlink()
             except OSError:
-                logger.debug("Failed to clean up log file", exc_info=True)
+                logger.debug("Failed to close log file", exc_info=True)
+
+            from deepagents_cli._env_vars import DEBUG
+
+            if os.environ.get(DEBUG):
+                print(  # noqa: T201
+                    f"Server log preserved at: {log_path}",
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    log_path.unlink()
+                except OSError:
+                    logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
 
     def stop(self) -> None:

@@ -704,6 +704,83 @@ class TestBuiltInProfiles:
         assert _OPUS_SYSTEM_PROMPT_SUFFIX != _OPUS_47_SYSTEM_PROMPT_SUFFIX
         assert _ANTHROPIC_OPUS_SYSTEM_PROMPT_SUFFIX != _ANTHROPIC_OPUS_47_SYSTEM_PROMPT_SUFFIX
 
+    def test_sonnet_46_profile_registered(self) -> None:
+        """Sonnet 4.6 model profile is registered at import time as an audit anchor."""
+        assert "anthropic:claude-sonnet-4-6" in _HARNESS_PROFILES
+
+    def test_sonnet_46_uses_provider_suffix_unchanged(self) -> None:
+        """Sonnet 4.6 resolves to the Anthropic provider suffix verbatim.
+
+        The Sonnet 4.6 profile is intentionally empty; no documented
+        Sonnet-specific behavioral tendencies justify an overlay.  The empty
+        override composes with the provider profile and inherits the
+        suffix unchanged.
+        """
+        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        assert profile.system_prompt_suffix == _ANTHROPIC_SYSTEM_PROMPT_SUFFIX
+        assert profile.init_kwargs == {}
+        assert profile.pre_init is None
+        assert profile.init_kwargs_factory is None
+        assert profile.extra_middleware == ()
+
+    def test_sonnet_46_excludes_opus_overlay_sections(self) -> None:
+        """Sonnet 4.6 must not carry Opus 4.6 or 4.7 overlay sections.
+
+        Locks in the audit finding that Opus-specific prompt steering
+        (overengineering, subagent overuse, reduced tool usage) does not
+        apply to Sonnet and should not leak in via future edits.
+        """
+        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<minimal_changes>",
+            "<subagent_discipline>",
+            "<focused_exploration>",
+            "<tool_usage>",
+            "<subagent_usage>",
+        ):
+            assert tag not in suffix
+
+    def test_haiku_45_profile_registered(self) -> None:
+        """Haiku 4.5 model profile is registered at import time as an audit anchor."""
+        assert "anthropic:claude-haiku-4-5" in _HARNESS_PROFILES
+
+    def test_haiku_45_uses_provider_suffix_unchanged(self) -> None:
+        """Haiku 4.5 resolves to the Anthropic provider suffix verbatim.
+
+        The Haiku 4.5 profile is intentionally empty; the source material
+        documents no Haiku-specific behavioral tendencies that warrant an
+        overlay.  The empty override composes with the provider profile
+        and inherits the suffix unchanged.
+        """
+        profile = _get_harness_profile("anthropic:claude-haiku-4-5")
+        assert profile.system_prompt_suffix == _ANTHROPIC_SYSTEM_PROMPT_SUFFIX
+        assert profile.init_kwargs == {}
+        assert profile.pre_init is None
+        assert profile.init_kwargs_factory is None
+        assert profile.extra_middleware == ()
+
+    def test_haiku_45_excludes_opus_overlay_sections(self) -> None:
+        """Haiku 4.5 must not carry Opus 4.6 or 4.7 overlay sections.
+
+        Haiku is often chosen as a fast subagent model; this test guards
+        against a future contributor grafting Opus-only steering
+        (overengineering, subagent overuse, reduced tool usage) onto
+        Haiku without new evidence.
+        """
+        profile = _get_harness_profile("anthropic:claude-haiku-4-5")
+        suffix = profile.system_prompt_suffix
+        assert suffix is not None
+        for tag in (
+            "<minimal_changes>",
+            "<subagent_discipline>",
+            "<focused_exploration>",
+            "<tool_usage>",
+            "<subagent_usage>",
+        ):
+            assert tag not in suffix
+
 
 class TestResolveModelWithProfiles:
     """Tests for resolve_model using the profile registry."""

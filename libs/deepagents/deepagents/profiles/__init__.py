@@ -13,10 +13,15 @@ internal consumers can import from `deepagents.profiles` directly.
 # _openrouter registration fires via the `from` import below.
 # _anthropic_opus registers the model-level Opus 4.6 overlay.
 # _anthropic_opus47 registers the model-level Opus 4.7 overlay.
+# _anthropic_sonnet registers an intentionally empty Sonnet 4.6 profile
+# (audit anchor; see module docstring for rationale).
+# _anthropic_haiku does the same for Haiku 4.5.
 from deepagents.profiles import (
     _anthropic as _anthropic,
+    _anthropic_haiku as _anthropic_haiku,
     _anthropic_opus as _anthropic_opus,
     _anthropic_opus47 as _anthropic_opus47,
+    _anthropic_sonnet as _anthropic_sonnet,
     _openai as _openai,
 )
 from deepagents.profiles._anthropic import (

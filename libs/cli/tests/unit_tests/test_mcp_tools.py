@@ -1844,3 +1844,53 @@ class TestToolOrdering:
 
         assert [t.name for t in tools] == ["alpha_read", "beta_write"]
         await manager.cleanup()
+
+
+class TestLoadToolsFromConfigHeaders:
+    @pytest.mark.asyncio
+    async def test_headers_are_resolved_before_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_mcp_client: tuple[MagicMock, AsyncMock],
+    ) -> None:
+        """Env-var references in headers are resolved before being passed to
+        MultiServerMCPClient."""
+        from deepagents_cli.mcp_tools import _load_tools_from_config
+
+        monkeypatch.setenv("DA_TOKEN", "tok-123")
+
+        mock_client, _ = mock_mcp_client
+        captured: dict = {}
+
+        def _capture(connections: dict) -> MagicMock:
+            captured["connections"] = connections
+            return mock_client
+
+        with (
+            patch(
+                "langchain_mcp_adapters.client.MultiServerMCPClient",
+                side_effect=_capture,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "langchain_mcp_adapters.tools.load_mcp_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            config = {
+                "mcpServers": {
+                    "linear": {
+                        "transport": "http",
+                        "url": "https://mcp.linear.app/mcp",
+                        "headers": {"Authorization": "Bearer ${DA_TOKEN}"},
+                    }
+                }
+            }
+            _, mgr, _ = await _load_tools_from_config(config)
+            await mgr.cleanup()
+
+        sent_headers = captured["connections"]["linear"]["headers"]
+        assert sent_headers == {"Authorization": "Bearer tok-123"}

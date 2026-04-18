@@ -495,7 +495,11 @@ async def _load_tools_from_config(
                     url=server_config["url"],
                 )
             if "headers" in server_config:
-                conn["headers"] = server_config["headers"]
+                from deepagents_cli.mcp_auth import resolve_headers
+
+                conn["headers"] = resolve_headers(
+                    server_config["headers"], server_name=server_name
+                )
             connections[server_name] = conn
         else:
             # stdio server connection (default)

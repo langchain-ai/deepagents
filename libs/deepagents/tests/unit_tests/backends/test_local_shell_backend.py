@@ -1,5 +1,6 @@
 """Unit tests for LocalShellBackend."""
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import pytest
 
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
 
 
 def test_local_shell_backend_initialization() -> None:
@@ -108,8 +111,9 @@ def test_local_shell_backend_filesystem_operations() -> None:
 
         # Read the file
         content = backend.read("/test.txt")
-        assert "Hello" in content
-        assert "World" in content
+        assert content.file_data is not None
+        assert "Hello" in content.file_data["content"]
+        assert "World" in content.file_data["content"]
 
         # Edit the file
         edit_result = backend.edit("/test.txt", "World", "Universe")
@@ -118,8 +122,9 @@ def test_local_shell_backend_filesystem_operations() -> None:
 
         # Verify edit
         content = backend.read("/test.txt")
-        assert "Universe" in content
-        assert "World" not in content
+        assert content.file_data is not None
+        assert "Universe" in content.file_data["content"]
+        assert "World" not in content.file_data["content"]
 
 
 def test_local_shell_backend_integration_shell_and_filesystem() -> None:
@@ -142,7 +147,8 @@ def test_local_shell_backend_integration_shell_and_filesystem() -> None:
 
         # Read via filesystem
         content = backend.read("/shell_file.txt")
-        assert "Shell created" in content
+        assert content.file_data is not None
+        assert "Shell created" in content.file_data["content"]
 
 
 def test_local_shell_backend_ls_info() -> None:
@@ -155,8 +161,9 @@ def test_local_shell_backend_ls_info() -> None:
         backend.write("/file2.txt", "content2")
 
         # List files
-        files = backend.ls_info("/")
+        files = backend.ls("/").entries
 
+        assert files is not None
         assert len(files) == 2
         paths = [f["path"] for f in files]
         assert "/file1.txt" in paths
@@ -173,9 +180,9 @@ def test_local_shell_backend_grep() -> None:
         backend.write("/file2.txt", "DONE: completed")
 
         # Search for TODO
-        matches = backend.grep_raw("TODO")
+        matches = backend.grep("TODO").matches
 
-        assert isinstance(matches, list)
+        assert matches is not None
         assert len(matches) == 1
         assert matches[0]["text"] == "TODO: implement this"
 
@@ -191,8 +198,9 @@ def test_local_shell_backend_glob() -> None:
         backend.write("/file3.txt", "content")
 
         # Find all .txt files
-        txt_files = backend.glob_info("*.txt")
+        txt_files = backend.glob("*.txt").matches
 
+        assert txt_files is not None
         assert len(txt_files) == 2
         paths = [f["path"] for f in txt_files]
         assert "/file1.txt" in paths
@@ -288,7 +296,8 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
 
         # Async read
         content = await backend.aread("/async_test.txt")
-        assert "async content" in content
+        assert content.file_data is not None
+        assert "async content" in content.file_data["content"]
 
         # Async edit
         edit_result = await backend.aedit("/async_test.txt", "async", "modified")
@@ -296,4 +305,5 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
 
         # Verify
         content = await backend.aread("/async_test.txt")
-        assert "modified content" in content
+        assert content.file_data is not None
+        assert "modified content" in content.file_data["content"]

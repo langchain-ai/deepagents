@@ -3,7 +3,7 @@
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 
@@ -14,31 +14,31 @@ class PatchToolCallsMiddleware(AgentMiddleware):
     def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
         """Before the agent runs, handle dangling tool calls from any AIMessage."""
         messages = state["messages"]
-        if not messages or len(messages) == 0:
+        if not messages:
+            return None
+
+        answered_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}  # ty: ignore[unresolved-attribute]
+
+        if not any(
+            tool_call["id"] not in answered_ids for msg in messages if isinstance(msg, AIMessage) and msg.tool_calls for tool_call in msg.tool_calls
+        ):
             return None
 
         patched_messages = []
-        # Iterate over the messages and add any dangling tool calls
-        for i, msg in enumerate(messages):
+        for msg in messages:
             patched_messages.append(msg)
-            if msg.type == "ai" and msg.tool_calls:
-                for tool_call in msg.tool_calls:
-                    corresponding_tool_msg = next(
-                        (msg for msg in messages[i:] if msg.type == "tool" and msg.tool_call_id == tool_call["id"]),
-                        None,
-                    )
-                    if corresponding_tool_msg is None:
-                        # We have a dangling tool call which needs a ToolMessage
-                        tool_msg = (
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                patched_messages.extend(
+                    ToolMessage(
+                        content=(
                             f"Tool call {tool_call['name']} with id {tool_call['id']} was "
                             "cancelled - another message came in before it could be completed."
-                        )
-                        patched_messages.append(
-                            ToolMessage(
-                                content=tool_msg,
-                                name=tool_call["name"],
-                                tool_call_id=tool_call["id"],
-                            )
-                        )
+                        ),
+                        name=tool_call["name"],
+                        tool_call_id=tool_call["id"],
+                    )
+                    for tool_call in msg.tool_calls
+                    if tool_call["id"] not in answered_ids
+                )
 
         return {"messages": Overwrite(patched_messages)}

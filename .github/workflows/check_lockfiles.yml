@@ -24,55 +24,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: "🐍 Set up UV"
-        uses: astral-sh/setup-uv@v7
+      - name: "🐍 Set up Python and uv"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
 
       - name: "🔍 Check all lockfiles"
-        run: |
-          set -e
-
-          # Find all directories containing uv.lock
-          lockfile_dirs=$(find . -name "uv.lock" -type f -exec dirname {} \; | sort)
-
-          failed_dirs=""
-          for dir in $lockfile_dirs; do
-            echo "::group::Checking $dir"
-
-            # Use appropriate Python version based on project requirements
-            if [ "$dir" = "./libs/acp" ]; then
-              python_version="3.14"
-            else
-              python_version="3.12"
-            fi
-
-            if ! uv lock --check --directory "$dir" --python "$python_version" 2>&1; then
-              echo "::error file=$dir/uv.lock::Lockfile is out of sync. Run 'uv lock' in $dir"
-              failed_dirs="$failed_dirs $dir"
-            else
-              echo "✅ $dir/uv.lock is up-to-date"
-            fi
-            echo "::endgroup::"
-          done
-
-          if [ -n "$failed_dirs" ]; then
-            echo ""
-            echo "❌ The following lockfiles are out of sync with their pyproject.toml:"
-            echo ""
-            for dir in $failed_dirs; do
-              echo "  - $dir/uv.lock"
-            done
-            echo ""
-            echo "To fix, run these commands:"
-            echo ""
-            for dir in $failed_dirs; do
-              echo "  uv lock --directory $dir"
-            done
-            echo ""
-            echo "Then commit the updated lockfile(s)."
-            exit 1
-          fi
-
-          echo ""
-          echo "✅ All lockfiles are up-to-date!"
+        run: make lock-check
+        working-directory: libs

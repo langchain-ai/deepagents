@@ -5,13 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.widgets.autocomplete import (
-    SLASH_COMMANDS,
+    MAX_SUGGESTIONS,
     CompletionController,
+    CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
-    _find_project_root,
     _fuzzy_score,
     _fuzzy_search,
     _is_dotpath,
@@ -61,6 +62,18 @@ class TestFuzzyScore:
         short_score = _fuzzy_score("test", "test.py")
         long_score = _fuzzy_score("test", "very/long/path/to/test.py")
         assert short_score > long_score
+
+    def test_backslash_normalization(self):
+        """Backslash-separated paths score the same as forward-slash paths."""
+        forward = _fuzzy_score("helper", "src/utils/helper.py")
+        backward = _fuzzy_score("helper", "src\\utils\\helper.py")
+        assert backward == forward
+        assert backward > 100  # Should be a strong filename match
+
+    def test_mixed_separator_normalization(self):
+        """Mixed forward/backslash paths are normalized before scoring."""
+        score = _fuzzy_score("helper", "src/utils\\helper.py")
+        assert score > 100  # Should extract filename correctly
 
 
 class TestFuzzySearch:
@@ -144,38 +157,6 @@ class TestHelperFunctions:
         assert _path_depth("a/b/c/d/file.py") == 4
 
 
-class TestFindProjectRoot:
-    """Tests for _find_project_root function."""
-
-    def test_finds_git_root(self, tmp_path):
-        """Finds .git directory and returns its parent."""
-        # Create nested structure with .git at root
-        git_dir = tmp_path / ".git"
-        git_dir.mkdir()
-        nested = tmp_path / "src" / "deep" / "nested"
-        nested.mkdir(parents=True)
-
-        result = _find_project_root(nested)
-        assert result == tmp_path
-
-    def test_returns_start_path_when_no_git(self, tmp_path):
-        """Returns start path when no .git found."""
-        nested = tmp_path / "some" / "path"
-        nested.mkdir(parents=True)
-
-        result = _find_project_root(nested)
-        # Should return the path itself (or a parent) since no .git exists
-        assert result == nested or nested.is_relative_to(result)
-
-    def test_handles_root_level_git(self, tmp_path):
-        """Handles .git at the start path itself."""
-        git_dir = tmp_path / ".git"
-        git_dir.mkdir()
-
-        result = _find_project_root(tmp_path)
-        assert result == tmp_path
-
-
 class TestSlashCommandController:
     """Tests for SlashCommandController."""
 
@@ -224,7 +205,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == len(SLASH_COMMANDS)
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -242,6 +223,206 @@ class TestSlashCommandController:
         controller.reset()
 
         mock_view.clear_completion_suggestions.assert_called()
+
+    def test_suggestions_return_after_reset(self, controller, mock_view):
+        """Suggestions reappear when text is re-entered after a reset."""
+        controller.on_text_changed("/", 1)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.reset()
+        mock_view.reset_mock()
+
+        # Re-entering "/" should show suggestions again
+        controller.on_text_changed("/", 1)
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+
+    def test_hidden_keyword_match_continue(self, controller, mock_view):
+        """Typing 'continue' surfaces /threads via hidden keyword."""
+        controller.on_text_changed("/continue", 9)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/threads" in s[0] for s in suggestions)
+
+    def test_substring_description_match_exit(self, controller, mock_view):
+        """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""
+        controller.on_text_changed("/exit", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_substring_description_match_new(self, controller, mock_view):
+        """Typing 'new' surfaces /clear via substring on 'start new thread'."""
+        controller.on_text_changed("/new", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/clear" in s[0] for s in suggestions)
+
+    def test_substring_name_match(self, controller, mock_view):
+        """Substring of command name (not prefix) surfaces the command."""
+        controller.on_text_changed("/flo", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/offload" in s[0] for s in suggestions)
+
+    def test_true_fuzzy_match_via_misspelling(self, controller, mock_view):
+        """Misspelled command surfaces via SequenceMatcher ratio."""
+        controller.on_text_changed("/hlep", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/help" in s[0] for s in suggestions)
+
+    def test_prefix_match_ranks_first(self, controller, mock_view):
+        """Prefix matches on command name rank above description matches."""
+        controller.on_text_changed("/he", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        # /help is a prefix match — should be first
+        assert suggestions[0][0] == "/help"
+
+    def test_no_match_clears(self, controller, mock_view):
+        """Completely unrelated input clears suggestions."""
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/zzzzzzzzz", 10)
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_space_dismisses_suggestions(self, controller, mock_view):
+        """Typing a space after a command name dismisses the popup."""
+        controller.on_text_changed("/model", 6)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/model ", 7)
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_space_with_args_stays_dismissed(self, controller, mock_view):
+        """Suggestions stay dismissed while typing arguments after a space."""
+        # First show suggestions, then dismiss with space
+        controller.on_text_changed("/model", 6)
+        mock_view.render_completion_suggestions.assert_called()
+        mock_view.reset_mock()
+
+        controller.on_text_changed("/model gpt-4o", 13)
+        mock_view.render_completion_suggestions.assert_not_called()
+
+    def test_bare_slash_space_dismisses(self, controller, mock_view):
+        """Typing '/ ' (slash then space, no command) dismisses the popup."""
+        controller.on_text_changed("/", 1)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/ ", 2)
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_backspace_from_space_restores_suggestions(self, controller, mock_view):
+        """Deleting the space after '/model ' re-shows suggestions."""
+        controller.on_text_changed("/model", 6)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.on_text_changed("/model ", 7)
+        mock_view.clear_completion_suggestions.assert_called()
+        mock_view.reset_mock()
+
+        # Simulate backspace back to "/model"
+        controller.on_text_changed("/model", 6)
+        mock_view.render_completion_suggestions.assert_called()
+
+    @pytest.mark.usefixtures("mock_view")
+    def test_double_reset_is_safe(self, controller):
+        """Calling reset twice does not raise or double-clear."""
+        controller.on_text_changed("/", 1)
+        controller.reset()
+        # Second reset should be a no-op (suggestions already empty)
+        controller.reset()
+
+    def test_space_key_applies_selected_completion(self, controller, mock_view) -> None:
+        """Pressing space with active suggestions applies the completion."""
+        controller.on_text_changed("/hel", 4)
+        mock_view.render_completion_suggestions.assert_called()
+
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/hel", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once()
+        # First positional arg is start=0, second is cursor_index=4,
+        # third is the completed command name.
+        args = mock_view.replace_completion_range.call_args[0]
+        assert args[0] == 0
+        assert args[1] == 4
+        assert args[2] == "/help"
+
+    def test_space_key_ignored_without_suggestions(self, controller) -> None:
+        """Space returns IGNORED when there are no active suggestions."""
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/zzz", 4)
+        assert result == CompletionResult.IGNORED
+
+
+class TestScoreCommand:
+    """Direct unit tests for SlashCommandController._score_command."""
+
+    @staticmethod
+    def score(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Proxy score helper with explicit type signature for static analysis."""
+        return SlashCommandController._score_command(search, cmd, desc, keywords)
+
+    def test_prefix_returns_200(self):
+        assert self.score("hel", "/help", "Show help") == 200
+
+    def test_substring_name_returns_150(self):
+        assert self.score("omp", "/compact", "Offload conversation") == 150
+
+    def test_substring_desc_word_boundary_returns_110(self):
+        assert self.score("exit", "/quit", "Exit app") == 110
+
+    def test_substring_desc_mid_word_returns_90(self):
+        desc = "Free up context window space by offloading older messages"
+        assert self.score("ex", "/offload", desc) == 90
+
+    def test_no_match_returns_zero(self):
+        assert self.score("zzzzz", "/help", "Show help") == 0
+
+    def test_fuzzy_above_threshold(self):
+        score = self.score("hlep", "/help", "Show help")
+        assert 0 < score < 100  # fuzzy tier, not substring/prefix
+
+    def test_hidden_keyword_prefix_match(self):
+        assert (
+            self.score("cont", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_substring_match(self):
+        assert (
+            self.score("hist", "/threads", "Browse threads", "continue history") == 120
+        )
+
+    def test_hidden_keyword_ignored_when_empty(self):
+        assert self.score("cont", "/threads", "Browse threads", "") == 0
+
+    def test_hidden_keyword_requires_min_length(self):
+        """Single-char queries do not match hidden keywords."""
+        assert self.score("c", "/threads", "Browse threads", "continue") == 0
+
+    def test_tiers_ordering(self):
+        """Prefix > substring-name > keyword > substring-desc > fuzzy."""
+        prefix = self.score("hel", "/help", "Show help")
+        substr_name = self.score("omp", "/compact", "Offload conversation")
+        keyword = self.score("cont", "/threads", "Browse threads", "continue")
+        desc_boundary = self.score("exit", "/quit", "Exit app")
+        offload_desc = "Free up context window space by offloading older messages"
+        desc_mid = self.score("ex", "/offload", offload_desc)
+        fuzzy = self.score("hlep", "/help", "Show help")
+        assert prefix > substr_name > keyword > desc_boundary > desc_mid > fuzzy > 0
 
 
 class TestFuzzyFileControllerCanHandle:
@@ -338,3 +519,74 @@ class TestMultiCompletionManager:
         manager.on_text_changed("/cmd", 4)
         manager.reset()
         assert manager._active is None
+
+    def test_reactivates_after_reset(self, manager, mock_view):
+        """Controller reactivates for new input after a full reset."""
+        manager.on_text_changed("/", 1)
+        assert isinstance(manager._active, SlashCommandController)
+
+        manager.reset()
+        assert manager._active is None
+        mock_view.reset_mock()
+
+        # Typing "/" again should reactivate the slash controller
+        manager.on_text_changed("/", 1)
+        assert isinstance(manager._active, SlashCommandController)
+        mock_view.render_completion_suggestions.assert_called()
+
+    def test_double_reset_is_safe(self, manager):
+        """Calling reset when already inactive is a no-op."""
+        manager.on_text_changed("/cmd", 4)
+        manager.reset()
+        manager.reset()
+        assert manager._active is None
+
+
+class TestSlashCommandControllerUpdateCommands:
+    """Tests for SlashCommandController.update_commands()."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    def test_update_replaces_commands(self, mock_view: MagicMock) -> None:
+        """update_commands() replaces the internal commands list."""
+        initial = [CommandEntry("/help", "Show help", "", "")]
+        controller = SlashCommandController(initial, mock_view)
+
+        new_commands = [
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/skill:web-research", "Research topics", "web-research", ""),
+        ]
+        controller.update_commands(new_commands)
+
+        # Typing /skill: should now show the skill command
+        controller.on_text_changed("/skill:", 7)
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/skill:web-research" in s[0] for s in suggestions)
+
+    def test_update_resets_suggestions(self, mock_view: MagicMock) -> None:
+        """update_commands() clears any active suggestions."""
+        commands = [CommandEntry("/help", "Show help", "", "")]
+        controller = SlashCommandController(commands, mock_view)
+        controller.on_text_changed("/h", 2)
+        mock_view.render_completion_suggestions.assert_called()
+
+        controller.update_commands([CommandEntry("/quit", "Exit", "", "")])
+        mock_view.clear_completion_suggestions.assert_called()
+
+    def test_skill_commands_fuzzy_match(self, mock_view: MagicMock) -> None:
+        """Skill commands match via hidden keywords."""
+        commands = [
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry(
+                "/skill:code-review", "Review code changes", "code-review", ""
+            ),
+        ]
+        controller = SlashCommandController(commands, mock_view)
+        controller.on_text_changed("/code", 5)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/skill:code-review" in s[0] for s in suggestions)

@@ -8,10 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.backends.utils import perform_string_replacement
-
-from deepagents_cli.config import settings
-
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -140,6 +136,8 @@ def resolve_physical_path(
         return None
     try:
         if assistant_id and path_str.startswith("/memories/"):
+            from deepagents_cli.config import settings
+
             agent_dir = settings.get_agent_dir(assistant_id)
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()
@@ -229,6 +227,8 @@ def build_approval_preview(
         old_string = str(args.get("old_string", ""))
         new_string = str(args.get("new_string", ""))
         replace_all = bool(args.get("replace_all"))
+        from deepagents.backends.utils import perform_string_replacement
+
         replacement = perform_string_replacement(
             before, old_string, new_string, replace_all
         )
@@ -322,50 +322,7 @@ class FileOpTracker:
                 record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
-    def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
-        """Update args for an active operation and retry capturing before_content."""
-        record = self.active.get(tool_call_id)
-        if not record:
-            return
-
-        record.args.update(args)
-
-        # If we haven't captured before_content yet, try again now that we
-        # might have the path
-        if record.before_content is None and record.tool_name in {
-            "write_file",
-            "edit_file",
-        }:
-            path_str = str(
-                record.args.get("file_path") or record.args.get("path") or ""
-            )
-            if path_str:
-                record.display_path = format_display_path(path_str)
-                record.physical_path = resolve_physical_path(
-                    path_str, self.assistant_id
-                )
-                if self.backend:
-                    try:
-                        responses = self.backend.download_files([path_str])
-                        if (
-                            responses
-                            and responses[0].content is not None
-                            and responses[0].error is None
-                        ):
-                            record.before_content = responses[0].content.decode("utf-8")
-                        else:
-                            record.before_content = ""
-                    except (OSError, UnicodeDecodeError, AttributeError) as e:
-                        logger.debug(
-                            "Failed to read before_content in update_args for %s: %s",
-                            path_str,
-                            e,
-                        )
-                        record.before_content = ""
-                elif record.physical_path:
-                    record.before_content = _safe_read(record.physical_path) or ""
-
-    def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
+    def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:  # noqa: ANN401  # Tool message type is dynamic
         """Complete a file operation with the tool message result.
 
         Returns:

@@ -1,12 +1,19 @@
 """Test sandbox integrations with upload/download functionality.
 
-This module tests sandbox backends (RunLoop, Daytona, Modal, LangSmith) with support for
-optional sandbox reuse to reduce test execution time.
+This module tests sandbox backends (RunLoop, Daytona, Modal, LangSmith) with
+support for optional sandbox reuse to reduce test execution time.
 
-Set REUSE_SANDBOX=1 environment variable to reuse sandboxes across tests within
-a class. Otherwise, a fresh sandbox is created for each test method.
+Set `REUSE_SANDBOX=1` environment variable to reuse sandboxes across tests
+within a class. Otherwise, a fresh sandbox is created for each test method.
+
+TODO: These tests partially overlap with langchain-tests.SandboxIntegrationTests
+(upload/download tests). Several tests here (test_sandbox_creation,
+test_partial_success_*, error-handling edge cases) are unique. This file and
+test_sandbox_operations.py can be removed once partner packages extend the
+standard suite to cover these cases. Skipped in release pipeline — see release.yml.
 """
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
@@ -20,8 +27,11 @@ from deepagents_cli.integrations.sandbox_factory import create_sandbox
 class BaseSandboxIntegrationTest(ABC):
     """Base class for sandbox integration tests.
 
-    Subclasses must implement the `sandbox` fixture to provide a sandbox instance.
-    All test methods are defined here and will be inherited by concrete test classes.
+    Subclasses must implement the `sandbox` fixture to provide a
+    sandbox instance.
+
+    All test methods are defined here and will be inherited by concrete
+    test classes.
     """
 
     @pytest.fixture(scope="class")
@@ -213,17 +223,13 @@ class BaseSandboxIntegrationTest(ABC):
         assert responses[0].error == "is_directory"
 
     @pytest.mark.skip(reason="Error handling not yet implemented in sandbox providers")
-    def test_upload_error_parent_not_found(
+    def test_upload_error_parent_is_file_returns_invalid_path(
         self, sandbox: SandboxBackendProtocol
     ) -> None:
-        """Test uploading to non-existent parent returns parent_not_found error.
+        """Test uploading through a file path returns invalid_path.
 
         Expected behavior: upload_files should return FileUploadResponse with
-        error='parent_not_found' when the parent directory doesn't exist and
-        can't be created automatically.
-
-        Note: This test may need adjustment based on whether sandbox providers
-        auto-create parent directories or not.
+        error='invalid_path' when an intermediate path segment is a file.
         """
         # Try to upload to a path where the parent is a file, not a directory
         # First create a file
@@ -236,8 +242,7 @@ class BaseSandboxIntegrationTest(ABC):
 
         assert len(responses) == 1
         assert responses[0].path == "/tmp/parent_is_file.txt/child.txt"
-        # Could be parent_not_found or invalid_path depending on implementation
-        assert responses[0].error in ("parent_not_found", "invalid_path")
+        assert responses[0].error == "invalid_path"
 
     @pytest.mark.skip(reason="Error handling not yet implemented in sandbox providers")
     def test_upload_error_invalid_path(self, sandbox: SandboxBackendProtocol) -> None:
@@ -325,4 +330,20 @@ class TestLangSmithIntegration(BaseSandboxIntegrationTest):
     def sandbox(self) -> Iterator[BaseSandbox]:
         """Provide a LangSmith sandbox instance."""
         with create_sandbox("langsmith") as sandbox:
+            yield sandbox
+
+
+_has_aws_credentials = bool(
+    os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_PROFILE")
+)
+
+
+@pytest.mark.skipif(not _has_aws_credentials, reason="AWS credentials not configured")
+class TestAgentCoreIntegration(BaseSandboxIntegrationTest):
+    """Test AgentCore Code Interpreter backend integration."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
+        """Provide an AgentCore sandbox instance."""
+        with create_sandbox("agentcore") as sandbox:
             yield sandbox

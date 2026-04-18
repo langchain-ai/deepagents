@@ -14,6 +14,8 @@ from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    SkillMessage,
+    SummarizationMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -138,6 +140,20 @@ class TestMessageData:
         assert restored._file_path == "src/file.py"
         assert restored.id == "test-diff-1"
 
+    def test_summarization_message_roundtrip(self):
+        """Test SummarizationMessage serialization and deserialization."""
+        original = SummarizationMessage(id="test-summary-1")
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.SUMMARIZATION
+        assert data.content == "✓ Conversation offloaded"
+        assert data.id == "test-summary-1"
+
+        restored = data.to_widget()
+        assert isinstance(restored, SummarizationMessage)
+        assert str(restored._content) == "✓ Conversation offloaded"
+        assert restored.id == "test-summary-1"
+
     def test_message_data_defaults(self):
         """Test MessageData default values."""
         data = MessageData(type=MessageType.USER, content="test")
@@ -152,6 +168,39 @@ class TestMessageData:
         """Test that TOOL messages must have a tool_name."""
         with pytest.raises(ValueError, match="TOOL messages must have a tool_name"):
             MessageData(type=MessageType.TOOL, content="")
+
+    def test_skill_message_roundtrip(self):
+        """Test SkillMessage serialization and deserialization."""
+        original = SkillMessage(
+            skill_name="web-research",
+            description="Research topics",
+            source="user",
+            body="# Instructions\nDo stuff",
+            args="find quantum",
+            id="test-skill-1",
+        )
+        original._expanded = True
+
+        # Serialize
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.SKILL
+        assert data.skill_name == "web-research"
+        assert data.skill_description == "Research topics"
+        assert data.skill_source == "user"
+        assert data.skill_body == "# Instructions\nDo stuff"
+        assert data.skill_args == "find quantum"
+        assert data.skill_expanded is True
+
+        # Deserialize
+        restored = data.to_widget()
+        assert isinstance(restored, SkillMessage)
+        assert restored._skill_name == "web-research"
+        assert restored._description == "Research topics"
+        assert restored._source == "user"
+        assert restored._body == "# Instructions\nDo stuff"
+        assert restored._args == "find quantum"
+        assert restored._deferred_expanded is True
+        assert restored.id == "test-skill-1"
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""
@@ -569,6 +618,180 @@ class TestVirtualizationFlow:
         assert retrieved is not None
         assert retrieved.content == "Updated content"
         assert retrieved.is_streaming is False
+
+
+class TestBulkLoad:
+    """Tests for MessageStore.bulk_load."""
+
+    def test_bulk_load_under_window_size(self):
+        """All messages should be visible when count <= WINDOW_SIZE."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 50
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(10)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 0
+        assert len(visible) == 10
+        assert store.total_count == 10
+        assert store.visible_count == 10
+        assert store._visible_start == 0
+        assert store._visible_end == 10
+
+    def test_bulk_load_over_window_size(self):
+        """Only the tail WINDOW_SIZE messages should be visible."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(20)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 15
+        assert len(visible) == 5
+        assert store.total_count == 20
+        assert store.visible_count == 5
+        assert store._visible_start == 15
+        assert store._visible_end == 20
+        assert visible[0].id == "id-15"
+        assert visible[-1].id == "id-19"
+
+    def test_bulk_load_exact_window_size(self):
+        """Edge case: count == WINDOW_SIZE means all visible, none archived."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 10
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(10)
+        ]
+        archived, visible = store.bulk_load(data)
+
+        assert len(archived) == 0
+        assert len(visible) == 10
+        assert store._visible_start == 0
+        assert store._visible_end == 10
+
+    def test_bulk_load_then_hydrate(self):
+        """Archived messages should be accessible via get_messages_to_hydrate."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+        store.HYDRATE_BUFFER = 3
+
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(20)
+        ]
+        store.bulk_load(data)
+
+        assert store.has_messages_above
+        to_hydrate = store.get_messages_to_hydrate()
+        assert len(to_hydrate) == 3
+        assert to_hydrate[0].id == "id-12"
+        assert to_hydrate[1].id == "id-13"
+        assert to_hydrate[2].id == "id-14"
+
+    def test_bulk_load_empty(self):
+        """Bulk loading an empty list should be a no-op."""
+        store = MessageStore()
+        archived, visible = store.bulk_load([])
+
+        assert len(archived) == 0
+        assert len(visible) == 0
+        assert store.total_count == 0
+
+    def test_bulk_load_preserves_existing_messages(self):
+        """Bulk load should extend, not replace, existing messages."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+
+        store.append(MessageData(type=MessageType.USER, content="pre", id="pre-0"))
+        data = [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(6)
+        ]
+        archived, _visible = store.bulk_load(data)
+
+        assert store.total_count == 7
+        assert store.visible_count == 5
+        assert store._visible_start == 2
+        assert archived[0].id == "pre-0"
+
+
+class TestMessageStoreIndex:
+    """Tests for the _index dict that backs O(1) lookups."""
+
+    def test_index_populated_on_append(self):
+        """Appending a message adds it to _index keyed by ID."""
+        store = MessageStore()
+        msg = MessageData(type=MessageType.USER, content="test", id="idx-1")
+        store.append(msg)
+        assert store._index["idx-1"] is msg
+
+    def test_index_populated_on_bulk_load(self):
+        """bulk_load populates _index for every loaded message."""
+        store = MessageStore()
+        msgs = [
+            MessageData(type=MessageType.USER, content=f"m{i}", id=f"bl-{i}")
+            for i in range(5)
+        ]
+        store.bulk_load(msgs)
+        for i in range(5):
+            assert f"bl-{i}" in store._index
+            assert store._index[f"bl-{i}"] is msgs[i]
+
+    def test_index_cleared_on_clear(self):
+        """clear() empties _index alongside _messages."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="x", id="c-1"))
+        assert len(store._index) == 1
+        store.clear()
+        assert len(store._index) == 0
+
+    def test_index_and_list_share_same_objects(self):
+        """_index values are the same object references as _messages entries."""
+        store = MessageStore()
+        msg = MessageData(type=MessageType.USER, content="test", id="shared-1")
+        store.append(msg)
+        assert store._index["shared-1"] is store._messages[0]
+
+    def test_update_via_index_mutates_list_entry(self):
+        """update_message via _index mutates the same object in _messages."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="old", id="mut-1"))
+        store.update_message("mut-1", content="new")
+        assert store._messages[0].content == "new"
+
+    def test_duplicate_id_logs_warning(self, caplog):
+        """Appending a message with a duplicate ID logs a warning."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="a", id="dup-1"))
+        with caplog.at_level("WARNING"):
+            store.append(MessageData(type=MessageType.USER, content="b", id="dup-1"))
+        assert "Duplicate message ID" in caplog.text
+
+    def test_bulk_load_duplicate_id_logs_warning(self, caplog):
+        """bulk_load with a pre-existing ID logs a warning."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="a", id="dup-2"))
+        with caplog.at_level("WARNING"):
+            store.bulk_load(
+                [MessageData(type=MessageType.USER, content="b", id="dup-2")]
+            )
+        assert "Duplicate message ID" in caplog.text
+
+    def test_update_unknown_id_logs_warning(self, caplog):
+        """update_message for a missing ID logs a warning and returns False."""
+        store = MessageStore()
+        with caplog.at_level("WARNING"):
+            result = store.update_message("ghost", content="nope")
+        assert result is False
+        assert "update_message called for unknown ID" in caplog.text
 
 
 if __name__ == "__main__":

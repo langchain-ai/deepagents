@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from deepagents_cli.agent import create_cli_agent
@@ -96,7 +97,7 @@ def mock_settings(
             return tmp_path / "agents" / agent_id
 
         mock_settings_obj.get_user_agent_md_path = get_user_agent_md_path
-        mock_settings_obj.get_project_agent_md_path.return_value = None
+        mock_settings_obj.get_project_agent_md_path.return_value = []
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 
@@ -145,6 +146,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent with a simple message
@@ -183,6 +185,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -229,7 +232,7 @@ class TestDeepAgentsCLIEndToEnd:
             assert agent_response.generations[0].message.content == "response"
 
             # Verify conversation history was offloaded to backend
-            assert backend.ls_info("/conversation_history/")
+            assert backend.ls("/conversation_history/").entries
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.
@@ -265,6 +268,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -321,6 +325,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -381,6 +386,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
+                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent
@@ -422,6 +428,7 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
+                checkpointer=InMemorySaver(),
             )
 
             assert isinstance(backend, CompositeBackend)

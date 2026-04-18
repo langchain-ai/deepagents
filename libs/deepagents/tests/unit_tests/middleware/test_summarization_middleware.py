@@ -1,5 +1,7 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
+import asyncio
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
@@ -10,7 +12,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -109,13 +111,13 @@ class MockBackend(BackendProtocol):
         self.download_raises = download_raises
         self.write_raises = write_raises
 
-    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+    def read(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         self.read_calls.append(path)
         if self.existing_content is not None:
-            return self.existing_content
-        return ""
+            return ReadResult(file_data={"content": self.existing_content, "encoding": "utf-8"})
+        return ReadResult(file_data={"content": "", "encoding": "utf-8"})
 
-    async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+    async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         return self.read(path, offset, limit)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -346,6 +348,35 @@ class TestSummarizationMiddlewareInit:
         )
 
         assert callable(middleware._backend)
+
+    def test_deprecated_history_path_prefix_warns_and_applies(self) -> None:
+        """Passing history_path_prefix emits a deprecation warning and is used."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/custom/history",
+            )
+
+        assert middleware._history_path_prefix == "/custom/history"
+
+    def test_deprecated_history_path_prefix_overrides_default(self) -> None:
+        """Deprecated history_path_prefix takes precedence over the default."""
+        backend = MockBackend()
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 3),
+                history_path_prefix="/overridden",
+            )
+
+        assert middleware._history_path_prefix == "/overridden"
+        assert middleware._history_path_prefix != "/conversation_history"
 
 
 class TestOffloadingBasic:
@@ -641,6 +672,11 @@ class TestSummaryMessageFormat:
         assert result.command.update is not None
         assert modified_request is not None
 
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
+
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
         """Test that summary message includes file path reference after multiple summarizations.
 
@@ -909,6 +945,11 @@ class TestBackendFailureHandling:
         assert result.command.update is not None
         assert modified_request is not None
 
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
+
     def test_summarization_aborts_on_write_exception(self) -> None:
         """Test that summarization warns when backend raises exception but still summarizes."""
         backend = MagicMock()
@@ -935,6 +976,11 @@ class TestBackendFailureHandling:
         assert result.command is not None
         assert result.command.update is not None
         assert modified_request is not None
+
+        # file_path must be None so the summary message does not reference
+        # a nonexistent backend path.
+        event = result.command.update["_summarization_event"]
+        assert event["file_path"] is None
 
 
 class TestThreadIdExtraction:
@@ -1074,33 +1120,6 @@ class TestBackendFactoryInvocation:
         assert len(factory_called_with) == 1
         # Backend should have received write call
         assert len(backend.write_calls) == 1
-
-
-class TestCustomHistoryPathPrefix:
-    """Tests for custom `history_path_prefix` configuration."""
-
-    def test_custom_history_path_prefix(self) -> None:
-        """Test that custom `history_path_prefix` is used in file paths."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-            history_path_prefix="/custom/path",
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        with mock_get_config(thread_id="test-thread"):
-            call_wrap_model_call(middleware, state, runtime)
-
-        path, _ = backend.write_calls[0]
-        assert path == "/custom/path/test-thread.md"
 
 
 class TestMarkdownFormatting:
@@ -2499,3 +2518,50 @@ def test_usage_metadata_trigger() -> None:
     assert result.command.update is not None
     assert "_summarization_event" in result.command.update
     assert len(backend.write_calls) == 1
+
+
+async def test_async_offload_and_summary_run_concurrently() -> None:
+    """Verify that _aoffload_to_backend and _acreate_summary run in parallel."""
+    delay = 0.1
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    original_offload = middleware._aoffload_to_backend
+    original_summary = middleware._acreate_summary
+
+    async def slow_offload(
+        be: Any,  # noqa: ANN401
+        msgs: Any,  # noqa: ANN401
+    ) -> str | None:
+        await asyncio.sleep(delay)
+        return await original_offload(be, msgs)
+
+    async def slow_summary(
+        msgs: Any,  # noqa: ANN401
+    ) -> str:
+        await asyncio.sleep(delay)
+        return await original_summary(msgs)
+
+    middleware._aoffload_to_backend = slow_offload  # type: ignore[assignment]
+    middleware._acreate_summary = slow_summary  # type: ignore[assignment]
+
+    messages = make_conversation_messages(num_old=6, num_recent=2)
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        start = time.monotonic()
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
+        elapsed = time.monotonic() - start
+
+    assert isinstance(result, ExtendedModelResponse)
+    # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay.
+    # Use 2.5x multiplier to allow for CI scheduling jitter.
+    assert elapsed < 2.5 * delay, f"Expected parallel execution (<{2.5 * delay}s) but took {elapsed:.2f}s"

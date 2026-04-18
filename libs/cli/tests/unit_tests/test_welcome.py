@@ -1,21 +1,25 @@
 """Unit tests for the welcome banner widget."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rich.style import Style
-from rich.text import Text
+from textual.content import Content
+from textual.style import Style as TStyle
 
-from deepagents_cli.widgets.welcome import WelcomeBanner
+from deepagents_cli.widgets.welcome import (
+    _TIPS,
+    WelcomeBanner,
+    build_connecting_footer,
+    build_failure_footer,
+    build_welcome_footer,
+)
 
 
-def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
+def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
     """Extract link URLs from spans covering the given text range.
 
-    Note: This relies on `rich.text.Text._spans` internals and may need
-    updating if the Rich library changes its internal representation.
-
     Args:
-        banner: The Rich Text object to inspect.
+        banner: The Content object to inspect.
         text_start: Start index in the plain text.
         text_end: End index in the plain text.
 
@@ -23,10 +27,14 @@ def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
         List of link URL strings found on spans covering the range.
     """
     links: list[str] = []
-    for start, end, style in banner._spans:
-        if not isinstance(style, Style):
-            continue
-        if start <= text_start and end >= text_end and style.link:
+    for span in banner._spans:
+        style = span.style
+        if (
+            isinstance(style, TStyle)
+            and style.link
+            and span.start <= text_start
+            and span.end >= text_end
+        ):
             links.append(style.link)
     return links
 
@@ -44,14 +52,29 @@ def _make_banner(
     Returns:
         A `WelcomeBanner` instance ready for testing.
     """
+    import deepagents_cli.config as _cfg
+
     env = {}
     if project_name:
         env["LANGSMITH_API_KEY"] = "fake-key"
         env["LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_PROJECT"] = project_name
+        env["DEEPAGENTS_CLI_LANGSMITH_PROJECT"] = project_name
 
-    with patch.dict("os.environ", env, clear=True):
-        return WelcomeBanner(thread_id=thread_id)
+    # Temporarily clear the cached settings singleton so _get_settings()
+    # re-creates it from the patched env vars inside the context manager.
+    saved = _cfg.__dict__.pop("settings", None)
+    saved_bootstrap = _cfg._bootstrap_done
+    _cfg._bootstrap_done = False
+    try:
+        with patch.dict("os.environ", env, clear=True):
+            return WelcomeBanner(thread_id=thread_id)
+    finally:
+        _cfg._bootstrap_done = saved_bootstrap
+        if saved is not None:
+            _cfg.__dict__["settings"] = saved
+        else:
+            _cfg.__dict__.pop("settings", None)
 
 
 class TestBuildBannerThreadLink:
@@ -83,7 +106,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("99999")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links, "Expected a link style on the thread ID text"
-        assert links[0] == f"{project_url}/t/99999"
+        assert links[0] == f"{project_url}/t/99999?utm_source=deepagents-cli"
 
     def test_no_thread_line_when_thread_id_is_none(self) -> None:
         """Banner should not contain a thread line when `thread_id` is `None`."""
@@ -126,7 +149,7 @@ class TestBuildBannerThreadLink:
         thread_id_end = thread_id_start + len("77777")
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links
-        assert links[0] == f"{project_url}/t/77777"
+        assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
 
 
 class TestUpdateThreadId:
@@ -162,14 +185,285 @@ class TestUpdateThreadId:
         thread_end = thread_start + len("new_id")
         links = _extract_links(banner, thread_start, thread_end)
         assert links
-        assert links[0] == f"{project_url}/t/new_id"
+        assert links[0] == f"{project_url}/t/new_id?utm_source=deepagents-cli"
+
+
+class TestBuildBannerEditableInstall:
+    """Tests for the editable-install path in `_build_banner`."""
+
+    def test_build_banner_with_editable_install(self) -> None:
+        """Banner should include install path when running from editable install."""
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/dev/deepagents",
+            ),
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        assert "Installed from: ~/dev/deepagents" in banner.plain
+
+    def test_build_banner_without_editable_install(self) -> None:
+        """Banner should not include install path for non-editable installs."""
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value=None,
+            ),
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        assert "Installed from:" not in banner.plain
 
 
 class TestBuildBannerReturnType:
     """Tests for `_build_banner` return value."""
 
-    def test_returns_rich_text(self) -> None:
-        """`_build_banner` should return a `rich.text.Text` object."""
+    def test_returns_content(self) -> None:
+        """`_build_banner` should return a `Content` object."""
         widget = _make_banner(thread_id="abc")
         result = widget._build_banner()
-        assert isinstance(result, Text)
+        assert isinstance(result, Content)
+
+
+class TestAutoLinksDisabled:
+    """Tests that `auto_links` is disabled to prevent hover flicker."""
+
+    def test_auto_links_is_false(self) -> None:
+        """`WelcomeBanner` should disable Textual's `auto_links`."""
+        assert WelcomeBanner.auto_links is False
+
+
+_WEBBROWSER_OPEN = "deepagents_cli.widgets._links.webbrowser.open"
+
+
+class TestOnClickOpensLink:
+    """Tests for `WelcomeBanner.on_click` opening Rich-style hyperlinks."""
+
+    def test_click_on_link_opens_browser(self) -> None:
+        """Clicking a Rich link should call `webbrowser.open`."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            widget.on_click(event)
+
+        mock_open.assert_called_once_with("https://example.com")
+        event.stop.assert_called_once()
+
+    def test_click_without_link_is_noop(self) -> None:
+        """Clicking on non-link text should not open the browser."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style()
+
+        with patch(_WEBBROWSER_OPEN) as mock_open:
+            widget.on_click(event)
+
+        mock_open.assert_not_called()
+        event.stop.assert_not_called()
+
+    def test_click_with_browser_error_is_graceful(self) -> None:
+        """Browser failure should not crash the widget."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
+            widget.on_click(event)  # should not raise
+
+        event.stop.assert_not_called()
+
+
+class TestBuildWelcomeFooter:
+    """Tests for the `build_welcome_footer` standalone function."""
+
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_welcome_footer(), Content)
+
+    def test_contains_ready_prompt(self) -> None:
+        """Footer should include the ready-to-code prompt."""
+        assert (
+            "Ready to code! What would you like to build?"
+            in build_welcome_footer().plain
+        )
+
+    def test_contains_tip(self) -> None:
+        """Footer should include a tip from the rotating tips list."""
+        plain = build_welcome_footer().plain
+        assert "Tip: " in plain
+        assert any(tip in plain for tip in _TIPS)
+
+    def test_tip_varies_across_calls(self) -> None:
+        """Tips should rotate (not always the same)."""
+        seen = {build_welcome_footer().plain for _ in range(50)}
+        assert len(seen) > 1, "Expected different tips across multiple calls"
+
+    def test_ready_line_is_first_content_line(self) -> None:
+        """The ready prompt must be the first non-blank line."""
+        lines = build_welcome_footer().plain.strip().splitlines()
+        assert lines[0].strip() == "Ready to code! What would you like to build?"
+
+    def test_tip_line_is_last(self) -> None:
+        """The tip line must be the last line after the ready prompt."""
+        lines = build_welcome_footer().plain.strip().splitlines()
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_blank_line_precedes_ready_prompt(self) -> None:
+        """A blank line must precede the ready prompt (leading newline)."""
+        raw = build_welcome_footer().plain
+        assert raw.startswith("\n")
+
+    def test_exactly_three_lines_with_leading_blank(self) -> None:
+        """Footer: blank line, ready prompt, tip."""
+        lines = build_welcome_footer().plain.split("\n")
+        # Leading \n produces ['', 'Ready to code...', 'Tip: ...']
+        assert lines[0] == ""
+        assert lines[1].startswith("Ready to code")
+        assert lines[2].startswith("Tip: ")
+        assert len(lines) == 3
+
+
+class TestBannerFooterPosition:
+    """Tests that the footer is always the last content in the full banner."""
+
+    def test_footer_is_last_in_minimal_banner(self) -> None:
+        """With no thread/project/MCP, footer lines are still last."""
+        widget = _make_banner()
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_footer_is_last_with_thread_id(self) -> None:
+        """Footer remains last when a thread ID is displayed."""
+        widget = _make_banner(thread_id="tid-123")
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_footer_is_last_with_langsmith_project(self) -> None:
+        """Footer remains last when LangSmith project info is shown."""
+        widget = _make_banner(project_name="my-proj")
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_footer_is_last_with_mcp_tools(self) -> None:
+        """Footer remains last when MCP tools are loaded."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(mcp_tool_count=5)
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_footer_is_last_with_all_info(self) -> None:
+        """Footer remains last when all info lines are present."""
+        env = {
+            "LANGSMITH_API_KEY": "fake-key",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "proj",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            widget = WelcomeBanner(thread_id="t-1", mcp_tool_count=3)
+        lines = widget._build_banner().plain.strip().splitlines()
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
+
+    def test_blank_line_separates_info_from_footer(self) -> None:
+        """A blank line should appear between info lines and footer."""
+        widget = _make_banner(thread_id="tid")
+        plain = widget._build_banner().plain
+        # The ready prompt should be preceded by a double newline
+        idx = plain.index("Ready to code")
+        assert plain[idx - 1] == "\n"
+        assert plain[idx - 2] == "\n"
+
+
+class TestBuildFailureFooter:
+    """Tests for the `build_failure_footer` standalone function."""
+
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_failure_footer("oops"), Content)
+
+    def test_contains_error_message(self) -> None:
+        """Footer should include the failure prefix and error text."""
+        plain = build_failure_footer("connection refused").plain
+        assert "Server failed to start: " in plain
+        assert "connection refused" in plain
+
+
+class TestBuildConnectingFooter:
+    """Tests for the `build_connecting_footer` standalone function."""
+
+    def test_returns_content(self) -> None:
+        """Footer should return a `Content` object."""
+        assert isinstance(build_connecting_footer(), Content)
+
+    def test_contains_connecting_message(self) -> None:
+        """Footer should include the connecting status text."""
+        assert "Connecting to server..." in build_connecting_footer().plain
+
+    def test_resuming_message(self) -> None:
+        """Footer should say 'Resuming...' when resuming."""
+        footer = build_connecting_footer(resuming=True)
+        assert "Resuming..." in footer.plain
+        assert "Connecting" not in footer.plain
+
+    def test_local_server_message(self) -> None:
+        """Footer should say 'local server' when local_server is True."""
+        footer = build_connecting_footer(local_server=True)
+        assert "Connecting to local server..." in footer.plain
+
+    def test_resuming_takes_precedence_over_local(self) -> None:
+        """Resuming text should win when both resuming and local_server are set."""
+        footer = build_connecting_footer(resuming=True, local_server=True)
+        assert "Resuming..." in footer.plain
+        assert "local server" not in footer.plain
+
+
+class TestBannerConnectingFooterVariants:
+    """Verify WelcomeBanner forwards resuming/local_server to _build_banner."""
+
+    def test_connecting_default(self) -> None:
+        """Baseline connecting banner shows generic server text."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." in plain
+        assert "Ready to code" not in plain
+
+    def test_connecting_resuming(self) -> None:
+        """Banner forwards resuming flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "Connecting" not in plain
+
+    def test_connecting_local_server(self) -> None:
+        """Banner forwards local_server flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to local server..." in plain
+
+    def test_connecting_resuming_precedence(self) -> None:
+        """Resuming wins over local_server at the banner level."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "local server" not in plain

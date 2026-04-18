@@ -13,9 +13,9 @@ when skills have the same name (last one wins). This enables layering: base -> u
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
 portable across different storage backends (filesystem, state, remote storage, etc.).
 
-For StateBackend (ephemeral/in-memory), use a factory function:
+For StateBackend (ephemeral/in-memory):
 ```python
-SkillsMiddleware(backend=lambda rt: StateBackend(rt), ...)
+SkillsMiddleware(backend=StateBackend(), ...)
 ```
 
 ## Skill Structure
@@ -99,21 +99,27 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.runtime import Runtime
+
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
-from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
-from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
-from langgraph.runtime import Runtime
 
+from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
+from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -242,7 +248,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,
     directory_name: str,
@@ -396,6 +402,68 @@ def _format_skill_annotations(skill: SkillMetadata) -> str:
     return ", ".join(parts)
 
 
+def _skill_metadata_from_response(
+    response: FileDownloadResponse,
+    skill_dir_path: str,
+    skill_md_path: str,
+) -> SkillMetadata | None:
+    """Decode a `SKILL.md` download response into `SkillMetadata` (or `None`).
+
+    Logs a warning on any non-expected failure so that a silently dropped
+    skill (parse error, invalid name, unreadable bytes) surfaces in logs
+    instead of vanishing from the system prompt without explanation.
+
+    Args:
+        response: The backend's download response for `skill_md_path`.
+        skill_dir_path: Backend path of the skill directory (used to derive
+            the expected `name` for validation).
+        skill_md_path: Backend path of the `SKILL.md` file (used in log
+            messages so operators can locate the offending skill).
+
+    Returns:
+        Parsed `SkillMetadata` on success, or `None` when the response carries
+            an error, the content is missing/non-UTF8, or frontmatter
+            parsing / name validation fails. All `None` returns except an
+            expected `file_not_found` emit a warning.
+    """
+    if response.error:
+        # `file_not_found` is the only expected miss (not every subdirectory
+        # is a skill). Everything else -- notably `is_directory` as returned
+        # by `FilesystemBackend.download_files` when the SKILL.md path is a
+        # directory, plus `permission_denied` / backend-specific errors --
+        # indicates a malformed or inaccessible skill and must surface.
+        if response.error != FILE_NOT_FOUND:
+            logger.warning(
+                "Cannot load SKILL.md at %s: %s; skipping",
+                skill_md_path,
+                response.error,
+            )
+        return None
+
+    if response.content is None:
+        logger.warning("Downloaded skill file %s has no content", skill_md_path)
+        return None
+
+    try:
+        content = response.content.decode("utf-8")
+    except UnicodeDecodeError as e:
+        logger.warning("Error decoding %s: %s", skill_md_path, e)
+        return None
+
+    directory_name = PurePosixPath(to_posix_path(skill_dir_path)).name
+    skill_metadata = _parse_skill_metadata(
+        content=content,
+        skill_path=skill_md_path,
+        directory_name=directory_name,
+    )
+    if skill_metadata is None:
+        logger.warning(
+            "Skill at %s failed metadata parse or name validation; skipping",
+            skill_md_path,
+        )
+    return skill_metadata
+
+
 def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
@@ -418,14 +486,13 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = backend.ls_info(base_path)
+    ls_result = backend.ls(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -436,40 +503,16 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(to_posix_path(skill_dir_path))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
     responses = backend.download_files(paths_to_download)
 
-    # Parse each downloaded SKILL.md
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
-
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
-
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
-
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        if skill_metadata is not None:
             skills.append(skill_metadata)
 
     return skills
@@ -497,14 +540,13 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     Returns:
         List of skill metadata from successfully parsed `SKILL.md` files
     """
-    base_path = source_path
-
     skills: list[SkillMetadata] = []
-    items = await backend.als_info(base_path)
+    ls_result = await backend.als(source_path)
+    items = ls_result.entries if isinstance(ls_result, LsResult) else ls_result
 
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
-    for item in items:
+    for item in items or []:
         if not item.get("is_dir"):
             continue
         skill_dirs.append(item["path"])
@@ -515,40 +557,16 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
     for skill_dir_path in skill_dirs:
-        # Construct SKILL.md path using PurePosixPath for safe, standardized path operations
-        skill_dir = PurePosixPath(skill_dir_path)
+        skill_dir = PurePosixPath(to_posix_path(skill_dir_path))
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
     responses = await backend.adownload_files(paths_to_download)
 
-    # Parse each downloaded SKILL.md
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        if response.error:
-            # Skill doesn't have a SKILL.md, skip it
-            continue
-
-        if response.content is None:
-            logger.warning("Downloaded skill file %s has no content", skill_md_path)
-            continue
-
-        try:
-            content = response.content.decode("utf-8")
-        except UnicodeDecodeError as e:
-            logger.warning("Error decoding %s: %s", skill_md_path, e)
-            continue
-
-        # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
-
-        # Parse metadata
-        skill_metadata = _parse_skill_metadata(
-            content=content,
-            skill_path=skill_md_path,
-            directory_name=directory_name,
-        )
-        if skill_metadata:
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        if skill_metadata is not None:
             skills.append(skill_metadata)
 
     return skills
@@ -571,7 +589,8 @@ You have access to a skills library that provides specialized capabilities and d
 Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
+2. **Read the skill's full instructions**: Use `read_file` on the path shown in the skill list above.
+   Pass `limit=1000` since the default of 100 lines is too small for most skill files.
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
@@ -588,7 +607,7 @@ Skills may contain Python scripts or other executable files. Always use absolute
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
+2. Read the full skill file: `read_file(path, limit=1000)`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
@@ -596,7 +615,7 @@ Remember: Skills make you more capable and consistent. When in doubt, check if a
 """
 
 
-class SkillsMiddleware(AgentMiddleware):
+class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     """Middleware for loading and exposing agent skills to the system prompt.
 
     Loads skills from backend sources and injects them into the system prompt
@@ -632,10 +651,7 @@ class SkillsMiddleware(AgentMiddleware):
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime and
-                returns a backend.
-
-                Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
+            backend: Backend instance (e.g. ``StateBackend()``).
             sources: List of skill source paths (e.g.,
                 `['/skills/user/', '/skills/project/']`).
         """
@@ -664,9 +680,10 @@ class SkillsMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)
+            backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
             if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+                msg = "SkillsMiddleware requires a valid backend instance"
+                raise AssertionError(msg)
             return backend
 
         return self._backend
@@ -676,7 +693,7 @@ class SkillsMiddleware(AgentMiddleware):
         locations = []
 
         for i, source_path in enumerate(self.sources):
-            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
+            name = PurePosixPath(to_posix_path(source_path).rstrip("/")).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
 
@@ -701,7 +718,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
         Args:
@@ -723,11 +740,12 @@ class SkillsMiddleware(AgentMiddleware):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -738,7 +756,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -758,11 +776,12 @@ class SkillsMiddleware(AgentMiddleware):
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (async).
 
-        Runs before each agent interaction to discover available skills from all
-        configured sources. Re-loads on every call to capture any changes.
+        Loads skills once per session from all configured sources. If
+        `skills_metadata` is already present in state (from a prior turn or
+        checkpointed session), the load is skipped and `None` is returned.
 
         Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
@@ -773,7 +792,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with `skills_metadata` populated, or `None` if already present
+            State update with `skills_metadata` populated, or `None` if already present.
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -795,9 +814,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt.
 
         Args:
@@ -812,9 +831,9 @@ class SkillsMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Inject skills documentation into the system prompt (async version).
 
         Args:

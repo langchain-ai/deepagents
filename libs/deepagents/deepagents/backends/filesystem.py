@@ -1,28 +1,43 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import base64
 import json
+import logging
 import os
 import re
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 
 import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
+    GlobResult,
     GrepMatch,
+    GrepResult,
+    LsResult,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     check_empty_content,
-    format_content_with_line_numbers,
     perform_string_replacement,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FilesystemBackend(BackendProtocol):
@@ -58,18 +73,25 @@ class FilesystemBackend(BackendProtocol):
 
         1. Enable Human-in-the-Loop (HITL) middleware to review sensitive operations
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
-        3. Use `SandboxBackend` for production environments requiring filesystem
-            interaction
-        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
-            access restrictions (blocks `..`, `~`, and absolute paths outside root).
-            Note that the default (`virtual_mode=False`) provides no security even with
-            `root_dir` set.
+        3. For production environments, prefer `StateBackend`, `StoreBackend` or `SandboxBackend`
+
+        In general, we expect this backend to be used with Human-in-the-Loop (HITL)
+        middleware, or within a properly sandboxed environment if you need to run
+        untrusted workloads.
+
+        !!! note
+
+            `virtual_mode=True` is primarily for virtual path semantics (for example with
+            `CompositeBackend`). It can also provide path-based guardrails by blocking
+            traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
+            provide sandboxing or process isolation. The default (`virtual_mode=False`)
+            provides no security even with `root_dir` set.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,
+        virtual_mode: bool | None = None,  # noqa: FBT001
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -77,28 +99,28 @@ class FilesystemBackend(BackendProtocol):
         Args:
             root_dir: Optional root directory for file operations.
 
-                - If not provided, defaults to the current working directory.
-                - When `virtual_mode=False` (default): Only affects relative path
-                    resolution. Provides **no security** - agents can access any file
-                    using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: All paths are restricted to this
-                    directory with traversal protection enabled.
+                Defaults to the current working directory.
 
-            virtual_mode: Enable path-based access restrictions.
+                - When `virtual_mode=False` (default): Only affects relative path resolution.
+                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+
+            virtual_mode: Enable virtual path mode.
+
+                **Primary use case:** stable, backend-independent path semantics when
+                used with `CompositeBackend`, which strips route prefixes and forwards
+                normalized paths to the routed backend.
 
                 When `True`, all paths are treated as virtual paths anchored to
                 `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
                 are verified to remain within `root_dir`.
 
-                When `False` (default), **no security is provided**:
+                When `False` (default), absolute paths are used as-is and relative paths
+                are resolved under `root_dir`. This provides no security against an agent
+                choosing paths outside `root_dir`.
 
                 - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
                 - Relative paths with `..` can escape `root_dir`
                 - Agents have unrestricted filesystem access
-
-                **Security note:** `virtual_mode=True` provides path-based access
-                control, not process isolation. It restricts which files can be
-                accessed via paths, but does not sandbox the Python process itself.
 
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
@@ -106,6 +128,18 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
+        if virtual_mode is None:
+            warnings.warn(
+                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
+                "please specify virtual_mode explicitly. "
+                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
+                "it does not provide sandboxing or process isolation. "
+                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
+                "Consult the API reference for details.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
@@ -132,12 +166,14 @@ class FilesystemBackend(BackendProtocol):
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
             if ".." in vpath or vpath.startswith("~"):
-                raise ValueError("Path traversal not allowed")
+                msg = "Path traversal not allowed"
+                raise ValueError(msg)
             full = (self.cwd / vpath.lstrip("/")).resolve()
             try:
                 full.relative_to(self.cwd)
             except ValueError:
-                raise ValueError(f"Path:{full} outside root directory: {self.cwd}") from None
+                msg = f"Path:{full} outside root directory: {self.cwd}"
+                raise ValueError(msg) from None
             return full
 
         path = Path(key)
@@ -145,7 +181,22 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def _to_virtual_path(self, path: Path) -> str:
+        """Convert a filesystem path to a virtual path relative to cwd.
+
+        Args:
+            path: Filesystem path to convert.
+
+        Returns:
+            Forward-slash relative path string prefixed with `/`.
+
+        Raises:
+            ValueError: If path is outside cwd.
+            OSError: If path cannot be resolved (broken symlink, permission denied).
+        """
+        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+
+    def ls(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -158,7 +209,7 @@ class FilesystemBackend(BackendProtocol):
         """
         dir_path = self._resolve_path(path)
         if not dir_path.exists() or not dir_path.is_dir():
-            return []
+            return LsResult(entries=[])
 
         results: list[FileInfo] = []
 
@@ -188,7 +239,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": abs_path,
                                     "is_dir": False,
                                     "size": int(st.st_size),
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -201,23 +252,21 @@ class FilesystemBackend(BackendProtocol):
                                     "path": abs_path + "/",
                                     "is_dir": True,
                                     "size": 0,
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
-                    # Virtual mode: strip cwd prefix
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        # Path is outside cwd, return as-is or skip
-                        relative_path = abs_path
-
-                    virt_path = "/" + relative_path
+                    # Virtual mode: strip cwd prefix using Path for cross-platform support
+                    try:
+                        virt_path = self._to_virtual_path(child_path)
+                    except ValueError:
+                        logger.debug("Skipping path outside root: %s", child_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve path: %s", child_path, exc_info=True)
+                        continue
 
                     if is_file:
                         try:
@@ -227,7 +276,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": virt_path,
                                     "is_dir": False,
                                     "size": int(st.st_size),
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -240,7 +289,7 @@ class FilesystemBackend(BackendProtocol):
                                     "path": virt_path + "/",
                                     "is_dir": True,
                                     "size": 0,
-                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                                 }
                             )
                         except OSError:
@@ -250,15 +299,15 @@ class FilesystemBackend(BackendProtocol):
 
         # Keep deterministic order by path
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return LsResult(entries=results)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute or relative file path.
@@ -266,34 +315,40 @@ class FilesystemBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         resolved_path = self._resolve_path(file_path)
 
         if not resolved_path.exists() or not resolved_path.is_file():
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
-            # Open with O_NOFOLLOW where available to avoid symlink traversal
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            if _get_file_type(file_path) != "text":
+                with os.fdopen(fd, "rb") as f:
+                    raw = f.read()
+                encoded = base64.standard_b64encode(raw).decode("ascii")
+                return ReadResult(file_data=FileData(content=encoded, encoding="base64"))
+
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
             empty_msg = check_empty_content(content)
             if empty_msg:
-                return empty_msg
+                return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
-                return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
+                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
             selected_lines = lines[start_idx:end_idx]
-            return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
+            return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as e:
-            return f"Error reading file '{file_path}': {e}"
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
     def write(
         self,
@@ -308,7 +363,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `WriteResult` with path on success, or error message if the file
-                already exists or write fails. External storage sets `files_update=None`.
+                already exists or write fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -324,10 +379,12 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # newline="" disables Windows CRLF translation so callers that
+            # pass LF-only content get LF-only bytes on disk.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
 
-            return WriteResult(path=file_path, files_update=None)
+            return WriteResult(path=file_path)
         except (OSError, UnicodeEncodeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
@@ -336,7 +393,7 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -349,8 +406,7 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `EditResult` with path and occurrence count on success, or error
-                message if file not found or replacement fails. External storage sets
-                `files_update=None`.
+                message if file not found or replacement fails.
         """
         resolved_path = self._resolve_path(file_path)
 
@@ -362,6 +418,15 @@ class FilesystemBackend(BackendProtocol):
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
+
+            # Normalize line endings in old_string/new_string to match the
+            # text-mode read above. Python universal newlines (the default
+            # when newline=None) converts \r\n and bare \r to \n on read.
+            # Callers that obtained content via binary-mode reads (e.g.
+            # download_files) may pass strings with \r\n or \r that would
+            # fail to match the \n-only content.
+            old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+            new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
             result = perform_string_replacement(content, old_string, new_string, replace_all)
 
@@ -375,19 +440,19 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
-            return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+            return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search for a literal text pattern in files.
 
         Uses ripgrep if available, falling back to Python search.
@@ -398,16 +463,16 @@ class FilesystemBackend(BackendProtocol):
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
-            List of GrepMatch dicts containing path, line number, and matched text.
+            GrepResult with matches or error.
         """
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
         except ValueError:
-            return []
+            return GrepResult(matches=[])
 
         if not base_full.exists():
-            return []
+            return GrepResult(matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob)
@@ -419,9 +484,9 @@ class FilesystemBackend(BackendProtocol):
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
-        return matches
+        return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -446,7 +511,7 @@ class FilesystemBackend(BackendProtocol):
                 timeout=30,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -464,8 +529,12 @@ class FilesystemBackend(BackendProtocol):
             p = Path(ftext)
             if self.virtual_mode:
                 try:
-                    virt = "/" + str(p.resolve().relative_to(self.cwd))
-                except Exception:
+                    virt = self._to_virtual_path(p)
+                except ValueError:
+                    logger.debug("Skipping grep result outside root: %s", p)
+                    continue
+                except OSError:
+                    logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
                     continue
             else:
                 virt = str(p)
@@ -477,7 +546,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:  # noqa: C901, PLR0912
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
@@ -502,8 +571,10 @@ class FilesystemBackend(BackendProtocol):
                     continue
             except (PermissionError, OSError):
                 continue
-            if include_glob and not wcglob.globmatch(fp.name, include_glob, flags=wcglob.BRACE):
-                continue
+            if include_glob:
+                rel_path = str(fp.relative_to(root))
+                if not wcglob.globmatch(rel_path, include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+                    continue
             try:
                 if fp.stat().st_size > self.max_file_size_bytes:
                     continue
@@ -517,8 +588,12 @@ class FilesystemBackend(BackendProtocol):
                 if regex.search(line):
                     if self.virtual_mode:
                         try:
-                            virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
-                        except Exception:
+                            virt_path = self._to_virtual_path(fp)
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except OSError:
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
                             continue
                     else:
                         virt_path = str(fp)
@@ -526,7 +601,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
@@ -534,15 +609,18 @@ class FilesystemBackend(BackendProtocol):
             path: Base directory to search from. Defaults to root (`/`).
 
         Returns:
-            List of `FileInfo` dicts for matching files, sorted by path. Each dict
-                contains `path`, `is_dir`, `size`, and `modified_at` fields.
+            GlobResult with matching files or error.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
 
+        if self.virtual_mode and ".." in Path(pattern).parts:
+            msg = "Path traversal not allowed in glob pattern"
+            raise ValueError(msg)
+
         search_path = self.cwd if path == "/" else self._resolve_path(path)
         if not search_path.exists() or not search_path.is_dir():
-            return []
+            return GlobResult(matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -554,6 +632,11 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 if not is_file:
                     continue
+                if self.virtual_mode:
+                    try:
+                        matched_path.resolve().relative_to(self.cwd)
+                    except ValueError:
+                        continue
                 abs_path = str(matched_path)
                 if not self.virtual_mode:
                     try:
@@ -563,22 +646,21 @@ class FilesystemBackend(BackendProtocol):
                                 "path": abs_path,
                                 "is_dir": False,
                                 "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                             }
                         )
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
-                    if not cwd_str.endswith("/"):
-                        cwd_str += "/"
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        relative_path = abs_path
-                    virt = "/" + relative_path
+                    # Virtual mode: use Path for cross-platform support
+                    try:
+                        virt = self._to_virtual_path(matched_path)
+                    except ValueError:
+                        logger.debug("Skipping glob result outside root: %s", matched_path)
+                        continue
+                    except OSError:
+                        logger.warning("Could not resolve glob result path: %s", matched_path, exc_info=True)
+                        continue
                     try:
                         st = matched_path.stat()
                         results.append(
@@ -586,7 +668,7 @@ class FilesystemBackend(BackendProtocol):
                                 "path": virt,
                                 "is_dir": False,
                                 "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),  # noqa: DTZ006  # Local filesystem timestamps don't need timezone
                             }
                         )
                     except OSError:
@@ -595,7 +677,7 @@ class FilesystemBackend(BackendProtocol):
             pass
 
         results.sort(key=lambda x: x.get("path", ""))
-        return results
+        return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.
@@ -623,17 +705,11 @@ class FilesystemBackend(BackendProtocol):
                     f.write(content)
 
                 responses.append(FileUploadResponse(path=path, error=None))
-            except FileNotFoundError:
-                responses.append(FileUploadResponse(path=path, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
-            except (ValueError, OSError) as e:
-                # ValueError from _resolve_path for path traversal, OSError for other file errors
-                if isinstance(e, ValueError) or "invalid" in str(e).lower():
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
-                else:
-                    # Generic error fallback
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+            except Exception as exc:
+                error = _map_exception_to_standard_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileUploadResponse(path=path, error=error))
 
         return responses
 
@@ -650,19 +726,44 @@ class FilesystemBackend(BackendProtocol):
         for path in paths:
             try:
                 resolved_path = self._resolve_path(path)
+                if resolved_path.is_dir():
+                    responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
+                    continue
                 # Use flags to optionally prevent symlink following if
                 # supported by the OS
                 fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 with os.fdopen(fd, "rb") as f:
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except FileNotFoundError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            except PermissionError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            except IsADirectoryError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
-            except ValueError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
-            # Let other errors propagate
+            except Exception as exc:
+                error = _map_exception_to_standard_error(exc)
+                if error is None:
+                    raise
+                responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
+
+
+def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:
+    """Map a caught exception to a standardized `FileOperationError` code.
+
+    Classification is based on exception type only (stdlib hierarchy).
+    Returns `None` for any exception that cannot be classified by type,
+    letting callers decide whether to re-raise or fall back to `str(exc)`.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        A `FileOperationError` literal, or `None` if unrecognized.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return FILE_NOT_FOUND
+    if isinstance(exc, PermissionError):
+        return PERMISSION_DENIED
+    if isinstance(exc, IsADirectoryError):
+        return IS_DIRECTORY
+    if isinstance(exc, (NotADirectoryError, FileExistsError)):
+        return INVALID_PATH
+    if isinstance(exc, ValueError):
+        return INVALID_PATH
+    return None

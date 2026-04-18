@@ -6,6 +6,11 @@ Screen {
     layers: base autocomplete;
 }
 
+/* Thin scrollbars app-wide */
+* {
+    scrollbar-size-vertical: 1;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */
@@ -15,19 +20,16 @@ Screen {
     background: $background;
 }
 
-/* Spacer fills remaining viewport below input */
-#chat-spacer {
-    height: auto;
-}
-
 /* Welcome banner */
 #welcome-banner {
     height: auto;
     margin-bottom: 1;
 }
 
-/* Messages area */
+/* Messages area — uses undocumented "stream" layout (Textual ≥5.2.0) for
+   O(1) append performance via incremental placement caching. */
 #messages {
+    layout: stream;
     height: auto;
 }
 
@@ -42,7 +44,7 @@ Screen {
 #input-area {
     height: auto;
     min-height: 3;
-    max-height: 12;
+    max-height: 25;
 }
 
 /* Approval Menu - inline in messages area */
@@ -54,16 +56,20 @@ Screen {
     border: solid $warning;
 }
 
+/* Placeholder shown while the user is actively typing (approval deferred) */
+.approval-placeholder {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border: solid $panel;
+    color: $text-muted;
+    text-style: italic;
+}
+
 .approval-menu .approval-title {
     text-style: bold;
     color: $warning;
     margin-bottom: 0;
-}
-
-.approval-menu .approval-command {
-    height: auto;
-    margin: 0 0 1 0;
-    padding: 0 1;
 }
 
 .approval-menu .approval-info {
@@ -101,45 +107,80 @@ Screen {
     height: auto;
 }
 
-.approval-file-path {
-    color: $primary;
-    text-style: bold;
-}
-
 .approval-description {
     color: $text-muted;
 }
 
-/* Diff styling */
-.diff-header {
-    height: auto;
-    color: $text-muted;
-}
-
+/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
 .diff-removed {
     height: auto;
-    color: #ff8787;
-    background: #4a2020;
+    color: $text-error;
+    background: $error-muted;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
-    color: #8ce99a;
-    background: #1e4620;
+    color: $text-success;
+    background: $success-muted;
     padding: 0 1;
-}
-
-.diff-range {
-    height: auto;
-    color: $primary;
-    text-style: bold;
 }
 
 .diff-context {
     height: auto;
     color: $text-muted;
     padding: 0 1;
+}
+
+/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+.diff-line-removed {
+    background: $error-muted;
+}
+
+.diff-line-added {
+    background: $success-muted;
+}
+
+/* Mode-specific borders for UserMessage */
+UserMessage.-mode-shell {
+    border-left: wide $mode-bash;
+}
+
+UserMessage.-mode-command {
+    border-left: wide $mode-command;
+}
+
+/* ASCII border overrides */
+UserMessage.-ascii {
+    border-left: ascii $primary;
+}
+
+UserMessage.-ascii.-mode-shell {
+    border-left: ascii $mode-bash;
+}
+
+UserMessage.-ascii.-mode-command {
+    border-left: ascii $mode-command;
+}
+
+QueuedUserMessage.-ascii {
+    border-left: ascii $panel;
+}
+
+ToolCallMessage.-ascii {
+    border-left: ascii $panel;
+}
+
+ToolCallMessage.-ascii:hover {
+    border-left: ascii $secondary;
+}
+
+/* Approval command — warning color for shell commands */
+.approval-menu .approval-command {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    color: $warning;
 }
 
 /* Separator line between tool details and options */
@@ -151,7 +192,8 @@ Screen {
 
 /* Scrollable tool info area in approval menu */
 .approval-menu .tool-info-scroll {
-    height: 10;
+    height: auto;
+    max-height: 10;
     margin-top: 0;
 }
 
@@ -168,6 +210,79 @@ Screen {
     margin-top: 0;
 }
 
+/* Ask user widget */
+.ask-user-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    background: $surface;
+    border: solid $success;
+}
+
+.ask-user-menu .ask-user-title {
+    text-style: bold;
+    color: $success;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.ask-user-menu .ask-user-questions {
+    height: auto;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-question {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.ask-user-menu .ask-user-question-active {
+    border-left: thick $success;
+    padding-left: 1;
+}
+
+.ask-user-menu .ask-user-question-inactive {
+    opacity: 0.5;
+    padding-left: 2;
+}
+
+.ask-user-menu .ask-user-question-text {
+    margin: 0 0 0 2;
+    padding: 0;
+}
+
+.ask-user-menu .ask-user-choice {
+    height: 1;
+    padding: 0 1;
+}
+
+.ask-user-menu .ask-user-text-input {
+    margin: 1 1 0 1;
+}
+
+.ask-user-menu .ask-user-other-input {
+    margin: 1 1 0 1;
+}
+
+/* ChatTextArea: override TextArea's built-in $surface background */
+ChatTextArea {
+    background: transparent;
+
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
 /* Completion popup styling (used by ChatInput) - appears BELOW input */
 #completion-popup {
     height: auto;
@@ -176,6 +291,5 @@ Screen {
     margin-left: 3;
     margin-top: 0;
     padding: 0;
-    background: $background;
     color: $text;
 }

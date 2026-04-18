@@ -1,49 +1,108 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
+import base64
 import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
-from langgraph.config import get_config
+from langgraph.config import get_config, get_store
+from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item
 from langgraph.typing import ContextT, StateT
 
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
+    FileData,
     FileDownloadResponse,
+    FileFormat,
     FileInfo,
     FileUploadResponse,
-    GrepMatch,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.utils import (
+    _get_file_type,
     _glob_search_files,
+    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
-    format_read_response,
     grep_matches_from_files,
     perform_string_replacement,
+    slice_read_response,
     update_file_data,
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
     from langgraph.runtime import Runtime
 
 
 @dataclass
 class BackendContext(Generic[StateT, ContextT]):
-    """Context passed to namespace factory functions."""
+    """Context passed to namespace factory functions.
+
+    Deprecated: `BackendContext` will be removed in version 0.7.0.
+    Namespace factories now receive a `Runtime` instance directly.
+    Migrate from `lambda ctx: (ctx.runtime.context.user_id, "fs")`
+    to `lambda rt: (rt.server_info.user.identity, "fs")`.
+    """
 
     state: StateT
     runtime: "Runtime[ContextT]"
 
 
-# Type alias for namespace factory functions
-NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
+class _NamespaceRuntimeCompat:
+    """Wrapper that duck-types as both Runtime and BackendContext.
+
+    Allows old-style namespace factories (accessing ``.runtime`` / ``.state``)
+    to work alongside new-style factories (accessing ``Runtime`` attrs directly).
+
+    Will be removed in v0.7.
+    """
+
+    def __init__(self, runtime: "Runtime[Any] | None", state: object = None) -> None:
+        self._runtime = runtime
+        self._state = state
+
+    @property
+    def runtime(self) -> "Runtime[Any] | None":
+        warnings.warn(
+            "Accessing .runtime on the namespace factory argument is deprecated. "
+            "The argument is now a Runtime instance — use its attributes directly "
+            "(e.g. `rt.context` instead of `ctx.runtime.context`). "
+            "This will be removed in v0.7.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._runtime
+
+    @property
+    def state(self) -> object:
+        warnings.warn(
+            "Accessing .state on the namespace factory argument is deprecated. "
+            "Namespace resolution should not depend on state. "
+            "This will be removed in v0.7.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._state
+
+    def __getattr__(self, name: str) -> object:
+        if self._runtime is None:
+            msg = f"Runtime is not available (running outside graph execution), cannot access '.{name}'"
+            raise AttributeError(msg)
+        return getattr(self._runtime, name)
+
+
+# Type alias for namespace factory functions.
+# Accepts Runtime directly. Old-style BackendContext callables still work
+# via _NamespaceRuntimeCompat but are deprecated (removed in v0.7).
+NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
 # common in user IDs (hyphen, underscore, dot, @, +, colon, tilde).
@@ -100,142 +159,182 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None):
-        """Initialize StoreBackend with runtime.
+    def __init__(
+        self,
+        runtime: object = None,
+        *,
+        store: BaseStore | None = None,
+        namespace: NamespaceFactory | None = None,
+        file_format: FileFormat = "v2",
+    ) -> None:
+        r"""Initialize StoreBackend.
 
         Args:
-            runtime: The ToolRuntime instance providing store access and configuration.
-            namespace: Optional callable that takes a BackendContext and returns
-                a namespace tuple. This provides full flexibility for namespace resolution.
-                We forbid * which is a wild card for now.
-                If None, uses legacy assistant_id detection from metadata (deprecated).
+            runtime: Deprecated - accepted for backward compatibility but
+                ignored.  Store and context are now obtained via
+                ``get_store()`` / ``get_runtime()``.
+            store: Optional ``BaseStore`` instance.  When provided, this store
+                is used directly.  When ``None`` (the default), the store is
+                obtained at call time via ``get_store()``, which requires
+                a LangGraph graph execution context.
+            namespace: Optional callable that receives a ``Runtime`` and returns
+                a namespace tuple for scoping store operations.
+                Wildcards (``*``) are forbidden.
+                If ``None``, uses legacy assistant_id detection from metadata (deprecated).
 
-                .. note::
-                    This parameter will be **required** in version 0.5.0.
+                Old-style callables that accept ``BackendContext`` still work
+                but are deprecated and will be removed in v0.7.
 
-                .. warning::
-                    This API is subject to change in a minor version.
+            file_format: Storage format version. `"v1"` (default) stores
+                content as `list[str]` (lines split on `\\n`) without an
+                `encoding` field.  `"v2"` stores content as a plain `str`
+                with an `encoding` field.
 
         Example:
-                    namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
+                    namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
         """
-        self.runtime = runtime
+        if runtime is not None:
+            warnings.warn(
+                "Passing `runtime` to StoreBackend is deprecated and will be "
+                "removed in v0.7. StoreBackend now obtains store "
+                "and context via `get_store()` / `get_runtime()`. Simply use "
+                "`StoreBackend()` or `StoreBackend(store=my_store)` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._store = store
         self._namespace = namespace
+        self._file_format = file_format
 
     def _get_store(self) -> BaseStore:
-        """Get the store instance.
+        """Return the store instance.
 
-        Returns:
-            BaseStore instance from the runtime.
-
-        Raises:
-            ValueError: If no store is available in the runtime.
+        Uses the store passed at init if available, otherwise falls back to
+        ``get_store()`` which reads from the LangGraph execution context.
         """
-        store = self.runtime.store
-        if store is None:
-            msg = "Store is required but not available in runtime"
-            raise ValueError(msg)
-        return store
+        if self._store is not None:
+            return self._store
+        try:
+            return get_store()
+        except (RuntimeError, KeyError):
+            msg = (
+                "StoreBackend must be used inside a LangGraph graph execution "
+                "(e.g. via create_deep_agent), or initialized with an explicit "
+                "store: StoreBackend(store=my_store)"
+            )
+            raise RuntimeError(msg) from None
 
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
-        If namespace was provided at init, calls it with a BackendContext.
+        If namespace was provided at init, calls it with a ``_NamespaceRuntimeCompat``
+        wrapper that duck-types as both ``Runtime`` (new) and ``BackendContext`` (legacy).
         Otherwise, uses legacy assistant_id detection from metadata (deprecated).
         """
         if self._namespace is not None:
-            state = getattr(self.runtime, "state", None)
-            ctx = BackendContext(state=state, runtime=self.runtime)
-            return _validate_namespace(self._namespace(ctx))
+            try:
+                runtime = get_runtime()
+            except (RuntimeError, KeyError):
+                runtime = None
+            compat = _NamespaceRuntimeCompat(runtime)
+            return _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]
 
         return self._get_namespace_legacy()
 
     def _get_namespace_legacy(self) -> tuple[str, ...]:
         """Legacy namespace resolution: check metadata for assistant_id.
 
-        Preference order:
-        1) Use `self.runtime.config` if present (tests pass this explicitly).
-        2) Fallback to `langgraph.config.get_config()` if available.
-        3) Default to ("filesystem",).
-
-        If an assistant_id is available in the config metadata, return
-        (assistant_id, "filesystem") to provide per-assistant isolation.
+        Uses ``get_config()`` to find assistant_id in metadata.
+        Defaults to ``("filesystem",)``.
 
         .. deprecated::
             Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
         warnings.warn(
-            "StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            "StoreBackend without explicit `namespace` is deprecated and will be removed in v0.7. "
+            "Pass `namespace=lambda ctx: (...)` to StoreBackend.",
             DeprecationWarning,
             stacklevel=3,
         )
         namespace = "filesystem"
 
-        # Prefer the runtime-provided config when present
-        runtime_cfg = getattr(self.runtime, "config", None)
-        if isinstance(runtime_cfg, dict):
-            assistant_id = runtime_cfg.get("metadata", {}).get("assistant_id")
-            if assistant_id:
-                return (assistant_id, namespace)
-            return (namespace,)
-
-        # Fallback to langgraph's context, but guard against errors when
-        # called outside of a runnable context
         try:
             cfg = get_config()
-        except Exception:
+        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
             return (namespace,)
 
         try:
-            assistant_id = cfg.get("metadata", {}).get("assistant_id")  # type: ignore[assignment]
-        except Exception:
+            assistant_id = cfg.get("metadata", {}).get("assistant_id")
+        except Exception:  # noqa: BLE001  # Intentional for resilient config fallback
             assistant_id = None
 
         if assistant_id:
-            return (assistant_id, namespace)
+            return _validate_namespace((assistant_id, namespace))
         return (namespace,)
 
-    def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
+    def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
         """Convert a store Item to FileData format.
 
         Args:
             store_item: The store Item containing file data.
 
         Returns:
-            FileData dict with content, created_at, and modified_at fields.
-
-        Raises:
-            ValueError: If required fields are missing or have incorrect types.
+            FileData dict with content and encoding. Includes created_at and
+            modified_at when present in the store item.
         """
-        if "content" not in store_item.value or not isinstance(store_item.value["content"], list):
+        raw_content = store_item.value.get("content")
+        if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
-        if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
-            msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        if "modified_at" not in store_item.value or not isinstance(store_item.value["modified_at"], str):
-            msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
-            raise ValueError(msg)
-        return {
-            "content": store_item.value["content"],
-            "created_at": store_item.value["created_at"],
-            "modified_at": store_item.value["modified_at"],
-        }
 
-    def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
+        # BACKWARDS COMPAT: legacy list[str] format
+        if isinstance(raw_content, list):
+            warnings.warn(
+                "Store item with list[str] content is deprecated and will be removed in v0.7. Content should be stored as a plain str.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            content = "\n".join(raw_content)
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
+            msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
+            raise TypeError(msg)
+
+        result = FileData(
+            content=content,
+            encoding=store_item.value.get("encoding", "utf-8"),
+        )
+        if "created_at" in store_item.value and isinstance(store_item.value["created_at"], str):
+            result["created_at"] = store_item.value["created_at"]
+        if "modified_at" in store_item.value and isinstance(store_item.value["modified_at"], str):
+            result["modified_at"] = store_item.value["modified_at"]
+        return result
+
+    def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
+
+        When `file_format="v1"`, returns the legacy format with `content`
+        as `list[str]` and no `encoding` key.
 
         Args:
             file_data: The FileData to convert.
 
         Returns:
-            Dictionary with content, created_at, and modified_at fields.
+            Dictionary with content and encoding. Includes created_at and
+            modified_at when present in the FileData.
         """
-        return {
+        if self._file_format == "v1":
+            return _to_legacy_file_data(file_data)
+        result: dict[str, Any] = {
             "content": file_data["content"],
-            "created_at": file_data["created_at"],
-            "modified_at": file_data["modified_at"],
+            "encoding": file_data["encoding"],
         }
+        if "created_at" in file_data:
+            result["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            result["modified_at"] = file_data["modified_at"]
+        return result
 
     def _search_store_paginated(
         self,
@@ -243,7 +342,7 @@ class StoreBackend(BackendProtocol):
         namespace: tuple[str, ...],
         *,
         query: str | None = None,
-        filter: dict[str, Any] | None = None,
+        filter: dict[str, Any] | None = None,  # noqa: A002  # Matches LangGraph BaseStore.search() API
         page_size: int = 100,
     ) -> list[Item]:
         """Search store with automatic pagination to retrieve all results.
@@ -284,7 +383,7 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
@@ -326,7 +425,9 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len("\n".join(fd.get("content", [])))
+            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+            raw = fd.get("content", "")
+            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
             infos.append(
                 {
                     "path": item.key,
@@ -337,26 +438,18 @@ class StoreBackend(BackendProtocol):
             )
 
         # Add directories to the results
-        for subdir in sorted(subdirs):
-            infos.append(
-                {
-                    "path": subdir,
-                    "is_dir": True,
-                    "size": 0,
-                    "modified_at": "",
-                }
-            )
+        infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
         infos.sort(key=lambda x: x.get("path", ""))
-        return infos
+        return LsResult(entries=infos)
 
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
-        """Read file content with line numbers.
+    ) -> ReadResult:
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute file path.
@@ -364,28 +457,43 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            Formatted file content with line numbers, or error message.
+            ReadResult with raw (unformatted) content for the requested
+            window. Line-number formatting is applied by the middleware.
         """
         store = self._get_store()
         namespace = self._get_namespace()
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
+        )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     async def aread(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
-    ) -> str:
+    ) -> ReadResult:
         """Async version of read using native store async methods.
 
         This avoids sync calls in async context by using store.aget directly.
@@ -395,14 +503,28 @@ class StoreBackend(BackendProtocol):
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
-            return f"Error: File '{file_path}' not found"
+            return ReadResult(error=f"File '{file_path}' not found")
 
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
+            return ReadResult(error=str(e))
 
-        return format_read_response(file_data, offset, limit)
+        if _get_file_type(file_path) != "text":
+            return ReadResult(file_data=file_data)
+
+        sliced = slice_read_response(file_data, offset, limit)
+        if isinstance(sliced, ReadResult):
+            return sliced
+        sliced_fd = FileData(
+            content=sliced,
+            encoding=file_data.get("encoding", "utf-8"),
+        )
+        if "created_at" in file_data:
+            sliced_fd["created_at"] = file_data["created_at"]
+        if "modified_at" in file_data:
+            sliced_fd["modified_at"] = file_data["modified_at"]
+        return ReadResult(file_data=sliced_fd)
 
     def write(
         self,
@@ -410,7 +532,8 @@ class StoreBackend(BackendProtocol):
         content: str,
     ) -> WriteResult:
         """Create a new file with content.
-        Returns WriteResult. External storage sets files_update=None.
+
+        Returns WriteResult on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -424,7 +547,7 @@ class StoreBackend(BackendProtocol):
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     async def awrite(
         self,
@@ -447,17 +570,18 @@ class StoreBackend(BackendProtocol):
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        Returns EditResult. External storage sets files_update=None.
+
+        Returns EditResult on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -484,14 +608,14 @@ class StoreBackend(BackendProtocol):
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
-        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+        return EditResult(path=file_path, occurrences=int(occurrences))
 
     async def aedit(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
@@ -522,16 +646,17 @@ class StoreBackend(BackendProtocol):
         # Update file in store using async method
         store_value = self._convert_file_data_to_store_value(new_file_data)
         await store.aput(namespace, file_path, store_value)
-        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+        return EditResult(path=file_path, occurrences=int(occurrences))
 
     # Removed legacy grep() convenience to keep lean surface
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
+        """Search store files for a literal text pattern."""
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -543,7 +668,8 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+        """Find files matching a glob pattern in the store."""
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -555,12 +681,17 @@ class StoreBackend(BackendProtocol):
                 continue
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
-            return []
+            return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len("\n".join(fd.get("content", []))) if fd else 0
+            if fd:
+                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
+                raw = fd.get("content", "")
+                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            else:
+                size = 0
             infos.append(
                 {
                     "path": p,
@@ -569,10 +700,13 @@ class StoreBackend(BackendProtocol):
                     "modified_at": fd.get("modified_at", "") if fd else "",
                 }
             )
-        return infos
+        return GlobResult(matches=infos)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
+
+        Binary files (images, PDFs, etc.) are stored as base64-encoded strings.
+        Text files are stored as utf-8 strings.
 
         Args:
             files: List of (path, content) tuples where content is bytes.
@@ -586,12 +720,16 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            content_str = content.decode("utf-8")
-            # Create file data
-            file_data = create_file_data(content_str)
+            try:
+                content_str = content.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                content_str = base64.standard_b64encode(content).decode("ascii")
+                encoding = "base64"
+
+            file_data = create_file_data(content_str, encoding=encoding)
             store_value = self._convert_file_data_to_store_value(file_data)
 
-            # Store the file
             store.put(namespace, path, store_value)
             responses.append(FileUploadResponse(path=path, error=None))
 
@@ -619,9 +757,10 @@ class StoreBackend(BackendProtocol):
                 continue
 
             file_data = self._convert_store_item_to_file_data(item)
-            # Convert file data to bytes
             content_str = file_data_to_string(file_data)
-            content_bytes = content_str.encode("utf-8")
+
+            encoding = file_data["encoding"]
+            content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 

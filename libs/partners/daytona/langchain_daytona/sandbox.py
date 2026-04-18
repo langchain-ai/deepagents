@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from typing import cast
+from uuid import uuid4
+
 import daytona
-from daytona import FileDownloadRequest, FileUpload
+from daytona import FileDownloadRequest, FileUpload, SessionExecuteRequest
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
+
+SyncPollingInterval = float | Callable[[float], float]
+PollingStrategy = Callable[[float], float]
 
 
 class DaytonaSandbox(BaseSandbox):
@@ -19,10 +27,36 @@ class DaytonaSandbox(BaseSandbox):
     and only implements the execute() method using Daytona's API.
     """
 
-    def __init__(self, *, sandbox: daytona.Sandbox) -> None:
-        """Create a backend wrapping an existing Daytona sandbox."""
+    def __init__(
+        self,
+        *,
+        sandbox: daytona.Sandbox,
+        timeout: int = 30 * 60,
+        sync_polling_interval: SyncPollingInterval = 0.1,
+    ) -> None:
+        """Create a backend wrapping an existing Daytona sandbox.
+
+        Args:
+            sandbox: Existing Daytona sandbox instance to wrap.
+            timeout: Default command timeout in seconds used when `execute()` is
+                called without an explicit `timeout`.
+            sync_polling_interval: Delay in seconds between polling Daytona for
+                command completion on the sync execution path, or a callable
+                that receives elapsed execution time in seconds and returns the
+                next polling delay. This will eventually only appear on the
+                sync path once an optimized async implementation is available.
+        """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60
+        self._default_timeout = timeout
+        polling_strategy: PollingStrategy
+        if callable(sync_polling_interval):
+            polling_strategy = cast("PollingStrategy", sync_polling_interval)
+        else:
+
+            def polling_strategy(_elapsed: float) -> float:
+                return sync_polling_interval
+
+        self._sync_polling_interval = polling_strategy
 
     @property
     def id(self) -> str:
@@ -32,13 +66,70 @@ class DaytonaSandbox(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute a shell command inside the sandbox."""
-        result = self._sandbox.process.exec(command, timeout=self._timeout)
+        """Execute a shell command inside the sandbox.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Daytona's implementation, a timeout of 0 means
+                "wait indefinitely".
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        return self._execute_via_session_logs(command, timeout=effective_timeout)
+
+    def _execute_via_session_logs(
+        self,
+        command: str,
+        *,
+        timeout: int,
+    ) -> ExecuteResponse:
+        """Execute a command through a session and poll logs until completion."""
+        session_id = str(uuid4())
+        self._sandbox.process.create_session(session_id)
+        try:
+            started_at = time.monotonic()
+            result = self._sandbox.process.execute_session_command(
+                session_id,
+                SessionExecuteRequest(command=command, run_async=True),
+                timeout=timeout,
+            )
+            while True:
+                if timeout != 0 and time.monotonic() - started_at >= timeout:
+                    msg = f"Command timed out after {timeout} seconds"
+                    return ExecuteResponse(
+                        output=msg,
+                        exit_code=124,
+                        truncated=False,
+                    )
+                command_result = self._sandbox.process.get_session_command(
+                    session_id,
+                    result.cmd_id,
+                )
+                if command_result.exit_code is not None:
+                    break
+                elapsed = time.monotonic() - started_at
+                time.sleep(self._sync_polling_interval(elapsed))
+            logs = self._sandbox.process.get_session_command_logs(
+                session_id,
+                result.cmd_id,
+            )
+        finally:
+            self._sandbox.process.delete_session(session_id)
+
+        output = logs.stdout or ""
+
+        if logs.stderr is not None and logs.stderr.strip():
+            output += f"\n<stderr>{logs.stderr.strip()}</stderr>"
 
         return ExecuteResponse(
-            output=result.result,
-            exit_code=result.exit_code,
+            output=output,
+            exit_code=command_result.exit_code,
             truncated=False,
         )
 
@@ -76,7 +167,7 @@ class DaytonaSandbox(BaseSandbox):
                 mapped_responses.append(
                     FileDownloadResponse(
                         path=resp.source,
-                        content=content,
+                        content=content,  # ty: ignore[invalid-argument-type]  # Daytona SDK returns bytes for file content
                         error=None,
                     )
                 )

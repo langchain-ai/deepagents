@@ -161,6 +161,13 @@ def _build_inbound_content(event: MessageEvent) -> str | list[dict]:
     blocks (text + images) for PHOTO events with readable images within
     the size limit. Oversize or unreadable images are dropped with a
     warning; if every image is dropped, falls back to plain-string text.
+
+    Emits images as ``image_url`` blocks with a ``data:`` URI — the
+    OpenAI chat-completions wire format. Every major LangChain integration
+    accepts this shape: ``langchain-openai`` natively, ``langchain-anthropic``
+    and ``langchain-google-genai`` via auto-conversion, and any
+    OpenAI-compatible endpoint (Ollama openai-compat, LM Studio, OpenRouter,
+    vLLM, LocalAI) by definition. This keeps the adapter provider-agnostic.
     """
     text = event.text.strip()
     if event.message_type != MessageType.PHOTO or not event.media_urls:
@@ -193,10 +200,8 @@ def _build_inbound_content(event: MessageEvent) -> str | list[dict]:
             else "image/jpeg"
         )
         image_blocks.append({
-            "type": "image",
-            "source_type": "base64",
-            "data": data,
-            "mime_type": mime,
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{data}"},
         })
 
     if not image_blocks:

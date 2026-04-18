@@ -93,10 +93,10 @@ class TestBuildInboundContent:
         assert content[0] == {"type": "text", "text": "look"}
         assert len(content) == 2
         block = content[1]
-        assert block["type"] == "image"
-        assert block["source_type"] == "base64"
-        assert block["mime_type"] == "image/png"
-        assert isinstance(block["data"], str) and block["data"]
+        assert block["type"] == "image_url"
+        url = block["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        assert len(url) > len("data:image/png;base64,")
 
     def test_photo_event_with_empty_body_uses_placeholder(
         self, tiny_png: Path
@@ -115,8 +115,10 @@ class TestBuildInboundContent:
         content = _build_inbound_content(event)
         assert isinstance(content, list)
         assert len(content) == 3
-        assert content[1]["mime_type"] == "image/png"
-        assert content[2]["mime_type"] == "image/jpeg"
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[2]["type"] == "image_url"
+        assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
     def test_oversize_image_dropped(
         self, tiny_png: Path, oversize_image: Path

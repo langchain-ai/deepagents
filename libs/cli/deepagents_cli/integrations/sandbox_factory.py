@@ -210,8 +210,8 @@ _LANGSMITH_DEFAULT_SNAPSHOT = "deepagents-cli"
 _LANGSMITH_DEFAULT_IMAGE = "python:3"
 """Default Docker image for LangSmith sandbox snapshots when none is provided."""
 
-_LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 4 * 1024**3
-"""Default filesystem capacity (4 GiB) for LangSmith sandbox snapshots."""
+_LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
+"""Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
 
 
 class _LangSmithProvider(SandboxProvider):

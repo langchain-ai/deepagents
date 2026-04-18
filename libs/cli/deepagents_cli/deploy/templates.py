@@ -29,7 +29,7 @@ SANDBOX_BLOCK_LANGSMITH = '''\
 from deepagents.backends.langsmith import LangSmithSandbox
 
 _SANDBOXES: dict = {}
-_SANDBOX_FS_CAPACITY_BYTES = 4 * 1024**3
+_SANDBOX_FS_CAPACITY_BYTES = 16 * 1024**3
 
 
 def _get_or_create_sandbox(cache_key):

@@ -6,7 +6,6 @@ context under the bare specifier ``@/skills/<name>``. The guest can
 then ``await import("@/skills/<name>")`` to pull the skill's entrypoint
 exports.
 
-See ``libs/deepagents-repl/SKILL_BUNDLES_SPEC.md`` for the full design.
 This module is the enumeration + scope-build half; the install-cache
 and the pre-eval specifier scan live on ``_ThreadREPL`` in
 ``_repl.py`` so they share the Context / Runtime locks.
@@ -276,9 +275,6 @@ def load_skill(
     backend: BackendProtocol,
 ) -> LoadedSkill:
     """Load one skill into a ``LoadedSkill``.
-
-    Pure — no QuickJS context required. Suitable for unit-testing the
-    scope shape in isolation from an installed runtime.
 
     Raises:
         SkillScopeInvalid: Metadata has no `module` key, or the

@@ -23,6 +23,8 @@
 | [async-subagent-server](async-subagent-server/) | Self-hosted Agent Protocol server exposing a Deep Agents researcher as an async subagent, with a supervisor REPL |
 | [nvidia_deep_agent](nvidia_deep_agent/) | Multi-model agent with NVIDIA Nemotron Super for research and GPU-accelerated code execution via RAPIDS |
 | [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |
+| [rlm_agent](rlm_agent/) | `create_rlm_agent` helper: wraps `create_deep_agent` with a recursive REPL + PTC subagent chain for parallel fan-out across levels |
+| [repl_swarm](repl_swarm/) | Skill-module example: a `swarm` skill (TypeScript) dispatches subagents in parallel from inside the QuickJS REPL |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
 | [better-harness](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness using the `better-harness` research artifact |
 

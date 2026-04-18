@@ -9,7 +9,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Input, Static
+from textual.widgets import Input, Markdown, Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         Question,
     )
 
+from deepagents_cli import theme
 from deepagents_cli.config import (
     get_glyphs,
     is_ascii_mode,
@@ -110,7 +111,8 @@ class AskUserMenu(Container):
 
     async def on_mount(self) -> None:  # noqa: D102
         if is_ascii_mode():
-            self.styles.border = ("ascii", "green")
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.success)
         self._set_active_question(0)
 
     def focus_active(self) -> None:
@@ -270,11 +272,11 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = self._question.get("question", "")
-        if self._required:
-            markup = "[bold]$num. $text[/bold] [dim](required)[/dim]"
-        else:
-            markup = "[bold]$num. $text[/bold]"
-        yield Static(Content.from_markup(markup, num=self._index + 1, text=q_text))
+        num = self._index + 1
+        suffix = " *(required)*" if self._required else ""
+        # q_text is agent-authored; rendered as markdown intentionally so
+        # agents can use inline formatting, links, and code spans in questions.
+        yield Markdown(f"**{num}.** {q_text}{suffix}", classes="ask-user-question-text")
 
         if self._q_type == "multiple_choice" and self._choices:
             for i, choice in enumerate(self._choices):

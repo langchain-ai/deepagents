@@ -31,7 +31,8 @@ from tests.evals.utils import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("memory")]
+pytestmark = [pytest.mark.eval_category("memory"), pytest.mark.eval_tier("baseline")]
+"""Apply memory category and baseline tier to all tests in this module."""
 
 MEMORY_PATH = "/project/AGENTS.md"
 """Virtual path to the agent's memory file used across all memory multi-turn evals."""
@@ -216,7 +217,7 @@ def test_implicit_preference_remembered(model: BaseChatModel, case: dict[str, An
             )
             .success(
                 file_contains(MEMORY_PATH, case["should_contain"]),
-                llm_judge(*case["criteria"]),
+                llm_judge(*case["criteria"], include_tool_calls=True),
             )
         ),
     )
@@ -243,7 +244,7 @@ def test_explicit_preference_remembered(model: BaseChatModel, case: dict[str, An
             )
             .success(
                 file_contains(MEMORY_PATH, case["should_contain"]),
-                llm_judge(*case["criteria"]),
+                llm_judge(*case["criteria"], include_tool_calls=True),
             )
         ),
     )

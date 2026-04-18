@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.4"
+version = "0.0.6"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,10 @@ dependencies = [
 ]
 
 [dependency-groups]
+examples = [
+    "langchain-baseten>=0.2.0",
+    "langchain-openai>=1.1.11",
+]
 test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
@@ -54,8 +58,12 @@ Twitter = "https://x.com/LangChain"
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = ["../deepagents"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

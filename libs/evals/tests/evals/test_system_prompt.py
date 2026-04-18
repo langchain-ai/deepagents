@@ -1,3 +1,10 @@
+"""Unit test for system prompt passthrough.
+
+Verifies that a custom system prompt provided via create_deep_agent
+is reflected in the agent's response. This is an SDK integration test,
+not a model capability eval.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -14,7 +21,8 @@ from tests.evals.utils import (
     run_agent,
 )
 
-pytestmark = [pytest.mark.eval_category("system_prompt")]
+pytestmark = [pytest.mark.eval_category("unit_test"), pytest.mark.eval_tier("baseline")]
+"""Apply unit_test category and baseline tier to all tests in this module."""
 
 
 @pytest.mark.langsmith

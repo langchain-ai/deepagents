@@ -9,8 +9,6 @@
 #   OPENAI_API_KEY     — needed for OpenAI models
 #   GOOGLE_API_KEY     — needed for Google models
 #   XAI_API_KEY        — needed for xAI/Grok models
-#   MISTRAL_API_KEY    — needed for Mistral models
-#   DEEPSEEK_API_KEY   — needed for DeepSeek models
 #   GROQ_API_KEY       — needed for Groq-hosted models
 #   OLLAMA_API_KEY     — needed for Ollama Cloud models
 #   OLLAMA_HOST        — set to https://ollama.com for cloud inference
@@ -19,29 +17,76 @@
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
-name: "📊 Evals"
+name: "📊 Evals - GHA"
+run-name: >-
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
 
 on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to evaluate. Set definitions: .github/scripts/models.py. Use models_override for individual models."
-        required: true
-        default: "all"
+        description: "Model set to evaluate. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        required: false
+        default: ""
         type: choice
         options:
+          - ""
           - all
           - set0
           - set1
           - set2
+          - frontier
+          - fast
           - open
+          - anthropic
+          - baseten
+          - fireworks
+          - google_genai
+          - groq
+          - nvidia
+          - openai
+          - ollama
+          - openrouter
+          - xai
           - "anthropic:claude-haiku-4-5-20251001"
-          - "anthropic:claude-sonnet-4-20250514"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
+          - "baseten:zai-org/GLM-5"
+          - "baseten:MiniMaxAI/MiniMax-M2.5"
+          - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:nvidia/Nemotron-120B-A12B"
+          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
+          - "fireworks:fireworks/deepseek-v3p2"
+          - "fireworks:fireworks/deepseek-v3-0324"
+          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:fireworks/minimax-m2p1"
+          - "fireworks:fireworks/kimi-k2p5"
+          - "fireworks:fireworks/glm-5"
+          - "fireworks:fireworks/minimax-m2p5"
+          - "google_genai:gemini-2.5-flash"
+          - "google_genai:gemini-2.5-pro"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-pro-preview"
+          - "groq:openai/gpt-oss-120b"
+          - "groq:qwen/qwen3-32b"
+          - "groq:moonshotai/kimi-k2-instruct"
+          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
+          - "ollama:glm-5"
+          - "ollama:glm-5.1"
+          - "ollama:minimax-m2.5"
+          - "ollama:minimax-m2.7:cloud"
+          - "ollama:qwen3.5:397b-cloud"
+          - "ollama:nemotron-3-nano:30b"
+          - "ollama:nemotron-3-super"
+          - "ollama:cogito-2.1:671b"
+          - "ollama:devstral-2:123b"
+          - "ollama:ministral-3:14b"
+          - "ollama:qwen3-next:80b"
+          - "ollama:qwen3-coder:480b-cloud"
+          - "ollama:deepseek-v3.2:cloud"
           - "openai:gpt-4o"
           - "openai:gpt-4o-mini"
           - "openai:gpt-4.1"
@@ -49,56 +94,80 @@ on:
           - "openai:o4-mini"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
-          - "google_genai:gemini-2.5-flash"
-          - "google_genai:gemini-2.5-pro"
-          - "google_genai:gemini-3-flash-preview"
-          - "google_genai:gemini-3.1-pro-preview"
+          - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
-          - "baseten:zai-org/GLM-5"
-          - "baseten:MiniMaxAI/MiniMax-M2.5"
-          - "baseten:moonshotai/Kimi-K2.5"
-          - "baseten:deepseek-ai/DeepSeek-V3.2"
-          - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
-          - "fireworks:fireworks/deepseek-v3-0324"
-          - "fireworks:fireworks/minimax-m2p1"
-          - "fireworks:fireworks/kimi-k2p5"
-          - "fireworks:fireworks/glm-5"
-          - "fireworks:fireworks/minimax-m2p5"
-          - "ollama:glm-5"
-          - "ollama:minimax-m2.5"
-          - "ollama:qwen3.5:397b-cloud"
-          - "groq:openai/gpt-oss-120b"
-          - "groq:qwen/qwen3-32b"
-          - "groq:moonshotai/kimi-k2-instruct"
+          - "openrouter:z-ai/glm-5.1"
+          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
-          - "ollama:nemotron-3-nano:30b"
-          - "ollama:cogito-2.1:671b"
-          - "ollama:devstral-2:123b"
-          - "ollama:ministral-3:14b"
-          - "ollama:qwen3-next:80b"
-          - "ollama:qwen3-coder:480b-cloud"
-          - "ollama:deepseek-v3.2:cloud"
-          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
       models_override:
         description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
       eval_categories:
-        description: "Comma-separated eval categories to run (e.g. 'memory,hitl,tool_usage'). Leave empty to run all categories."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - conversation
+          - file_operations
+          - memory
+          - retrieval
+          - summarization
+          - tool_use
+          - unit_test
+      eval_categories_override:
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        required: false
+        default: ""
+        type: string
+      eval_tiers:
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - baseline
+          - hillclimb
+      eval_tiers_override:
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'."
+        required: false
+        default: ""
+        type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after evals."
+        required: false
+        default: false
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
+          - "openai:o4-mini"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-flash-lite-preview"
+      openrouter_provider:
+        description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
         required: false
         default: ""
         type: string
 
 permissions:
   contents: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.models_override || inputs.models || 'all' }}
-  cancel-in-progress: true
 
 env:
   UV_NO_SYNC: "true"
@@ -116,36 +185,71 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          RESOLVED: ${{ inputs.models_override || inputs.models || 'all' }}
-          EVAL_CATEGORIES: ${{ inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Resolved**¹ | \`${RESOLVED}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`eval_categories\` (list) | \`${EVAL_CATEGORIES}\` |" >> "$GITHUB_STEP_SUMMARY"
-
-          # Build eval_categories as a bullet list
+          if [ "${MODELS_OVERRIDE}" != "(empty)" ]; then
+            echo "| \`models_override\` | \`${MODELS_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Show eval categories as both comma-separated and bulleted list
           if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
             echo "| \`eval_categories\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
           else
-            bullets=""
             IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
+            # Comma-separated row
+            comma_list=""
             for cat in "${cats[@]}"; do
               cat=$(echo "$cat" | xargs)
-              bullets="${bullets}<li><code>${cat}</code></li>"
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
             done
-            echo "| \`eval_categories\` | <ul>${bullets}</ul> |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| \`eval_categories\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+            # Bulleted list row (only when more than one category)
+            if [ ${#cats[@]} -gt 1 ]; then
+              bulleted=""
+              for cat in "${cats[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -n "$bulleted" ] && bulleted="${bulleted}<br>"
+                bulleted="${bulleted}• <code>${cat}</code>"
+              done
+              echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          # Show eval tiers
+          if [ "${EVAL_TIERS}" = "(all)" ]; then
+            echo "| \`eval_tiers\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+            comma_list=""
+            for tier in "${tiers[@]}"; do
+              tier=$(echo "$tier" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${tier}\`"
+            done
+            echo "| \`eval_tiers\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "${OPENROUTER_PROVIDER}" ]; then
+            echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${ANALYZE_FAILURES}" = "true" ]; then
+            echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> ¹ **Resolved** = \`models_override\` if set, otherwise \`models\` dropdown, otherwise \`all\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
@@ -157,7 +261,13 @@ jobs:
     name: "📊 Eval (${{ matrix.model }})"
     needs: prep
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    environment: evals
+    timeout-minutes: 360
+    # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
+    # jobs on different providers run in parallel.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.provider }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
@@ -167,25 +277,23 @@ jobs:
         working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING_V2: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -198,26 +306,164 @@ jobs:
         run: uv sync --group test
 
       - name: "🏷️ Apply category filter"
-        if: inputs.eval_categories != ''
+        if: inputs.eval_categories_override != '' || inputs.eval_categories != ''
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories }}
         run: |
           flags=""
-          IFS=',' read -ra cats <<< "${{ inputs.eval_categories }}"
+          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
           for cat in "${cats[@]}"; do
             cat=$(echo "$cat" | xargs)
+            [ -z "$cat" ] && continue
             flags="$flags --eval-category $cat"
           done
           echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
 
+      - name: "🏷️ Apply tier filter"
+        if: inputs.eval_tiers_override != '' || inputs.eval_tiers != ''
+        env:
+          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+        run: |
+          flags=""
+          IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+          for tier in "${tiers[@]}"; do
+            tier=$(echo "$tier" | xargs)
+            [ -z "$tier" ] && continue
+            flags="$flags --eval-tier $tier"
+          done
+          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+
+      - name: "🔒 Apply OpenRouter provider pin"
+        if: inputs.openrouter_provider != '' && matrix.provider == 'openrouter'
+        env:
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+        run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
+
       - name: "📊 Run Evals"
         run: make evals
 
+      - name: "🔍 Check eval report"
+        if: "!cancelled()"
+        run: |
+          if [ ! -f evals_report.json ]; then
+            echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
+            exit 1
+          fi
+
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled() && inputs.analyze_failures"
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
+
       - name: "📤 Upload eval report"
-        if: always()
-        uses: actions/upload-artifact@v7
+        if: "!cancelled()"
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-report-${{ strategy.job-index }}
           path: libs/evals/evals_report.json
           if-no-files-found: error
+
+      - name: "📊 Post results to summary"
+        if: "!cancelled()"
+        run: |
+          python3 << 'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+
+          report_path = Path("evals_report.json")
+          if not report_path.exists():
+              print("evals_report.json not found, skipping summary", file=sys.stderr)
+              sys.exit(0)
+
+          try:
+              report = json.loads(report_path.read_text())
+          except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+              print(f"::error::evals_report.json is malformed: {exc}")
+              sys.exit(1)
+          model = report.get("model", "unknown")
+          if model == "unknown":
+              print("::warning::evals_report.json has no 'model' key; using 'unknown'")
+
+          # Load category labels for friendly display names.
+          labels = {}
+          try:
+              cats_json = Path("deepagents_evals/categories.json")
+              labels = json.loads(cats_json.read_text()).get("labels", {})
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"::warning::Could not load category labels from {cats_json}: {exc}")
+
+          lines = [
+              "<details>",
+              "<summary>(click to expand)</summary>",
+              "",
+          ]
+
+          try:
+              # -- Metrics table --
+              metrics = [
+                  ("passed", None), ("failed", None), ("skipped", None),
+                  ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+                  ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+                  ("median_duration_s", None),
+              ]
+              header = "| " + " | ".join(f"`{k}`" for k, _ in metrics) + " |"
+              sep = "|" + "|".join("---:" for _ in metrics) + "|"
+              vals = []
+              for key, default in metrics:
+                  val = report.get(key, default)
+                  if val is None:
+                      val = 0
+                  vals.append(str(val))
+              row = "| " + " | ".join(vals) + " |"
+              lines += [header, sep, row]
+
+              # -- Per-category scores (horizontal) --
+              cat_scores = report.get("category_scores")
+              if isinstance(cat_scores, dict) and cat_scores:
+                  sorted_cats = sorted(cat_scores.items())
+                  esc = lambda s: str(s).replace("|", "\\|")
+                  cat_header = "| " + " | ".join(esc(labels.get(c, c)) for c, _ in sorted_cats) + " |"
+                  cat_sep = "|" + "|".join("---:" for _ in sorted_cats) + "|"
+                  cat_row = "| " + " | ".join(esc(s) for _, s in sorted_cats) + " |"
+                  lines += ["", "### Per-category correctness", "", cat_header, cat_sep, cat_row]
+
+              # -- Experiment links --
+              exp_links = report.get("experiment_links")
+              if isinstance(exp_links, list) and exp_links:
+                  lines += ["", "### LangSmith experiments", ""]
+                  for link in exp_links:
+                      if not isinstance(link, dict):
+                          continue
+                      name = link.get("name", "")
+                      url = link.get("url", "")
+                      public_url = link.get("public_url", "")
+                      if public_url:
+                          lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                      elif url:
+                          lines.append(f"- [{name or url}]({url})")
+          except Exception as exc:
+              lines.append(f"\n\n**Error building summary:** {exc}\n")
+              print(f"::warning::Error building summary for {model}: {exc}")
+          finally:
+              lines += ["", "</details>"]
+
+          text = "\n".join(lines) + "\n"
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write(text)
+          print(text)
+          PYEOF
 
   aggregate:
     name: "📋 Aggregate evals"
@@ -226,10 +472,10 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "📥 Download eval artifacts"
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: evals_artifacts
 
@@ -252,10 +498,12 @@ jobs:
       - name: "📊 Generate radar chart"
         if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
         working-directory: libs/evals
+        env:
+          EVAL_OUTCOME: ${{ needs.eval.result }}
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: evals-summary
           path: evals_summary.json
@@ -263,7 +511,7 @@ jobs:
 
       - name: "📤 Upload radar charts"
         if: hashFiles('charts/radar.png') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: radar-charts
           path: charts/
@@ -296,11 +544,17 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory.
+          # Copy charts into run-specific directory (light + dark variants).
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
+          if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then
+            cp "$GITHUB_WORKSPACE/charts/radar-dark.png" "${asset_dir}/radar-dark.png"
+          fi
           if [ -d "$GITHUB_WORKSPACE/charts/individual" ]; then
             cp -r "$GITHUB_WORKSPACE/charts/individual" "${asset_dir}/individual"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/charts/individual-dark" ]; then
+            cp -r "$GITHUB_WORKSPACE/charts/individual-dark" "${asset_dir}/individual-dark"
           fi
 
           git add "${asset_dir}"
@@ -318,13 +572,30 @@ jobs:
         env:
           BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
         run: |
+          # Use <picture> with prefers-color-scheme so GitHub automatically
+          # shows the right variant based on the reader's theme setting.
+          # Direct download links are included for each variant.
+          has_dark=false
+          [ -f charts/radar-dark.png ] && has_dark=true
+
           {
             echo ""
             echo "## Radar charts"
             echo ""
             echo "### Combined"
             echo ""
-            echo "![Combined radar chart](${BASE_URL}/radar.png)"
+            if $has_dark; then
+              echo '<picture>'
+              echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo '</picture>'
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
+            else
+              echo "<img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png)"
+            fi
             echo ""
 
             if [ -d charts/individual ]; then
@@ -332,7 +603,18 @@ jobs:
               echo ""
               for img in charts/individual/*.png; do
                 name="$(basename "$img" .png)"
-                echo "![${name}](${BASE_URL}/individual/${name}.png)"
+                if [ -d charts/individual-dark ] && [ -f "charts/individual-dark/${name}.png" ]; then
+                  echo '<picture>'
+                  echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo '</picture>'
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
+                else
+                  echo "<img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png)"
+                fi
                 echo ""
               done
             fi

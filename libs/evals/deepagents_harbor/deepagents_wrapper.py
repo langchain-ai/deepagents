@@ -79,6 +79,7 @@ class DeepAgentsWrapper(BaseAgent):
         temperature: float = 0.0,
         verbose: bool = True,
         use_cli_agent: bool = True,
+        openrouter_provider: str | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -91,8 +92,16 @@ class DeepAgentsWrapper(BaseAgent):
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
                 If False, use create_deep_agent from SDK.
+            openrouter_provider: Pin OpenRouter routing to a single provider
+                (e.g. `"MiniMax"`).
+
+                Requires an `openrouter:` model prefix.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
+
+        if openrouter_provider and (model_name is None or not model_name.startswith("openrouter:")):
+            msg = "openrouter_provider requires an openrouter: model prefix"
+            raise ValueError(msg)
 
         if model_name is None:
             # Keep Harbor default aligned with the SDK default model.
@@ -104,7 +113,13 @@ class DeepAgentsWrapper(BaseAgent):
             self._model_name = model.model
         else:
             self._model_name = model_name
-            self._model = init_chat_model(model_name, temperature=temperature)
+            model_kwargs: dict[str, Any] = {}
+            if openrouter_provider:
+                model_kwargs["openrouter_provider"] = {
+                    "only": [openrouter_provider],
+                    "allow_fallbacks": False,
+                }
+            self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
 
         self._temperature = temperature
         self._verbose = verbose

@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Install deepagents-cli via uv.
-#
-# Interactive mode detection, color logging, and optional tool install
-# patterns adapted from hermes-agent (NousResearch/hermes-agent).
+# Install deepagents-cli.
 #
 # Usage:
 #   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "anthropic",
-#                        "anthropic,groq", or "daytona"
+#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "ollama",
+#                        "ollama,groq", or "daytona"
 #                        (see pyproject.toml for available extras)
 #   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   UV_BIN             — path to uv binary (auto-detected if unset)
+#
+# Credits:
+#   Interactive mode detection, color logging, and optional tool install
+#   patterns adapted from hermes-agent (NousResearch/hermes-agent).
+
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,79 @@ detect_os() {
   esac
 }
 detect_os
+
+# ---------------------------------------------------------------------------
+# Root / MDM support (macOS — Kandji, Jamf, etc.)
+# ---------------------------------------------------------------------------
+# MDM tools run scripts as root in a minimal environment where HOME may be
+# unset or point to /var/root.  Resolve the real console user's home so uv
+# and deepagents install to the right place.
+if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
+  CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null)" || {
+    log_warn "Could not determine console user via /dev/console. Falling back to directory scan."
+    CONSOLE_USER=""
+  }
+
+  if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    if [ -d "/Users/$CONSOLE_USER" ]; then
+      HOME="/Users/$CONSOLE_USER"
+    else
+      log_warn "Console user ${CONSOLE_USER} home /Users/${CONSOLE_USER} does not exist. Falling back to directory scan."
+      CONSOLE_USER=""
+    fi
+  fi
+
+  # Console user is root or undetectable (MDM enrollment, single-user mode,
+  # headless session) — fall back to scanning /Users.
+  if [ -z "${CONSOLE_USER:-}" ] || [ "$CONSOLE_USER" = "root" ]; then
+    candidates="$(find /Users -mindepth 1 -maxdepth 1 -type d \
+      ! -name root ! -name Shared ! -name '.*' | sort)"
+    count="$(echo "$candidates" | grep -c . || true)"
+    if [ "$count" -eq 1 ]; then
+      HOME="$candidates"
+    elif [ "$count" -gt 1 ]; then
+      log_error "Multiple user directories found and no console user detected."
+      log_error "  Set HOME explicitly: HOME=/Users/yourname curl ... | bash"
+      exit 1
+    else
+      log_error "Could not determine user home directory. No user directories in /Users."
+      exit 1
+    fi
+  fi
+
+  export HOME
+fi
+
+# ---------------------------------------------------------------------------
+# Ownership fix for root installs
+# ---------------------------------------------------------------------------
+# When running as root, files created under $HOME will be owned by root.
+# Resolve the target user so we can fix ownership after install steps.
+# When not root, fix_owner is a no-op.
+if [ "$(id -u)" -eq 0 ]; then
+  if [ "$OS" = "macos" ]; then
+    # Reuse CONSOLE_USER from above; fall back to basename of the
+    # already-resolved HOME (not a second stat call).
+    TARGET_USER="${CONSOLE_USER:-$(basename "$HOME")}"
+    [ "$TARGET_USER" = "root" ] && TARGET_USER="$(basename "$HOME")"
+  else
+    TARGET_USER="${SUDO_USER:-$(basename "$HOME")}"
+  fi
+
+  if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+    log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
+    log_warn "  After install, run: sudo chown -R YOUR_USERNAME ~/.local"
+    fix_owner() { :; }
+  else
+    fix_owner() {
+      if ! chown -R "$TARGET_USER" "$@" 2>&1; then
+        log_warn "Could not fix ownership of $* for user ${TARGET_USER}."
+      fi
+    }
+  fi
+else
+  fix_owner() { :; }
+fi
 
 # ---------------------------------------------------------------------------
 # Prompt helper — reads from /dev/tty when stdin is piped
@@ -150,6 +225,7 @@ install_uv() {
 if ! command -v uv >/dev/null 2>&1; then
   log_info "uv not found — installing..."
   install_uv
+  fix_owner "${HOME}/.local/bin"  # root installs: restore user ownership
 fi
 
 # Resolve uv binary: honor UV_BIN override, then PATH, then the default
@@ -195,6 +271,12 @@ if ! "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE"; then
   log_error "Failed to install ${PACKAGE}. See errors above."
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_PYTHON=3.12), or install manually."
   exit 1
+fi
+fix_owner "${HOME}/.local/bin" "${HOME}/.local/share/uv"  # uv binaries + tool data
+if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
+  fix_owner "${HOME}/Library/Caches/uv"
+elif [ -d "${HOME}/.cache/uv" ]; then
+  fix_owner "${HOME}/.cache/uv"
 fi
 log_success "deepagents-cli installed."
 
@@ -300,6 +382,7 @@ install_ripgrep_via_cargo() {
   if command -v cargo >/dev/null 2>&1; then
     log_info "Installing ripgrep via cargo (no sudo needed)..."
     if cargo install ripgrep; then
+      fix_owner "${HOME}/.cargo"
       command -v rg >/dev/null 2>&1 && return 0
       log_warn "cargo install succeeded but rg not found in PATH."
     fi

@@ -71,8 +71,10 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -87,6 +89,11 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class CompactConversationSchema(BaseModel):
+    """Input schema for the `compact_conversation` tool."""
+
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
@@ -215,7 +222,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        history_path_prefix: str = "/conversation_history",
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
@@ -247,7 +253,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
-            history_path_prefix: Path prefix for storing conversation history.
 
         Example:
             ```python
@@ -256,12 +261,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
             middleware = SummarizationMiddleware(
                 model="gpt-4o-mini",
-                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
             ```
         """
+        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
+        if _deprecated_history_prefix is not None:
+            warnings.warn(
+                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
+                " and will be removed in 0.7."
+                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -275,7 +290,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Deep Agents specific attributes
         self._backend = backend
-        self._history_path_prefix = history_path_prefix
+
+        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+        _root = artifacts_root.rstrip("/")
+        self._history_path_prefix = f"{_root}/conversation_history"
+
+        if _deprecated_history_prefix is not None:
+            self._history_path_prefix = _deprecated_history_prefix
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -724,7 +745,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -732,7 +753,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -798,7 +819,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A `None` return is non-fatal; callers may proceed without the
+        A ``None`` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -806,7 +827,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was stored, or `None` if write failed.
+            The file path where history was offloaded, or ``None`` on failure.
         """
         path = self._get_history_path()
 
@@ -1070,8 +1091,11 @@ A condensed summary follows:
         )
 
 
-# Public alias
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
+"""Public alias for `_DeepAgentsSummarizationMiddleware`.
+
+This is the name external callers should import and reference.
+"""
 
 
 def create_summarization_middleware(
@@ -1084,11 +1108,16 @@ def create_summarization_middleware(
     (or uses fixed-token fallbacks) and returns a configured middleware.
 
     Args:
-        model: Resolved chat model instance.
+        model: Resolved `BaseChatModel` instance.
+
+            Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
+
+    Raises:
+        TypeError: If `model` is not a `BaseChatModel` instance.
     """
     from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
 
@@ -1118,7 +1147,7 @@ def create_summarization_tool_middleware(
     `SummarizationToolMiddleware`.
 
     Args:
-        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-20250514"`).
+        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:
@@ -1260,6 +1289,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+            # infer_schema=False,  # noqa: ERA001
+            # args_schema=CompactConversationSchema,  # noqa: ERA001
         )
 
     def _build_compact_result(
@@ -1280,8 +1311,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or `None`.
-            event: The prior `_summarization_event`, or `None`.
+            file_path: Backend path where history was offloaded, or ``None``.
+            event: The prior `_summarization_event`, or ``None``.
             cutoff: The cutoff index within the effective message list.
 
         Returns:

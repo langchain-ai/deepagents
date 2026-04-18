@@ -8,8 +8,8 @@ import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
-from deepagents_cli._server_constants import ENV_PREFIX
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -33,7 +33,6 @@ class TestServerGraph:
         """Server mode should auto-discover MCP configs when no path is passed."""
         graph_obj = object()
         model_obj = object()
-        http_tool = object()
         fetch_tool = object()
         mcp_tool = object()
         mcp_server_info = [SimpleNamespace(name="docs")]
@@ -60,7 +59,6 @@ class TestServerGraph:
 
         tools_module = _module_with_attrs(
             "deepagents_cli.tools",
-            http_request=http_tool,
             fetch_url=fetch_tool,
             web_search=object(),
         )
@@ -77,7 +75,7 @@ class TestServerGraph:
         env_overrides = {}
         for suffix, value in config.to_env().items():
             if value is not None:
-                env_overrides[f"{ENV_PREFIX}{suffix}"] = value
+                env_overrides[f"{SERVER_ENV_PREFIX}{suffix}"] = value
 
         with (
             patch.dict(os.environ, env_overrides, clear=False),
@@ -101,7 +99,7 @@ class TestServerGraph:
                 "CWD",
                 "PROJECT_ROOT",
             ):
-                os.environ.pop(f"{ENV_PREFIX}{suffix}", None)
+                os.environ.pop(f"{SERVER_ENV_PREFIX}{suffix}", None)
 
             module = _import_fresh_server_graph()
 
@@ -114,12 +112,15 @@ class TestServerGraph:
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",
-            tools=[http_tool, fetch_tool, mcp_tool],
+            tools=[fetch_tool, mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,
             interactive=True,
             auto_approve=False,
+            interrupt_shell_only=False,
+            shell_allow_list=None,
+            enable_ask_user=False,
             enable_memory=True,
             enable_skills=True,
             enable_shell=True,

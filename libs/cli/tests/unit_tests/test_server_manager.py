@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
+from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli._server_config import ServerConfig
-from deepagents_cli._server_constants import ENV_PREFIX
 from deepagents_cli.project_utils import ProjectContext
 from deepagents_cli.server_manager import (
     _apply_server_config,
@@ -30,6 +33,8 @@ class TestServerConfigRoundTrip:
             assistant_id="my-agent",
             system_prompt="Be helpful",
             auto_approve=True,
+            interrupt_shell_only=True,
+            shell_allow_list=["ls", "cat", "grep"],
             interactive=False,
             enable_shell=False,
             enable_ask_user=True,
@@ -48,7 +53,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored == original
@@ -60,7 +65,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored == original
@@ -72,7 +77,7 @@ class TestServerConfigRoundTrip:
         with patch.dict(os.environ, {}, clear=True):
             for suffix, value in env_dict.items():
                 if value is not None:
-                    os.environ[f"{ENV_PREFIX}{suffix}"] = value
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
             restored = ServerConfig.from_env()
 
         assert restored.trust_project_mcp is None
@@ -112,15 +117,15 @@ class TestApplyServerConfig:
 
         with patch.dict(os.environ, {}, clear=False):
             for suffix in ("MCP_CONFIG_PATH", "CWD", "PROJECT_ROOT"):
-                monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+                monkeypatch.delenv(f"{SERVER_ENV_PREFIX}{suffix}", raising=False)
 
             _apply_server_config(config)
 
-            assert os.environ[f"{ENV_PREFIX}MCP_CONFIG_PATH"] == str(
+            assert os.environ[f"{SERVER_ENV_PREFIX}MCP_CONFIG_PATH"] == str(
                 (user_cwd / "configs" / "mcp.json").resolve()
             )
-            assert os.environ[f"{ENV_PREFIX}CWD"] == str(user_cwd.resolve())
-            assert os.environ[f"{ENV_PREFIX}PROJECT_ROOT"] == str(
+            assert os.environ[f"{SERVER_ENV_PREFIX}CWD"] == str(user_cwd.resolve())
+            assert os.environ[f"{SERVER_ENV_PREFIX}PROJECT_ROOT"] == str(
                 project_root.resolve()
             )
 
@@ -128,10 +133,10 @@ class TestApplyServerConfig:
 class TestStartServerAndGetAgent:
     """Tests for server bootstrap wiring."""
 
-    async def test_uses_absolute_graph_and_checkpointer_refs(
+    async def test_uses_relative_graph_and_checkpointer_refs(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Generated LangGraph config should use absolute bootstrap paths."""
+        """Generated LangGraph config should use relative paths (Windows compat)."""
         project_root = tmp_path / "project"
         project_root.mkdir()
         monkeypatch.chdir(project_root)
@@ -169,16 +174,25 @@ class TestStartServerAndGetAgent:
         assert manager is None
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
-        graph_path, _graph_attr = kwargs["graph_ref"].rsplit(":", 1)
-        checkpointer_path, _checkpointer_attr = kwargs["checkpointer_path"].rsplit(
-            ":",
-            1,
-        )
+        assert kwargs["graph_ref"] == "./server_graph.py:graph"
+        assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
-        assert Path(graph_path).is_absolute()
-        assert Path(checkpointer_path).is_absolute()
-        assert Path(graph_path).parent == work_dir
-        assert Path(checkpointer_path).parent == work_dir
+    def test_relative_paths_written_verbatim_to_langgraph_json(
+        self, tmp_path: Path
+    ) -> None:
+        """Relative refs must appear verbatim in the generated config."""
+        import json
+
+        from deepagents_cli.server import generate_langgraph_json
+
+        generate_langgraph_json(
+            tmp_path,
+            graph_ref="./server_graph.py:graph",
+            checkpointer_path="./checkpointer.py:create_checkpointer",
+        )
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"]["agent"] == "./server_graph.py:graph"
+        assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
 
 class TestWritePyproject:

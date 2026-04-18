@@ -60,10 +60,13 @@ class AskUserRequest(TypedDict):
     """Request payload sent via interrupt when asking the user questions."""
 
     type: Literal["ask_user"]
+    """Discriminator tag, always `'ask_user'`."""
 
     questions: list[Question]
+    """Questions to present to the user."""
 
     tool_call_id: str
+    """ID of the originating tool call, used to route the response back."""
 
 
 class AskUserAnswered(TypedDict):
@@ -83,5 +86,5 @@ class AskUserCancelled(TypedDict):
     """Discriminator tag, always `'cancelled'`."""
 
 
-# Discriminated union for the ask_user widget Future result.
 AskUserWidgetResult = AskUserAnswered | AskUserCancelled
+"""Discriminated union for the ask_user widget Future result."""

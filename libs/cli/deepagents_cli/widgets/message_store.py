@@ -31,6 +31,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_status",
         "tool_output",
         "tool_expanded",
+        "skill_expanded",
         "is_streaming",
         "height_hint",
     }
@@ -43,6 +44,7 @@ class MessageType(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+    SKILL = "skill"
     ERROR = "error"
     APP = "app"
     SUMMARIZATION = "summarization"
@@ -107,6 +109,25 @@ class MessageData:
     diff_file_path: str | None = None
     """File path associated with the diff (DIFF messages only)."""
 
+    # SKILL message fields - only populated for SKILL messages
+    skill_name: str | None = None
+    """Name of the skill that was invoked."""
+
+    skill_description: str | None = None
+    """Short description of the skill."""
+
+    skill_source: str | None = None
+    """Origin of the skill (e.g., `'built-in'`, `'user'`, `'project'`)."""
+
+    skill_args: str | None = None
+    """User-provided arguments to the skill invocation."""
+
+    skill_body: str | None = None
+    """Full SKILL.md content sent to the agent."""
+
+    skill_expanded: bool = False
+    """Whether the skill body is expanded in the UI."""
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
@@ -130,10 +151,14 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name`.
+            ValueError: If a TOOL message is missing `tool_name` or a SKILL
+                message is missing `skill_name`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
+            raise ValueError(msg)
+        if self.type == MessageType.SKILL and not self.skill_name:
+            msg = "SKILL messages must have a skill_name"
             raise ValueError(msg)
 
     def to_widget(self) -> Widget:
@@ -148,6 +173,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
             UserMessage,
@@ -171,6 +197,18 @@ class MessageData:
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
                 widget._deferred_expanded = self.tool_expanded
+                return widget
+
+            case MessageType.SKILL:
+                widget = SkillMessage(
+                    skill_name=self.skill_name or "unknown",
+                    description=self.skill_description or "",
+                    source=self.skill_source or "",
+                    body=self.skill_body or "",
+                    args=self.skill_args or "",
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.skill_expanded
                 return widget
 
             case MessageType.ERROR:
@@ -214,12 +252,26 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
             UserMessage,
         )
 
         widget_id = widget.id or f"msg-{uuid.uuid4().hex[:8]}"
+
+        if isinstance(widget, SkillMessage):
+            return cls(
+                type=MessageType.SKILL,
+                content="",
+                id=widget_id,
+                skill_name=widget._skill_name,
+                skill_description=widget._description,
+                skill_source=widget._source,
+                skill_body=widget._body,
+                skill_args=widget._args,
+                skill_expanded=widget._expanded,
+            )
 
         if isinstance(widget, UserMessage):
             return cls(
@@ -323,6 +375,13 @@ class MessageStore:
     def __init__(self) -> None:
         """Initialize the message store."""
         self._messages: list[MessageData] = []
+        self._index: dict[str, MessageData] = {}
+        """ID -> MessageData lookup.
+
+        Must contain exactly one entry per element of `_messages`. Any method
+        that adds to or removes from `_messages` must update `_index`
+        in lockstep.
+        """
         self._visible_start: int = 0
         self._visible_end: int = 0
 
@@ -355,7 +414,14 @@ class MessageStore:
         Args:
             message: The message data to add.
         """
+        if message.id in self._index:
+            logger.warning(
+                "Duplicate message ID %r appended; previous entry will be "
+                "unreachable via get_message()",
+                message.id,
+            )
         self._messages.append(message)
+        self._index[message.id] = message
         self._visible_end = len(self._messages)
 
     def bulk_load(
@@ -374,6 +440,14 @@ class MessageStore:
             Tuple of (archived, visible) message lists.
         """
         self._messages.extend(messages)
+        for msg in messages:
+            if msg.id in self._index:
+                logger.warning(
+                    "Duplicate message ID %r in bulk_load; previous entry "
+                    "will be unreachable via get_message()",
+                    msg.id,
+                )
+            self._index[msg.id] = msg
         total = len(self._messages)
 
         if total <= self.WINDOW_SIZE:
@@ -396,10 +470,7 @@ class MessageStore:
         Returns:
             The message data, or None if not found.
         """
-        for msg in self._messages:
-            if msg.id == message_id:
-                return msg
-        return None
+        return self._index.get(message_id)
 
     def get_message_at_index(self, index: int) -> MessageData | None:
         """Get a message by its index.
@@ -436,12 +507,16 @@ class MessageStore:
             msg = f"Cannot update unknown or protected fields: {unknown}"
             raise ValueError(msg)
 
-        for msg_data in self._messages:
-            if msg_data.id == message_id:
-                for key, value in updates.items():
-                    setattr(msg_data, key, value)
-                return True
-        return False
+        msg_data = self._index.get(message_id)
+        if msg_data is None:
+            logger.warning(
+                "update_message called for unknown ID %r; update discarded",
+                message_id,
+            )
+            return False
+        for key, value in updates.items():
+            setattr(msg_data, key, value)
+        return True
 
     def set_active_message(self, message_id: str | None) -> None:
         """Set the currently active (streaming) message.
@@ -594,6 +669,7 @@ class MessageStore:
     def clear(self) -> None:
         """Clear all messages."""
         self._messages.clear()
+        self._index.clear()
         self._visible_start = 0
         self._visible_end = 0
         self._active_message_id = None

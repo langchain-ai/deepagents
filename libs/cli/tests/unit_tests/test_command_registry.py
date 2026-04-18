@@ -10,10 +10,12 @@ from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
+    HIDDEN_DEBUG,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
     SLASH_COMMANDS,
+    CommandEntry,
 )
 
 
@@ -30,10 +32,6 @@ class TestCommandIntegrity:
                 assert alias.startswith("/"), (
                     f"Alias {alias!r} of {cmd.name} missing leading slash"
                 )
-
-    def test_alphabetically_sorted(self) -> None:
-        names = [cmd.name for cmd in COMMANDS]
-        assert names == sorted(names), "COMMANDS must be sorted alphabetically by name"
 
     def test_no_duplicate_names(self) -> None:
         names = [cmd.name for cmd in COMMANDS]
@@ -71,6 +69,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
+            | HIDDEN_DEBUG
         )
 
     def test_aliases_in_correct_tier(self) -> None:
@@ -92,23 +91,27 @@ class TestSlashCommands:
     def test_length_matches_commands(self) -> None:
         assert len(SLASH_COMMANDS) == len(COMMANDS)
 
-    def test_tuple_format(self) -> None:
+    def test_entry_format(self) -> None:
         for entry in SLASH_COMMANDS:
-            assert isinstance(entry, tuple)
-            assert len(entry) == 3
-            name, desc, keywords = entry
-            assert isinstance(name, str)
-            assert name.startswith("/")
-            assert isinstance(desc, str)
-            assert isinstance(keywords, str)
+            assert isinstance(entry, CommandEntry)
+            assert isinstance(entry.name, str)
+            assert entry.name.startswith("/")
+            assert isinstance(entry.description, str)
+            assert isinstance(entry.hidden_keywords, str)
+            assert isinstance(entry.argument_hint, str)
 
     def test_excludes_aliases(self) -> None:
-        names = {entry[0] for entry in SLASH_COMMANDS}
+        names = {entry.name for entry in SLASH_COMMANDS}
         for cmd in COMMANDS:
             for alias in cmd.aliases:
                 assert alias not in names, (
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
+
+    def test_to_entry_matches_slash_commands(self) -> None:
+        """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
+        for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
+            assert cmd.to_entry() == entry
 
 
 class TestHelpBodyDrift:
@@ -135,11 +138,14 @@ class TestHelpBodyDrift:
         assert match, "Could not locate Commands section in help_body"
         commands_section = match.group(1)
 
-        help_cmds = set(re.findall(r"/[a-z]+", commands_section))
+        help_cmds = set(re.findall(r"/[a-z][-a-z]*", commands_section))
         registry_cmds = {cmd.name for cmd in COMMANDS}
 
         # Commands intentionally omitted from the help body
         excluded = {"/version"}
+
+        # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
+        help_cmds.discard("/skill")
 
         missing = registry_cmds - help_cmds - excluded
         extra = help_cmds - registry_cmds

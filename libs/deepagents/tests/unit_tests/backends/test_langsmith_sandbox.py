@@ -71,6 +71,27 @@ def test_execute_with_zero_timeout() -> None:
     mock_sdk.run.assert_called_once_with("cmd", timeout=0)
 
 
+def test_write_success() -> None:
+    sb, mock_sdk = _make_sandbox()
+
+    result = sb.write("/app/test.txt", "hello world")
+
+    assert result.path == "/app/test.txt"
+    assert result.error is None
+    mock_sdk.write.assert_called_once_with("/app/test.txt", b"hello world")
+
+
+def test_write_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.write.side_effect = SandboxClientError("permission denied")
+
+    result = sb.write("/readonly/test.txt", "content")
+
+    assert result.error is not None
+    assert "Failed to write file" in result.error
+    assert "/readonly/test.txt" in result.error
+
+
 def test_download_files_success() -> None:
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"file content"

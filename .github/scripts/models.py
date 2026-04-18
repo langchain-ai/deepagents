@@ -394,6 +394,19 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "openai:gpt-5.3-codex",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
         "openai:gpt-5.4",
         frozenset(
             {

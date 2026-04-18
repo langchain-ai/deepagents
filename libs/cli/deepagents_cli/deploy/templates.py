@@ -46,21 +46,26 @@ def _get_or_create_sandbox(cache_key):
     )
     client = SandboxClient(api_key=api_key)
 
-    snapshot_id = next(
-        (
-            snap.id
-            for snap in client.list_snapshots()
-            if snap.name == SANDBOX_SNAPSHOT and snap.status == "ready"
-        ),
-        None,
-    )
-    if snapshot_id is None:
-        snapshot = client.create_snapshot(
-            name=SANDBOX_SNAPSHOT,
-            docker_image=SANDBOX_IMAGE,
-            fs_capacity_bytes=_SANDBOX_FS_CAPACITY_BYTES,
+    snapshot_id = os.environ.get("LANGSMITH_SANDBOX_SNAPSHOT_ID")
+    if not snapshot_id:
+        snapshot_name = (
+            os.environ.get("LANGSMITH_SANDBOX_SNAPSHOT_NAME") or SANDBOX_SNAPSHOT
         )
-        snapshot_id = snapshot.id
+        snapshot_id = next(
+            (
+                snap.id
+                for snap in client.list_snapshots()
+                if snap.name == snapshot_name and snap.status == "ready"
+            ),
+            None,
+        )
+        if snapshot_id is None:
+            snapshot = client.create_snapshot(
+                name=snapshot_name,
+                docker_image=SANDBOX_IMAGE,
+                fs_capacity_bytes=_SANDBOX_FS_CAPACITY_BYTES,
+            )
+            snapshot_id = snapshot.id
 
     sandbox = client.create_sandbox(snapshot_id=snapshot_id)
     backend = LangSmithSandbox(sandbox)

@@ -283,6 +283,8 @@ class _LangSmithProvider(SandboxProvider):
         """
         from deepagents.backends.langsmith import LangSmithSandbox
 
+        from deepagents_cli.model_config import resolve_env_var
+
         if kwargs:
             msg = f"Received unsupported arguments: {list(kwargs.keys())}"
             raise TypeError(msg)
@@ -295,11 +297,17 @@ class _LangSmithProvider(SandboxProvider):
                 raise RuntimeError(msg) from e
             return LangSmithSandbox(sandbox)
 
-        snapshot_name = snapshot or _LANGSMITH_DEFAULT_SNAPSHOT
-        image = snapshot_image or _LANGSMITH_DEFAULT_IMAGE
-        capacity = fs_capacity_bytes or _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES
-
-        snapshot_id = self._ensure_snapshot(snapshot_name, image, capacity)
+        # Explicit snapshot ID wins — skip name lookup and auto-build.
+        env_snapshot_id = resolve_env_var("LANGSMITH_SANDBOX_SNAPSHOT_ID")
+        if env_snapshot_id:
+            snapshot_id = env_snapshot_id
+            snapshot_name = env_snapshot_id
+        else:
+            env_snapshot_name = resolve_env_var("LANGSMITH_SANDBOX_SNAPSHOT_NAME")
+            snapshot_name = snapshot or env_snapshot_name or _LANGSMITH_DEFAULT_SNAPSHOT
+            image = snapshot_image or _LANGSMITH_DEFAULT_IMAGE
+            capacity = fs_capacity_bytes or _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES
+            snapshot_id = self._ensure_snapshot(snapshot_name, image, capacity)
 
         try:
             sandbox = self._client.create_sandbox(

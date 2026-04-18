@@ -1,7 +1,7 @@
 """Tests for deepagents_cli.mcp_auth."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthToken
@@ -214,3 +214,58 @@ class TestBuildOAuthProvider:
         )
         with pytest.raises(RuntimeError, match="code"):
             await callback()
+
+
+class TestLoginCommand:
+    @pytest.mark.asyncio
+    async def test_login_persists_tokens(
+        self,
+        fake_home: Path,
+    ) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage, login
+
+        async def _fake_handshake(
+            connections: dict, storage: FileTokenStorage
+        ) -> None:
+            # Simulate what MultiServerMCPClient.session(...) would trigger.
+            await storage.set_tokens(
+                OAuthToken(access_token="new", token_type="Bearer")
+            )
+            await storage.set_client_info(_make_client_info())
+
+        with patch(
+            "deepagents_cli.mcp_auth._drive_handshake",
+            new=AsyncMock(side_effect=_fake_handshake),
+        ):
+            await login(
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth": "oauth",
+                },
+            )
+
+        storage = FileTokenStorage("notion")
+        tok = await storage.get_tokens()
+        assert tok is not None and tok.access_token == "new"
+
+    @pytest.mark.asyncio
+    async def test_login_rejects_non_oauth_server(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import login
+
+        with pytest.raises(ValueError, match="oauth"):
+            await login(
+                server_name="x",
+                server_config={"transport": "http", "url": "https://example"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_login_rejects_stdio_server(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import login
+
+        with pytest.raises(ValueError, match="stdio"):
+            await login(
+                server_name="x",
+                server_config={"command": "echo", "auth": "oauth"},
+            )

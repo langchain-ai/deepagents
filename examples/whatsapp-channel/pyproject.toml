@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "langchain>=1.2.11",
+    "langchain-openai>=0.3.0",
     "langchain-mcp-adapters>=0.1.0",
     "requests>=2.0.0",
     "markdownify>=0.13.0",

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
@@ -91,11 +92,15 @@ class AgentSelectorScreen(ModalScreen[str | None]):
         options: list[Option] = []
         highlight_index = 0
 
+        # Render labels via `Content.from_markup` so agent directory names
+        # containing Rich markup characters (e.g. `[`) don't break rendering
+        # or corrupt the option prompt.
         for i, name in enumerate(self._agent_names):
-            label = name
             if name == self._current_agent:
-                label = f"{name} (current)"
+                label = Content.from_markup("$name [dim](current)[/dim]", name=name)
                 highlight_index = i
+            else:
+                label = Content.from_markup("$name", name=name)
             options.append(Option(label, id=name))
 
         with Vertical():
@@ -104,16 +109,18 @@ class AgentSelectorScreen(ModalScreen[str | None]):
                 option_list = OptionList(*options, id="agent-options")
                 option_list.highlighted = highlight_index
                 yield option_list
+                help_text = (
+                    f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+                    f" {glyphs.bullet} Enter select"
+                    f" {glyphs.bullet} Esc cancel"
+                )
             else:
                 yield Static(
-                    "No agents found in ~/.deepagents/",
+                    "No agents found in ~/.deepagents/.\n"
+                    "Run the CLI with -a <name> to create one.",
                     classes="agent-selector-help",
                 )
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-                f" {glyphs.bullet} Enter select"
-                f" {glyphs.bullet} Esc cancel"
-            )
+                help_text = f"{glyphs.bullet} Esc close"
             yield Static(help_text, classes="agent-selector-help")
 
     def on_mount(self) -> None:

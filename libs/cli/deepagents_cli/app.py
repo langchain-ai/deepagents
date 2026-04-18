@@ -4611,7 +4611,11 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
 
     async def _show_agent_selector(self) -> None:
-        """Show interactive agent selector as a modal screen."""
+        """Show the interactive agent selector modal.
+
+        Scans `~/.deepagents/` off the event loop via `asyncio.to_thread`
+        because `iterdir()` can block on slow filesystems.
+        """
         from deepagents_cli.agent import get_available_agent_names
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 
@@ -4631,51 +4635,108 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
 
     def _switch_agent(self, agent_name: str) -> None:
-        """Switch to a different agent by updating the active agent identity.
+        """Switch to a different agent's memory, skills, and thread.
 
-        Updates `_assistant_id` (and `_server_kwargs` if present) so that
-        subsequent invocations use the new agent's memory and skills
-        directories. A new thread is started immediately so the agent begins
-        fresh without the previous conversation history.
+        Updates `_assistant_id` (and `_server_kwargs["assistant_id"]` when
+        present) so subsequent invocations read from the new agent's
+        `~/.deepagents/<agent>/` directory, re-discovers skills, and starts a
+        fresh thread.
+
+        The running agent subprocess is **not** restarted, so the previous
+        agent's system prompt (its `AGENTS.md`) stays in effect until the
+        user relaunches the CLI with `-a <name>`. `_apply_agent_switch`
+        surfaces this caveat to the user.
 
         Args:
             agent_name: The name of the agent to switch to.
         """
-        self._assistant_id = agent_name
-        if self._server_kwargs:
-            self._server_kwargs["assistant_id"] = agent_name
+        from deepagents_cli.config import settings
 
-        # Re-discover skills for the new agent
-        self.run_worker(
-            self._discover_skills(),
-            exclusive=True,
-            group="startup-skill-discovery",
-        )
+        # Re-verify the agent directory still exists — it may have been
+        # deleted between modal open and selection. Mutating `_assistant_id`
+        # to a non-existent agent would fail later (during skill discovery
+        # or first invocation) with no clear connection to the switch.
+        try:
+            agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
+        except OSError:
+            logger.warning(
+                "Could not stat agent directory for %r", agent_name, exc_info=True
+            )
+            agent_dir_exists = False
 
-        # Start a new thread so the conversation is fresh for the new agent
-        self._pending_messages.clear()
-        self._queued_widgets.clear()
-        self.call_later(self._apply_agent_switch, agent_name)
+        if not agent_dir_exists:
+            self.notify(
+                f"Agent {agent_name!r} is no longer available.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        previous_agent = self._assistant_id
+        try:
+            self._assistant_id = agent_name
+            if self._server_kwargs:
+                self._server_kwargs["assistant_id"] = agent_name
+
+            self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="agent-switch-skill-discovery",
+            )
+
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
+            self.call_later(self._apply_agent_switch, agent_name)
+        except Exception:
+            # Roll back identity so the app is not left in a split-brain
+            # state pointing at an agent whose switch never completed.
+            self._assistant_id = previous_agent
+            if self._server_kwargs:
+                self._server_kwargs["assistant_id"] = previous_agent
+            logger.exception("Failed to schedule agent switch to %r", agent_name)
+            self.notify(
+                f"Could not switch to {agent_name!r}. Staying on current agent.",
+                severity="error",
+                markup=False,
+            )
 
     async def _apply_agent_switch(self, agent_name: str) -> None:
-        """Clear the conversation and confirm the agent switch.
+        """Reset conversation state and confirm the agent switch to the user.
 
         Args:
             agent_name: The name of the agent that was switched to.
         """
-        await self._clear_messages()
-        self._context_tokens = 0
-        self._tokens_approximate = False
-        self._update_tokens(0)
-        self._update_status("")
-        if self._session_state:
-            new_thread_id = self._session_state.reset_thread()
-            try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.update_thread_id(new_thread_id)
-            except NoMatches:
-                pass
-        await self._mount_message(AppMessage(f"Switched to agent: {agent_name}"))
+        try:
+            await self._clear_messages()
+            self._context_tokens = 0
+            self._tokens_approximate = False
+            self._update_tokens(0)
+            self._update_status("")
+            if self._session_state:
+                new_thread_id = self._session_state.reset_thread()
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.update_thread_id(new_thread_id)
+                except NoMatches:
+                    pass
+            # Be explicit about what actually changed: the running agent
+            # subprocess still uses the previous agent's system prompt until
+            # the CLI is relaunched. Build via `from_markup` so a directory
+            # name containing Rich markup characters can't break rendering.
+            confirmation = Content.from_markup(
+                "Switched agent context to $name. "
+                "[dim]Memory, skills, and thread were reset. "
+                "Restart the CLI with -a $name to load its system prompt.[/dim]",
+                name=agent_name,
+            )
+            await self._mount_message(AppMessage(confirmation))
+        except Exception:
+            logger.exception("Failed to apply agent switch to %r", agent_name)
+            self.notify(
+                f"Agent switch to {agent_name!r} did not complete cleanly.",
+                severity="error",
+                markup=False,
+            )
 
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""

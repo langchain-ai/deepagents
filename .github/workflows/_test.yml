@@ -93,7 +93,7 @@ jobs:
           - ${{ inputs.os }}
         include: ${{ fromJSON(inputs.extra-configurations) }}
       fail-fast: false
-    name: "Python ${{ matrix.python-version }} / ${{ matrix.os }}"
+    name: "Python ${{ matrix.python-version }} (${{ matrix.os }})"
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

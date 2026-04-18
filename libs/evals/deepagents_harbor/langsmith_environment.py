@@ -71,6 +71,7 @@ class LangSmithEnvironment(BaseEnvironment):
         self._sandbox: AsyncSandbox | None = None
         self._client: AsyncSandboxClient | None = None
         self._template_name: str | None = None
+        self._default_cwd: str | None = None
         super().__init__(
             environment_dir,
             environment_name,
@@ -274,6 +275,54 @@ class LangSmithEnvironment(BaseEnvironment):
             timeout=30,
         )
 
+        self._default_cwd = await self._detect_workdir(sandbox)
+        logger.info(
+            "LangSmith sandbox '%s' default cwd resolved to '%s'",
+            sandbox.name,
+            self._default_cwd,
+        )
+
+    @staticmethod
+    async def _detect_workdir(sandbox: AsyncSandbox) -> str:
+        """Resolve the container's Dockerfile ``WORKDIR`` at runtime.
+
+        LangSmith's ``sandbox.run(cwd=None)`` spawns each command from the
+        dataplane daemon's cwd, not the image's ``WORKDIR``. Terminal-bench
+        verifier scripts rely on ``WORKDIR`` (e.g. ``/app``) — many include
+        ``if [ "$PWD" = "/" ]; then exit 1; fi`` as a guard and abort without
+        writing ``/logs/verifier/reward.txt`` when this assumption is violated.
+
+        PID 1 (the container entrypoint) inherits the image's ``WORKDIR`` as
+        its cwd, so ``readlink /proc/1/cwd`` yields the correct directory
+        without requiring access to the image metadata. Falls back to ``/app``
+        (terminal-bench convention) when the probe is inconclusive.
+
+        Args:
+            sandbox: The active LangSmith sandbox.
+
+        Returns:
+            Absolute path to use as the default working directory for
+            subsequent command execution.
+        """
+        try:
+            result = await sandbox.run("readlink /proc/1/cwd", timeout=15)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to probe /proc/1/cwd; falling back to '/app'", exc_info=True
+            )
+            return "/app"
+
+        candidate = (result.stdout or "").strip()
+        if result.exit_code == 0 and candidate and candidate != "/":
+            return candidate
+
+        probe = await sandbox.run(
+            "[ -d /app ] && echo /app || echo /",
+            timeout=15,
+        )
+        fallback = (probe.stdout or "").strip() or "/"
+        return fallback if fallback != "/" else "/app"
+
     async def stop(self, delete: bool) -> None:
         """Tear down the LangSmith sandbox and its dedicated template.
 
@@ -309,6 +358,7 @@ class LangSmithEnvironment(BaseEnvironment):
         self._sandbox = None
         self._client = None
         self._template_name = None
+        self._default_cwd = None
 
     # -- Command execution -----------------------------------------------------
 
@@ -332,9 +382,15 @@ class LangSmithEnvironment(BaseEnvironment):
     ) -> ExecResult:
         """Execute a command inside the LangSmith sandbox.
 
+        When ``cwd`` is not provided, defaults to the container's
+        ``WORKDIR`` (resolved at ``start()``) rather than LangSmith's
+        dataplane default of ``/``. This preserves the semantics that
+        terminal-bench verifier scripts assume when they probe ``$PWD``.
+
         Args:
             command: Shell command string to execute.
-            cwd: Working directory for command execution.
+            cwd: Working directory for command execution. Overrides the
+                detected default when provided.
             env: Environment variables to set.
             timeout_sec: Timeout in seconds.
 
@@ -343,11 +399,12 @@ class LangSmithEnvironment(BaseEnvironment):
         """
         sandbox = self._require_sandbox()
         effective_timeout = timeout_sec if timeout_sec is not None else _DEFAULT_EXEC_TIMEOUT_SEC
+        effective_cwd = cwd if cwd is not None else self._default_cwd
 
         result = await sandbox.run(
             command,
             timeout=effective_timeout,
-            cwd=cwd,
+            cwd=effective_cwd,
             env=env,
         )
         return ExecResult(

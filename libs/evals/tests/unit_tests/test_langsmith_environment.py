@@ -500,6 +500,32 @@ class TestExec:
         assert cwd == "/app"
         assert cmd_env == {"FOO": "bar"}
 
+    async def test_exec_uses_default_cwd_when_none_provided(self, tmp_path: Path) -> None:
+        """Regression: without this, LangSmith's dataplane defaults to "/",
+        which causes terminal-bench verifier scripts to abort early without
+        writing /logs/verifier/reward.txt.
+        """
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        env._sandbox = sandbox  # type: ignore[assignment]
+        env._default_cwd = "/app"
+
+        await env.exec("ls")
+
+        _, _, cwd, _ = sandbox._run_calls[0]
+        assert cwd == "/app"
+
+    async def test_exec_explicit_cwd_overrides_default(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        sandbox = _FakeSandbox()
+        env._sandbox = sandbox  # type: ignore[assignment]
+        env._default_cwd = "/app"
+
+        await env.exec("ls", cwd="/tmp")
+
+        _, _, cwd, _ = sandbox._run_calls[0]
+        assert cwd == "/tmp"
+
     async def test_exec_uses_default_timeout(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
@@ -522,6 +548,145 @@ class TestExec:
         env = _make_env(tmp_path)
         with pytest.raises(RuntimeError, match="start"):
             await env.exec("echo fail")
+
+
+class TestWorkdirDetection:
+    """Tests for container WORKDIR detection at start()."""
+
+    @staticmethod
+    def _install_probe_sandbox(
+        mock_client: MagicMock,
+        *,
+        readlink_stdout: str = "",
+        readlink_exit_code: int = 0,
+        dir_probe_stdout: str = "",
+    ) -> _FakeSandbox:
+        """Install a sandbox whose `run()` answers the workdir probes.
+
+        Both probes (`readlink /proc/1/cwd` and the `/app`-existence fallback)
+        are dispatched from the same method so assertions stay simple.
+        """
+        sandbox = _FakeSandbox()
+
+        async def _run(
+            command: str,
+            *,
+            timeout: int = 60,  # noqa: ASYNC109
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+        ) -> _FakeExecResult:
+            sandbox._run_calls.append((command, timeout, cwd, env))
+            if "readlink /proc/1/cwd" in command:
+                return _FakeExecResult(
+                    stdout=readlink_stdout, exit_code=readlink_exit_code
+                )
+            if "-d /app" in command:
+                return _FakeExecResult(stdout=dir_probe_stdout)
+            return _FakeExecResult()
+
+        sandbox.run = _run  # type: ignore[assignment]
+        mock_client.create_sandbox.return_value = sandbox
+        return sandbox
+
+    async def test_detects_workdir_from_pid1(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            self._install_probe_sandbox(mock_client, readlink_stdout="/app\n")
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+        assert env._default_cwd == "/app"
+
+    async def test_detects_non_app_workdir(self, tmp_path: Path) -> None:
+        """Images with non-standard WORKDIRs (e.g. /workspace) must be honored."""
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            self._install_probe_sandbox(mock_client, readlink_stdout="/workspace\n")
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+        assert env._default_cwd == "/workspace"
+
+    async def test_falls_back_to_app_when_root(self, tmp_path: Path) -> None:
+        """When the container has no WORKDIR, prefer /app if it exists."""
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            self._install_probe_sandbox(
+                mock_client,
+                readlink_stdout="/\n",
+                dir_probe_stdout="/app\n",
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+        assert env._default_cwd == "/app"
+
+    async def test_falls_back_to_app_on_probe_failure(self, tmp_path: Path) -> None:
+        """A broken readlink probe must not prevent start()."""
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            sandbox = _FakeSandbox()
+
+            async def _run(
+                command: str,
+                *,
+                timeout: int = 60,  # noqa: ASYNC109
+                cwd: str | None = None,
+                env: dict[str, str] | None = None,
+            ) -> _FakeExecResult:
+                sandbox._run_calls.append((command, timeout, cwd, env))
+                if "readlink /proc/1/cwd" in command:
+                    msg = "connection reset"
+                    raise RuntimeError(msg)
+                return _FakeExecResult()
+
+            sandbox.run = _run  # type: ignore[assignment]
+            mock_client.create_sandbox.return_value = sandbox
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+        assert env._default_cwd == "/app"
+
+    async def test_falls_back_to_app_when_nothing_resolves(self, tmp_path: Path) -> None:
+        """When /app doesn't exist either, still default to /app rather
+        than "/" to preserve terminal-bench verifier PWD semantics."""
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = AsyncMock()
+            self._install_probe_sandbox(
+                mock_client,
+                readlink_stdout="/\n",
+                dir_probe_stdout="/\n",
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+        assert env._default_cwd == "/app"
+
+    async def test_stop_clears_default_cwd(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
+        env._client = AsyncMock()
+        env._template_name = "tmpl"
+        env._default_cwd = "/app"
+
+        await env.stop(delete=False)
+
+        assert env._default_cwd is None
 
 
 class TestFileOps:

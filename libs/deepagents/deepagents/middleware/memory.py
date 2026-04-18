@@ -182,16 +182,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         Args:
             backend: Backend instance or factory function that takes runtime
-                     and returns a backend. Use a factory for StateBackend.
+                and returns a backend.
+
+                Use a factory for StateBackend.
             sources: List of memory file paths to load (e.g., `["~/.deepagents/AGENTS.md",
-                     "./.deepagents/AGENTS.md"]`).
+                "./.deepagents/AGENTS.md"]`).
 
-                     Display names are automatically derived from the paths.
+                Display names are automatically derived from the paths.
 
-                     Sources are loaded in order.
+                Sources are loaded in order.
             add_cache_control: Whether to tag the memory content block with
-                     ``cache_control: {"type": "ephemeral"}`` for Anthropic
-                     prompt caching.
+                `cache_control: {"type": "ephemeral"}` for Anthropic
+                prompt caching.
         """
         self._backend = backend
         self.sources = sources

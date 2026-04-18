@@ -4611,11 +4611,7 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
 
     async def _show_agent_selector(self) -> None:
-        """Show the interactive agent selector modal.
-
-        Scans `~/.deepagents/` off the event loop via `asyncio.to_thread`
-        because `iterdir()` can block on slow filesystems.
-        """
+        """Show the interactive agent selector modal."""
         from deepagents_cli.agent import get_available_agent_names
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 
@@ -4652,10 +4648,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.config import settings
 
-        # Re-verify the agent directory still exists — it may have been
-        # deleted between modal open and selection. Mutating `_assistant_id`
-        # to a non-existent agent would fail later (during skill discovery
-        # or first invocation) with no clear connection to the switch.
         try:
             agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
         except OSError:

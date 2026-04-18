@@ -261,12 +261,12 @@ def get_available_agent_names() -> list[str]:
     """Return a sorted list of available agent names from `~/.deepagents/`.
 
     Scans the user's `.deepagents` directory and returns each real
-    subdirectory found there. Symlinks are excluded so a dangling link does
-    not masquerade as an agent.
+    subdirectory found there. Symlinks excluded so a dangling link does not
+    masquerade as an agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
-    logged and surfaced as an empty list rather than raised — the caller
-    shows an empty modal instead of crashing mid-render.
+    logged and surfaced as an empty list rather than raised — the caller shows
+    an empty modal instead of crashing mid-render.
 
     Returns:
         Sorted list of agent names. Empty when no agents exist yet or the

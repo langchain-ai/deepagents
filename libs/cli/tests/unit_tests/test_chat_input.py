@@ -2219,13 +2219,13 @@ class _TextAreaTypingApp(App[None]):
 
     def on_chat_text_area_typing(
         self,
-        event: ChatTextArea.Typing,  # noqa: ARG002
+        event: ChatTextArea.Typing,
     ) -> None:
         self.text_area_typing_count += 1
 
     def on_chat_input_typing(
         self,
-        event: ChatInput.Typing,  # noqa: ARG002
+        event: ChatInput.Typing,
     ) -> None:
         self.chat_input_typing_count += 1
 

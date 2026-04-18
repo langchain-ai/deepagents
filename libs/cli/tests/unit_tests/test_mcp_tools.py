@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,9 +33,7 @@ def _make_mcp_tool(
     name: str, description: str = "", input_schema: dict | None = None
 ) -> MagicMock:
     """Build a mock MCP `Tool` object suitable for proxy-tool construction."""
-    mock = MagicMock(
-        spec=["name", "description", "inputSchema", "annotations", "meta"]
-    )
+    mock = MagicMock(spec=["name", "description", "inputSchema", "annotations", "meta"])
     mock.name = name
     mock.description = description
     mock.inputSchema = input_schema or {"type": "object", "properties": {}}
@@ -43,7 +42,9 @@ def _make_mcp_tool(
     return mock
 
 
-def _make_tool_page(tools: list[MagicMock], next_cursor: str | None = None) -> MagicMock:
+def _make_tool_page(
+    tools: list[MagicMock], next_cursor: str | None = None
+) -> MagicMock:
     """Build a mock `list_tools` page result."""
     page = MagicMock(spec=["tools", "nextCursor"])
     page.tools = tools
@@ -62,6 +63,7 @@ def _reset_mcp_singleton() -> Generator[None]:
     reset_default_session_manager_for_testing()
     yield
     reset_default_session_manager_for_testing()
+
 
 # Test Fixtures
 
@@ -111,7 +113,7 @@ def fake_create_session() -> Generator[tuple[AsyncMock, list]]:
     recorded: list = []
 
     @asynccontextmanager
-    async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+    async def _fake(connection, *, mcp_callbacks=None):
         recorded.append(connection)
         yield mock_session
 
@@ -620,7 +622,7 @@ class TestLoadMCPConfig:
             }
         }
         path = write_config(config_data)
-        with pytest.raises(ValueError, match="stdio.*oauth|oauth.*stdio"):
+        with pytest.raises(ValueError, match=r"stdio.*oauth|oauth.*stdio"):
             load_mcp_config(path)
 
     def test_load_config_auth_oauth_with_authorization_header_rejected(
@@ -790,7 +792,7 @@ class TestGetMCPTools:
         mock_session.list_tools = AsyncMock(side_effect=[page_fs, page_search])
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             recorded.append(connection)
             yield mock_session
 
@@ -872,9 +874,7 @@ class TestGetMCPTools:
         fake_create_session: tuple[AsyncMock, list],
     ) -> None:
         """`env` defaults to None (inherit parent env) when not in config."""
-        path = write_config(
-            {"mcpServers": {"simple": {"command": "simple-server"}}}
-        )
+        path = write_config({"mcpServers": {"simple": {"command": "simple-server"}}})
         _, recorded = fake_create_session
 
         await get_mcp_tools(path)
@@ -1611,14 +1611,12 @@ class TestHealthCheckIntegration:
         fake_session = AsyncMock()
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             yield fake_session
 
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
-            patch(
-                "langchain_mcp_adapters.sessions.create_session", _fake
-            ) as patched,
+            patch("langchain_mcp_adapters.sessions.create_session", _fake) as patched,
             pytest.raises(RuntimeError, match="Pre-flight health check"),
         ):
             await get_mcp_tools(path)
@@ -1644,7 +1642,7 @@ class TestHealthCheckIntegration:
         fake_session = AsyncMock()
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             yield fake_session
 
         mock_http = AsyncMock()
@@ -1677,7 +1675,7 @@ class TestHealthCheckIntegration:
         fake_session = AsyncMock()
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             yield fake_session
 
         with (
@@ -1789,7 +1787,7 @@ class TestToolOrdering:
         )
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             yield mock_session
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
@@ -1803,8 +1801,11 @@ class TestLoadToolsFromConfigHeaders:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Env-var references in headers are resolved before being passed to
-        `create_session` as part of the Connection config."""
+        """Resolve env-var references in headers before the Connection is built.
+
+        The resolved values must be passed to `create_session` via the
+        Connection config rather than the raw `${VAR}` placeholders.
+        """
         from deepagents_cli.mcp_tools import _load_tools_from_config
 
         monkeypatch.setenv("DA_TOKEN", "tok-123")
@@ -1815,7 +1816,7 @@ class TestLoadToolsFromConfigHeaders:
         mock_session.list_tools = AsyncMock(return_value=_make_tool_page([]))
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             recorded.append(connection)
             yield mock_session
 
@@ -1856,12 +1857,14 @@ class TestLoadToolsFromConfigOAuth:
                 }
             }
         }
-        with patch(
-            "deepagents_cli.mcp_tools._check_remote_server",
-            new=AsyncMock(return_value=None),
+        with (
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new=AsyncMock(return_value=None),
+            ),
+            pytest.raises(RuntimeError, match="deepagents mcp login notion"),
         ):
-            with pytest.raises(RuntimeError, match="deepagents mcp login notion"):
-                await _load_tools_from_config(config)
+            await _load_tools_from_config(config)
 
     async def test_existing_tokens_attach_oauth_provider(
         self,
@@ -1882,7 +1885,7 @@ class TestLoadToolsFromConfigOAuth:
         mock_session.list_tools = AsyncMock(return_value=_make_tool_page([]))
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             recorded.append(connection)
             yield mock_session
 
@@ -1923,7 +1926,7 @@ class TestCachedSessionProxy:
             yield
 
     @staticmethod
-    def _fake_call_tool_result(text: str = "ok") -> MagicMock:
+    def _fake_call_tool_result(text: str = "ok") -> Any:  # noqa: ANN401 — returns mcp.types.CallToolResult; avoid pulling the import to module top
         """Build a mock `CallToolResult` compatible with `_convert_call_tool_result`."""
         from mcp.types import CallToolResult, TextContent
 
@@ -1952,7 +1955,7 @@ class TestCachedSessionProxy:
             return s
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             nonlocal session_ctx_entries
             session_ctx_entries += 1
             yield _new_session()
@@ -1963,7 +1966,7 @@ class TestCachedSessionProxy:
 
             # Invoke the proxy tool — should open a second session (first was
             # the throwaway discovery session).
-            content = await tools[0].ainvoke({})
+            content = await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         assert session_ctx_entries == 2, (
             "expected one discovery session + one cached runtime session"
@@ -1995,13 +1998,13 @@ class TestCachedSessionProxy:
             return s
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             yield _new_session()
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, _, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})
-            await tools[0].ainvoke({})
+            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         # discovery + one runtime session — NOT two runtime sessions.
         assert len(sessions) == 2
@@ -2037,7 +2040,7 @@ class TestCachedSessionProxy:
         call_counter = {"n": 0}
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             call_counter["n"] += 1
             # discovery (#1), first runtime session is dead (#2), retry opens
             # a fresh session (#3)
@@ -2045,7 +2048,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, _, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})
+            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         assert call_counter["n"] == 3, (
             "discovery + dead runtime + retry = 3 sessions opened"
@@ -2071,15 +2074,13 @@ class TestCachedSessionProxy:
             s.list_tools = AsyncMock(
                 return_value=_make_tool_page([_make_mcp_tool("echo")])
             )
-            s.call_tool = AsyncMock(
-                side_effect=ClosedResourceError() if dead else None
-            )
+            s.call_tool = AsyncMock(side_effect=ClosedResourceError() if dead else None)
             return s
 
         call_counter = {"n": 0}
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             call_counter["n"] += 1
             # discovery session is "alive" so list_tools succeeds; both runtime
             # sessions (post-discovery) fail with ClosedResourceError.
@@ -2088,7 +2089,7 @@ class TestCachedSessionProxy:
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, _, _ = await get_mcp_tools(path)
             with pytest.raises(ToolException, match="failed after one retry"):
-                await tools[0].ainvoke({})
+                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
     async def test_logical_tool_exception_is_not_retried(
         self,
@@ -2124,14 +2125,14 @@ class TestCachedSessionProxy:
             return s
 
         @asynccontextmanager
-        async def _fake(connection, *, mcp_callbacks=None):  # noqa: ANN001, ARG001
+        async def _fake(connection, *, mcp_callbacks=None):
             call_counter["n"] += 1
             yield _new_session()
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, _, _ = await get_mcp_tools(path)
             with pytest.raises(ToolException, match="boom"):
-                await tools[0].ainvoke({})
+                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         # Only discovery + one runtime session — NO retry.
         assert call_counter["n"] == 2

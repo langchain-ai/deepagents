@@ -1,5 +1,6 @@
 """Tests for deepagents_cli.mcp_auth."""
 
+import io
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -16,9 +17,7 @@ class TestResolveHeaders:
             "Authorization": "Bearer secret-value"
         }
 
-    def test_multiple_vars_in_one_value(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_multiple_vars_in_one_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("A", "alpha")
         monkeypatch.setenv("B", "beta")
         assert resolve_headers({"X-Combo": "${A}-${B}"}) == {"X-Combo": "alpha-beta"}
@@ -95,8 +94,6 @@ class TestFileTokenStorage:
         reason="POSIX file-mode semantics",
     )
     async def test_file_and_dir_permissions(self, fake_home: Path) -> None:
-        import os
-
         from deepagents_cli.mcp_auth import FileTokenStorage
 
         storage = FileTokenStorage("notion")
@@ -104,20 +101,20 @@ class TestFileTokenStorage:
         token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
         dir_path = token_path.parent
         assert token_path.exists()
-        assert (os.stat(token_path).st_mode & 0o777) == 0o600
-        assert (os.stat(dir_path).st_mode & 0o777) == 0o700
+        assert (token_path.stat().st_mode & 0o777) == 0o600
+        assert (dir_path.stat().st_mode & 0o777) == 0o700
 
-    async def test_atomic_write_no_partial_on_failure(
-        self, fake_home: Path
-    ) -> None:
+    async def test_atomic_write_no_partial_on_failure(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage
 
         storage = FileTokenStorage("notion")
         token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
 
-        with patch("os.replace", side_effect=OSError("boom")):
-            with pytest.raises(OSError, match="boom"):
-                await storage.set_tokens(_make_tokens())
+        with (
+            patch("os.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError, match="boom"),
+        ):
+            await storage.set_tokens(_make_tokens())
         assert not token_path.exists()
 
     async def test_version_mismatch_raises(self, fake_home: Path) -> None:
@@ -137,19 +134,14 @@ class TestFileTokenStorage:
 
         a = FileTokenStorage("notion")
         b = FileTokenStorage("linear")
-        await a.set_tokens(
-            OAuthToken(access_token="a-tok", token_type="Bearer")
-        )
-        await b.set_tokens(
-            OAuthToken(access_token="b-tok", token_type="Bearer")
-        )
+        await a.set_tokens(OAuthToken(access_token="a-tok", token_type="Bearer"))
+        await b.set_tokens(OAuthToken(access_token="b-tok", token_type="Bearer"))
         got_a = await a.get_tokens()
         got_b = await b.get_tokens()
-        assert got_a is not None and got_a.access_token == "a-tok"
-        assert got_b is not None and got_b.access_token == "b-tok"
-
-
-import io
+        assert got_a is not None
+        assert got_a.access_token == "a-tok"
+        assert got_b is not None
+        assert got_b.access_token == "b-tok"
 
 
 class TestBuildOAuthProvider:
@@ -186,9 +178,7 @@ class TestBuildOAuthProvider:
         _, callback = mcp_auth._make_paste_back_handlers()
         monkeypatch.setattr(
             "sys.stdin",
-            io.StringIO(
-                "http://localhost/callback?code=ABC&state=XYZ\n"
-            ),
+            io.StringIO("http://localhost/callback?code=ABC&state=XYZ\n"),
         )
         code, state = await callback()
         assert code == "ABC"
@@ -200,9 +190,7 @@ class TestBuildOAuthProvider:
         from deepagents_cli import mcp_auth
 
         _, callback = mcp_auth._make_paste_back_handlers()
-        monkeypatch.setattr(
-            "sys.stdin", io.StringIO("http://localhost/callback\n")
-        )
+        monkeypatch.setattr("sys.stdin", io.StringIO("http://localhost/callback\n"))
         with pytest.raises(RuntimeError, match="code"):
             await callback()
 
@@ -214,9 +202,7 @@ class TestLoginCommand:
     ) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage, login
 
-        async def _fake_handshake(
-            connections: dict, storage: FileTokenStorage
-        ) -> None:
+        async def _fake_handshake(connections: dict, storage: FileTokenStorage) -> None:
             # Simulate what MultiServerMCPClient.session(...) would trigger.
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
@@ -238,7 +224,8 @@ class TestLoginCommand:
 
         storage = FileTokenStorage("notion")
         tok = await storage.get_tokens()
-        assert tok is not None and tok.access_token == "new"
+        assert tok is not None
+        assert tok.access_token == "new"
 
     async def test_login_rejects_non_oauth_server(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import login

@@ -5,11 +5,11 @@ Registered via `setup_mcp_parsers` in `main.py`.
 
 from __future__ import annotations
 
-import argparse
 import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import argparse
     from collections.abc import Callable
 
 
@@ -66,7 +66,12 @@ def setup_mcp_parsers(
 
 
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
-    """Handler for `deepagents mcp login <server>`. Returns an exit code."""
+    """Handler for `deepagents mcp login <server>`.
+
+    Returns:
+        Process exit code: 0 on success, 1 on config or login failure,
+        2 if no config file could be found.
+    """
     from deepagents_cli.mcp_auth import login
     from deepagents_cli.mcp_tools import discover_mcp_configs, load_mcp_config
 

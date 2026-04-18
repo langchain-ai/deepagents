@@ -20,42 +20,42 @@ if TYPE_CHECKING:
 
 
 class _AcpSmokeClient(Client):
-    async def request_permission(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def request_permission(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "session/request_permission"
         raise RequestError.method_not_found(msg)
 
-    async def write_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def write_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "fs/write_text_file"
         raise RequestError.method_not_found(msg)
 
-    async def read_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def read_text_file(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "fs/read_text_file"
         raise RequestError.method_not_found(msg)
 
-    async def create_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def create_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "terminal/create"
         raise RequestError.method_not_found(msg)
 
-    async def terminal_output(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def terminal_output(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "terminal/output"
         raise RequestError.method_not_found(msg)
 
-    async def release_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def release_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "terminal/release"
         raise RequestError.method_not_found(msg)
 
-    async def wait_for_terminal_exit(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def wait_for_terminal_exit(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "terminal/wait_for_exit"
         raise RequestError.method_not_found(msg)
 
-    async def kill_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401, ARG002  # required by ACP Client protocol
+    async def kill_terminal(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # required by ACP Client protocol
         msg = "terminal/kill"
         raise RequestError.method_not_found(msg)
 
-    async def ext_method(self, method: str, params: dict) -> dict:  # noqa: ARG002
+    async def ext_method(self, method: str, params: dict) -> dict:
         raise RequestError.method_not_found(method)
 
-    async def ext_notification(self, method: str, params: dict) -> None:  # noqa: ARG002
+    async def ext_notification(self, method: str, params: dict) -> None:
         raise RequestError.method_not_found(method)
 
 

@@ -1,6 +1,10 @@
 """Tests for deepagents_cli.mcp_auth."""
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
+from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthToken
 
 from deepagents_cli.mcp_auth import resolve_headers
 
@@ -49,3 +53,110 @@ class TestResolveHeaders:
 
     def test_no_substitution_when_no_placeholders(self) -> None:
         assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
+
+
+@pytest.fixture
+def fake_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Redirect `~/.deepagents/` into a per-test tmp dir."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path
+
+
+def _make_tokens() -> OAuthToken:
+    return OAuthToken(
+        access_token="at", token_type="Bearer", refresh_token="rt", expires_in=3600
+    )
+
+
+def _make_client_info() -> OAuthClientInformationFull:
+    return OAuthClientInformationFull(
+        client_id="cid",
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+    )
+
+
+class TestFileTokenStorage:
+    @pytest.mark.asyncio
+    async def test_get_tokens_when_file_missing(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        storage = FileTokenStorage("notion")
+        assert await storage.get_tokens() is None
+        assert await storage.get_client_info() is None
+
+    @pytest.mark.asyncio
+    async def test_set_and_get_round_trip(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        got_ci = await storage.get_client_info()
+        got_tok = await storage.get_tokens()
+        assert got_ci is not None
+        assert got_tok is not None
+        assert got_ci.client_id == "cid"
+        assert got_tok.access_token == "at"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not hasattr(__import__("os"), "geteuid"),
+        reason="POSIX file-mode semantics",
+    )
+    async def test_file_and_dir_permissions(self, fake_home: Path) -> None:
+        import os
+
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+        token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+        dir_path = token_path.parent
+        assert token_path.exists()
+        assert (os.stat(token_path).st_mode & 0o777) == 0o600
+        assert (os.stat(dir_path).st_mode & 0o777) == 0o700
+
+    @pytest.mark.asyncio
+    async def test_atomic_write_no_partial_on_failure(
+        self, fake_home: Path
+    ) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        storage = FileTokenStorage("notion")
+        token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+
+        with patch("os.replace", side_effect=OSError("boom")):
+            with pytest.raises(OSError, match="boom"):
+                await storage.set_tokens(_make_tokens())
+        assert not token_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_version_mismatch_raises(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        storage = FileTokenStorage("notion")
+        # Force-write a bad file bypassing the model.
+        token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text('{"version": 999, "tokens": {}}')
+
+        with pytest.raises(RuntimeError, match="version"):
+            await storage.get_tokens()
+
+    @pytest.mark.asyncio
+    async def test_two_servers_do_not_collide(self, fake_home: Path) -> None:
+        from deepagents_cli.mcp_auth import FileTokenStorage
+
+        a = FileTokenStorage("notion")
+        b = FileTokenStorage("linear")
+        await a.set_tokens(
+            OAuthToken(access_token="a-tok", token_type="Bearer")
+        )
+        await b.set_tokens(
+            OAuthToken(access_token="b-tok", token_type="Bearer")
+        )
+        got_a = await a.get_tokens()
+        got_b = await b.get_tokens()
+        assert got_a is not None and got_a.access_token == "a-tok"
+        assert got_b is not None and got_b.access_token == "b-tok"

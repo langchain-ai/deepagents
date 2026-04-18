@@ -6,10 +6,12 @@ import json
 import os
 import re
 import stat
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from mcp.client.auth import TokenStorage
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -196,3 +198,69 @@ class FileTokenStorage(TokenStorage):
                 os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
             except OSError:
                 pass
+
+
+RedirectHandler = Callable[[str], Awaitable[None]]
+CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
+
+
+def _make_paste_back_handlers() -> tuple[RedirectHandler, CallbackHandler]:
+    """Create paste-back redirect and callback handlers for OAuth.
+
+    Returns:
+        A tuple of (redirect_handler, callback_handler) functions that implement
+        the paste-back OAuth flow for interactive CLI use.
+    """
+
+    async def redirect(auth_url: str) -> None:
+        print(  # noqa: T201 - intentional user-facing prompt
+            "\nOpen this URL in a browser, approve access, then paste the full "
+            "callback URL back here:\n"
+            f"\n  {auth_url}\n"
+        )
+
+    async def callback() -> tuple[str, str | None]:
+        url = input("Callback URL: ").strip()
+        params = parse_qs(urlparse(url).query)
+        if "code" not in params or not params["code"]:
+            msg = "Callback URL is missing the 'code' parameter."
+            raise RuntimeError(msg)
+        return params["code"][0], (params.get("state") or [None])[0]
+
+    return redirect, callback
+
+
+def build_oauth_provider(
+    *,
+    server_name: str,  # noqa: ARG001 - reserved for future error-message use
+    server_url: str,
+    storage: TokenStorage,
+) -> OAuthClientProvider:
+    """Construct a paste-back `OAuthClientProvider` for an MCP server.
+
+    The metadata defaults match what most public MCP servers accept under
+    Dynamic Client Registration; servers are expected to advertise scopes
+    via their OAuth metadata document.
+
+    Args:
+        server_name: The name of the MCP server (for future error messages).
+        server_url: The MCP server's URL (e.g., "https://mcp.notion.com/mcp").
+        storage: A TokenStorage instance for persisting OAuth credentials.
+
+    Returns:
+        An OAuthClientProvider configured for paste-back OAuth flow.
+    """
+    redirect, callback = _make_paste_back_handlers()
+    metadata = OAuthClientMetadata(
+        client_name="deepagents-cli",
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+    )
+    return OAuthClientProvider(
+        server_url=server_url,
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=redirect,
+        callback_handler=callback,
+    )

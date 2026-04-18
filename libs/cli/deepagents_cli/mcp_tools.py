@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import json
 import logging
+import re
 import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -57,6 +58,11 @@ _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
 
 
+_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+"""Server names become token-file basenames under ~/.deepagents/mcp-tokens/;
+restricting to alphanumerics, hyphens, and underscores keeps them path-safe."""
+
+
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
     """Determine the transport type for a server config.
 
@@ -85,6 +91,13 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         TypeError: If config fields have wrong types.
         ValueError: If required fields are missing or server type is unsupported.
     """
+    if not _SERVER_NAME_RE.fullmatch(server_name):
+        error_msg = (
+            f"Invalid server name {server_name!r}: server names must contain "
+            "only alphanumerics, hyphens, and underscores."
+        )
+        raise ValueError(error_msg)
+
     if not isinstance(server_config, dict):
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)

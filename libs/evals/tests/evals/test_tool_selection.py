@@ -10,13 +10,15 @@ the agent called the right tool(s) and avoided calling wrong ones.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 from deepagents import create_deep_agent
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
 

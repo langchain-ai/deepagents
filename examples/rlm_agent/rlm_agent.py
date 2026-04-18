@@ -1,20 +1,20 @@
-"""Recursive REPL Mode (RLM) — `create_deep_agent` + a self-recursive general-purpose subagent.
+"""Recursive REPL Mode (RLM) — `create_deep_agent` with a compiled general-purpose chain.
 
-`create_rlm_agent` builds a Deep Agent whose `general-purpose`
-subagent has `REPLMiddleware(ptc=True)` attached. That subagent can
-delegate a sub-task to a `deeper-agent` peer — a structurally
-separate compiled agent one level shallower, built by this helper
-itself — via `tools.task(subagent_type="deeper-agent", ...)` inside
-`eval`. Each `deeper-agent` has the same shape and its own
-`deeper-agent` peer, until `max_depth` bottoms out. The leaf still
-has REPL + PTC but no deeper peer.
+`create_rlm_agent` builds a Deep Agent whose own middleware stack
+includes `REPLMiddleware(ptc=True)`, and — for `max_depth > 0` —
+replaces the default `general-purpose` subagent with a
+`CompiledSubAgent` whose runnable is itself a depth-(N-1) RLM agent.
+The model delegates via `tools.task({subagent_type: "general-purpose",
+...})` and reaches the deeper compiled agent, which has its own REPL
+and its own compiled `general-purpose`, and so on until `max_depth`
+bottoms out. At the leaf, `general-purpose` is the plain built-in —
+no further recursion.
 
 The pattern is useful when a task decomposes into independent
 sub-tasks whose decomposition you can't predict in advance. At each
-level the agent can choose: do the work inline, parallelize with
-`Promise.all(tools.<x>(...))` inside `eval`, or fan out via
-`tools.task(subagent_type="deeper-agent", ...)` to a peer whose own
-REPL can fan out again.
+level the agent can parallelize with `Promise.all(tools.<x>(...))`
+inside `eval`, or fan out via `tools.task(subagent_type="general-purpose",
+...)` to a fully realized deeper agent whose own REPL can fan out again.
 
 Usage:
     from rlm_agent import create_rlm_agent
@@ -47,34 +47,6 @@ from deepagents_repl import REPLMiddleware
 
 _MAX_DEPTH_LIMIT = 8  # guard against typos that would build thousands of agents
 
-_BASE_SYSTEM_ADDENDUM = (
-    "\n\n"
-    "You are running in Recursive REPL Mode. You have an `eval` tool that "
-    "runs JavaScript and a programmatic tool-calling layer that exposes "
-    "agent tools under `tools.<name>(...)`. Use `eval` for any work that "
-    "benefits from parallel fan-out: write one script that issues many "
-    "`tools.<x>(...)` calls inside `Promise.all(...)` instead of making "
-    "the same tool calls serially across turns."
-)
-
-_RECURSE_SYSTEM_ADDENDUM = (
-    "\n\n"
-    "You have {remaining} level(s) of recursion budget remaining. You can "
-    "delegate a sub-task to the `deeper-agent` subagent by calling "
-    "`await tools.task({{subagent_type: 'deeper-agent', description: "
-    "'...'}})`. It has the same tools and its own `eval` REPL, so use it "
-    "when a sub-task itself decomposes into independent parallel steps. "
-    "Prefer one `Promise.all(...)` over a deeper chain — recursion is "
-    "for structural decomposition, not for issuing more calls."
-)
-
-_LEAF_SYSTEM_ADDENDUM = (
-    "\n\n"
-    "You are at the bottom of the recursion chain. No `deeper-agent` "
-    "subagent is available here; do the work inline, using `eval` to "
-    "parallelize tool calls when you can."
-)
-
 
 def create_rlm_agent(
     *,
@@ -84,20 +56,27 @@ def create_rlm_agent(
     max_depth: int = 1,
     **kwargs: Any,
 ) -> Any:
-    """Build a Deep Agent with a self-recursive general-purpose subagent.
+    """Build a Deep Agent with a recursive compiled general-purpose chain.
+
+    At every depth the agent itself has `REPLMiddleware(ptc=True)` so
+    the model can write `eval` + `Promise.all(tools.<x>(...))` to
+    parallelize. For `max_depth > 0` the default `general-purpose`
+    subagent is replaced with a `CompiledSubAgent` pointing at a
+    depth-(N-1) RLM agent. The model reaches it the usual way:
+    `tools.task({subagent_type: "general-purpose", ...})`.
 
     Args:
         model: Passed through to `create_deep_agent`.
         tools: Tools available at every level, merged with the
             deep-agent built-ins.
         subagents: Extra subagents. Must NOT contain a spec named
-            `general-purpose` — this helper provides its own at every
-            level. Pass other subagent specs freely; they're carried
-            through to every depth unchanged.
+            `general-purpose` — this helper manages that name. Pass
+            other subagent specs freely; they're carried through to
+            every depth unchanged.
         max_depth: How many levels of recursion to build. `0` means
-            "no recursion" — the returned agent still has REPL + PTC
-            at the general-purpose subagent, but that subagent cannot
-            delegate to a deeper peer. Capped at `_MAX_DEPTH_LIMIT`.
+            "no recursion" — the returned agent still has REPL + PTC,
+            but its `general-purpose` is the unmodified built-in.
+            Capped at `_MAX_DEPTH_LIMIT`.
         **kwargs: Forwarded to `create_deep_agent`.
 
     Returns:
@@ -105,9 +84,7 @@ def create_rlm_agent(
 
     Raises:
         ValueError: If `max_depth` is negative, above the cap, or if
-            `subagents` contains an entry named `general-purpose`
-            (RLM owns that name and overriding it would break the
-            recursion contract).
+            `subagents` contains an entry named `general-purpose`.
     """
     if max_depth < 0:
         msg = "max_depth must be >= 0"
@@ -140,26 +117,22 @@ def _build(
     max_depth: int,
     **kwargs: Any,
 ) -> Any:
-    """Recursive builder. Each call compiles one level.
+    """Recursive builder. One call compiles one level of the chain.
 
-    At depth N > 0, the general-purpose subagent's recursion budget
-    is wired through a `CompiledSubAgent` pointing at a depth-(N-1)
-    build of this same chain. The compiled peer is installed under a
-    private name (`deeper-agent`) so the model sees one
-    `general-purpose` entry plus one fan-out target — the private
-    name appears in the task tool's subagent listing, and the
-    system-prompt addendum explains when to use it.
+    At depth 0, the general-purpose subagent is left to the default
+    `create_deep_agent` auto-injection — no override, no REPL on it,
+    no deeper peer. At depth N > 0, we build the depth-(N-1) agent
+    first and register it as a `CompiledSubAgent` under the name
+    `general-purpose`, which satisfies the "already has a
+    general-purpose" check in `create_deep_agent` and suppresses the
+    auto-injected default at this level.
     """
     if max_depth == 0:
-        gp_middleware_addendum = _BASE_SYSTEM_ADDENDUM + _LEAF_SYSTEM_ADDENDUM
-        level_subagents: list[SubAgent | CompiledSubAgent] = [
-            _general_purpose_spec(gp_middleware_addendum),
-            *extra_subagents,
-        ]
         return create_deep_agent(
             model=model,
             tools=tools,
-            subagents=level_subagents,
+            subagents=extra_subagents,
+            middleware=[REPLMiddleware(ptc=True)],
             **kwargs,
         )
 
@@ -170,44 +143,17 @@ def _build(
         max_depth=max_depth - 1,
         **kwargs,
     )
-    deeper_entry = CompiledSubAgent(
-        name="deeper-agent",
-        description=(
-            "Delegate a sub-task to a peer `general-purpose` agent one level deeper. "
-            "Use when the sub-task itself decomposes into independent parallel steps."
-        ),
+    compiled_gp = CompiledSubAgent(
+        name=GENERAL_PURPOSE_SUBAGENT["name"],
+        description=GENERAL_PURPOSE_SUBAGENT["description"],
         runnable=deeper,
     )
-    gp_middleware_addendum = _BASE_SYSTEM_ADDENDUM + _RECURSE_SYSTEM_ADDENDUM.format(
-        remaining=max_depth,
-    )
-    level_subagents = [
-        _general_purpose_spec(gp_middleware_addendum),
-        *extra_subagents,
-        deeper_entry,
-    ]
     return create_deep_agent(
         model=model,
         tools=tools,
-        subagents=level_subagents,
-        **kwargs,
-    )
-
-
-def _general_purpose_spec(system_addendum: str) -> SubAgent:
-    """Return a general-purpose SubAgent spec with REPL + the given addendum.
-
-    Overrides the default built-in general-purpose (which `create_deep_agent`
-    provides automatically when no user spec claims the name). We override
-    for two reasons: (1) attach `REPLMiddleware(ptc=True)`, (2) tack on a
-    system-prompt addendum describing the recursion contract for this level.
-    """
-    base_prompt = GENERAL_PURPOSE_SUBAGENT["system_prompt"]
-    return SubAgent(  # ty: ignore[missing-typed-dict-key]
-        name=GENERAL_PURPOSE_SUBAGENT["name"],
-        description=GENERAL_PURPOSE_SUBAGENT["description"],
-        system_prompt=base_prompt + system_addendum,
+        subagents=[compiled_gp, *extra_subagents],
         middleware=[REPLMiddleware(ptc=True)],
+        **kwargs,
     )
 
 

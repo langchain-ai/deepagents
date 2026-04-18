@@ -9,11 +9,23 @@ import argparse
 import sys
 from typing import TYPE_CHECKING, Any
 
-from deepagents_cli.mcp_auth import login
-from deepagents_cli.mcp_tools import discover_mcp_configs, load_mcp_config
-
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
+    """Return a callable that lazily imports and invokes a `ui` help function.
+
+    Defers the `ui` import (which pulls in Rich + config) until the user
+    actually triggers the help action, keeping parse-time imports cheap.
+    """
+
+    def _show() -> None:
+        from deepagents_cli import ui
+
+        getattr(ui, fn_name)()
+
+    return _show
 
 
 def setup_mcp_parsers(
@@ -30,7 +42,7 @@ def setup_mcp_parsers(
     mcp_parser.add_argument(
         "-h",
         "--help",
-        action=make_help_action(lambda: mcp_parser.print_help()),
+        action=make_help_action(_lazy_ui_help("show_mcp_help")),
     )
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
 
@@ -49,12 +61,15 @@ def setup_mcp_parsers(
     login_parser.add_argument(
         "-h",
         "--help",
-        action=make_help_action(lambda: login_parser.print_help()),
+        action=make_help_action(_lazy_ui_help("show_mcp_login_help")),
     )
 
 
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     """Handler for `deepagents mcp login <server>`. Returns an exit code."""
+    from deepagents_cli.mcp_auth import login
+    from deepagents_cli.mcp_tools import discover_mcp_configs, load_mcp_config
+
     if config_path is None:
         found = discover_mcp_configs()
         if not found:

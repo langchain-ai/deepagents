@@ -1,7 +1,7 @@
 """Tests for MCP tools configuration loading and validation."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +11,8 @@ from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _check_remote_server,
+    _check_stdio_server,
     _filter_project_stdio_servers,
     classify_discovered_configs,
     discover_mcp_configs,
@@ -448,6 +450,18 @@ class TestLoadMCPConfig:
 class TestGetMCPTools:
     """Test MCP tools loading from configuration."""
 
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        """Bypass pre-flight health checks for all tests in this class."""
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+        ):
+            yield
+
     @patch("langchain_mcp_adapters.tools.load_mcp_tools")
     @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
     async def test_get_mcp_tools_success(
@@ -648,9 +662,17 @@ class TestGetMCPTools:
             }
         )
 
-        # Create mock tools from different servers
-        mock_tools_fs = [MagicMock(name="read_file"), MagicMock(name="write_file")]
-        mock_tools_search = [MagicMock(name="web_search")]
+        # Create mock tools from different servers.
+        # Note: MagicMock(name=...) sets the internal _mock_name, not a .name
+        # attribute. Set .name explicitly so tools can be sorted by name.
+        tool_read = MagicMock()
+        tool_read.name = "read_file"
+        tool_write = MagicMock()
+        tool_write.name = "write_file"
+        tool_search = MagicMock()
+        tool_search.name = "web_search"
+        mock_tools_fs = [tool_read, tool_write]
+        mock_tools_search = [tool_search]
 
         # Setup mock client with session support
         mock_session_fs = AsyncMock()
@@ -1441,3 +1463,342 @@ class TestFilterProjectStdioServers:
         config = {"mcpServers": {"a": {"command": "x", "args": []}}}
         result = _filter_project_stdio_servers(config)
         assert result["mcpServers"] == {}
+
+
+class TestCheckStdioServer:
+    """Tests for _check_stdio_server pre-flight validation."""
+
+    def test_command_not_found(self) -> None:
+        """Raises RuntimeError with server name and command when missing."""
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(
+                RuntimeError,
+                match="MCP server 'test-server': command 'nonexistent' not found",
+            ),
+        ):
+            _check_stdio_server("test-server", {"command": "nonexistent"})
+
+    def test_command_exists(self) -> None:
+        """No error when command exists on PATH."""
+        with patch(
+            "deepagents_cli.mcp_tools.shutil.which", return_value="/usr/bin/npx"
+        ):
+            _check_stdio_server("test-server", {"command": "npx"})
+
+    def test_missing_command_key(self) -> None:
+        """Raises RuntimeError when config lacks `command` key."""
+        with pytest.raises(RuntimeError, match="missing 'command' in config"):
+            _check_stdio_server("test-server", {})
+
+
+class TestCheckRemoteServer:
+    """Tests for _check_remote_server pre-flight validation."""
+
+    async def test_unreachable(self) -> None:
+        """Raises RuntimeError when URL is unreachable."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.TransportError("connection refused")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://localhost:9999"})
+
+    async def test_reachable(self) -> None:
+        """No error when URL responds."""
+        mock_client = AsyncMock()
+        mock_client.head = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await _check_remote_server("test-server", {"url": "http://localhost:8080"})
+
+        mock_client.head.assert_awaited_once_with("http://localhost:8080", timeout=2)
+
+    async def test_unreachable_os_error(self) -> None:
+        """Raises RuntimeError on OS-level socket errors."""
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = OSError("Network is unreachable")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server(
+                "test-server", {"url": "http://10.255.255.1:9999"}
+            )
+
+    async def test_invalid_url(self) -> None:
+        """Raises RuntimeError on malformed URLs."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.InvalidURL("Invalid URL")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://"})
+
+    async def test_missing_url_key(self) -> None:
+        """Raises RuntimeError when config lacks `url` key."""
+        with pytest.raises(RuntimeError, match="missing 'url' in config"):
+            await _check_remote_server("test-server", {})
+
+    async def test_timeout(self) -> None:
+        """Raises RuntimeError on connection timeout."""
+        import httpx
+
+        mock_client = AsyncMock()
+        mock_client.head.side_effect = httpx.TimeoutException("timed out")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError, match="unreachable"),
+        ):
+            await _check_remote_server("test-server", {"url": "http://slow:8080"})
+
+
+class TestHealthCheckIntegration:
+    """Tests for health check integration in _load_tools_from_config."""
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_stdio_health_check_failure_skips_session(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Health check failure cleans up and does not call client.session()."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "missing-cmd", "args": []}}}
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="Pre-flight health check"),
+        ):
+            await get_mcp_tools(path)
+
+        # session() should never be called — health check fails first
+        mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_remote_health_check_failure_skips_session(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Remote health check failure prevents session creation."""
+        import httpx
+
+        path = write_config(
+            {"mcpServers": {"api": {"type": "sse", "url": "http://down:9999"}}}
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_http = AsyncMock()
+        mock_http.head.side_effect = httpx.TransportError("refused")
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_http),
+            pytest.raises(RuntimeError, match="Pre-flight health check"),
+        ):
+            await get_mcp_tools(path)
+
+        mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_multi_server_collects_all_failures(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """All server failures are reported in a single error."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "a": {"command": "missing-a", "args": []},
+                    "b": {"command": "missing-b", "args": []},
+                }
+            }
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await get_mcp_tools(path)
+
+        error_msg = str(exc_info.value)
+        assert "missing-a" in error_msg
+        assert "missing-b" in error_msg
+        mock_client.session.assert_not_called()
+
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_mixed_stdio_and_remote_checks(
+        self,
+        mock_client_class: MagicMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Both stdio and remote health checks run for mixed configs."""
+        import httpx
+
+        path = write_config(
+            {
+                "mcpServers": {
+                    "local": {"command": "missing-cmd", "args": []},
+                    "remote": {"type": "sse", "url": "http://down:9999"},
+                }
+            }
+        )
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        mock_http = AsyncMock()
+        mock_http.head.side_effect = httpx.TransportError("refused")
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
+            patch("httpx.AsyncClient", return_value=mock_http),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await get_mcp_tools(path)
+
+        # Both failures appear in the error message
+        error_msg = str(exc_info.value)
+        assert "missing-cmd" in error_msg
+        assert "down:9999" in error_msg
+
+
+class TestToolOrdering:
+    """Tools returned by get_mcp_tools are sorted deterministically."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        """Bypass pre-flight health checks for all tests in this class."""
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch(
+                "deepagents_cli.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+        ):
+            yield
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tools_sorted_alphabetically_by_name(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Tools from MCP servers are sorted by name for stable prompt caches."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "srv": {"command": "node", "args": ["server.js"]},
+                }
+            }
+        )
+
+        # Return tools in non-alphabetical order
+        zeta = MagicMock()
+        zeta.name = "srv_zeta"
+        zeta.description = "z"
+        alpha = MagicMock()
+        alpha.name = "srv_alpha"
+        alpha.description = "a"
+        mu = MagicMock()
+        mu.name = "srv_mu"
+        mu.description = "m"
+        mock_load_tools.return_value = [zeta, alpha, mu]
+
+        mock_session = AsyncMock()
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_session)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        mock_client = MagicMock()
+        mock_client.session.return_value = cm
+        mock_client_class.return_value = mock_client
+
+        tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
+        await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_tools_sorted_across_multiple_servers(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Tools from multiple servers are interleaved alphabetically."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "beta": {"command": "node", "args": ["b.js"]},
+                    "alpha": {"command": "node", "args": ["a.js"]},
+                }
+            }
+        )
+
+        tool_b = MagicMock()
+        tool_b.name = "beta_write"
+        tool_b.description = "w"
+        tool_a = MagicMock()
+        tool_a.name = "alpha_read"
+        tool_a.description = "r"
+
+        mock_session_a = AsyncMock()
+        mock_session_b = AsyncMock()
+
+        def mock_load_side_effect(
+            session: AsyncMock, **_kwargs: object
+        ) -> list[MagicMock]:
+            if session == mock_session_b:
+                return [tool_b]
+            return [tool_a]
+
+        mock_load_tools.side_effect = mock_load_side_effect
+
+        def mock_session_cm(server_name: str) -> MagicMock:
+            session = mock_session_b if server_name == "beta" else mock_session_a
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(return_value=session)
+            cm.__aexit__ = AsyncMock(return_value=None)
+            return cm
+
+        mock_client = MagicMock()
+        mock_client.session.side_effect = mock_session_cm
+        mock_client_class.return_value = mock_client
+
+        tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["alpha_read", "beta_write"]
+        await manager.cleanup()

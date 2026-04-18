@@ -49,7 +49,7 @@ python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
 # With a specific working directory
 python ralph_mode.py "Build a web app" --work-dir ./my-project
 
-# Run in a remote sandbox (Modal, Daytona, or Runloop)
+# Run in a remote sandbox (AgentCore, Modal, Daytona, or Runloop)
 python ralph_mode.py "Build an app" --sandbox modal
 python ralph_mode.py "Build an app" --sandbox daytona --sandbox-setup ./setup.sh
 
@@ -77,7 +77,7 @@ for provider setup (API keys, etc.) and the
 [sandboxes concept guide](https://docs.langchain.com/oss/python/deepagents/sandboxes)
 for architecture details.
 
-Supported providers: **Modal**, **Daytona**, **Runloop**.
+Supported providers: **AgentCore**, **Modal**, **Daytona**, **Runloop**.
 
 ## How It Works
 

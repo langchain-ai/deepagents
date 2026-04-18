@@ -24,8 +24,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -33,7 +31,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
+from rich.live import Live
 from rich.markup import escape as escape_markup
+from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
@@ -107,6 +107,51 @@ def _write_newline() -> None:
     sys.stdout.flush()
 
 
+class _ConsoleSpinner:
+    """Animated spinner for non-interactive verbose output.
+
+    Uses Rich's `Live` display with a transient braille-dot spinner that
+    disappears when stopped, keeping terminal output clean.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._live: Live | None = None
+
+    def start(self, message: str = "Working...") -> None:
+        """Start the spinner with the given message.
+
+        No-op if the spinner is already running. Fails silently if the console
+        cannot support live display.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is not None:
+            return
+        renderable = RichSpinner(
+            "dots",
+            text=Text(f" {message}", style="dim"),
+            style="dim",
+        )
+        try:
+            self._live = Live(renderable, console=self._console, transient=True)
+            self._live.start()
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner start failed: %s", exc)
+            self._live = None
+
+    def stop(self) -> None:
+        """Stop the spinner if running. Can be restarted with `start`."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except (AttributeError, TypeError, OSError) as exc:
+                logger.warning("Spinner stop failed: %s", exc)
+            finally:
+                self._live = None
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
@@ -151,6 +196,9 @@ class StreamState:
 
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
+
+    spinner: _ConsoleSpinner | None = None
+    """Optional animated spinner shown during agent work in verbose mode."""
 
 
 @dataclass
@@ -272,6 +320,8 @@ def _process_ai_message(
             text = block.get("text", "")
             if text:
                 if state.stream:
+                    if state.spinner:
+                        state.spinner.stop()
                     _write_text(text)
                 state.full_response.append(text)
         elif block_type in {"tool_call_chunk", "tool_call"}:
@@ -290,10 +340,13 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
             if chunk_name:
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
+                if state.spinner:
+                    state.spinner.stop()
                 if state.full_response and not state.quiet:
                     _write_newline()
                 console.print(
-                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]"
+                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
+                    highlight=False,
                 )
 
 
@@ -334,7 +387,14 @@ def _process_message_chunk(
     elif isinstance(message_obj, ToolMessage):
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
-            console.print(f"[dim]📝 {escape_markup(record.display_path)}[/dim]")
+            if state.spinner:
+                state.spinner.stop()
+            console.print(
+                f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                highlight=False,
+            )
+        if state.spinner:
+            state.spinner.start()
 
 
 def _process_stream_chunk(
@@ -525,14 +585,20 @@ async def _stream_agent(
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
     """
-    async for chunk in agent.astream(
-        stream_input,
-        stream_mode=["messages", "updates"],
-        subgraphs=True,
-        config=config,
-        durability="exit",
-    ):
-        _process_stream_chunk(chunk, state, console, file_op_tracker)
+    if state.spinner:
+        state.spinner.start()
+    try:
+        async for chunk in agent.astream(
+            stream_input,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+            config=config,
+            durability="exit",
+        ):
+            _process_stream_chunk(chunk, state, console, file_op_tracker)
+    finally:
+        if state.spinner:
+            state.spinner.stop()
 
 
 async def _run_agent_loop(
@@ -544,6 +610,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
@@ -562,16 +629,20 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        message_kwargs: Extra fields merged into the initial HumanMessage
+            dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
             a fast-follow LangSmith thread link.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
-    state = StreamState(quiet=quiet, stream=stream)
-    stream_input: dict[str, Any] | Command = {
-        "messages": [{"role": "user", "content": message}]
-    }
+    spinner = None if quiet else _ConsoleSpinner(console)
+    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
+    user_msg: dict[str, Any] = {"role": "user", "content": message}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -681,6 +752,7 @@ async def run_non_interactive(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    initial_skill: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
@@ -712,11 +784,13 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
-        sandbox_type: Type of sandbox (`'none'`, `'modal'`,
-            `'runloop'`, `'daytona'`, `'langsmith'`).
+        sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
+            `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
+            the user message before sending it to the agent.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -741,6 +815,85 @@ async def run_non_interactive(
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
+
+    message_kwargs: dict[str, Any] | None = None
+    if initial_skill and initial_skill.strip():
+        from deepagents_cli.skills.invocation import (
+            build_skill_invocation_envelope,
+            discover_skills_and_roots,
+        )
+        from deepagents_cli.skills.load import load_skill_content
+
+        normalized_skill = initial_skill.strip().lower()
+        try:
+            skills, allowed_roots = discover_skills_and_roots(assistant_id)
+            skill = next((s for s in skills if s["name"] == normalized_skill), None)
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+
+        if skill is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill not found: {escape_markup(normalized_skill)}"
+            )
+            return 1
+
+        try:
+            content = load_skill_content(
+                str(skill["path"]),
+                allowed_roots=allowed_roots,
+            )
+        except PermissionError as e:
+            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
+            return 1
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+        if content is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
+            )
+            return 1
+
+        if not content.strip():
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill '{escape_markup(normalized_skill)}' has an empty "
+                "SKILL.md file. "
+                "Add instructions to the file before invoking."
+            )
+            return 1
+
+        envelope = build_skill_invocation_envelope(skill, content, message)
+        message = envelope.prompt
+        message_kwargs = envelope.message_kwargs
+
     try:
         result = create_model(
             model_name,
@@ -754,30 +907,11 @@ async def run_non_interactive(
     result.apply_to_settings()
     thread_id = generate_thread_id()
 
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        logger.warning("Could not determine working directory", exc_info=True)
-        cwd = ""
-    metadata: dict[str, str] = {
-        "assistant_id": assistant_id,
-        "agent_name": assistant_id,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    if cwd:
-        metadata["cwd"] = cwd
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
-    from deepagents_cli.textual_adapter import _get_git_branch
+    from deepagents_cli.config import build_stream_config
 
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": metadata,
-    }
+    config: RunnableConfig = build_stream_config(
+        thread_id, assistant_id, sandbox_type=sandbox_type
+    )
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
@@ -811,7 +945,18 @@ async def run_non_interactive(
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
         )
+        # Currently, non-shell tools have no HITL handler in non-interactive
+        # mode, so interrupting on them just fragments LangSmith traces
+        # without adding value. Gate only shell execution via middleware.
         use_auto_approve = not enable_shell or shell_is_unrestricted
+        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        # Extract the concrete allow-list to forward to the server subprocess.
+        # settings.shell_allow_list is already validated at this point.
+        restrictive_allow_list: list[str] | None = (
+            list(settings.shell_allow_list)
+            if use_interrupt_shell_only and settings.shell_allow_list
+            else None
+        )
 
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
@@ -821,6 +966,8 @@ async def run_non_interactive(
             model_name=model_name,
             model_params=model_params,
             auto_approve=use_auto_approve,
+            interrupt_shell_only=use_interrupt_shell_only,
+            shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=sandbox_setup,
@@ -858,6 +1005,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
             )
 

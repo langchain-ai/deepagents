@@ -1,0 +1,169 @@
+[
+  {
+    "input": "My friend is pretty cheap but hes kinda hungry, help?",
+    "output": "sort_results(places=get_recommendations(topics=['food'], lat_long=get_latitude_longitude(location=get_current_location())), sort='price', ascending=True) ",
+    "domain": "PlacesAPI",
+    "nesting_depth": 4,
+    "num_function_calls": 4,
+    "difficulty": "medium",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests inferring intent (cheap food near current location) from casual language and composing location, recommendation, and sort calls.",
+    "id": "nexus_placesapi_6"
+  },
+  {
+    "input": "Can you retrieve the first comment on the 'github.com' domain using your API key 'ABCD1234' and then add that comment to ip address '192.0.2.0' using the same API key?",
+    "output": "vt_add_comment_to_ip_address('192.0.2.0', get_first_object_from_list(vt_get_comments_on_domain(\"github.com\", \"ABCD1234\")), 'ABCD1234')",
+    "domain": "VirusTotal_Nested",
+    "nesting_depth": 3,
+    "num_function_calls": 3,
+    "difficulty": "medium",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests cross-entity data transfer: retrieving a comment from one domain and posting it to an IP address via nested composition.",
+    "id": "nexus_virustotal_nested_8"
+  },
+  {
+    "input": "I want to plan a picnic around Jan 23, 2024 and I want it to go for 4 days at least. Will it be raining then?",
+    "output": "get_hourly_observation(get_nearest_station_id(find_nearby_stations(get_latitude_longitude(get_current_location()))), subtract_time_delta(\"2024-01-23\", 4), \"2024-01-23\", get_timezone(get_latitude_longitude(get_current_location())))",
+    "domain": "ClimateAPI",
+    "nesting_depth": 5,
+    "num_function_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests deep nesting (depth 5) combining location inference, station lookup, date arithmetic, and timezone resolution for weather retrieval.",
+    "id": "nexus_climateapi_11"
+  },
+  {
+    "input": "What has been the weather like for the past 5 days in the city of Menlo Park? Also get me the coordinates for Palo Alto. And finally, get me the timezone Palo Alto is in?",
+    "output": "get_hourly_observation(get_nearest_station_id(find_nearby_stations(get_latitude_longitude(\"Menlo Park\"))), subtract_time_delta(get_current_time_at_location(get_latitude_longitude(\"Menlo Park\")), 5), get_current_time_at_location(get_latitude_longitude(\"Menlo Park\")), get_timezone(get_latitude_longitude(\"Menlo Park\"))); get_latitude_longitude(\"Palo Alto\"); get_timezone(get_latitude_longitude(\"Palo Alto\"))",
+    "domain": "ClimateAPI",
+    "nesting_depth": 4,
+    "num_function_calls": 14,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests parallel composition of 14 function calls across multiple tasks (weather, coordinates, timezone) for different cities.",
+    "id": "nexus_climateapi_12"
+  },
+  {
+    "input": "I am interested in finding vulnerabilities connected with a certain CPE name. First, I would like to find a non-deprecated CPE record using a partial match of the CPE name I am looking for. Let's say the partial CPE name is 'cpe:2.3:a:microsoft:exchange_server:2013:'. Could you use the full CPE name from the first non-deprecated CPE object in the obtained list and find a list of corresponding CVEs?",
+    "output": "searchCVE(cpeName=getCPEName(get_first_object_from_list(filterDeprecatedCPEs(searchCPE(cpeMatchString='cpe:2.3:a:microsoft:exchange_server:2013:'))))) ",
+    "domain": "NVD_Nested",
+    "nesting_depth": 5,
+    "num_function_calls": 5,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests a 5-deep pipeline: CPE search, deprecation filter, list extraction, CPE name extraction, and CVE lookup.",
+    "id": "nexus_nvd_nested_13",
+    "prompt": "Inspect the files under `/cases/nexus_nvd_nested_13/` and write the exact function-composition expression that solves the request. Return only the expression.\n\nRequest: I need the first non-deprecated CPE record matching the partial string cpe:2.3:a:microsoft:exchange_server:2013:, then I need the vulnerabilities associated with its full CPE name.",
+    "answer_snippets": [
+      "filterDeprecatedCPEs(searchCVE(cpeMatchString='cpe:2.3:a:microsoft:exchange_server:2013:'))",
+      "searchCVE(cpeName=getCPEName(get_first_object_from_list("
+    ],
+    "files": {
+      "/cases/nexus_nvd_nested_13/api_reference.md": "Available functions:\n- searchCVE(cpeMatchString=...) -> list of CPE records\n- searchCVE(keywordExactMatch=True, keywordSearch=...) -> list of CPE records\n- searchCVE(cpeName=...) -> list of CVEs\n- filterDeprecatedCPEs(records) -> only non-deprecated CPE records\n- get_first_object_from_list(records) -> first record\n- getCPEName(cpe_record) -> full CPE name string\n",
+      "/cases/nexus_nvd_nested_13/syntax.md": "Write the final answer as an exact function-composition expression. Use the function names and argument names from the docs exactly. Separate independent expressions with ';'.\n"
+    }
+  },
+  {
+    "input": "Can you help me find the first non-deprecated CPE name from the NVD database with an exact match for the keyword 'Windows' and then find the associated vulnerabilities?",
+    "output": "searchCVE(cpeName=getCPEName(get_first_object_from_list(filterDeprecatedCPEs(searchCPE(keywordExactMatch=True, keywordSearch='Windows'))))) ",
+    "domain": "NVD_Nested",
+    "nesting_depth": 5,
+    "num_function_calls": 5,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests the same 5-deep CPE-to-CVE pipeline but with keyword exact match, requiring different parameter threading.",
+    "id": "nexus_nvd_nested_14",
+    "prompt": "Inspect the files under `/cases/nexus_nvd_nested_14/` and write the exact function-composition expression that solves the request. Return only the expression.\n\nRequest: Find the first non-deprecated CPE name from the NVD database using an exact keyword search for Windows, then find the associated vulnerabilities.",
+    "answer_snippets": [
+      "searchCVE(cpeName=getCPEName(get_first_object_from_list(filterDeprecatedCPEs(searchCVE(keywordExactMatch=True, keywordSearch='Windows')))))"
+    ],
+    "files": {
+      "/cases/nexus_nvd_nested_14/api_reference.md": "Available functions:\n- searchCVE(cpeMatchString=...) -> list of CPE records\n- searchCVE(keywordExactMatch=True, keywordSearch=...) -> list of CPE records\n- searchCVE(cpeName=...) -> list of CVEs\n- filterDeprecatedCPEs(records) -> only non-deprecated CPE records\n- get_first_object_from_list(records) -> first record\n- getCPEName(cpe_record) -> full CPE name string\n",
+      "/cases/nexus_nvd_nested_14/syntax.md": "Write the final answer as an exact function-composition expression. Use the function names and argument names from the docs exactly. Separate independent expressions with ';'.\n"
+    }
+  },
+  {
+    "input": "Get me good food near me please, and also get me good food near Reno?",
+    "output": "sort_results(places=get_recommendations(topics=['food'], lat_long=get_latitude_longitude(location=get_current_location())), sort='distance', ascending=True); sort_results(places=get_recommendations(topics=['food'], lat_long=get_latitude_longitude(location='Reno')), sort='distance', ascending=True); ",
+    "domain": "PlacesAPI",
+    "nesting_depth": 4,
+    "num_function_calls": 7,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests parallel composition of 7 calls across two independent location pipelines (current location and named city).",
+    "id": "nexus_placesapi_15",
+    "prompt": "Inspect the files under `/cases/nexus_placesapi_15/` and write the exact function-composition expression that solves the request. Return only the expression.\n\nRequest: Get me good food near my current location, and also get me good food near Reno.",
+    "answer_snippets": [
+      "sort_results(places=get_recommendations(topics=['food'], lat_long=get_latitude_longitude(location=get_current_location())), sort='distance', ascending=True); sort_results(places=get_recommendations(topics=['food'], lat_long=get_latitude_longitude(location='Reno')), sort='distance', ascending=True);"
+    ],
+    "files": {
+      "/cases/nexus_placesapi_15/api_reference.md": "Available functions:\n- get_current_location()\n- get_latitude_longitude(location=...)\n- get_recommendations(topics=['food'], lat_long=...)\n- sort_results(places=..., sort='distance', ascending=True)\nFor two independent requests, write two expressions separated by ';'.\n",
+      "/cases/nexus_placesapi_15/syntax.md": "Write the final answer as an exact function-composition expression. Use the function names and argument names from the docs exactly. Separate independent expressions with ';'.\n"
+    }
+  },
+  {
+    "input": "Get me the values for (sin(pi) - sin(-(cos((8.0 + pi))))), pi, -(cos(5.0)), and -(pi ** sin(8.0)) using only the given tools.",
+    "output": "subtract(a=sin(radians=pi()), b=sin(radians=negate(a=cos(radians=add(a=8.0, b=pi()))))); pi(); negate(a=cos(radians=5.0)); negate(a=power(a=pi(), b=sin(radians=8.0)))",
+    "domain": "MultiverseMath",
+    "nesting_depth": 6,
+    "num_function_calls": 15,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests translating complex mathematical expressions into deeply nested (depth 6) function call trees with 15 calls.",
+    "id": "nexus_multiversemath_17",
+    "prompt": "Inspect the files under `/cases/nexus_multiversemath_17/` and write the exact function-composition expression that solves the request. Return only the expression.\n\nRequest: Get the values for (sin(pi) - sin(-(cos((8.0 + pi))))), pi, -(cos(5.0)), and -(pi ** sin(8.0)) using only the documented functions.",
+    "answer_snippets": [
+      "subtract(a=sin(radians=pi()), b=sin(radians=negate(a=cos(radians=add(a=8.0, b=pi()))))); pi(); negate(a=cos(radians=5.0)); negate(a=power(a=pi(), b=sin(radians=8.0)))"
+    ],
+    "files": {
+      "/cases/nexus_multiversemath_17/api_reference.md": "Available functions:\n- pi()\n- sin(radians=...)\n- cos(radians=...)\n- add(a=..., b=...)\n- subtract(a=..., b=...)\n- negate(a=...)\n- power(a=..., b=...)\n",
+      "/cases/nexus_multiversemath_17/syntax.md": "Write the final answer as an exact function-composition expression. Use the function names and argument names from the docs exactly. Separate independent expressions with ';'.\n"
+    }
+  },
+  {
+    "input": "Get me the values for 0.0, pi, 0.0, and pi ** -(-((cos(5.0) + sin(0.0)))) using only the given tools.",
+    "output": "0.0; pi(); 0.0; power(a=pi(), b=negate(a=negate(a=add(a=cos(radians=5.0), b=sin(radians=0.0)))))",
+    "domain": "MultiverseMath",
+    "nesting_depth": 5,
+    "num_function_calls": 8,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "Tests decomposing multiple mathematical expressions including double negation and trigonometric composition at depth 5.",
+    "id": "nexus_multiversemath_18",
+    "prompt": "Inspect the files under `/cases/nexus_multiversemath_18/` and write the exact function-composition expression that solves the request. Return only the expression.\n\nRequest: Get the values for 0.0, pi, 0.0, and pi ** -(-((cos(5.0) + sin(0.0)))) using only the documented functions.",
+    "answer_snippets": [
+      "0.0; pi(); 0.0; power(a=pi(), b=negate(a=negate(a=add(a=cos(radians=5.0), b=sin(radians=0.0)))))"
+    ],
+    "files": {
+      "/cases/nexus_multiversemath_18/api_reference.md": "Available functions:\n- pi()\n- sin(radians=...)\n- cos(radians=...)\n- add(a=..., b=...)\n- negate(a=...)\n- power(a=..., b=...)\n",
+      "/cases/nexus_multiversemath_18/syntax.md": "Write the final answer as an exact function-composition expression. Use the function names and argument names from the docs exactly. Separate independent expressions with ';'.\n"
+    }
+  }
+]

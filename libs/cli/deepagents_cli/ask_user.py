@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-from typing import NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -21,84 +20,10 @@ from langchain.tools import InjectedToolCallId
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from pydantic import Field
-from typing_extensions import TypedDict
+
+from deepagents_cli._ask_user_types import AskUserRequest, Question
 
 logger = logging.getLogger(__name__)
-
-
-class Choice(TypedDict):
-    """A single choice option for a multiple choice question."""
-
-    value: Annotated[str, Field(description="The display label for this choice.")]
-
-
-class Question(TypedDict):
-    """A question to ask the user."""
-
-    question: Annotated[str, Field(description="The question text to display.")]
-
-    type: Annotated[
-        Literal["text", "multiple_choice"],
-        Field(
-            description=(
-                "Question type. 'text' for free-form input, 'multiple_choice' for "
-                "predefined options."
-            )
-        ),
-    ]
-
-    choices: NotRequired[
-        Annotated[
-            list[Choice],
-            Field(
-                description=(
-                    "Options for multiple_choice questions. An 'Other' free-form "
-                    "option is always appended automatically."
-                )
-            ),
-        ]
-    ]
-
-    required: NotRequired[
-        Annotated[
-            bool,
-            Field(
-                description="Whether the user must answer. Defaults to true if omitted."
-            ),
-        ]
-    ]
-
-
-class AskUserRequest(TypedDict):
-    """Request payload sent via interrupt when asking the user questions."""
-
-    type: Literal["ask_user"]
-
-    questions: list[Question]
-
-    tool_call_id: str
-
-
-class AskUserAnswered(TypedDict):
-    """Widget result when the user submits answers."""
-
-    type: Literal["answered"]
-    """Discriminator tag, always `'answered'`."""
-
-    answers: list[str]
-    """User-provided answers, one per question."""
-
-
-class AskUserCancelled(TypedDict):
-    """Widget result when the user cancels the prompt."""
-
-    type: Literal["cancelled"]
-    """Discriminator tag, always `'cancelled'`."""
-
-
-# Discriminated union for the ask_user widget Future result.
-AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.

@@ -52,14 +52,29 @@ def _make_banner(
     Returns:
         A `WelcomeBanner` instance ready for testing.
     """
+    import deepagents_cli.config as _cfg
+
     env = {}
     if project_name:
         env["LANGSMITH_API_KEY"] = "fake-key"
         env["LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_PROJECT"] = project_name
+        env["DEEPAGENTS_CLI_LANGSMITH_PROJECT"] = project_name
 
-    with patch.dict("os.environ", env, clear=True):
-        return WelcomeBanner(thread_id=thread_id)
+    # Temporarily clear the cached settings singleton so _get_settings()
+    # re-creates it from the patched env vars inside the context manager.
+    saved = _cfg.__dict__.pop("settings", None)
+    saved_bootstrap = _cfg._bootstrap_done
+    _cfg._bootstrap_done = False
+    try:
+        with patch.dict("os.environ", env, clear=True):
+            return WelcomeBanner(thread_id=thread_id)
+    finally:
+        _cfg._bootstrap_done = saved_bootstrap
+        if saved is not None:
+            _cfg.__dict__["settings"] = saved
+        else:
+            _cfg.__dict__.pop("settings", None)
 
 
 class TestBuildBannerThreadLink:
@@ -285,14 +300,6 @@ class TestBuildWelcomeFooter:
             in build_welcome_footer().plain
         )
 
-    def test_contains_shortcut_hints(self) -> None:
-        """Footer should include all keyboard shortcut hints."""
-        plain = build_welcome_footer().plain
-        assert "Enter send" in plain
-        assert "newline" in plain
-        assert "@ files" in plain
-        assert "/ commands" in plain
-
     def test_contains_tip(self) -> None:
         """Footer should include a tip from the rotating tips list."""
         plain = build_welcome_footer().plain
@@ -309,32 +316,24 @@ class TestBuildWelcomeFooter:
         lines = build_welcome_footer().plain.strip().splitlines()
         assert lines[0].strip() == "Ready to code! What would you like to build?"
 
-    def test_shortcut_line_is_last(self) -> None:
-        """The shortcut help line must be the very last line."""
+    def test_tip_line_is_last(self) -> None:
+        """The tip line must be the last line after the ready prompt."""
         lines = build_welcome_footer().plain.strip().splitlines()
-        last = lines[-1].strip()
-        assert last.startswith("Enter send")
-        assert last.endswith("/ commands")
-
-    def test_tip_line_between_ready_and_shortcuts(self) -> None:
-        """The tip line must sit between the ready prompt and shortcut hints."""
-        lines = build_welcome_footer().plain.strip().splitlines()
-        assert lines[1].strip().startswith("Tip: ")
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_blank_line_precedes_ready_prompt(self) -> None:
         """A blank line must precede the ready prompt (leading newline)."""
         raw = build_welcome_footer().plain
         assert raw.startswith("\n")
 
-    def test_exactly_four_lines_with_leading_blank(self) -> None:
-        """Footer: blank line, ready prompt, tip, shortcut help."""
+    def test_exactly_three_lines_with_leading_blank(self) -> None:
+        """Footer: blank line, ready prompt, tip."""
         lines = build_welcome_footer().plain.split("\n")
-        # Leading \n produces ['', 'Ready to code...', 'Tip: ...', 'Enter send...']
+        # Leading \n produces ['', 'Ready to code...', 'Tip: ...']
         assert lines[0] == ""
         assert lines[1].startswith("Ready to code")
         assert lines[2].startswith("Tip: ")
-        assert lines[3].startswith("Enter send")
-        assert len(lines) == 4
+        assert len(lines) == 3
 
 
 class TestBannerFooterPosition:
@@ -344,34 +343,30 @@ class TestBannerFooterPosition:
         """With no thread/project/MCP, footer lines are still last."""
         widget = _make_banner()
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-3]
-        assert lines[-2].strip().startswith("Tip: ")
-        assert lines[-1].strip().startswith("Enter send")
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_footer_is_last_with_thread_id(self) -> None:
         """Footer remains last when a thread ID is displayed."""
         widget = _make_banner(thread_id="tid-123")
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-3]
-        assert lines[-2].strip().startswith("Tip: ")
-        assert lines[-1].strip().startswith("Enter send")
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_footer_is_last_with_langsmith_project(self) -> None:
         """Footer remains last when LangSmith project info is shown."""
         widget = _make_banner(project_name="my-proj")
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-3]
-        assert lines[-2].strip().startswith("Tip: ")
-        assert lines[-1].strip().startswith("Enter send")
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_footer_is_last_with_mcp_tools(self) -> None:
         """Footer remains last when MCP tools are loaded."""
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner(mcp_tool_count=5)
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-3]
-        assert lines[-2].strip().startswith("Tip: ")
-        assert lines[-1].strip().startswith("Enter send")
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_footer_is_last_with_all_info(self) -> None:
         """Footer remains last when all info lines are present."""
@@ -383,9 +378,8 @@ class TestBannerFooterPosition:
         with patch.dict("os.environ", env, clear=True):
             widget = WelcomeBanner(thread_id="t-1", mcp_tool_count=3)
         lines = widget._build_banner().plain.strip().splitlines()
-        assert "Ready to code" in lines[-3]
-        assert lines[-2].strip().startswith("Tip: ")
-        assert lines[-1].strip().startswith("Enter send")
+        assert "Ready to code" in lines[-2]
+        assert lines[-1].strip().startswith("Tip: ")
 
     def test_blank_line_separates_info_from_footer(self) -> None:
         """A blank line should appear between info lines and footer."""
@@ -421,3 +415,55 @@ class TestBuildConnectingFooter:
     def test_contains_connecting_message(self) -> None:
         """Footer should include the connecting status text."""
         assert "Connecting to server..." in build_connecting_footer().plain
+
+    def test_resuming_message(self) -> None:
+        """Footer should say 'Resuming...' when resuming."""
+        footer = build_connecting_footer(resuming=True)
+        assert "Resuming..." in footer.plain
+        assert "Connecting" not in footer.plain
+
+    def test_local_server_message(self) -> None:
+        """Footer should say 'local server' when local_server is True."""
+        footer = build_connecting_footer(local_server=True)
+        assert "Connecting to local server..." in footer.plain
+
+    def test_resuming_takes_precedence_over_local(self) -> None:
+        """Resuming text should win when both resuming and local_server are set."""
+        footer = build_connecting_footer(resuming=True, local_server=True)
+        assert "Resuming..." in footer.plain
+        assert "local server" not in footer.plain
+
+
+class TestBannerConnectingFooterVariants:
+    """Verify WelcomeBanner forwards resuming/local_server to _build_banner."""
+
+    def test_connecting_default(self) -> None:
+        """Baseline connecting banner shows generic server text."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." in plain
+        assert "Ready to code" not in plain
+
+    def test_connecting_resuming(self) -> None:
+        """Banner forwards resuming flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "Connecting" not in plain
+
+    def test_connecting_local_server(self) -> None:
+        """Banner forwards local_server flag to footer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to local server..." in plain
+
+    def test_connecting_resuming_precedence(self) -> None:
+        """Resuming wins over local_server at the banner level."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, resuming=True, local_server=True)
+        plain = widget._build_banner().plain
+        assert "Resuming..." in plain
+        assert "local server" not in plain

@@ -32,6 +32,8 @@ def _get_git_executable() -> str | None:
 if TYPE_CHECKING:
     from textual import events
 
+    from deepagents_cli.command_registry import CommandEntry
+
 
 class CompletionResult(StrEnum):
     """Result of handling a key event in the completion system."""
@@ -96,33 +98,6 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    ("/help", "Show help", ""),
-    ("/changelog", "Open changelog in browser", ""),
-    ("/clear", "Clear chat and start new thread", "reset"),
-    ("/docs", "Open documentation in browser", ""),
-    ("/editor", "Open prompt in external editor ($EDITOR)", ""),
-    ("/feedback", "Submit a bug report or feature request", ""),
-    ("/mcp", "Show active MCP servers and tools", "servers"),
-    ("/model", "Switch or configure model (--model-params, --default)", ""),
-    (
-        "/offload",
-        "Free up context window space by offloading older messages",
-        "compact",
-    ),
-    ("/quit", "Exit app", "close leave"),
-    ("/reload", "Reload config from environment variables and .env", "refresh"),
-    ("/remember", "Update memory and skills from conversation", ""),
-    ("/tokens", "Token usage", "cost"),
-    ("/threads", "Browse and resume previous threads", "continue history sessions"),
-    ("/trace", "Open current thread in LangSmith", ""),
-    ("/version", "Show version", ""),
-]
-"""Built-in slash commands: (name, description, hidden_keywords).
-
-Hidden keywords are space-separated terms that participate in fuzzy matching
-but are never displayed to the user.
-"""
 
 MAX_SUGGESTIONS = 10
 """UI cap so the completion popup doesn't get unwieldy."""
@@ -139,19 +114,31 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str, str]],
+        commands: list[CommandEntry],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
 
         Args:
-            commands: List of `(command, description, hidden_keywords)` tuples.
+            commands: List of `CommandEntry` instances.
             view: View to render suggestions to.
         """
         self._commands = commands
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
+
+    def update_commands(self, commands: list[CommandEntry]) -> None:
+        """Replace the commands list and reset suggestions.
+
+        Used to merge dynamically discovered skill commands with
+        the static command registry at runtime.
+
+        Args:
+            commands: New list of `CommandEntry` instances.
+        """
+        self._commands = commands
+        self.reset()
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
@@ -223,17 +210,27 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
+        # Space means the user finished picking a command — dismiss popup
+        if " " in search:
+            self.reset()
+            return
+
         if not search:
             # No search text — show all commands (display only cmd + desc)
-            suggestions = [(cmd, desc) for cmd, desc, _ in self._commands][
+            suggestions = [(entry.name, entry.description) for entry in self._commands][
                 :MAX_SUGGESTIONS
             ]
         else:
             # Score and filter commands using fuzzy matching
             scored = [
-                (score, cmd, desc)
-                for cmd, desc, kw in self._commands
-                if (score := self._score_command(search, cmd, desc, kw)) > 0
+                (score, entry.name, entry.description)
+                for entry in self._commands
+                if (
+                    score := self._score_command(
+                        search, entry.name, entry.description, entry.hidden_keywords
+                    )
+                )
+                > 0
             ]
             scored.sort(key=lambda x: -x[0])
             suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
@@ -259,7 +256,7 @@ class SlashCommandController:
             return CompletionResult.IGNORED
 
         match event.key:
-            case "tab":
+            case "tab" | "space":
                 if self._apply_selected_completion(cursor_index):
                     return CompletionResult.HANDLED
                 return CompletionResult.IGNORED

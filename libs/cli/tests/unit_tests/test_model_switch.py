@@ -21,16 +21,25 @@ def _make_remote_agent() -> RemoteAgent:
 class _FakeModelResult:
     """Minimal model result for `_switch_model` tests."""
 
-    def __init__(self, *, model_name: str, provider: str, context_limit: int) -> None:
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        provider: str,
+        context_limit: int,
+        unsupported_modalities: frozenset[str] = frozenset(),
+    ) -> None:
         self.model_name = model_name
         self.provider = provider
         self.context_limit = context_limit
+        self.unsupported_modalities = unsupported_modalities
 
     def apply_to_settings(self) -> None:
         """Mirror `ModelResult.apply_to_settings()` for test isolation."""
         settings.model_name = self.model_name
         settings.model_provider = self.provider
         settings.model_context_limit = self.context_limit
+        settings.model_unsupported_modalities = self.unsupported_modalities
 
 
 @pytest.fixture(autouse=True)
@@ -39,10 +48,12 @@ def _restore_settings() -> Iterator[None]:
     original_name = settings.model_name
     original_provider = settings.model_provider
     original_context_limit = settings.model_context_limit
+    original_modalities = settings.model_unsupported_modalities
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
     settings.model_context_limit = original_context_limit
+    settings.model_unsupported_modalities = original_modalities
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +90,7 @@ def mock_create_model() -> Iterator[Mock]:
         )
 
     with patch(
-        "deepagents_cli.app.create_model",
+        "deepagents_cli.config.create_model",
         side_effect=fake_create_model,
     ) as mock:
         yield mock
@@ -197,7 +208,7 @@ class TestModelSwitchErrorHandling:
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.save_recent_model", return_value=False),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=False),
             patch.object(ErrorMessage, "__init__", capture_err),
             patch.object(AppMessage, "__init__", capture_app),
         ):
@@ -234,7 +245,7 @@ class TestModelSwitchErrorHandling:
                 return_value=True,
             ),
             patch(
-                "deepagents_cli.app.save_recent_model", return_value=True
+                "deepagents_cli.model_config.save_recent_model", return_value=True
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -265,7 +276,7 @@ class TestModelSwitchErrorHandling:
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
             await app._switch_model(
                 "anthropic:claude-sonnet-4-5",
@@ -295,7 +306,7 @@ class TestModelSwitchErrorHandling:
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
             await app._switch_model(
                 "anthropic:claude-sonnet-4-5",
@@ -346,7 +357,7 @@ class TestModelSwitchConcurrencyGuard:
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
-            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
@@ -390,7 +401,7 @@ api_key_env = "FIREWORKS_API_KEY"
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
             patch(
-                "deepagents_cli.app.save_recent_model", return_value=True
+                "deepagents_cli.model_config.save_recent_model", return_value=True
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_app),
         ):
@@ -464,7 +475,7 @@ models = ["llama3"]
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch(
-                "deepagents_cli.app.save_recent_model", return_value=True
+                "deepagents_cli.model_config.save_recent_model", return_value=True
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_app),
         ):
@@ -497,13 +508,13 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,
             ),
             patch(
-                "deepagents_cli.app.save_recent_model", return_value=True
+                "deepagents_cli.model_config.save_recent_model", return_value=True
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -532,7 +543,7 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=False,
@@ -567,7 +578,7 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
-            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_cli.model_config.has_provider_credentials",
                 return_value=True,

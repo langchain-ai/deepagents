@@ -1,0 +1,182 @@
+[project]
+name = "deepagents-evals"
+version = "0.0.1"
+description = "Evaluation suite and Harbor integration for Deep Agents"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+keywords = ["agents", "ai", "evals", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
+    "deepagents>=0.5.0",
+    "langchain>=1.2.13",
+    "deepagents-cli",
+    # Harbor runtime
+    "harbor>=0.1.12",
+    # LangSmith for observability
+    "langsmith>=0.7.31",
+    # Sandbox runtimes
+    "dockerfile-parse>=2.0.1",
+    "modal>=0.64.0",
+    # LangChain model providers (evals run against many providers)
+    "langchain-anthropic>=1.0.0",
+    "langchain-baseten>=0.2.0",
+    "langchain-deepseek>=1.0.0",
+    "langchain-fireworks>=1.0.0",
+    "langchain-google-genai>=4.0.0",
+    "langchain-groq>=1.0.0",
+    "langchain-mistralai>=1.0.0",
+    "langchain-nvidia-ai-endpoints>=1.0.0",
+    "langchain-ollama>=1.0.0",
+    "langchain-openai>=1.1.14",
+    "langchain-openrouter>=0.1.0",
+    "langchain-xai>=1.0.0",
+    # Eval-specific dependencies
+    "datasets>=3.0.0",
+    "nltk>=3.9.0",
+    "openevals>=0.1.3",
+    "tiktoken>=0.8.0",
+    "langchain-repl",
+    "langchain-quickjs",
+]
+
+[project.optional-dependencies]
+charts = [
+    "matplotlib>=3.9.0",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.2.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "ruff>=0.8.0",
+    "ty>=0.0.1,<1.0.0",
+    "python-dotenv>=1.0.0",
+    "pytest-socket>=0.7.0",
+    "pytest-cov>=7.0.0",
+    "matplotlib>=3.9.0",
+]
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deepagents_harbor*", "deepagents_evals*"]
+
+[tool.setuptools.package-data]
+deepagents_evals = ["categories.json"]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+override-dependencies = [
+    "openai>=1.109.1,<2.0.0",
+    "e2b==2.4.3",
+    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
+    "python-multipart>=0.0.22",
+    # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
+    "protobuf>=6.33.5",
+]
+
+[tool.uv.sources]
+deepagents-cli = { path = "../cli" }
+deepagents = { path = "../deepagents", editable = true }
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
+langchain-repl = { path = "../repl", editable = true }
+
+[tool.ty.environment]
+extra-paths = ["../deepagents", "../cli"]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Vendored BFCL benchmark files — skip both lint and format
+exclude = ["tests/evals/data/bfcl_apis"]
+force-exclude = true
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity — trajectory conversion has inherent branching
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "E501",    # Line too long — harbor wraps long shell scripts and command strings
+    "FBT",     # Boolean positional arguments — too pedantic for wrapper APIs matching upstream signatures
+    "FIX002",  # Line contains TODO
+    "PLR09",   # Too many something (args, branches, returns, statements) — wrapper/conversion methods are inherently branchy
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
+]
+extend-safe-fixes = ["PLR6201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",  # Missing type annotation for function argument — not needed in tests
+    "ANN201",  # Missing return type annotation — not needed in tests
+    "ANN202",  # Missing return type annotation for private function — not needed in tests
+    "ARG002",  # Unused method argument — common for pytest fixtures and protocol methods
+    "D",       # Docstring conventions — not needed in tests
+    "S101",    # Use of `assert` — expected in tests
+    "PLR2004", # Magic value used in comparison — fine in test assertions
+    "S",       # Security warnings — not applicable to tests
+    "SLF",     # Private member access — tests need access to internals
+]
+"scripts/**" = [
+    "INP001",  # Missing `__init__.py` — scripts are standalone
+    "T201",    # `print` found — scripts use print for output
+    "S",       # Security warnings — not applicable to scripts
+]
+"deepagents_harbor/langsmith.py" = [
+    "T201",    # `print` found — CI-facing integration layer, print is the expected output
+]
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_evals", "deepagents_harbor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

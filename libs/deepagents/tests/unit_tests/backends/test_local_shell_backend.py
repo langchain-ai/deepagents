@@ -161,7 +161,7 @@ def test_local_shell_backend_ls_info() -> None:
         backend.write("/file2.txt", "content2")
 
         # List files
-        files = backend.ls_info("/").entries
+        files = backend.ls("/").entries
 
         assert files is not None
         assert len(files) == 2
@@ -180,7 +180,7 @@ def test_local_shell_backend_grep() -> None:
         backend.write("/file2.txt", "DONE: completed")
 
         # Search for TODO
-        matches = backend.grep_raw("TODO").matches
+        matches = backend.grep("TODO").matches
 
         assert matches is not None
         assert len(matches) == 1
@@ -198,7 +198,7 @@ def test_local_shell_backend_glob() -> None:
         backend.write("/file3.txt", "content")
 
         # Find all .txt files
-        txt_files = backend.glob_info("*.txt").matches
+        txt_files = backend.glob("*.txt").matches
 
         assert txt_files is not None
         assert len(txt_files) == 2

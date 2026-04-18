@@ -28,6 +28,7 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
     ".jpeg": "image",
     ".jpg": "image",
     ".webp": "image",
+    ".gif": "image",
     ".heic": "image",
     ".heif": "image",
     # Video (https://ai.google.dev/gemini-api/docs/video-understanding)
@@ -192,11 +193,14 @@ def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
         `modified_at` timestamps.  No `encoding` key.
     """
     content = file_data["content"]
-    return {
+    result: dict[str, Any] = {
         "content": content.split("\n"),
-        "created_at": file_data["created_at"],
-        "modified_at": file_data["modified_at"],
     }
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        result["modified_at"] = file_data["modified_at"]
+    return result
 
 
 def file_data_to_string(file_data: FileData) -> str:
@@ -248,12 +252,14 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     """
     now = datetime.now(UTC).isoformat()
 
-    return {
-        "content": content,
-        "encoding": file_data.get("encoding", "utf-8"),
-        "created_at": file_data["created_at"],
-        "modified_at": now,
-    }
+    result = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        result["created_at"] = file_data["created_at"]
+    result["modified_at"] = now
+    return result
 
 
 def slice_read_response(

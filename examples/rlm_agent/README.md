@@ -1,47 +1,54 @@
 # Recursive REPL Mode (RLM)
 
-`create_rlm_agent` is a tiny wrapper over `create_deep_agent` that adds a
-[`REPLMiddleware`](../../libs/deepagents-repl) with **programmatic tool
-calling (PTC)** at every level of a nested subagent chain, down to a
-caller-chosen `max_depth`.
+`create_rlm_agent` is a wrapper over `create_deep_agent` that replaces
+the default `general-purpose` subagent with one that has
+[`REPLMiddleware`](../../libs/deepagents-repl) attached, then — for
+`max_depth > 0` — adds a `deeper-agent` subagent pointing at another
+whole agent graph built the same way, one level shallower.
+
+The result: the general-purpose agent at any depth can delegate a
+sub-task via `tools.task({ subagent_type: "deeper-agent", ... })` to a
+structurally separate agent that itself has REPL + the same decision.
+Recursion bottoms out at depth 0, whose general-purpose has REPL but
+no `deeper-agent`.
 
 ## Why
 
-A plain Deep Agent can delegate to a subagent via the `task` tool. That's
-one call per subtask. If the task decomposes into ten independent
-subtasks, the top-level agent issues ten `task` calls sequentially and
-pays the round-trip cost on each.
+A plain Deep Agent can delegate to a subagent via the `task` tool.
+That's one call per subtask, serialized across model turns.
 
-With `REPLMiddleware(ptc=True)`, the agent can instead write:
+With `REPLMiddleware(ptc=True)` on the general-purpose subagent, the
+agent can instead write:
 
 ```javascript
-// inside one `eval` tool call
+// inside one `eval` tool call on general-purpose
 const results = await Promise.all([
-  tools.task({ description: "subtask 1" }),
-  tools.task({ description: "subtask 2" }),
+  tools.task({ subagent_type: "deeper-agent", description: "subtask 1" }),
+  tools.task({ subagent_type: "deeper-agent", description: "subtask 2" }),
   // ...
 ]);
 ```
 
-One model turn kicks off the whole fan-out. The `recursive` subagent
-`create_rlm_agent` injects has the same REPL + PTC, so the decomposition
-can continue at the next level — which is the whole point of the
-"recursion" in the name.
+One model turn kicks off the whole fan-out. Each `deeper-agent` call
+lands on a freshly-built general-purpose one level down, which itself
+has REPL and can fan out again until the chain bottoms out.
 
 ## Structure
 
 ```
-YourAgent (depth 0)
-├── eval + PTC over [add, task]     ← one eval can Promise.all()
-└── task → recursive subagent
-    ├── eval + PTC over [add, task]  ← depth 1 can also fan out
-    └── task → recursive subagent
-        ├── eval + PTC                ← depth 2 (leaf when max_depth=2)
-        └── (no recursive child)
+root (depth=2)
+├── general-purpose (REPL + PTC)
+│   └── can task `deeper-agent` →
+└── deeper-agent  (a full compiled depth-1 agent)
+    ├── general-purpose (REPL + PTC)
+    │   └── can task `deeper-agent` →
+    └── deeper-agent  (a full compiled depth-0 agent)
+        └── general-purpose (REPL + PTC, no deeper-agent peer)
 ```
 
-Every level shares the same tools and shares the same subagent set,
-plus a synthetic `recursive` subagent pointing at the depth-N-1 build.
+Each `deeper-agent` entry is an independent compiled graph — not a
+cycle. The system prompt at each level tells the model how much
+recursion budget is left.
 
 ## Usage
 
@@ -65,6 +72,23 @@ result = agent.invoke({
 })
 ```
 
+Extra subagents pass through untouched:
+
+```python
+agent = create_rlm_agent(
+    tools=[lookup],
+    subagents=[
+        {"name": "writer", "description": "...", "system_prompt": "..."},
+    ],
+    max_depth=1,
+)
+```
+
+What you cannot do: pass your own `general-purpose` spec. RLM manages
+that subagent's middleware and system prompt at every depth; a
+caller-provided override would break the recursion contract. The
+helper raises `ValueError` if it finds one.
+
 ## Running the demo
 
 ```bash
@@ -77,13 +101,13 @@ uv run python rlm_agent.py --max-depth 2
 
 ## Tradeoffs
 
-- **Parallelism is cheap, depth isn't.** Each recursion level builds a
-  full Deep Agent graph. `max_depth=2` is plenty for most decomposition
-  patterns; `max_depth=5+` is a sign the task should be rethought.
-- **State isn't shared across recursion levels.** Each subagent runs in
-  its own graph. Pass data through the `task` tool's `description`
-  argument or let results flow back through tool return values.
-- **Every level inherits the full tool set.** This is the point — but
-  if a dangerous tool shouldn't reach depth 2, wire your own
-  `SubAgent` entry that filters tools and hand it to `create_rlm_agent`
-  via the `subagents` kwarg.
+- **Each recursion level builds a full Deep Agent graph.** `max_depth=2`
+  is plenty for most decomposition patterns; deeper tends to be a
+  sign that the task should be rethought.
+- **State is not shared across recursion levels.** Each `deeper-agent`
+  call runs in its own graph. Pass data through the `task` tool's
+  `description` argument or let results flow back through tool
+  return values.
+- **Only the general-purpose subagent gets REPL.** If you want REPL
+  on a custom subagent too, add `REPLMiddleware` to its `middleware`
+  list yourself when you define it.

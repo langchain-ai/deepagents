@@ -1605,11 +1605,9 @@ def cli_main() -> None:
                 )
                 sys.exit(exit_code)
             else:
-                console.print(
-                    "[bold red]Error:[/bold red] "
-                    "Unknown mcp subcommand. Try: deepagents mcp login <server>"
-                )
-                sys.exit(2)
+                from deepagents_cli.ui import show_mcp_help
+
+                show_mcp_help()
         elif args.non_interactive_message:
             # Check for optional tools before running agent (stderr so
             # --quiet piped output stays clean)

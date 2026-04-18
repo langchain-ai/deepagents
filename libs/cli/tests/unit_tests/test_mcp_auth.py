@@ -69,7 +69,6 @@ def _make_client_info() -> OAuthClientInformationFull:
 
 
 class TestFileTokenStorage:
-    @pytest.mark.asyncio
     async def test_get_tokens_when_file_missing(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage
 
@@ -77,7 +76,6 @@ class TestFileTokenStorage:
         assert await storage.get_tokens() is None
         assert await storage.get_client_info() is None
 
-    @pytest.mark.asyncio
     async def test_set_and_get_round_trip(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage
 
@@ -92,7 +90,6 @@ class TestFileTokenStorage:
         assert got_ci.client_id == "cid"
         assert got_tok.access_token == "at"
 
-    @pytest.mark.asyncio
     @pytest.mark.skipif(
         not hasattr(__import__("os"), "geteuid"),
         reason="POSIX file-mode semantics",
@@ -110,7 +107,6 @@ class TestFileTokenStorage:
         assert (os.stat(token_path).st_mode & 0o777) == 0o600
         assert (os.stat(dir_path).st_mode & 0o777) == 0o700
 
-    @pytest.mark.asyncio
     async def test_atomic_write_no_partial_on_failure(
         self, fake_home: Path
     ) -> None:
@@ -124,7 +120,6 @@ class TestFileTokenStorage:
                 await storage.set_tokens(_make_tokens())
         assert not token_path.exists()
 
-    @pytest.mark.asyncio
     async def test_version_mismatch_raises(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage
 
@@ -137,7 +132,6 @@ class TestFileTokenStorage:
         with pytest.raises(RuntimeError, match="version"):
             await storage.get_tokens()
 
-    @pytest.mark.asyncio
     async def test_two_servers_do_not_collide(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage
 
@@ -172,7 +166,6 @@ class TestBuildOAuthProvider:
         )
         assert isinstance(provider, OAuthClientProvider)
 
-    @pytest.mark.asyncio
     async def test_redirect_handler_prints_url(
         self, fake_home: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -183,7 +176,6 @@ class TestBuildOAuthProvider:
         captured = capsys.readouterr()
         assert "https://issuer.example.com/authorize?x=1" in captured.out
 
-    @pytest.mark.asyncio
     async def test_callback_handler_parses_code_and_state(
         self,
         fake_home: Path,
@@ -202,7 +194,6 @@ class TestBuildOAuthProvider:
         assert code == "ABC"
         assert state == "XYZ"
 
-    @pytest.mark.asyncio
     async def test_callback_handler_rejects_missing_code(
         self, fake_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -217,7 +208,6 @@ class TestBuildOAuthProvider:
 
 
 class TestLoginCommand:
-    @pytest.mark.asyncio
     async def test_login_persists_tokens(
         self,
         fake_home: Path,
@@ -250,7 +240,6 @@ class TestLoginCommand:
         tok = await storage.get_tokens()
         assert tok is not None and tok.access_token == "new"
 
-    @pytest.mark.asyncio
     async def test_login_rejects_non_oauth_server(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import login
 
@@ -260,7 +249,6 @@ class TestLoginCommand:
                 server_config={"transport": "http", "url": "https://example"},
             )
 
-    @pytest.mark.asyncio
     async def test_login_rejects_stdio_server(self, fake_home: Path) -> None:
         from deepagents_cli.mcp_auth import login
 

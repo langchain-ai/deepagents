@@ -1799,7 +1799,6 @@ class TestToolOrdering:
 
 
 class TestLoadToolsFromConfigHeaders:
-    @pytest.mark.asyncio
     async def test_headers_are_resolved_before_connection(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1842,7 +1841,6 @@ class TestLoadToolsFromConfigHeaders:
 
 
 class TestLoadToolsFromConfigOAuth:
-    @pytest.mark.asyncio
     async def test_missing_tokens_raise_login_instruction(
         self,
         fake_home: Path,
@@ -1865,7 +1863,6 @@ class TestLoadToolsFromConfigOAuth:
             with pytest.raises(RuntimeError, match="deepagents mcp login notion"):
                 await _load_tools_from_config(config)
 
-    @pytest.mark.asyncio
     async def test_existing_tokens_attach_oauth_provider(
         self,
         fake_home: Path,

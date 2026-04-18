@@ -34,7 +34,6 @@ class TestSetupMCPParsers:
 
 
 class TestRunMCPLogin:
-    @pytest.mark.asyncio
     async def test_happy_path(
         self, tmp_path: Path
     ) -> None:
@@ -47,7 +46,7 @@ class TestRunMCPLogin:
         )
 
         with patch(
-            "deepagents_cli.mcp_commands.login",
+            "deepagents_cli.mcp_auth.login",
             new=AsyncMock(return_value=None),
         ) as mocked:
             exit_code = await run_mcp_login(
@@ -59,7 +58,6 @@ class TestRunMCPLogin:
         assert kwargs["server_name"] == "notion"
         assert kwargs["server_config"]["url"] == "https://mcp.notion.com/mcp"
 
-    @pytest.mark.asyncio
     async def test_server_not_in_config(
         self, tmp_path: Path
     ) -> None:

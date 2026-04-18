@@ -395,7 +395,7 @@ def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
     except OSError as e:
         logger.warning("Skipping unreadable MCP config %s: %s", config_path, e)
         return None
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
+    except (json.JSONDecodeError, ValueError, TypeError, RuntimeError) as e:
         logger.warning("Skipping invalid MCP config %s: %s", config_path, e)
         return None
 

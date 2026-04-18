@@ -55,13 +55,6 @@ class TestResolveHeaders:
         assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
 
 
-@pytest.fixture
-def fake_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Redirect `~/.deepagents/` into a per-test tmp dir."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    return tmp_path
-
-
 def _make_tokens() -> OAuthToken:
     return OAuthToken(
         access_token="at", token_type="Bearer", refresh_token="rt", expires_in=3600

@@ -524,6 +524,24 @@ async def _load_tools_from_config(
                 conn["headers"] = resolve_headers(
                     server_config["headers"], server_name=server_name
                 )
+            if server_config.get("auth") == "oauth":
+                from deepagents_cli.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
+
+                storage = FileTokenStorage(server_name)
+                if await storage.get_tokens() is None:
+                    msg = (
+                        f"MCP server '{server_name}' requires OAuth login. "
+                        f"Run: deepagents mcp login {server_name}"
+                    )
+                    raise RuntimeError(msg)
+                conn["auth"] = build_oauth_provider(
+                    server_name=server_name,
+                    server_url=server_config["url"],
+                    storage=storage,
+                )
             connections[server_name] = conn
         else:
             # stdio server connection (default)

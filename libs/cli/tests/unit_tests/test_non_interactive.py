@@ -1029,7 +1029,7 @@ class TestNonInteractivePrompt:
         mock_start_server.assert_not_awaited()
 
 
-async def _async_iter(items: list[object]) -> AsyncIterator[object]:
+async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item

@@ -230,7 +230,7 @@ class TestGetLatestVersion:
         assert result == "2.0.0"
         mock_get.assert_called_once()
 
-    def test_network_error(self, cache_file) -> None:  # fixture overrides CACHE_FILE
+    def test_network_error(self, cache_file) -> None:  # noqa: ARG002  # fixture overrides CACHE_FILE
         """Network failure returns None."""
         with patch("requests.get", side_effect=OSError("no network")):
             result = get_latest_version()
@@ -438,7 +438,7 @@ class TestSetAutoUpdate:
         assert data["update"]["check"] is False
         assert data["update"]["auto_update"] is True
 
-    def test_round_trip_with_is_auto_update_enabled(self, config_path) -> None:
+    def test_round_trip_with_is_auto_update_enabled(self, config_path) -> None:  # noqa: ARG002
         """set_auto_update(True) makes is_auto_update_enabled() return True."""
         set_auto_update(True)
         with (
@@ -459,7 +459,7 @@ class TestIsAutoUpdateEnabled:
         with patch("deepagents_cli.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
 
-    def test_default_is_false(self, config_path) -> None:
+    def test_default_is_false(self, config_path) -> None:  # noqa: ARG002
         """Auto-update defaults to disabled."""
         with (
             patch("deepagents_cli.config._is_editable_install", return_value=False),
@@ -470,7 +470,7 @@ class TestIsAutoUpdateEnabled:
             os.environ.pop("DEEPAGENTS_CLI_AUTO_UPDATE", None)
             assert is_auto_update_enabled() is False
 
-    def test_env_var_enables(self, config_path) -> None:
+    def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
         """DEEPAGENTS_CLI_AUTO_UPDATE=1 enables auto-update."""
         with (
             patch("deepagents_cli.config._is_editable_install", return_value=False),
@@ -494,7 +494,7 @@ class TestShouldNotifyUpdate:
         with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_no_file_returns_true(self, state_file) -> None:
+    def test_no_file_returns_true(self, state_file) -> None:  # noqa: ARG002
         """First-run case: no state file exists."""
         assert should_notify_update("2.0.0") is True
 
@@ -570,12 +570,12 @@ class TestMarkUpdateNotified:
         data = json.loads(state_file.read_text())
         assert data["notified_version"] == "2.0.0"
 
-    def test_round_trip(self, state_file) -> None:
+    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
         """Mark then should_notify returns False for same version."""
         mark_update_notified("2.0.0")
         assert should_notify_update("2.0.0") is False
 
-    def test_round_trip_different_version(self, state_file) -> None:
+    def test_round_trip_different_version(self, state_file) -> None:  # noqa: ARG002
         """Mark then should_notify returns True for different version."""
         mark_update_notified("1.9.0")
         assert should_notify_update("2.0.0") is True
@@ -610,8 +610,8 @@ class TestMarkUpdateNotified:
 
     def test_get_latest_version_does_not_clobber_notify(
         self,
-        state_file,
-        cache_file,
+        state_file,  # noqa: ARG002
+        cache_file,  # noqa: ARG002
     ) -> None:
         """get_latest_version writing cache doesn't destroy notification state."""
         mark_update_notified("2.0.0")
@@ -637,11 +637,11 @@ class TestGetSeenVersion:
         with patch("deepagents_cli.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_no_file_returns_none(self, state_file) -> None:
+    def test_no_file_returns_none(self, state_file) -> None:  # noqa: ARG002
         """No state file -> None."""
         assert get_seen_version() is None
 
-    def test_round_trip(self, state_file) -> None:
+    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
         """Mark then get returns the same version."""
         mark_version_seen("1.0.0")
         assert get_seen_version() == "1.0.0"
@@ -656,7 +656,7 @@ class TestGetSeenVersion:
         state_file.write_text(json.dumps({"seen_version": 123}))
         assert get_seen_version() is None
 
-    def test_preserves_notification_keys(self, state_file) -> None:
+    def test_preserves_notification_keys(self, state_file) -> None:  # noqa: ARG002
         """Marking seen preserves existing notification data."""
         mark_update_notified("2.0.0")
         mark_version_seen("1.0.0")
@@ -682,7 +682,7 @@ class TestShouldShowWhatsNew:
         data = json.loads(state_file.read_text())
         assert data["seen_version"] == "1.0.0"
 
-    def test_same_version_returns_false(self, state_file) -> None:
+    def test_same_version_returns_false(self, state_file) -> None:  # noqa: ARG002
         """Current version == seen version -> False."""
         from deepagents_cli.update_check import should_show_whats_new
 
@@ -690,7 +690,7 @@ class TestShouldShowWhatsNew:
         with patch("deepagents_cli.update_check.__version__", "1.0.0"):
             assert should_show_whats_new() is False
 
-    def test_newer_version_returns_true(self, state_file) -> None:
+    def test_newer_version_returns_true(self, state_file) -> None:  # noqa: ARG002
         """Current version > seen version -> True."""
         from deepagents_cli.update_check import should_show_whats_new
 
@@ -698,7 +698,7 @@ class TestShouldShowWhatsNew:
         with patch("deepagents_cli.update_check.__version__", "2.0.0"):
             assert should_show_whats_new() is True
 
-    def test_coexists_with_notification_state(self, state_file) -> None:
+    def test_coexists_with_notification_state(self, state_file) -> None:  # noqa: ARG002
         """What's-new and notification state don't interfere."""
         from deepagents_cli.update_check import should_show_whats_new
 

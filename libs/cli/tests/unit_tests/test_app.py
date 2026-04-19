@@ -60,7 +60,7 @@ class TestInitialPromptOnMount:
         submitted: list[str] = []
 
         # Must be async to match _handle_user_message's signature
-        async def capture(msg: str) -> None:
+        async def capture(msg: str) -> None:  # noqa: RUF029
             submitted.append(msg)
 
         app._handle_user_message = capture  # type: ignore[assignment]
@@ -83,7 +83,7 @@ class TestInitialPromptOnMount:
         )
         submitted: list[tuple[str, str, str | None]] = []
 
-        async def capture(
+        async def capture(  # noqa: RUF029
             skill_name: str,
             args: str = "",
             *,
@@ -111,7 +111,7 @@ class TestInitialPromptOnMount:
         app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
         submitted: list[tuple[str, str, str | None]] = []
 
-        async def capture(
+        async def capture(  # noqa: RUF029
             skill_name: str,
             args: str = "",
             *,
@@ -2164,7 +2164,9 @@ class TestRequestApprovalBranching:
 
         mounted_classes: list[str] = []
 
-        async def fake_mount_before_queued(_container: object, widget: object) -> None:
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
             if isinstance(widget, Static):
                 mounted_classes.append(" ".join(widget.classes))
 
@@ -2214,7 +2216,9 @@ class TestRequestApprovalBranching:
 
         call_count = 0
 
-        async def failing_then_ok_mount(_container: object, widget: object) -> None:
+        async def failing_then_ok_mount(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -2253,7 +2257,9 @@ class TestRequestApprovalBranching:
 
         mounted_types: list[type] = []
 
-        async def fake_mount_before_queued(_container: object, widget: object) -> None:
+        async def fake_mount_before_queued(  # noqa: RUF029
+            _container: object, widget: object
+        ) -> None:
             mounted_types.append(type(widget))
 
         app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
@@ -2291,7 +2297,7 @@ class TestDeferredShowApproval:
         placeholder.is_attached = True
         remove_called = False
 
-        async def fake_remove() -> None:
+        async def fake_remove() -> None:  # noqa: RUF029
             nonlocal remove_called
             remove_called = True
 
@@ -2304,9 +2310,9 @@ class TestDeferredShowApproval:
 
         mount_called = False
 
-        async def fake_mount_approval(
-            m: ApprovalMenu,
-            f: asyncio.Future[dict[str, str]],
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -2336,9 +2342,9 @@ class TestDeferredShowApproval:
 
         mount_called = False
 
-        async def fake_mount_approval(
-            m: ApprovalMenu,
-            f: asyncio.Future[dict[str, str]],
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -2370,7 +2376,7 @@ class TestDeferredShowApproval:
 
         remove_called = False
 
-        async def fake_remove() -> None:
+        async def fake_remove() -> None:  # noqa: RUF029
             nonlocal remove_called
             remove_called = True
 
@@ -2378,9 +2384,9 @@ class TestDeferredShowApproval:
 
         mount_called = False
 
-        async def fake_mount_approval(
-            m: ApprovalMenu,
-            f: asyncio.Future[dict[str, str]],
+        async def fake_mount_approval(  # noqa: RUF029
+            m: ApprovalMenu,  # noqa: ARG001
+            f: asyncio.Future[dict[str, str]],  # noqa: ARG001
         ) -> None:
             nonlocal mount_called
             mount_called = True
@@ -2445,7 +2451,7 @@ class TestOnApprovalMenuDecidedCleanup:
         placeholder.is_attached = True
         remove_called = False
 
-        async def fake_remove() -> None:
+        async def fake_remove() -> None:  # noqa: RUF029
             nonlocal remove_called
             remove_called = True
 
@@ -2964,7 +2970,7 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(
@@ -2986,7 +2992,7 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(
@@ -3007,7 +3013,7 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def action() -> None:
+            async def action() -> None:  # noqa: RUF029
                 executed.append("ran")
 
             app._deferred_actions.append(
@@ -3079,11 +3085,11 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def bad_action() -> None:
+            async def bad_action() -> None:  # noqa: RUF029
                 msg = "boom"
                 raise RuntimeError(msg)
 
-            async def good_action() -> None:
+            async def good_action() -> None:  # noqa: RUF029
                 executed.append("ok")
 
             app._deferred_actions.append(
@@ -3106,10 +3112,10 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def first() -> None:
+            async def first() -> None:  # noqa: RUF029
                 executed.append("first")
 
-            async def second() -> None:
+            async def second() -> None:  # noqa: RUF029
                 executed.append("second")
 
             app._defer_action(DeferredAction(kind="model_switch", execute=first))
@@ -3205,13 +3211,13 @@ class TestDeferredActions:
 
             executed: list[str] = []
 
-            async def first_model() -> None:
+            async def first_model() -> None:  # noqa: RUF029
                 executed.append("first_model")
 
-            async def thread_fn() -> None:
+            async def thread_fn() -> None:  # noqa: RUF029
                 executed.append("thread")
 
-            async def second_model() -> None:
+            async def second_model() -> None:  # noqa: RUF029
                 executed.append("second_model")
 
             app._defer_action(DeferredAction(kind="model_switch", execute=first_model))

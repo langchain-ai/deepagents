@@ -217,9 +217,6 @@ ignore-var-parameters = true
 "tests/**" = [
     "ANN001",   # Missing type annotation for function argument — not needed in tests
     "ANN201",   # Missing return type annotation — not needed in tests
-    "ANN202",   # Missing return type on private helper — not needed in tests
-    "ARG001",   # Unused function argument — common for pytest fixtures / mock stand-ins
-    "ARG002",   # Unused method argument — common for pytest fixtures / mock stand-ins
     "D1",       # Missing docstrings — not needed in tests
     "DOC",      # Docstring conventions — not needed in tests
     "F401",     # Imported but unused — test fixtures may appear unused
@@ -231,9 +228,14 @@ ignore-var-parameters = true
     "PLR6301",  # Method could be a function — test class organization
     "PLW0108",  # Lambda may be unnecessary — fine in test mocks
     "RUF001",   # Ambiguous characters — fine in test strings
-    "RUF029",   # Async without await — required for asynccontextmanager / AsyncMock stand-ins
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
+]
+"tests/unit_tests/test_mcp_{auth,commands,tools}.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
 ]
 "scripts/**" = [
     "BLE001",   # Blind exception catch — resilience in standalone scripts

@@ -55,7 +55,7 @@ class _SyncBackendFake:
         self,
         command: str,
         *,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ARG002
     ) -> ExecuteResponse:
         """Delegate to internal mock so callers can assert calls."""
         return self._mock(command)
@@ -85,7 +85,7 @@ class _AsyncBackendFake:
         self,
         command: str,
         *,
-        timeout: int | None = None,  # noqa: ASYNC109
+        timeout: int | None = None,  # noqa: ASYNC109, ARG002
     ) -> ExecuteResponse:
         """Delegate to internal mock so callers can assert calls."""
         return await self._mock(command)
@@ -603,18 +603,18 @@ class TestAsyncLocalContextMiddleware:
 
             def execute(
                 self,
-                command: str,
+                command: str,  # noqa: ARG002
                 *,
-                timeout: int | None = None,
+                timeout: int | None = None,  # noqa: ARG002
             ) -> ExecuteResponse:
                 msg = "abefore_agent should use aexecute when available"
                 raise AssertionError(msg)
 
             async def aexecute(
                 self,
-                command: str,
+                command: str,  # noqa: ARG002
                 *,
-                timeout: int | None = None,  # noqa: ASYNC109
+                timeout: int | None = None,  # noqa: ARG002, ASYNC109
             ) -> ExecuteResponse:
                 return ExecuteResponse(output=SAMPLE_CONTEXT, exit_code=0)
 
@@ -639,9 +639,9 @@ class TestAsyncLocalContextMiddleware:
 
             def execute(
                 self,
-                command: str,
+                command: str,  # noqa: ARG002
                 *,
-                timeout: int | None = None,
+                timeout: int | None = None,  # noqa: ARG002
             ) -> ExecuteResponse:
                 self.call_count += 1
                 return self._result
@@ -778,7 +778,7 @@ class TestTimeoutForwarding:
 
             def execute(
                 self,
-                command: str,
+                command: str,  # noqa: ARG002
                 *,
                 timeout: int | None = None,
             ) -> ExecuteResponse:
@@ -802,7 +802,7 @@ class TestTimeoutForwarding:
 
             async def aexecute(
                 self,
-                command: str,
+                command: str,  # noqa: ARG002
                 *,
                 timeout: int | None = None,  # noqa: ASYNC109
             ) -> ExecuteResponse:

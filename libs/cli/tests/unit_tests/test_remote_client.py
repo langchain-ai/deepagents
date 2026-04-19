@@ -233,9 +233,9 @@ def _make_agent(
     agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
     mock_graph = MagicMock()
 
-    async def fake_astream(
-        input: Any,  # noqa: A002, ANN401
-        **kwargs: Any,
+    async def fake_astream(  # noqa: RUF029
+        input: Any,  # noqa: A002, ANN401, ARG001
+        **kwargs: Any,  # noqa: ARG001
     ) -> Any:  # noqa: ANN401
         for ev in events:
             yield ev

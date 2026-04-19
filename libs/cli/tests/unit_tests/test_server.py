@@ -272,7 +272,7 @@ class TestServerProcess:
 
         old_value = os.environ.get("DEEPAGENTS_CLI_SERVER_MODEL")
 
-        async def failing_start(*, timeout: float = 60) -> None:  # noqa: ASYNC109
+        async def failing_start(*, timeout: float = 60) -> None:  # noqa: ARG001, ASYNC109, RUF029
             msg = "restart failed"
             raise RuntimeError(msg)
 

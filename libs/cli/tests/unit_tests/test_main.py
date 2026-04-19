@@ -267,7 +267,7 @@ class TestServerCleanupLifecycle:
         """server_proc set by the background worker must still be cleaned up."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
-        async def _fake_run_async(self: DeepAgentsApp) -> None:
+        async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
             # Simulate the background worker having set _server_proc
             self._server_proc = server_proc
 
@@ -702,8 +702,7 @@ class TestRunTextualCliAsyncModelConfigError:
         """Explicit model_name bypasses _get_default_model_spec."""
         app_result = AppResult(return_code=0, thread_id="t-1")
 
-        # must be async for run_textual_app signature
-        async def _stub(**_kwargs: Any) -> AppResult:
+        async def _stub(**_kwargs: Any) -> AppResult:  # noqa: RUF029  # must be async for run_textual_app signature
             return app_result
 
         with patch("deepagents_cli.app.run_textual_app", new=_stub):

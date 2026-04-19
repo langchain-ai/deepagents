@@ -130,6 +130,31 @@ def _parse_skill_sources() -> list[str]:
     ]
 
 
+def _parse_memory_sources() -> list[str]:
+    """Parse AGENT_MEMORY_PATHS into a list of existing AGENTS.md file paths.
+
+    When unset, defaults to ``~/.deepagents/AGENTS.md`` if that file exists.
+    Non-existent paths are dropped — MemoryMiddleware errors on missing files.
+    """
+    raw = os.getenv("AGENT_MEMORY_PATHS", "").strip()
+    if not raw:
+        default = Path("~/.deepagents/AGENTS.md").expanduser()
+        return [str(default)] if default.is_file() else []
+    sep = ";" if ";" in raw else os.pathsep
+    paths = [
+        Path(part).expanduser().resolve()
+        for part in raw.split(sep)
+        if part.strip()
+    ]
+    resolved: list[str] = []
+    for p in paths:
+        if p.is_file():
+            resolved.append(str(p))
+        else:
+            logger.warning("AGENT_MEMORY_PATHS: skipping %s (not a file)", p)
+    return resolved
+
+
 async def main() -> None:
     # --- Model setup ---
     model_name = os.getenv("AGENT_MODEL", "claude-sonnet-4-6")
@@ -158,6 +183,11 @@ async def main() -> None:
     if skill_sources:
         print(f"[main] Skills sources: {skill_sources}")
 
+    # --- Memory sources (optional; AGENTS.md files loaded into system prompt) ---
+    memory_sources = _parse_memory_sources()
+    if memory_sources:
+        print(f"[main] Memory sources: {memory_sources}")
+
     # --- Agent setup ---
     agent = create_deep_agent(
         model=model,
@@ -170,6 +200,7 @@ async def main() -> None:
             *mcp_extra_tools,
         ],
         skills=skill_sources or None,
+        memory=memory_sources or None,
         system_prompt=_IMAGE_ATTACH_INSTRUCTIONS,
     )
 

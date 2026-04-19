@@ -9,11 +9,12 @@ import os
 import signal
 import time
 import webbrowser
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+    from pathlib import Path
 
     from deepagents_cli.sessions import ThreadInfo
 
@@ -3373,3 +3374,303 @@ class TestRememberRequiresMessages:
                 await pilot.pause()
 
             mock_skill.assert_called_once_with("/skill:remember")
+
+
+class TestSwitchAgentGuards:
+    """Guards in `_switch_agent` before the restart worker is launched."""
+
+    async def test_noop_when_same_agent(self) -> None:
+        """Switching to the already-active agent should do nothing."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        async with app.run_test():
+            with patch.object(app, "run_worker") as worker:
+                app._switch_agent("coder")
+            worker.assert_not_called()
+            assert app._agent_switching is False
+
+    async def test_rejects_remote_server_mode(self) -> None:
+        """Without a local `server_proc` the CLI can't restart the agent."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs=None,
+            server_proc=None,
+        )
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+            assert any("remote server" in m for m in notifications)
+            assert app._assistant_id == "coder"
+            assert app._agent_switching is False
+
+    async def test_defers_while_local_server_is_connecting(self) -> None:
+        """Local startup should queue the swap instead of warning as remote."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=None,
+        )
+
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+
+            worker.assert_not_called()
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "agent_switch"
+            assert any("connection completes" in m for m in notifications)
+            assert all("remote server" not in m for m in notifications)
+            assert app._assistant_id == "coder"
+            assert app._agent_switching is False
+
+            with patch.object(app, "_switch_agent") as switch:
+                await action.execute()
+            switch.assert_called_once_with("researcher")
+
+    async def test_rejects_while_agent_running(self) -> None:
+        """Mid-run swaps are rejected so in-flight streams aren't orphaned."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        app._agent_running = True
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+            assert any("task is running" in m for m in notifications)
+
+    async def test_rejects_reentry_while_switching(self) -> None:
+        """A second switch while the first is in flight is a no-op."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        app._agent_switching = True
+        async with app.run_test():
+            with patch.object(app, "run_worker") as worker:
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+        # Reset the flag so the test app can tear down cleanly.
+        app._agent_switching = False
+
+    async def test_rejects_missing_agent_dir(self, tmp_path: Path) -> None:
+        """Missing `~/.deepagents/<name>/` rejects before launching a worker."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        (tmp_path / "coder").mkdir()
+        async with app.run_test():
+            with (
+                patch("deepagents_cli.config.settings") as mock_settings,
+                patch.object(app, "run_worker") as worker,
+            ):
+                mock_settings.user_deepagents_dir = tmp_path
+                app._switch_agent("ghost")
+            worker.assert_not_called()
+            assert app._assistant_id == "coder"
+
+    async def test_launches_worker_on_valid_switch(self, tmp_path: Path) -> None:
+        """A valid switch enqueues the restart worker and sets the guard flag."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        (tmp_path / "researcher").mkdir()
+        async with app.run_test():
+            with (
+                patch("deepagents_cli.config.settings") as mock_settings,
+                patch.object(app, "run_worker") as worker,
+            ):
+                mock_settings.user_deepagents_dir = tmp_path
+                app._switch_agent("researcher")
+            worker.assert_called_once()
+            assert app._agent_switching is True
+            # Close the coroutine that the mocked run_worker never awaited,
+            # otherwise pytest emits "coroutine was never awaited".
+            coro = worker.call_args.args[0]
+            coro.close()
+        app._agent_switching = False
+
+
+class TestRestartServerForAgentSwap:
+    """End-to-end wiring for the agent-swap worker."""
+
+    @staticmethod
+    def _make_app() -> tuple[DeepAgentsApp, MagicMock]:
+        """Return `(app, server_proc_mock)`.
+
+        Returning the mock directly keeps its `.url` / `.restart` /
+        `.update_env` mutable attributes typed as `Any` (via `MagicMock`)
+        so tests can reassign them without fighting `ServerProcess`'s
+        static type.
+        """
+        server_proc = MagicMock()
+        server_proc.update_env = MagicMock()
+        server_proc.restart = AsyncMock()
+        server_proc.url = "http://127.0.0.1:54321"
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="old-thread",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=server_proc,
+        )
+        return app, server_proc
+
+    async def test_happy_path_rebuilds_agent_and_updates_identity(
+        self,
+    ) -> None:
+        """Successful restart stages env, calls restart, and rewires client."""
+        app, server_proc = self._make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Simulate port rebind during restart (TIME_WAIT) so the test
+            # catches any regression that reuses the old URL.
+            def _rebind_port() -> None:
+                server_proc.url = "http://127.0.0.1:60000"
+
+            server_proc.restart = AsyncMock(side_effect=_rebind_port)
+
+            mounted: list[object] = []
+            spawned_workers: list[tuple[object, dict]] = []
+            real_run_worker = app.run_worker
+
+            def _run_worker_spy(coro_or_fn: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # test spy — accepts whatever run_worker does
+                spawned_workers.append((coro_or_fn, kwargs))
+                # Close the coroutine so pytest doesn't warn about it being
+                # unawaited — we only care that the worker was scheduled.
+                if hasattr(coro_or_fn, "close"):
+                    coro_or_fn.close()
+                return real_run_worker(asyncio.sleep(0))
+
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ) as save_mock,
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_run_worker_spy),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+            server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CLI_SERVER_ASSISTANT_ID="researcher"
+            )
+            server_proc.restart.assert_awaited_once()
+            assert app._assistant_id == "researcher"
+            assert app._server_kwargs is not None
+            assert app._server_kwargs["assistant_id"] == "researcher"
+            assert app._agent is not None
+            # RemoteAgent must target the URL that `server_proc.url` holds
+            # *after* restart, not the original.
+            assert app._agent._url == "http://127.0.0.1:60000"  # type: ignore[union-attr]
+            assert app._connecting is False
+            assert app._agent_switching is False
+            assert app._lc_thread_id != "old-thread"
+
+            save_mock.assert_called_once_with("researcher")
+
+            # Skill-discovery worker launched with the dedicated group.
+            groups = {kw.get("group") for _, kw in spawned_workers}
+            assert "agent-switch-skill-discovery" in groups
+
+            # Confirmation + resume-hint messages reached the user.
+            plain = [str(getattr(m, "_content", m)) for m in mounted]
+            assert any("Switched to researcher" in s for s in plain)
+            assert any(
+                "deepagents -r old-thread" in s and "to resume" in s for s in plain
+            )
+
+    async def test_no_resume_hint_when_no_previous_thread(self) -> None:
+        """Fresh session (no previous thread) skips the resume hint."""
+        server_proc = MagicMock()
+        server_proc.update_env = MagicMock()
+        server_proc.restart = AsyncMock()
+        server_proc.url = "http://127.0.0.1:54321"
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id=None,
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=server_proc,
+        )
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker"),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+        assert not any("to resume" in s for s in plain)
+
+    async def test_failure_rolls_back_identity_and_posts_failed(
+        self,
+    ) -> None:
+        """If restart raises, identity reverts and the banner failure fires."""
+        app, server_proc = self._make_app()
+        boom = RuntimeError("langgraph dev exited")
+        server_proc.restart = AsyncMock(side_effect=boom)
+        posted: list[object] = []
+        with patch.object(app, "post_message", side_effect=lambda m: posted.append(m)):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._restart_server_for_agent_swap("researcher")
+
+        assert app._assistant_id == "coder"
+        assert app._server_kwargs is not None
+        assert app._server_kwargs["assistant_id"] == "coder"
+        assert app._agent is None
+        assert app._agent_switching is False
+        # The ServerStartFailed handler sets _connecting=False on message
+        # dispatch, but the worker itself must also clear it synchronously
+        # before posting so any code reading the flag in between sees the
+        # correct value.
+        assert app._connecting is False
+        failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
+        assert len(failures) == 1
+        assert failures[0].error is boom

@@ -40,6 +40,7 @@ _TIPS: list[str] = [
     "Use /theme to customize the CLI colors and style",
     "Use /skill-creator to build reusable agent skills",
     "Use /auto-update to toggle automatic CLI updates",
+    "Use /agents to browse and switch between your available agents",
 ]
 """Rotating tips shown in the welcome footer.
 
@@ -147,6 +148,18 @@ class WelcomeBanner(Static):
         self._connecting = False
         self._failed = False
         self._mcp_tool_count = mcp_tool_count
+        self.update(self._build_banner(self._project_url))
+
+    def set_connecting(self) -> None:
+        """Transition back to the "connecting" state.
+
+        Used when the server is being restarted mid-session (e.g., switching
+        agents via `/agents`), so the banner reflects that no agent is
+        currently reachable.
+        """
+        self._connecting = True
+        self._failed = False
+        self._resuming = False
         self.update(self._build_banner(self._project_url))
 
     def set_failed(self, error: str) -> None:

@@ -232,10 +232,16 @@ class TestShortFlags:
         assert args.model == "gpt-4o"
 
     def test_agent_default_value(self) -> None:
-        """Verify -a defaults to DEFAULT_AGENT_NAME when omitted."""
+        """Verify -a is `None` when omitted so downstream fallback can run.
+
+        The `[agents].recent` / default-agent fallback lives in
+        `_resolve_agent_arg`, not argparse — argparse must leave the slot
+        empty so the resolver can distinguish "user didn't pass -a" from
+        "user explicitly passed the default name".
+        """
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
-        assert args.agent == DEFAULT_AGENT_NAME
+        assert args.agent is None
 
     def test_short_version_flag(self) -> None:
         """Verify -v shows version and exits."""

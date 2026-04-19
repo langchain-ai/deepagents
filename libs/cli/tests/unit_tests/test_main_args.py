@@ -621,3 +621,123 @@ class TestApplyStdinPipe:
         ):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "hello"
+
+
+class TestAgentResolutionScope:
+    """Recent-agent fallback should only apply to session launches."""
+
+    def test_threads_list_preserves_show_all_default(self) -> None:
+        """Bare `threads list` must not inherit `[agents].recent` as a filter."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "threads", "list"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.model_config.load_recent_agent") as load_recent,
+            patch("deepagents_cli.main._recent_agent_is_valid") as valid_recent,
+            patch(
+                "deepagents_cli.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+
+        mock_list.assert_awaited_once()
+        assert mock_list.await_args.kwargs["agent_name"] is None  # type: ignore[union-attr]
+        load_recent.assert_not_called()
+        valid_recent.assert_not_called()
+
+
+class TestResolveAgentArg:
+    """Resolution order: explicit > -r fallback > recent > default."""
+
+    @staticmethod
+    def _args(**kwargs: object) -> argparse.Namespace:
+        defaults = {"agent": None, "resume_thread": None}
+        defaults.update(kwargs)
+        return argparse.Namespace(**defaults)
+
+    def test_explicit_agent_wins(self) -> None:
+        """An explicit `-a <name>` bypasses recent/default lookup entirely."""
+        from deepagents_cli.main import _resolve_agent_arg
+
+        with patch("deepagents_cli.model_config.load_recent_agent") as load:
+            assert _resolve_agent_arg(self._args(agent="coder")) == "coder"
+            load.assert_not_called()
+
+    def test_resume_thread_forces_default(self) -> None:
+        """With -r present, default lets thread-metadata inference pick the agent."""
+        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+
+        with patch(
+            "deepagents_cli.model_config.load_recent_agent",
+            return_value="researcher",
+        ) as load:
+            result = _resolve_agent_arg(self._args(resume_thread="abc123"))
+            assert result == _DEFAULT_AGENT_NAME
+            load.assert_not_called()
+
+    def test_uses_recent_when_valid(self) -> None:
+        """No -a, no -r: use `[agents].recent` when the dir still exists."""
+        from deepagents_cli.main import _resolve_agent_arg
+
+        with (
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="coder",
+            ),
+            patch("deepagents_cli.main._recent_agent_is_valid", return_value=True),
+        ):
+            assert _resolve_agent_arg(self._args()) == "coder"
+
+    def test_falls_back_when_recent_missing_dir(self) -> None:
+        """Stale `[agents].recent` pointing at a deleted dir falls through."""
+        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+
+        with (
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="ghost",
+            ),
+            patch("deepagents_cli.main._recent_agent_is_valid", return_value=False),
+        ):
+            assert _resolve_agent_arg(self._args()) == _DEFAULT_AGENT_NAME
+
+    def test_falls_back_when_no_recent(self) -> None:
+        """No saved recent agent: final fallback is the hard-coded default."""
+        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+
+        with patch("deepagents_cli.model_config.load_recent_agent", return_value=None):
+            assert _resolve_agent_arg(self._args()) == _DEFAULT_AGENT_NAME
+
+
+class TestRecentAgentIsValid:
+    """`_recent_agent_is_valid` survives filesystem errors."""
+
+    def test_returns_true_for_existing_dir(self, tmp_path, monkeypatch) -> None:
+        """Existing `~/.deepagents/<name>/` resolves to True."""
+        from deepagents_cli.main import _recent_agent_is_valid
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".deepagents" / "coder").mkdir(parents=True)
+
+        assert _recent_agent_is_valid("coder") is True
+
+    def test_returns_false_for_missing_dir(self, tmp_path, monkeypatch) -> None:
+        """Missing dir → False, no exception."""
+        from deepagents_cli.main import _recent_agent_is_valid
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert _recent_agent_is_valid("ghost") is False
+
+    def test_swallows_os_error(self) -> None:
+        """A PermissionError or other OSError on is_dir() is logged and False."""
+        from deepagents_cli.main import _recent_agent_is_valid
+
+        with patch("pathlib.Path.is_dir", side_effect=PermissionError("denied")):
+            assert _recent_agent_is_valid("coder") is False

@@ -31,7 +31,7 @@ class TestDeepAgents:
                 "model": SAMPLE_MODEL,
             }
         ]
-        agent = create_deep_agent(tools=[sample_tool], subagents=subagents)
+        agent = create_deep_agent(tools=[sample_tool], subagents=subagents).with_config({"configurable": {"ls_agent_type": "root"}})
         assert_all_deepagent_qualities(agent)
         result = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         agent_messages = [msg for msg in result.get("messages", []) if msg.type == "ai"]

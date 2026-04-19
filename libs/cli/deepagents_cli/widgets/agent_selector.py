@@ -1,4 +1,4 @@
-"""Interactive agent selector screen for /agents command."""
+"""Interactive agent selector screen for `/agents` command."""
 
 from __future__ import annotations
 
@@ -30,7 +30,16 @@ class AgentSelectorScreen(ModalScreen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "cursor_down", "Next", show=False, priority=True),
+        Binding("shift+tab", "cursor_up", "Previous", show=False, priority=True),
     ]
+    """Key bindings for the selector.
+
+    Esc dismisses without switching agents. Arrow keys, Enter, and letter
+    navigation are handled natively by the embedded `OptionList`; Tab /
+    Shift+Tab are bound here to advance the cursor for consistency with
+    other selector screens.
+    """
 
     CSS = """
     AgentSelectorScreen {
@@ -69,13 +78,16 @@ class AgentSelectorScreen(ModalScreen[str | None]):
         text-align: center;
     }
     """
+    """Styling for the centered modal shell, title, option list, and help footer."""
 
     def __init__(self, current_agent: str | None, agent_names: list[str]) -> None:
-        """Initialize the AgentSelectorScreen.
+        """Initialize the `AgentSelectorScreen`.
 
         Args:
             current_agent: The name of the currently active agent (to
-                highlight). May be `None` when no agent is active.
+                highlight).
+
+                May be `None` when no agent is active.
             agent_names: Sorted list of available agent names to display.
         """
         super().__init__()
@@ -110,7 +122,7 @@ class AgentSelectorScreen(ModalScreen[str | None]):
                 option_list.highlighted = highlight_index
                 yield option_list
                 help_text = (
-                    f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+                    f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
                     f" {glyphs.bullet} Enter select"
                     f" {glyphs.bullet} Esc cancel"
                 )
@@ -142,3 +154,24 @@ class AgentSelectorScreen(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         """Cancel without switching agents."""
         self.dismiss(None)
+
+    def action_cursor_down(self) -> None:
+        """Move the option list cursor down (Tab)."""
+        option_list = self._option_list()
+        if option_list is not None:
+            option_list.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move the option list cursor up (Shift+Tab)."""
+        option_list = self._option_list()
+        if option_list is not None:
+            option_list.action_cursor_up()
+
+    def _option_list(self) -> OptionList | None:
+        """Return the agent `OptionList`, or `None` when the screen is empty."""
+        from textual.css.query import NoMatches
+
+        try:
+            return self.query_one("#agent-options", OptionList)
+        except NoMatches:
+            return None

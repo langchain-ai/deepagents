@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from tools import fetch_url, http_request, web_search
+from config import build_adapter_config
 from cron import build_cron_tools, origin_ctx, start_ticker
 from mcp_tools import MCPSessionManager, get_mcp_tools
 from whatsapp_adapter import (
@@ -87,19 +88,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-def _build_config() -> dict:
-    """Build adapter config from environment variables."""
-    return {
-        "bridge_port": os.getenv("WHATSAPP_BRIDGE_PORT", "3000"),
-        "session_path": os.getenv("WHATSAPP_SESSION_PATH", "./session"),
-        "require_mention": os.getenv("WHATSAPP_REQUIRE_MENTION", "false"),
-        "mention_patterns": os.getenv("WHATSAPP_MENTION_PATTERNS"),
-        "free_response_chats": os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", ""),
-        "reply_prefix": os.getenv("WHATSAPP_REPLY_PREFIX"),
-        "self_only": os.getenv("WHATSAPP_SELF_ONLY", "true"),
-    }
 
 
 def _parse_recursion_limit() -> int:
@@ -267,7 +255,7 @@ async def main() -> None:
     active_agent_tasks: dict[str, set[asyncio.Task]] = {}
 
     # --- Adapter setup ---
-    config = _build_config()
+    config = build_adapter_config()
     adapter = WhatsAppAdapter(config)
 
     async def handle_message(event: MessageEvent) -> None:

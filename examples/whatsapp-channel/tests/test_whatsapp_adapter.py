@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from whatsapp_adapter import extract_markdown_images
+from whatsapp_adapter import (
+    WhatsAppAdapter,
+    extract_markdown_images,
+    install_bridge_deps,
+)
 
 
 class TestExtractMarkdownImages:
@@ -144,3 +149,126 @@ class TestBuildInboundContent:
         content = _build_inbound_content(event)
         assert isinstance(content, list)
         assert len(content) == 2  # text + 1 surviving image
+
+
+class TestInstallBridgeDeps:
+    """Regression coverage for first-run bootstrap of the Node bridge."""
+
+    def test_skip_when_node_modules_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Already-installed deps must short-circuit without shelling out."""
+        bridge_dir = tmp_path / "bridge"
+        (bridge_dir / "node_modules").mkdir(parents=True)
+
+        def _fail(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("subprocess.run must not be called")
+
+        monkeypatch.setattr(subprocess, "run", _fail)
+        assert install_bridge_deps(bridge_dir) is True
+
+    def test_invokes_plain_npm_install(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bootstrap must call `npm install` directly — not wrapped in `sfw`.
+
+        The repo does not ship `sfw`, and the previous wrapping broke the
+        first-run path on a clean checkout. This test locks the command
+        shape so the regression cannot return silently.
+        """
+        bridge_dir = tmp_path / "bridge"
+        bridge_dir.mkdir()
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        assert install_bridge_deps(bridge_dir) is True
+        assert calls == [["npm", "install"]]
+
+    def test_returns_false_when_npm_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bridge_dir = tmp_path / "bridge"
+        bridge_dir.mkdir()
+
+        def _missing(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("npm")
+
+        monkeypatch.setattr(subprocess, "run", _missing)
+        assert install_bridge_deps(bridge_dir) is False
+
+    def test_returns_false_when_npm_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bridge_dir = tmp_path / "bridge"
+        bridge_dir.mkdir()
+
+        def _fail(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        monkeypatch.setattr(subprocess, "run", _fail)
+        assert install_bridge_deps(bridge_dir) is False
+
+
+class TestAdapterConfig:
+    """Lock in the public config surface used by the example."""
+
+    def test_no_reply_prefix_attribute(self) -> None:
+        """`reply_prefix` was dead config — the adapter must not expose it."""
+        adapter = WhatsAppAdapter({"bridge_script": "unused"})
+        assert not hasattr(adapter, "_reply_prefix")
+
+    def test_reply_prefix_config_key_ignored(self) -> None:
+        """Stray `reply_prefix` keys from stale .env files must not crash."""
+        adapter = WhatsAppAdapter({
+            "bridge_script": "unused",
+            "reply_prefix": "BOT: ",
+        })
+        assert adapter._session_path == Path("./session")
+
+    def test_self_only_default_off(self) -> None:
+        """Adapter-level default is off; main.py flips it on for safety."""
+        adapter = WhatsAppAdapter({"bridge_script": "unused"})
+        assert adapter._self_only is False
+
+    def test_self_only_parses_truthy_strings(self) -> None:
+        adapter = WhatsAppAdapter({
+            "bridge_script": "unused",
+            "self_only": "true",
+        })
+        assert adapter._self_only is True
+
+
+class TestBuildAdapterConfig:
+    """Lock in the env-var defaults — the user-facing first-run behavior."""
+
+    def test_self_only_default_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The example ships with self-only on so first-run is safe."""
+        from config import build_adapter_config
+
+        for key in (
+            "WHATSAPP_BRIDGE_PORT",
+            "WHATSAPP_SESSION_PATH",
+            "WHATSAPP_REQUIRE_MENTION",
+            "WHATSAPP_MENTION_PATTERNS",
+            "WHATSAPP_FREE_RESPONSE_CHATS",
+            "WHATSAPP_SELF_ONLY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = build_adapter_config()
+        assert config["self_only"] == "true"
+        assert "reply_prefix" not in config
+
+    def test_self_only_respects_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from config import build_adapter_config
+
+        monkeypatch.setenv("WHATSAPP_SELF_ONLY", "false")
+        assert build_adapter_config()["self_only"] == "false"

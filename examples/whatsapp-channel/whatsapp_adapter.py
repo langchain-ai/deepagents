@@ -256,6 +256,45 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def install_bridge_deps(bridge_dir: Path) -> bool:
+    """Install Node dependencies for the bridge on first run.
+
+    Skips if `node_modules` already exists. Shells out to `npm install` so
+    users do not need a separate setup step. Returns True on success (or
+    when nothing needs to happen), False if npm is missing or fails.
+
+    Args:
+        bridge_dir: Directory containing the bridge's `package.json`.
+    """
+    if (bridge_dir / "node_modules").exists():
+        return True
+
+    print("[whatsapp] Installing bridge dependencies (npm install)...")
+    install_env = os.environ.copy()
+    install_env.setdefault("PUPPETEER_SKIP_DOWNLOAD", "true")
+    try:
+        install = subprocess.run(
+            ["npm", "install"],
+            cwd=str(bridge_dir),
+            capture_output=True, text=True, timeout=120,
+            env=install_env,
+        )
+    except FileNotFoundError:
+        print(
+            "[whatsapp] npm not found on PATH. Install Node.js 18+ "
+            "or run `npm install` in bridge/ manually."
+        )
+        return False
+    except subprocess.SubprocessError as e:
+        print(f"[whatsapp] npm install failed: {e}")
+        return False
+    if install.returncode != 0:
+        print(f"[whatsapp] npm install failed: {install.stderr.strip()}")
+        return False
+    print("[whatsapp] Dependencies installed")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
@@ -468,7 +507,6 @@ class WhatsAppAdapter:
             str(Path(__file__).resolve().parent / "bridge" / "bridge.js"),
         )
         self._session_path: Path = Path(config.get("session_path", "./session"))
-        self._reply_prefix: str | None = config.get("reply_prefix")
         self._require_mention: bool = str(
             config.get("require_mention", "false")
         ).lower() in ("true", "1", "yes", "on")
@@ -508,26 +546,8 @@ class WhatsAppAdapter:
             logger.error("Bridge script not found: %s", bridge_path)
             return False
 
-        # Auto-install npm deps
-        bridge_dir = bridge_path.parent
-        if not (bridge_dir / "node_modules").exists():
-            print(f"[whatsapp] Installing bridge dependencies...")
-            try:
-                install_env = os.environ.copy()
-                install_env["PUPPETEER_SKIP_DOWNLOAD"] = "true"
-                install = subprocess.run(
-                    ["sfw", "npm", "install"],
-                    cwd=str(bridge_dir),
-                    capture_output=True, text=True, timeout=120,
-                    env=install_env,
-                )
-                if install.returncode != 0:
-                    print(f"[whatsapp] npm install failed: {install.stderr}")
-                    return False
-                print("[whatsapp] Dependencies installed")
-            except Exception as e:
-                print(f"[whatsapp] Failed to install dependencies: {e}")
-                return False
+        if not install_bridge_deps(bridge_path.parent):
+            return False
 
         self._session_path.mkdir(parents=True, exist_ok=True)
 
@@ -555,8 +575,6 @@ class WhatsAppAdapter:
 
         # Build env for bridge subprocess
         bridge_env = os.environ.copy()
-        if self._reply_prefix is not None:
-            bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
         # Start bridge — inherit stdout/stderr so QR codes and logs
         # are visible directly in the terminal

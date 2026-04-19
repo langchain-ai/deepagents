@@ -43,6 +43,11 @@ _IMAGE_ATTACH_INSTRUCTIONS = (
 # Minimum seconds between successive message edits to avoid rate-limits.
 _EDIT_THROTTLE_SECS = 2.0
 
+# Base dir for CLI-shared state. Kept in sync with the deepagents-cli layout
+# so users can drop skills/memory/MCP config under ~/.deepagents on the host
+# and share them with this example (mounted at /root/.deepagents in Docker).
+_DEEPAGENTS_HOME = Path("~/.deepagents").expanduser()
+
 
 def _describe_action(tool_name: str, tool_input: object) -> str:
     """Return a short, human-readable label for a tool invocation."""
@@ -117,26 +122,49 @@ def _parse_recursion_limit() -> int:
     return value
 
 
+def _assistant_id() -> str:
+    """Return the agent folder name under ~/.deepagents/ (default: whatsapp)."""
+    return os.getenv("AGENT_ASSISTANT_ID", "whatsapp").strip() or "whatsapp"
+
+
+def _agent_dir() -> Path:
+    """Return ~/.deepagents/<assistant_id>/ — mirrors the CLI's layout."""
+    return _DEEPAGENTS_HOME / _assistant_id()
+
+
 def _parse_skill_sources() -> list[str]:
-    """Parse SKILLS_DIRS into a list of skill source paths."""
+    """Return skill source dirs, always including ~/.deepagents/<agent>/skills/.
+
+    Additional dirs from ``SKILLS_DIRS`` (``;``- or ``:``-separated) are
+    appended after the default so explicit user entries take precedence.
+    """
+    default = _agent_dir() / "skills"
+    try:
+        default.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning("Could not create skills dir %s", default, exc_info=True)
+
+    sources: list[str] = [str(default)] if default.is_dir() else []
+
     raw = os.getenv("SKILLS_DIRS", "").strip()
-    if not raw:
-        return []
-    sep = ";" if ";" in raw else os.pathsep
-    return [
-        str(Path(part).expanduser().resolve())
-        for part in raw.split(sep)
-        if part.strip()
-    ]
+    if raw:
+        sep = ";" if ";" in raw else os.pathsep
+        for part in raw.split(sep):
+            if not part.strip():
+                continue
+            p = str(Path(part).expanduser().resolve())
+            if p not in sources:
+                sources.append(p)
+    return sources
 
 
 def _parse_memory_sources() -> list[str]:
     """Return absolute paths to AGENTS.md files for MemoryMiddleware.
 
-    When ``AGENT_MEMORY_PATHS`` is unset, uses ``~/.deepagents/AGENTS.md`` as
-    the single source. Missing files are created (empty) so the agent has a
-    writable destination — matches the CLI's behavior and keeps the
-    middleware's system-prompt guidance active on first run.
+    When ``AGENT_MEMORY_PATHS`` is unset, defaults to
+    ``~/.deepagents/<assistant_id>/AGENTS.md`` — the same layout as the CLI.
+    Missing files are created (empty) so the agent has a writable destination
+    and the middleware's system-prompt guidance is active on first run.
     """
     raw = os.getenv("AGENT_MEMORY_PATHS", "").strip()
     if raw:
@@ -147,7 +175,7 @@ def _parse_memory_sources() -> list[str]:
             if part.strip()
         ]
     else:
-        paths = [Path("~/.deepagents/AGENTS.md").expanduser().resolve()]
+        paths = [_agent_dir() / "AGENTS.md"]
 
     resolved: list[str] = []
     for p in paths:
@@ -159,6 +187,20 @@ def _parse_memory_sources() -> list[str]:
         except OSError:
             logger.warning("Could not prepare memory file %s; skipping", p, exc_info=True)
     return resolved
+
+
+def _resolve_mcp_config_path() -> str:
+    """Return MCP config path, defaulting to ~/.deepagents/.mcp.json if present.
+
+    Mirrors the CLI's `discover_mcp_configs()` user-level fallback: users who
+    already have a global MCP config from the CLI get it for free here too.
+    Explicit ``MCP_CONFIG`` env values always win.
+    """
+    explicit = os.getenv("MCP_CONFIG", "").strip()
+    if explicit:
+        return explicit
+    default = _DEEPAGENTS_HOME / ".mcp.json"
+    return str(default) if default.is_file() else ""
 
 
 async def main() -> None:
@@ -175,10 +217,12 @@ async def main() -> None:
         os.getenv("WHATSAPP_CRON_PATH", "./cron/jobs.json"),
     ).expanduser().resolve()
 
+    print(f"[main] Assistant ID: {_assistant_id()} (dir: {_agent_dir()})")
+
     # --- MCP tools (optional; follows the CLI's loader pattern) ---
     mcp_session_manager: MCPSessionManager | None = None
     mcp_extra_tools: list = []
-    mcp_config_path = os.getenv("MCP_CONFIG", "").strip()
+    mcp_config_path = _resolve_mcp_config_path()
     if mcp_config_path:
         print(f"[main] Loading MCP tools from {mcp_config_path}")
         mcp_extra_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)

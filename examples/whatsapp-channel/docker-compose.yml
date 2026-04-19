@@ -15,11 +15,14 @@ services:
       - whatsapp-session:/app/session
       # Persist downloaded media
       - whatsapp-media:/app/media
-      - whatsapp-memory:/root/.deepagents/AGENTS.md
+      # Share the host's deepagents-cli config dir (skills, memory, MCP).
+      # Host path resolves via ${HOME}; the container always sees it at
+      # /root/.deepagents (agent runs as root). Create ~/.deepagents on the
+      # host before `docker compose up` or docker will mount an empty dir.
+      - ${HOME:-/root}/.deepagents:/root/.deepagents
     # No ports exposed — bridge runs on localhost inside the container
 
 volumes:
   whatsapp-session:
   whatsapp-media:
-  whatsapp-memory:
 

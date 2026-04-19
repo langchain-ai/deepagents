@@ -742,12 +742,22 @@ def _build_cached_mcp_tool(
             session = await manager.get_or_create_session(server_name, connection)
             return await session.call_tool(original_tool_name, arguments)
 
+        from deepagents_cli.mcp_auth import find_reauth_required
+
         try:
             result = await _call_once()
         except ToolException:
             # Logical error from the MCP server — not transient. Let it bubble.
             raise
         except BaseException as exc:
+            # If the SDK's OAuth refresh path tripped our non-interactive
+            # re-auth signal, surface it as a ToolException so the LLM sees
+            # the "run deepagents mcp login" hint instead of the agent
+            # crashing or (worse) blocking on input().
+            reauth = find_reauth_required(exc)
+            if reauth is not None:
+                await get_default_session_manager().invalidate(server_name)
+                raise ToolException(str(reauth)) from exc
             if not _is_transient_session_error(exc):
                 raise
             logger.info(
@@ -767,6 +777,9 @@ def _build_cached_mcp_tool(
                 # try once more from scratch, but surface this call as a
                 # ToolException rather than crashing the agent loop.
                 await get_default_session_manager().invalidate(server_name)
+                retry_reauth = find_reauth_required(retry_exc)
+                if retry_reauth is not None:
+                    raise ToolException(str(retry_reauth)) from retry_exc
                 msg = (
                     f"MCP tool {lc_tool_name!r} failed after one retry on "
                     f"server {server_name!r}: {type(retry_exc).__name__}: "
@@ -890,6 +903,7 @@ async def _load_tools_from_config(
                     server_name=server_name,
                     server_url=server_config["url"],
                     storage=storage,
+                    interactive=False,
                 )
             connections[server_name] = conn
         else:

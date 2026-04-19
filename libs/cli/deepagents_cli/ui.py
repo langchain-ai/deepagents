@@ -113,6 +113,9 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
+    console.print(
+        "  --max-turns N              Max agentic turns before stopping (needs -n)"
+    )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(
         "  --json                     Emit machine-readable JSON for commands"

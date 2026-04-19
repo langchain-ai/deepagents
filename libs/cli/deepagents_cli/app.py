@@ -322,6 +322,37 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
     return remaining, params
 
 
+def _parse_mcp_login_argv(command: str) -> str:
+    """Parse `/mcp login <server>` and return the server name.
+
+    Args:
+        command: The command string starting with `/mcp login`.
+
+    Returns:
+        The server name string extracted from the command.
+
+    Raises:
+        ValueError: If the command is malformed or the server name fails
+            validation. The message is suitable for direct display in chat.
+    """
+    from deepagents_cli.mcp_tools import _SERVER_NAME_RE
+
+    # Strip the "/mcp login" prefix; expect exactly one additional token.
+    rest = command.strip()[len("/mcp login") :].strip()
+    parts = rest.split()
+    if len(parts) != 1:
+        msg = "Usage: /mcp login <server>"
+        raise ValueError(msg)
+    server = parts[0]
+    if not _SERVER_NAME_RE.fullmatch(server):
+        msg = (
+            f"Invalid server name {server!r}. "
+            "Must match [A-Za-z0-9_-]+."
+        )
+        raise ValueError(msg)
+    return server
+
+
 InputMode = Literal["normal", "shell", "command"]
 
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0

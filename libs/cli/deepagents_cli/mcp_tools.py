@@ -42,7 +42,7 @@ class MCPToolInfo:
 
 @dataclass
 class MCPServerInfo:
-    """Metadata for a connected MCP server and its tools."""
+    """Metadata for a configured MCP server and its tools."""
 
     name: str
     """Server name from the MCP configuration."""
@@ -51,7 +51,16 @@ class MCPServerInfo:
     """Transport type (`stdio`, `sse`, or `http`)."""
 
     tools: list[MCPToolInfo] = field(default_factory=list)
-    """Tools exposed by this server."""
+    """Tools exposed by this server (empty when `status != "ok"`)."""
+
+    status: str = "ok"
+    """Load status — `"ok"`, `"unauthenticated"`, or `"error"`. A non-`"ok"`
+    server is reported in the viewer but its tools are not mounted on the
+    agent, so a single failing server never blocks startup."""
+
+    error: str | None = None
+    """Human-readable reason when `status != "ok"`, suitable for display in
+    the TUI (e.g. `"Run: deepagents mcp login gh"`)."""
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -799,9 +808,9 @@ async def _load_tools_from_config(
     Returns:
         Tuple of `(tools_list, session_manager, server_infos)` — the manager
         is the process-wide singleton; callers need not manage its lifetime.
-
-    Raises:
-        RuntimeError: If MCP server fails to spawn or connect.
+        Servers that fail pre-flight, lack OAuth tokens, or can't complete
+        a discovery session are skipped (tools omitted) and reported in
+        `server_infos` with `status != "ok"`.
     """
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
@@ -810,9 +819,16 @@ async def _load_tools_from_config(
         create_session,
     )
 
+    # Per-server status tracking. A failure at any stage (pre-flight,
+    # OAuth-token lookup, session init) marks the server with a non-"ok"
+    # status and skips it instead of aborting the whole startup — so a
+    # single dark server never blocks the agent. The TUI's MCP viewer and
+    # the welcome surface read `status` / `error` from the returned
+    # `MCPServerInfo`s to signal which servers need attention.
+    skipped: dict[str, tuple[str, str]] = {}  # server_name -> (status, error)
+
     # Pre-flight health checks (best-effort early detection; the session setup
     # below has its own error handling for TOCTOU races).
-    errors: list[str] = []
     for server_name, server_config in config["mcpServers"].items():
         server_type = _resolve_server_type(server_config)
         try:
@@ -821,17 +837,19 @@ async def _load_tools_from_config(
             elif server_type == "stdio":
                 _check_stdio_server(server_name, server_config)
         except RuntimeError as exc:
-            errors.append(str(exc))
-    if errors:
-        msg = "Pre-flight health check(s) failed:\n" + "\n".join(
-            f"  - {e}" for e in errors
-        )
-        raise RuntimeError(msg)
+            logger.warning(
+                "MCP server '%s' skipped: pre-flight failed: %s",
+                server_name,
+                exc,
+            )
+            skipped[server_name] = ("error", str(exc))
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
     connections: dict[str, Connection] = {}
     for server_name, server_config in config["mcpServers"].items():
+        if server_name in skipped:
+            continue
         server_type = _resolve_server_type(server_config)
 
         if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -860,11 +878,14 @@ async def _load_tools_from_config(
 
                 storage = FileTokenStorage(server_name)
                 if await storage.get_tokens() is None:
-                    msg = (
-                        f"MCP server '{server_name}' requires OAuth login. "
-                        f"Run: deepagents mcp login {server_name}"
+                    auth_msg = f"Run: deepagents mcp login {server_name}"
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated. %s",
+                        server_name,
+                        auth_msg,
                     )
-                    raise RuntimeError(msg)
+                    skipped[server_name] = ("unauthenticated", auth_msg)
+                    continue
                 conn["auth"] = build_oauth_provider(
                     server_name=server_name,
                     server_url=server_config["url"],
@@ -888,20 +909,37 @@ async def _load_tools_from_config(
     server_infos: list[MCPServerInfo] = []
 
     for server_name, server_config in config["mcpServers"].items():
+        transport = _resolve_server_type(server_config)
+        if server_name in skipped:
+            status, error = skipped[server_name]
+            server_infos.append(
+                MCPServerInfo(
+                    name=server_name,
+                    transport=transport,
+                    status=status,
+                    error=error,
+                )
+            )
+            continue
         try:
             async with create_session(connections[server_name]) as session:
                 await session.initialize()
                 mcp_tools = await _discover_tools(session)
-        except Exception as e:
-            error_msg = (
-                f"Failed to load tools from MCP server '{server_name}': {e}\n"
-                "For stdio servers: Check that the command and args are correct,"
-                " and that the MCP server is installed"
-                " (e.g., run 'npx -y <package>' manually to test).\n"
-                "For sse/http servers: Check that the URL is correct"
-                " and the server is running."
+        except Exception as e:  # noqa: BLE001 — per-server skip
+            logger.warning(
+                "MCP server '%s' skipped: tool discovery failed: %s",
+                server_name,
+                e,
             )
-            raise RuntimeError(error_msg) from e
+            server_infos.append(
+                MCPServerInfo(
+                    name=server_name,
+                    transport=transport,
+                    status="error",
+                    error=str(e),
+                )
+            )
+            continue
 
         server_tools: list[BaseTool] = [
             _build_cached_mcp_tool(
@@ -916,7 +954,7 @@ async def _load_tools_from_config(
         server_infos.append(
             MCPServerInfo(
                 name=server_name,
-                transport=_resolve_server_type(server_config),
+                transport=transport,
                 tools=[
                     MCPToolInfo(name=t.name, description=t.description or "")
                     for t in server_tools
@@ -993,8 +1031,9 @@ async def resolve_and_load_mcp_tools(
             When no tools are loaded, returns `([], None, [])`.
 
     Raises:
-        RuntimeError: If an MCP server config is invalid or fails to
-            spawn/connect.
+        RuntimeError: If the MCP config itself is malformed. Per-server
+            spawn/connect failures are reported via `server_infos` rather
+            than raising.
     """
     if no_mcp:
         return [], None, []

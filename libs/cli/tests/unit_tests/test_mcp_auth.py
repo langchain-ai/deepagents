@@ -34,12 +34,6 @@ class TestResolveHeaders:
         assert "Authorization" in msg
         assert "linear" in msg
 
-    def test_escape_double_dollar(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("NOT_LOOKED_UP", raising=False)
-        assert resolve_headers({"X-Literal": "$${NOT_LOOKED_UP}"}) == {
-            "X-Literal": "${NOT_LOOKED_UP}"
-        }
-
     def test_dollar_not_followed_by_brace_untouched(self) -> None:
         assert resolve_headers({"X-Price": "price=$5"}) == {"X-Price": "price=$5"}
 
@@ -202,8 +196,10 @@ class TestLoginCommand:
     ) -> None:
         from deepagents_cli.mcp_auth import FileTokenStorage, login
 
-        async def _fake_handshake(connections: dict, storage: FileTokenStorage) -> None:
+        async def _fake_handshake(connections: dict) -> None:
             # Simulate what MultiServerMCPClient.session(...) would trigger.
+            server_name = next(iter(connections))
+            storage = FileTokenStorage(server_name)
             await storage.set_tokens(
                 OAuthToken(access_token="new", token_type="Bearer")
             )

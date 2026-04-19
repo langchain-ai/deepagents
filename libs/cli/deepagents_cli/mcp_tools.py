@@ -9,7 +9,6 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
-import atexit
 import json
 import logging
 import re
@@ -577,31 +576,6 @@ def reset_default_session_manager_for_testing() -> None:
     """Drop the cached singleton. Call from test fixtures only."""
     global _DEFAULT_MANAGER  # noqa: PLW0603 — test-only reset
     _DEFAULT_MANAGER = None
-
-
-def _best_effort_shutdown() -> None:
-    """Close cached MCP sessions on interpreter exit, best-effort.
-
-    Runs at `atexit` time. We try to close sessions in a fresh event loop, but
-    stdio subprocess cleanup depends on anyio streams being closed in their
-    original loop — so this is a best-effort hook, not a correctness guarantee.
-    Child subprocesses are reaped when the parent process exits regardless.
-    """
-    if _DEFAULT_MANAGER is None or not _DEFAULT_MANAGER._stacks:
-        return
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
-                asyncio.wait_for(_DEFAULT_MANAGER.aclose_all(), timeout=2.0)
-            )
-        finally:
-            loop.close()
-    except Exception:
-        logger.debug("Best-effort MCP shutdown failed", exc_info=True)
-
-
-atexit.register(_best_effort_shutdown)
 
 
 def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:

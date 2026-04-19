@@ -9,7 +9,6 @@ import re
 import stat
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider, TokenStorage
@@ -20,16 +19,9 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 
-if TYPE_CHECKING:
-    import httpx
-
-_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 _STORAGE_VERSION = 1
-
-# Cap HTTP response bodies (and replays) shown in error messages so a
-# misconfigured server can't flood the user's terminal with MBs of HTML.
-_BODY_TRUNCATE_AT = 2000
 
 
 # Slack's MCP server rejects Dynamic Client Registration — every client must
@@ -65,9 +57,6 @@ def _is_github_mcp_url(url: str) -> bool:
     return (urlparse(url).hostname or "") == "api.githubcopilot.com"
 
 
-_SLACK_TEAM_ID_RE = re.compile(r"^T[A-Z0-9]{2,}$")
-
-
 def _prompt_slack_team() -> str | None:
     """Interactively ask the user which Slack workspace to install into.
 
@@ -77,25 +66,13 @@ def _prompt_slack_team() -> str | None:
     which is the right default for first-time or single-workspace users.
 
     Returns:
-        The entered team ID (e.g., ``T01234567``), or ``None`` if the user
-        left the prompt blank.
-
-    Raises:
-        RuntimeError: If the entered ID isn't a valid Slack team ID format.
+        The entered team ID, or ``None`` if the user left the prompt blank.
     """
     raw = input(
         "Slack team ID to install the app into "
         "(e.g. T01234567 — leave blank to pick on Slack's page): "
     ).strip()
-    if not raw:
-        return None
-    if not _SLACK_TEAM_ID_RE.fullmatch(raw):
-        msg = (
-            f"Invalid Slack team ID {raw!r}. Team IDs start with 'T' and "
-            "contain only uppercase letters and digits (e.g. 'T01234567')."
-        )
-        raise RuntimeError(msg)
-    return raw
+    return raw or None
 
 
 def resolve_headers(
@@ -105,8 +82,7 @@ def resolve_headers(
 ) -> dict[str, str]:
     """Resolve `${VAR}` env-var references in header values.
 
-    `$${VAR}` is the escape form and collapses to the literal `${VAR}` with no
-    lookup. A dollar sign not followed by `{` or `$` is left untouched.
+    A dollar sign not followed by `{<ident>}` is left untouched.
 
     Returns:
         A new dict with all env-var references resolved to their current values.
@@ -127,66 +103,26 @@ def resolve_headers(
 
 
 def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
-    out: list[str] = []
-    i = 0
-    while i < len(s):
-        ch = s[i]
-        if ch == "$" and i + 1 < len(s):
-            nxt = s[i + 1]
-            if nxt == "$":
-                # `$${...}` → literal `${...}` if a brace group follows;
-                # otherwise literal `$$`.
-                if i + 2 < len(s) and s[i + 2] == "{":
-                    end = s.find("}", i + 3)
-                    if end != -1:
-                        out.append("$" + s[i + 2 : end + 1])
-                        i = end + 1
-                        continue
-                out.append("$$")
-                i += 2
-                continue
-            if nxt == "{":
-                end = s.find("}", i + 2)
-                if end != -1:
-                    var_name = s[i + 2 : end]
-                    if _IDENT_RE.fullmatch(var_name):
-                        val = os.environ.get(var_name)
-                        if val is None:
-                            where = (
-                                f"mcpServers.{server_name}.headers.{header}"
-                                if server_name
-                                else header
-                            )
-                            msg = (
-                                f"{where} references unset env var {var_name}. "
-                                f"Set {var_name} in the environment or remove "
-                                "the reference."
-                            )
-                            raise RuntimeError(msg)
-                        out.append(val)
-                        i = end + 1
-                        continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
+    def replace(m: re.Match[str]) -> str:
+        var_name = m.group(1)
+        val = os.environ.get(var_name)
+        if val is None:
+            where = (
+                f"mcpServers.{server_name}.headers.{header}" if server_name else header
+            )
+            msg = (
+                f"{where} references unset env var {var_name}. "
+                f"Set {var_name} in the environment or remove the reference."
+            )
+            raise RuntimeError(msg)
+        return val
+
+    return _REF_RE.sub(replace, s)
 
 
 def _tokens_dir() -> Path:
-    """Resolve the mcp-tokens directory.
-
-    Re-reads `$HOME` on every call so tests that override it via
-    `monkeypatch.setenv("HOME", ...)` transparently redirect token files.
-    Falls back to the module-level `DEFAULT_CONFIG_DIR` when `$HOME` is unset.
-
-    Returns:
-        Absolute path to the per-user mcp-tokens directory.
-    """
-    home_override = os.environ.get("HOME")
-    if home_override:
-        return Path(home_override) / ".deepagents" / "mcp-tokens"
-    from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
-
-    return DEFAULT_CONFIG_DIR / "mcp-tokens"
+    """Return `~/.deepagents/mcp-tokens/`. `Path.home()` re-reads `$HOME`."""
+    return Path.home() / ".deepagents" / "mcp-tokens"
 
 
 class FileTokenStorage(TokenStorage):
@@ -480,6 +416,10 @@ async def _run_device_flow(
     param is provider-dependent: GitHub Apps ignore it (permissions come from
     app config), OAuth Apps and most other IdPs require it.
 
+    Returns:
+        The issued `OAuthToken` (bearer access token, refresh token when
+        supported, and expiry).
+
     Raises:
         RuntimeError: If the provider returns a terminal error, or the user
             doesn't complete authorization before the device code expires.
@@ -529,10 +469,7 @@ async def _run_device_flow(
                 interval += 5
                 continue
             if err:
-                msg = (
-                    f"Device flow failed: {err}: "
-                    f"{body.get('error_description', '')}"
-                )
+                msg = f"Device flow failed: {err}: {body.get('error_description', '')}"
                 raise RuntimeError(msg)
             return OAuthToken.model_validate(body)
 
@@ -593,163 +530,19 @@ def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     return None
 
 
-def _find_http_status_error(exc: BaseException) -> httpx.HTTPStatusError | None:
-    """Find the first `httpx.HTTPStatusError` wrapped inside *exc*.
-
-    Recursively searches *exc* and any `BaseExceptionGroup` / chained
-    `__cause__` / `__context__` it wraps. The MCP streamable-HTTP client runs
-    inside an anyio `TaskGroup`, so HTTP errors from `raise_for_status` arrive
-    wrapped in one or more `BaseExceptionGroup` layers.
-
-    Returns:
-        The innermost `httpx.HTTPStatusError` found, or `None` if the
-        exception tree doesn't contain one.
-    """
-    import httpx
-
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc
-    sub_exceptions = getattr(exc, "exceptions", None)
-    if sub_exceptions:
-        for sub in sub_exceptions:
-            found = _find_http_status_error(sub)
-            if found is not None:
-                return found
-    cause = exc.__cause__ or exc.__context__
-    if cause is not None and cause is not exc:
-        return _find_http_status_error(cause)
-    return None
-
-
-async def _drive_handshake(
-    connections: dict,
-    storage: FileTokenStorage,  # noqa: ARG001 — documents caller contract; SDK writes via the provider
-) -> None:
+async def _drive_handshake(connections: dict) -> None:
     """Open a one-shot MCP session to trigger the OAuth handshake.
 
     The MCP SDK's `OAuthClientProvider` hooks into session startup and runs
     discovery → DCR → paste-back handlers → token exchange. Tokens land in
-    `storage` via `set_tokens` before this returns.
-
-    When the post-OAuth MCP init request fails with an HTTP error, the
-    response body almost always carries the real reason (invalid_scope,
-    missing_team, etc.). We unwrap the ExceptionGroup-wrapped error so that
-    body gets surfaced to the user instead of being swallowed.
-
-    Raises:
-        RuntimeError: If the MCP server rejects the initialize request with
-            an HTTP error; the message includes status line, headers, and the
-            response body when recoverable.
+    storage via `set_tokens` before this returns.
     """
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     client = MultiServerMCPClient(connections=connections)
     server_name = next(iter(connections))
-    try:
-        async with client.session(server_name):
-            # Entering the session drives the full flow.
-            pass
-    except BaseException as exc:
-        status_error = _find_http_status_error(exc)
-        if status_error is None:
-            raise
-        response = status_error.response
-        request = status_error.request
-
-        # Streamed responses have already been consumed by `raise_for_status`;
-        # try several paths to recover the body for the user.
-        body = ""
-        for reader in (
-            lambda: response.text,
-            lambda: response.content.decode(errors="replace"),
-        ):
-            try:
-                body = reader()
-                if body:
-                    break
-            except Exception:  # noqa: BLE001, S112 — best-effort diagnostic, swallow and try next
-                continue
-        if not body:
-            try:
-                await response.aread()
-                body = response.text
-            except Exception:  # noqa: BLE001, S110 — best-effort diagnostic, body stays empty
-                pass
-
-        lines = [
-            f"MCP server '{server_name}' rejected the initialize request:",
-            (
-                f"  HTTP {response.status_code} {response.reason_phrase} "
-                f"from {request.method} {request.url}"
-            ),
-        ]
-        content_type = response.headers.get("content-type")
-        if content_type:
-            lines.append(f"  Content-Type: {content_type}")
-        slack_err = response.headers.get("x-slack-error")
-        if slack_err:
-            lines.append(f"  X-Slack-Error: {slack_err}")
-        www_auth = response.headers.get("www-authenticate")
-        if www_auth:
-            lines.append(f"  WWW-Authenticate: {www_auth}")
-
-        if body:
-            truncated = (
-                body
-                if len(body) <= _BODY_TRUNCATE_AT
-                else body[:_BODY_TRUNCATE_AT] + "…[truncated]"
-            )
-            lines.extend(("\nResponse body:", truncated))
-        else:
-            # Streamed responses in the MCP SDK are consumed by raise_for_status
-            # before we can read the body. Replay the request manually as a
-            # non-streaming POST so we can see what the server actually said.
-            replay = await _replay_request_for_body(request)
-            if replay is not None:
-                lines.extend(("\n[Replayed request to capture response body]", replay))
-            else:
-                lines.append(
-                    "\n(Response body was empty on both the original request "
-                    "and a replay. Check the Slack app's OAuth scopes and the "
-                    "MCP-Protocol-Version the server expects.)"
-                )
-
-        raise RuntimeError("\n".join(lines)) from status_error
-
-
-async def _replay_request_for_body(request: httpx.Request) -> str | None:
-    """Resend *request* as a non-streaming POST so we can read the body.
-
-    The MCP SDK streams responses, which makes failed 4xx/5xx bodies
-    unavailable after `raise_for_status` closes the stream. Replaying the
-    same request outside of streaming mode is the simplest way to recover
-    the body for diagnostics.
-
-    Returns:
-        A human-readable summary (status line + body, truncated) or ``None``
-        if the replay itself failed.
-    """
-    import httpx
-
-    try:
-        body_bytes = request.content
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.request(
-                request.method,
-                str(request.url),
-                content=body_bytes,
-                headers=dict(request.headers),
-            )
-        preview = resp.text
-        if len(preview) > _BODY_TRUNCATE_AT:
-            preview = preview[:_BODY_TRUNCATE_AT] + "…[truncated]"
-        return (
-            f"HTTP {resp.status_code} {resp.reason_phrase}\n"
-            f"Content-Type: {resp.headers.get('content-type', '(none)')}\n\n"
-            f"{preview}"
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort diagnostic
-        return f"(replay failed: {type(exc).__name__}: {exc})"
+    async with client.session(server_name):
+        pass
 
 
 async def login(
@@ -790,8 +583,7 @@ async def login(
     if _is_github_mcp_url(server_config["url"]):
         await _preseed_github_auth(storage)
         print(  # noqa: T201 — user-facing confirmation
-            f"Logged in to MCP server '{server_name}'. "
-            f"Tokens saved to {storage._path}."
+            f"Logged in to MCP server '{server_name}'. Tokens saved to {storage._path}."
         )
         return
 
@@ -822,7 +614,7 @@ async def login(
     else:
         conn = SSEConnection(transport="sse", url=server_config["url"], auth=provider)
 
-    await _drive_handshake({server_name: conn}, storage)
+    await _drive_handshake({server_name: conn})
     print(  # noqa: T201 - user-facing confirmation
         f"Logged in to MCP server '{server_name}'. Tokens saved to {storage._path}."
     )

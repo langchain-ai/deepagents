@@ -4757,7 +4757,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     f"Logged in to MCP server '{server}'. "
-                    f"Run /clear to pick up its tools.{refresh_warning}"
+                    f"Restart the agent to pick up its tools.{refresh_warning}"
                 )
             )
         elif exit_code == exit_no_config:

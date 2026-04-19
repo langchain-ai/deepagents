@@ -268,13 +268,30 @@ class MCPViewerScreen(ModalScreen[None]):
                     for server in self._server_info:
                         tool_count = len(server.tools)
                         t_label = "tool" if tool_count == 1 else "tools"
-                        yield Static(
-                            Content.from_markup(
+                        if server.status == "ok":
+                            header_markup = (
                                 "[bold]$name[/bold]"
                                 f" [dim]$transport {glyphs.bullet}"
-                                f" {tool_count} {t_label}[/dim]",
+                                f" {tool_count} {t_label}[/dim]"
+                            )
+                        else:
+                            # Surface unauth / error servers inline so users
+                            # know the server is configured but unavailable,
+                            # and (for "unauthenticated") what to run to fix
+                            # it. The tools list is empty for these entries.
+                            header_markup = (
+                                "[bold]$name[/bold]"
+                                f" [dim]$transport[/dim]"
+                                f" [yellow]{glyphs.bullet} $status[/yellow]"
+                                f" [dim]— $error[/dim]"
+                            )
+                        yield Static(
+                            Content.from_markup(
+                                header_markup,
                                 name=server.name,
                                 transport=server.transport,
+                                status=server.status,
+                                error=server.error or "",
                             ),
                             classes="mcp-server-header",
                         )

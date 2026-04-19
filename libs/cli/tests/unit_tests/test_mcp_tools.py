@@ -708,16 +708,17 @@ class TestGetMCPTools:
         valid_config_data: dict,
         fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """Discovery errors surface as RuntimeError wrapping the original cause."""
+        """Discovery failure marks the server as errored, doesn't raise."""
         path = write_config(valid_config_data)
         mock_session, _ = fake_create_session
         mock_session.initialize = AsyncMock(side_effect=Exception("handshake failed"))
 
-        with pytest.raises(
-            RuntimeError,
-            match=r"Failed to load tools from MCP server.*handshake failed",
-        ):
-            await get_mcp_tools(path)
+        tools, _session_manager, server_infos = await get_mcp_tools(path)
+
+        assert tools == []
+        assert len(server_infos) == 1
+        assert server_infos[0].status == "error"
+        assert "handshake failed" in (server_infos[0].error or "")
 
     async def test_get_mcp_tools_list_tools_failure(
         self,
@@ -725,16 +726,17 @@ class TestGetMCPTools:
         valid_config_data: dict,
         fake_create_session: tuple[AsyncMock, list],
     ) -> None:
-        """`list_tools` errors surface as RuntimeError."""
+        """`list_tools` failure marks the server as errored, doesn't raise."""
         path = write_config(valid_config_data)
         mock_session, _ = fake_create_session
         mock_session.list_tools = AsyncMock(side_effect=Exception("protocol error"))
 
-        with pytest.raises(
-            RuntimeError,
-            match=r"Failed to load tools from MCP server.*protocol error",
-        ):
-            await get_mcp_tools(path)
+        tools, _session_manager, server_infos = await get_mcp_tools(path)
+
+        assert tools == []
+        assert len(server_infos) == 1
+        assert server_infos[0].status == "error"
+        assert "protocol error" in (server_infos[0].error or "")
 
     async def test_get_mcp_tools_empty_env_dict_coerced_to_none(
         self,
@@ -1604,7 +1606,7 @@ class TestHealthCheckIntegration:
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Health check failure raises before any session is opened."""
+        """Health check failure marks the server errored without opening a session."""
         path = write_config(
             {"mcpServers": {"fs": {"command": "missing-cmd", "args": []}}}
         )
@@ -1616,24 +1618,22 @@ class TestHealthCheckIntegration:
 
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
-            patch("langchain_mcp_adapters.sessions.create_session", _fake) as patched,
-            pytest.raises(RuntimeError, match="Pre-flight health check"),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
         ):
-            await get_mcp_tools(path)
+            tools, _session_manager, server_infos = await get_mcp_tools(path)
 
-        # create_session is the ContextDecorator itself; just assert no call
-        # reached `initialize` / `list_tools`.
+        assert tools == []
+        assert len(server_infos) == 1
+        assert server_infos[0].name == "fs"
+        assert server_infos[0].status == "error"
         fake_session.initialize.assert_not_called()
         fake_session.list_tools.assert_not_called()
-        # patched is the raw asynccontextmanager function, not a Mock; the
-        # underlying mock assertions above already cover the invariant.
-        del patched
 
     async def test_remote_health_check_failure_skips_session(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Remote health check failure prevents session creation."""
+        """Remote health check failure marks the server errored, no session open."""
         import httpx
 
         path = write_config(
@@ -1653,17 +1653,21 @@ class TestHealthCheckIntegration:
         with (
             patch("httpx.AsyncClient", return_value=mock_http),
             patch("langchain_mcp_adapters.sessions.create_session", _fake),
-            pytest.raises(RuntimeError, match="Pre-flight health check"),
         ):
-            await get_mcp_tools(path)
+            tools, _session_manager, server_infos = await get_mcp_tools(path)
 
+        assert tools == []
+        assert len(server_infos) == 1
+        assert server_infos[0].name == "api"
+        assert server_infos[0].status == "error"
+        assert "down:9999" in (server_infos[0].error or "")
         fake_session.initialize.assert_not_called()
 
     async def test_multi_server_collects_all_failures(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """All server failures are reported in a single error."""
+        """Each failing server gets its own errored server_info."""
         path = write_config(
             {
                 "mcpServers": {
@@ -1681,20 +1685,22 @@ class TestHealthCheckIntegration:
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
             patch("langchain_mcp_adapters.sessions.create_session", _fake),
-            pytest.raises(RuntimeError) as exc_info,
         ):
-            await get_mcp_tools(path)
+            tools, _session_manager, server_infos = await get_mcp_tools(path)
 
-        error_msg = str(exc_info.value)
-        assert "missing-a" in error_msg
-        assert "missing-b" in error_msg
+        assert tools == []
+        by_name = {info.name: info for info in server_infos}
+        assert by_name["a"].status == "error"
+        assert by_name["b"].status == "error"
+        assert "missing-a" in (by_name["a"].error or "")
+        assert "missing-b" in (by_name["b"].error or "")
         fake_session.initialize.assert_not_called()
 
     async def test_mixed_stdio_and_remote_checks(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Both stdio and remote health checks run for mixed configs."""
+        """Both stdio and remote health checks mark their servers errored."""
         import httpx
 
         path = write_config(
@@ -1714,13 +1720,15 @@ class TestHealthCheckIntegration:
         with (
             patch("deepagents_cli.mcp_tools.shutil.which", return_value=None),
             patch("httpx.AsyncClient", return_value=mock_http),
-            pytest.raises(RuntimeError) as exc_info,
         ):
-            await get_mcp_tools(path)
+            tools, _session_manager, server_infos = await get_mcp_tools(path)
 
-        error_msg = str(exc_info.value)
-        assert "missing-cmd" in error_msg
-        assert "down:9999" in error_msg
+        assert tools == []
+        by_name = {info.name: info for info in server_infos}
+        assert by_name["local"].status == "error"
+        assert by_name["remote"].status == "error"
+        assert "missing-cmd" in (by_name["local"].error or "")
+        assert "down:9999" in (by_name["remote"].error or "")
 
 
 class TestToolOrdering:
@@ -1842,10 +1850,11 @@ class TestLoadToolsFromConfigHeaders:
 
 
 class TestLoadToolsFromConfigOAuth:
-    async def test_missing_tokens_raise_login_instruction(
+    async def test_missing_tokens_skip_server_with_login_hint(
         self,
         fake_home: Path,
     ) -> None:
+        """An OAuth server without stored tokens is skipped, not fatal."""
         from deepagents_cli.mcp_tools import _load_tools_from_config
 
         config = {
@@ -1857,14 +1866,19 @@ class TestLoadToolsFromConfigOAuth:
                 }
             }
         }
-        with (
-            patch(
-                "deepagents_cli.mcp_tools._check_remote_server",
-                new=AsyncMock(return_value=None),
-            ),
-            pytest.raises(RuntimeError, match="deepagents mcp login notion"),
+        with patch(
+            "deepagents_cli.mcp_tools._check_remote_server",
+            new=AsyncMock(return_value=None),
         ):
-            await _load_tools_from_config(config)
+            tools, _session_manager, server_infos = await _load_tools_from_config(
+                config
+            )
+
+        assert tools == []
+        assert len(server_infos) == 1
+        assert server_infos[0].name == "notion"
+        assert server_infos[0].status == "unauthenticated"
+        assert "deepagents mcp login notion" in (server_infos[0].error or "")
 
     async def test_existing_tokens_attach_oauth_provider(
         self,

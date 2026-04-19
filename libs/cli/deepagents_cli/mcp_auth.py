@@ -50,6 +50,21 @@ def _is_slack_mcp_url(url: str) -> bool:
     return host == "slack.com" or host.endswith(".slack.com")
 
 
+# GitHub's Remote MCP Server rejects DCR and its token endpoint requires a
+# client_secret — unsafe to distribute in a public CLI. RFC 8628 Device Flow
+# works with client_id only, so the CLI obtains a GitHub access token that
+# way and pre-seeds it into storage; the MCP SDK then treats auth as already
+# complete and attaches `Authorization: Bearer <token>` to every request.
+_GITHUB_MCP_CLIENT_ID = "Ov23lirWr31UGKF4GEo3"
+_GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
+_GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105 — OAuth endpoint URL, not a secret
+
+
+def _is_github_mcp_url(url: str) -> bool:
+    """Return True when *url* points at GitHub's remote MCP endpoint."""
+    return (urlparse(url).hostname or "") == "api.githubcopilot.com"
+
+
 _SLACK_TEAM_ID_RE = re.compile(r"^T[A-Z0-9]{2,}$")
 
 
@@ -397,6 +412,108 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
     )
 
 
+async def _run_device_flow(
+    *,
+    device_code_url: str,
+    token_url: str,
+    client_id: str,
+    scope: str | None = None,
+) -> OAuthToken:
+    """Run OAuth 2.0 Device Authorization Grant (RFC 8628) and return the token.
+
+    Generic across providers that implement RFC 8628. Omits `client_secret` —
+    only use for public clients (CLIs, desktop apps). Callers pass provider-
+    specific endpoints and the registered public `client_id`. The `scope`
+    param is provider-dependent: GitHub Apps ignore it (permissions come from
+    app config), OAuth Apps and most other IdPs require it.
+
+    Raises:
+        RuntimeError: If the provider returns a terminal error, or the user
+            doesn't complete authorization before the device code expires.
+    """
+    import asyncio
+
+    import httpx
+
+    init_data = {"client_id": client_id}
+    if scope is not None:
+        init_data["scope"] = scope
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            device_code_url,
+            data=init_data,
+            headers={"Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        dev = resp.json()
+
+        print(  # noqa: T201 — user-facing prompt
+            f"\nVisit {dev['verification_uri']} and enter code: "
+            f"{dev['user_code']}\n(code expires in {dev['expires_in']}s)\n"
+        )
+
+        interval = max(int(dev.get("interval", 5)), 1)
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + int(dev["expires_in"])
+        while loop.time() < deadline:
+            await asyncio.sleep(interval)
+            tok = await client.post(
+                token_url,
+                data={
+                    "client_id": client_id,
+                    "device_code": dev["device_code"],
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                },
+                headers={"Accept": "application/json"},
+            )
+            tok.raise_for_status()
+            body = tok.json()
+            err = body.get("error")
+            if err == "authorization_pending":
+                continue
+            if err == "slow_down":
+                interval += 5
+                continue
+            if err:
+                msg = (
+                    f"Device flow failed: {err}: "
+                    f"{body.get('error_description', '')}"
+                )
+                raise RuntimeError(msg)
+            return OAuthToken.model_validate(body)
+
+    msg = "Device flow timed out; re-run `deepagents mcp login <server>`."
+    raise RuntimeError(msg)
+
+
+async def _preseed_github_auth(storage: FileTokenStorage) -> None:
+    """Run GitHub Device Flow and persist the token + stub client_info.
+
+    GitHub Apps ignore the ``scope`` param — permissions come from the app's
+    configured permissions, so we don't send one. The client_info stub exists
+    purely so the MCP SDK skips its DCR branch on subsequent sessions; token
+    refresh against GitHub requires a client_secret and isn't supported in
+    this flow, so callers must re-run ``mcp login <server>`` when tokens
+    expire.
+    """
+    token = await _run_device_flow(
+        device_code_url=_GITHUB_DEVICE_CODE_URL,
+        token_url=_GITHUB_TOKEN_URL,
+        client_id=_GITHUB_MCP_CLIENT_ID,
+    )
+    await storage.set_tokens(token)
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id=_GITHUB_MCP_CLIENT_ID,
+            redirect_uris=[AnyUrl("http://localhost/callback")],
+            grant_types=["urn:ietf:params:oauth:grant-type:device_code"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",  # noqa: S106 — OAuth method literal, not a password
+        )
+    )
+
+
 def _find_http_status_error(exc: BaseException) -> httpx.HTTPStatusError | None:
     """Find the first `httpx.HTTPStatusError` wrapped inside *exc*.
 
@@ -586,6 +703,18 @@ async def login(
         raise ValueError(msg)
 
     storage = FileTokenStorage(server_name)
+
+    # GitHub's MCP server doesn't implement DCR, and its token endpoint
+    # requires a client_secret that a public CLI can't safely distribute.
+    # Route through Device Flow (no secret) and persist the bearer token so
+    # regular MCP sessions pick it up via FileTokenStorage.get_tokens().
+    if _is_github_mcp_url(server_config["url"]):
+        await _preseed_github_auth(storage)
+        print(  # noqa: T201 — user-facing confirmation
+            f"Logged in to MCP server '{server_name}'. "
+            f"Tokens saved to {storage._path}."
+        )
+        return
 
     extra_auth_params: dict[str, str] = {}
 

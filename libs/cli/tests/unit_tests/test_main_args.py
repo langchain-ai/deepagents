@@ -541,6 +541,35 @@ class TestApplyStdinPipe:
         assert args.non_interactive_message == "hello"
 
 
+class TestAgentResolutionScope:
+    """Recent-agent fallback should only apply to session launches."""
+
+    def test_threads_list_preserves_show_all_default(self) -> None:
+        """Bare `threads list` must not inherit `[agents].recent` as a filter."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "threads", "list"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.model_config.load_recent_agent") as load_recent,
+            patch("deepagents_cli.main._recent_agent_is_valid") as valid_recent,
+            patch(
+                "deepagents_cli.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+
+        mock_list.assert_awaited_once()
+        assert mock_list.await_args.kwargs["agent_name"] is None  # type: ignore[union-attr]
+        load_recent.assert_not_called()
+        valid_recent.assert_not_called()
+
+
 class TestResolveAgentArg:
     """Resolution order: explicit > -r fallback > recent > default."""
 

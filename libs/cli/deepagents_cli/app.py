@@ -348,7 +348,12 @@ class QueuedMessage:
     """The input mode that determines message routing."""
 
 
-DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output"]
+DeferredActionKind = Literal[
+    "model_switch",
+    "thread_switch",
+    "chat_output",
+    "agent_switch",
+]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
 
@@ -4791,13 +4796,39 @@ class DeepAgentsApp(App):
         if agent_name == self._assistant_id:
             return
 
-        if self._server_kwargs is None or self._server_proc is None:
+        if self._server_kwargs is None:
             # Remote-server mode: we don't own the subprocess, so we can't
             # restart it. Changing identity locally would leave the running
             # server's system prompt pointing at a different agent.
             self.notify(
                 "Cannot switch agents against a remote server. "
                 "Relaunch the CLI with -a <name> instead.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._server_proc is None:
+            if self._connecting:
+
+                async def _deferred_switch() -> None:  # noqa: RUF029  # DeferredAction requires an awaitable; the UI mutation must stay on the main thread.
+                    self._switch_agent(agent_name)
+
+                self._defer_action(
+                    DeferredAction(
+                        kind="agent_switch",
+                        execute=_deferred_switch,
+                    )
+                )
+                self.notify(
+                    "Agent will switch after connection completes.",
+                    timeout=3,
+                    markup=False,
+                )
+                return
+
+            self.notify(
+                "Cannot switch agents until the local server is ready.",
                 severity="warning",
                 markup=False,
             )

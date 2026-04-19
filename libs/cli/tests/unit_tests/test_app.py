@@ -3412,6 +3412,38 @@ class TestSwitchAgentGuards:
             assert app._assistant_id == "coder"
             assert app._agent_switching is False
 
+    async def test_defers_while_local_server_is_connecting(self) -> None:
+        """Local startup should queue the swap instead of warning as remote."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=None,
+        )
+
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+
+            worker.assert_not_called()
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "agent_switch"
+            assert any("connection completes" in m for m in notifications)
+            assert all("remote server" not in m for m in notifications)
+            assert app._assistant_id == "coder"
+            assert app._agent_switching is False
+
+            with patch.object(app, "_switch_agent") as switch:
+                await action.execute()
+            switch.assert_called_once_with("researcher")
+
     async def test_rejects_while_agent_running(self) -> None:
         """Mid-run swaps are rejected so in-flight streams aren't orphaned."""
         app = DeepAgentsApp(

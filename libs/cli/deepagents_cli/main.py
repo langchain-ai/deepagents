@@ -1319,7 +1319,6 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
-        args.agent = _resolve_agent_arg(args)
 
         # Import console/settings AFTER arg parsing so --help (which exits
         # inside parse_args) never pays the settings bootstrap cost.
@@ -1360,6 +1359,7 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
                 from deepagents_acp.server import AgentServerACP
@@ -1385,7 +1385,7 @@ def cli_main() -> None:
 
             exit_code = asyncio.run(
                 _run_acp_cli_async(
-                    assistant_id=args.agent,
+                    assistant_id=assistant_id,
                     run_acp_agent=run_acp_agent,
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
@@ -1658,6 +1658,8 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            # Resolve recent-agent fallback only for actual session launches.
+            assistant_id = _resolve_agent_arg(args)
             # Check for optional tools before running agent (stderr so
             # --quiet piped output stays clean)
             try:
@@ -1696,7 +1698,7 @@ def cli_main() -> None:
             exit_code = asyncio.run(
                 run_non_interactive(
                     message=args.non_interactive_message,
-                    assistant_id=args.agent,
+                    assistant_id=assistant_id,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
                     profile_override=profile_override,
@@ -1713,6 +1715,8 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
         else:
+            # Resolve recent-agent fallback only for actual session launches.
+            assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
             from rich.style import Style
             from rich.text import Text
@@ -1755,7 +1759,7 @@ def cli_main() -> None:
             try:
                 result = asyncio.run(
                     run_textual_cli_async(
-                        assistant_id=args.agent,
+                        assistant_id=assistant_id,
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,

@@ -348,7 +348,9 @@ class QueuedMessage:
     """The input mode that determines message routing."""
 
 
-DeferredActionKind = Literal["model_switch", "thread_switch", "chat_output"]
+DeferredActionKind = Literal[
+    "model_switch", "thread_switch", "chat_output", "mcp_login"
+]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
 

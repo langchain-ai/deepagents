@@ -212,12 +212,16 @@ async def main() -> None:
     recursion_limit = _parse_recursion_limit()
     print(f"[main] Agent recursion_limit: {recursion_limit}")
 
-    # --- Cron jobs path ---
-    jobs_path = Path(
-        os.getenv("WHATSAPP_CRON_PATH", "./cron/jobs.json"),
-    ).expanduser().resolve()
-
     print(f"[main] Assistant ID: {_assistant_id()} (dir: {_agent_dir()})")
+
+    # --- Cron jobs path ---
+    # Default lives under the CLI-aligned agent dir so `jobs.json` is
+    # persistent (via the ~/.deepagents bind mount in docker-compose) and
+    # user-editable on the host.
+    cron_default = _agent_dir() / "cron" / "jobs.json"
+    jobs_path = Path(
+        os.getenv("WHATSAPP_CRON_PATH", str(cron_default)),
+    ).expanduser().resolve()
 
     # --- MCP tools (optional; follows the CLI's loader pattern) ---
     mcp_session_manager: MCPSessionManager | None = None

@@ -125,7 +125,7 @@ Configuration:
 
 | Variable | Default | Description |
 |---|---|---|
-| `WHATSAPP_CRON_PATH` | `./cron/jobs.json` | Where job state is persisted |
+| `WHATSAPP_CRON_PATH` | `~/.deepagents/<AGENT_ASSISTANT_ID>/cron/jobs.json` | Where job state is persisted |
 | `WHATSAPP_CRON_TICK_SECONDS` | `60` | How often the scheduler checks for due jobs |
 
 Limitations:

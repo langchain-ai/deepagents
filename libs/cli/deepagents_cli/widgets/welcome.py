@@ -150,6 +150,18 @@ class WelcomeBanner(Static):
         self._mcp_tool_count = mcp_tool_count
         self.update(self._build_banner(self._project_url))
 
+    def set_connecting(self) -> None:
+        """Transition back to the "connecting" state.
+
+        Used when the server is being restarted mid-session (e.g., switching
+        agents via `/agents`), so the banner reflects that no agent is
+        currently reachable.
+        """
+        self._connecting = True
+        self._failed = False
+        self._resuming = False
+        self.update(self._build_banner(self._project_url))
+
     def set_failed(self, error: str) -> None:
         """Transition from "connecting" to a persistent failure state.
 

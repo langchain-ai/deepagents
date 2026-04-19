@@ -64,6 +64,13 @@ class AgentSelectorScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
 
+    AgentSelectorScreen .agent-selector-subtitle {
+        height: auto;
+        color: $text-muted;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
     AgentSelectorScreen OptionList {
         height: auto;
         max-height: 16;
@@ -118,6 +125,10 @@ class AgentSelectorScreen(ModalScreen[str | None]):
         with Vertical():
             yield Static("Select Agent", classes="agent-selector-title")
             if options:
+                yield Static(
+                    "Switching restarts the agent and starts a new thread.",
+                    classes="agent-selector-subtitle",
+                )
                 option_list = OptionList(*options, id="agent-options")
                 option_list.highlighted = highlight_index
                 yield option_list

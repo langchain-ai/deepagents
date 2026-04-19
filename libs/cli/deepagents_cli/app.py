@@ -573,18 +573,49 @@ class DeepAgentsApp(App):
 
         self._register_custom_themes()
 
-        # Apply saved theme preference (or default)
         self.theme = _load_theme_preference()
+        """Active Textual theme name.
 
+        Loaded from the user's saved preference (or the default) so the app
+        boots with consistent colors before `/theme` runs.
+        """
+
+        # Injected session config
         self._agent = agent
+        """Pre-configured agent (local `Pregel` or `RemoteAgent`).
+
+        `None` when server startup is deferred via `server_kwargs`; filled in
+        by the server-ready handler (and by the agent-swap worker when
+        `/agents` restarts the subprocess).
+        """
 
         self._assistant_id = assistant_id
+        """Current agent identity.
+
+        Scopes per-agent memory (`~/.deepagents/<id>/`) and skill discovery,
+        keys `FileOpTracker` file-op history, and is attached to LangSmith
+        traces as `assistant_id` / `agent_name`. Mutated by `/agents` swaps
+        and by `-r` resume when the resumed thread belongs to a different
+        agent.
+        """
 
         self._backend = backend
+        """Filesystem/storage backend for agent file operations."""
 
         self._auto_approve = auto_approve
+        """Current auto-approve state for tool calls.
+
+        Initialized from `--auto-approve` and toggled at runtime via
+        Ctrl+T / Shift+Tab or the approval menu's 'Auto' option; kept in
+        sync with `_session_state.auto_approve`.
+        """
 
         self._cwd = str(cwd) if cwd else str(Path.cwd())
+        """Session cwd.
+
+        Shown in the status bar; used as the root for `@` file-mention
+        completion in the chat input.
+        """
 
         self._lc_thread_id = thread_id
         """LangChain thread identifier.
@@ -593,60 +624,132 @@ class DeepAgentsApp(App):
         """
 
         self._resume_thread_intent = resume_thread
+        """Raw `-r` intent (`None`, `'__MOST_RECENT__'`, or a thread id).
+
+        Resolved into a concrete `_lc_thread_id` by `_resolve_resume_thread`
+        during background startup.
+        """
 
         self._initial_prompt = initial_prompt
+        """Prompt to auto-submit after first paint (from `-m`)."""
 
         self._initial_skill = (
             initial_skill.strip().lower()
             if initial_skill and initial_skill.strip()
             else None
         )
+        """Skill name to auto-invoke after first paint (from `--skill`).
+
+        Normalized to lowercase; `None` when not provided.
+        """
 
         self._mcp_server_info = mcp_server_info
-
-        self._profile_override = profile_override
-
-        self._server_proc = server_proc
-
-        self._server_kwargs = server_kwargs
-
-        self._mcp_preload_kwargs = mcp_preload_kwargs
-
-        self._model_kwargs = model_kwargs
-
-        self._connecting = server_kwargs is not None
-        # Extract sandbox type from server kwargs for trace metadata.
-        # ServerConfig.__post_init__ normalizes "none" → None, but server_kwargs carries
-        # the raw argparse value, so guard against both.
-
-        raw = (server_kwargs or {}).get("sandbox_type")
-
-        self._sandbox_type: str | None = raw if raw and raw != "none" else None
-
-        self._model_override: str | None = None
-
-        self._model_params_override: dict[str, Any] | None = None
+        """MCP server metadata surfaced in the `/mcp` viewer."""
 
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
+        """Total tool count across MCP servers, displayed in the status bar."""
 
+        self._profile_override = profile_override
+        """Extra profile fields from `--profile-override`, retained so later
+        profile-aware behavior (model selection, offload budget display,
+        on-demand `create_model()`) stays consistent with the CLI override."""
+
+        self._server_proc = server_proc
+        """Handle to the langgraph dev subprocess, when the CLI owns one.
+
+        `None` in remote-server mode (the CLI connects to an external server
+        and cannot restart it).
+        """
+
+        self._server_kwargs = server_kwargs
+        """Cached kwargs for `start_server_and_get_agent`.
+
+        When non-`None`, startup is deferred and the UI begins in
+        "Connecting..." state.
+
+        Re-used so downstream features that restart the server (e.g. `/agents`)
+        start from the same config.
+        """
+
+        self._mcp_preload_kwargs = mcp_preload_kwargs
+        """Kwargs for `_preload_session_mcp_server_info`, run concurrently
+        with server startup when `server_kwargs` is set."""
+
+        self._model_kwargs = model_kwargs
+        """Kwargs for deferred `create_model()`.
+
+        When non-`None`, model creation runs in a background worker after
+        first paint; consumed by the startup worker and reset to `None`.
+        """
+
+        raw = (server_kwargs or {}).get("sandbox_type")
+        """Raw argparse sandbox value from `server_kwargs` before normalization.
+
+        `ServerConfig.__post_init__` maps `"none"` to `None`, but
+        `server_kwargs` still carries the argparse string, so `_sandbox_type`
+        below guards against both representations.
+        """
+
+        self._sandbox_type: str | None = raw if raw and raw != "none" else None
+        """Normalized sandbox type (or `None`), attached to trace metadata."""
+
+        # Per-turn model overrides
+        self._model_override: str | None = None
+        """Per-turn model override set via `/model`; `None` uses session default."""
+
+        self._model_params_override: dict[str, Any] | None = None
+        """Per-turn model params override set via `/model --model-params`."""
+
+        # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
+        """Status bar widget; populated in `on_mount`."""
 
         self._chat_input: ChatInput | None = None
+        """Chat input widget; populated in `on_mount`."""
 
-        self._quit_pending = False
-
-        self._session_state: TextualSessionState | None = None
+        self._loading_widget: LoadingWidget | None = None
+        """Active spinner widget; populated by `_set_spinner(status)` and
+        cleared when status resolves to `None`."""
 
         self._ui_adapter: TextualUIAdapter | None = None
+        """Bridge that renders agent events into widgets; set in `on_mount`."""
+
+        self._approval_placeholder: Static | None = None
+        """'Waiting for typing to finish...' placeholder mounted in place of
+        the approval menu while the user is mid-type, so stray keys (`y`,
+        `n`, `1`-`3`) can't trigger approval decisions. Swapped for the real
+        `ApprovalMenu` by `_deferred_show_approval` once typing settles."""
 
         self._pending_approval_widget: ApprovalMenu | None = None
+        """Currently-mounted HITL approval widget awaiting a decision."""
 
         self._pending_ask_user_widget: AskUserMenu | None = None
-        # Agent task tracking for interruption
+        """Currently-mounted `ask_user` prompt awaiting an answer."""
 
+        # Agent & shell run state
         self._agent_worker: Worker[None] | None = None
+        """Active `_run_agent_task` worker, tracked so it can be cancelled
+        on interrupt (`Ctrl+C`) or exit."""
 
         self._agent_running = False
+        """True while the agent worker is streaming a response."""
+
+        self._shell_process: asyncio.subprocess.Process | None = None
+        """Shell command process tracking for interruption (! commands)."""
+
+        self._shell_worker: Worker[None] | None = None
+        """Active `!` shell-command worker, tracked for interruption."""
+
+        self._shell_running = False
+        """True while a `!` shell command is executing."""
+
+        # Lifecycle flags & re-entry guards
+        self._connecting = server_kwargs is not None
+        """True while the backing server is being started or restarted.
+
+        Gates message handling so user input is queued until the agent is
+        actually reachable.
+        """
 
         self._server_startup_error: str | None = None
         """Set when the background server fails to start; persists for the
@@ -655,33 +758,40 @@ class DeepAgentsApp(App):
         Shown in place of the generic 'Agent not configured' message.
         """
 
-        self._shell_process: asyncio.subprocess.Process | None = None
-        """Shell command process tracking for interruption (! commands)."""
+        self._quit_pending = False
+        """True after a first `Ctrl+C` so a second press within the window quits."""
 
-        self._shell_worker: Worker[None] | None = None
+        self._thread_switching = False
+        """Re-entry guard for `/threads` switches; blocks message handling
+        until the new thread's history finishes loading."""
 
-        self._shell_running = False
+        self._model_switching = False
+        """Re-entry guard for `/model` switches while the new model is being
+        resolved."""
 
-        self._loading_widget: LoadingWidget | None = None
+        self._agent_switching = False
+        """Re-entry guard for `/agents` switches while the backing server is
+        being restarted with a new `assistant_id`."""
 
-        self._context_tokens: int = 0
-        """Local cache of the last total-context token count.
+        self._processing_pending = False
+        """Re-entry guard for `_process_next_from_queue` so only one drain
+        loop runs at a time."""
 
-        Source of truth is `_context_tokens` in graph state; this is a sync
-        copy for the status bar.
-        """
+        # Message queue & store
+        self._pending_messages: deque[QueuedMessage] = deque()
+        """User message queue for sequential processing."""
 
-        self._tokens_approximate: bool = False
-        """Whether the cached token count is stale (interrupted generation)."""
+        self._queued_widgets: deque[QueuedUserMessage] = deque()
+        """Placeholder widgets mounted for messages still sitting in
+        `_pending_messages`, removed as the queue drains."""
 
-        self._last_typed_at: float | None = None
-        """Typing-aware approval deferral state."""
+        self._message_store = MessageStore()
+        """Message virtualization store."""
 
-        self._approval_placeholder: Static | None = None
+        self._deferred_actions: list[DeferredAction] = []
+        """Deferred actions executed after the current busy state resolves."""
 
-        self._update_available: tuple[bool, str | None] = (False, None)
-        """Update availability state — set by _check_for_updates, read on exit."""
-
+        # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this session."""
 
@@ -695,26 +805,34 @@ class DeepAgentsApp(App):
         self._inflight_turn_start: float = 0.0
         """Monotonic timestamp when the current turn started."""
 
-        self._pending_messages: deque[QueuedMessage] = deque()
-        """User message queue for sequential processing."""
+        self._context_tokens: int = 0
+        """Local cache of the last total-context token count.
 
-        self._queued_widgets: deque[QueuedUserMessage] = deque()
+        Source of truth is `_context_tokens` in graph state; this is a sync
+        copy for the status bar.
+        """
 
-        self._processing_pending = False
+        self._tokens_approximate: bool = False
+        """Whether the cached token count is stale (interrupted generation)."""
 
-        self._thread_switching = False
+        # Session lazy state & startup
+        self._session_state: TextualSessionState | None = None
+        """Auto-approve + thread state shared with `execute_task_textual`.
 
-        self._model_switching = False
-
-        self._deferred_actions: list[DeferredAction] = []
-        """Deferred actions executed after the current busy state resolves."""
-
-        self._message_store = MessageStore()
-        """Message virtualization store."""
+        Lazily constructed by the session-init worker so we don't block
+        startup on it.
+        """
 
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._last_typed_at: float | None = None
+        """Typing-aware approval deferral state."""
+
+        self._update_available: tuple[bool, str | None] = (False, None)
+        """Update availability state — set by _check_for_updates, read on exit."""
+
+        # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
         """Cached skill metadata (populated by startup discovery worker,
         refreshed on `/reload`).
@@ -730,11 +848,14 @@ class DeepAgentsApp(App):
         Built alongside `_discovered_skills`.
         """
 
+        # Media
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
         from deepagents_cli.input import MediaTracker
 
         self._image_tracker = MediaTracker()
+        """Tracks image/media pastes in the chat input so they can be
+        attached to outgoing messages and cleared after submission."""
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -1220,6 +1341,18 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
+
+        # Persist the agent in use so a later bare `deepagents` relaunch
+        # brings the user back to it (same pattern as `save_recent_model`).
+        if self._assistant_id:
+            from deepagents_cli.model_config import save_recent_agent
+
+            saved = await asyncio.to_thread(save_recent_agent, self._assistant_id)
+            if not saved:
+                logger.warning(
+                    "Could not persist recent agent %r to config at startup",
+                    self._assistant_id,
+                )
 
         from deepagents_cli.server_manager import start_server_and_get_agent
 
@@ -4642,22 +4775,50 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
 
     def _switch_agent(self, agent_name: str) -> None:
-        """Switch to a different agent's memory, skills, and thread.
+        """Switch to a different agent and hot-restart the backing server.
 
-        Updates `_assistant_id` (and `_server_kwargs["assistant_id"]` when
-        present) so subsequent invocations read from the new agent's
-        `~/.deepagents/<agent>/` directory, re-discovers skills, and starts a
-        fresh thread.
-
-        The running agent subprocess is **not** restarted, so the previous
-        agent's system prompt (its `AGENTS.md`) stays in effect until the
-        user relaunches the CLI with `-a <name>`. `_apply_agent_switch`
-        surfaces this caveat to the user.
+        Runs guard checks (remote-server mode, mid-run, re-entry, missing
+        agent directory), then kicks off `_restart_server_for_agent_swap` as
+        a worker. That worker restarts the langgraph subprocess with the new
+        `assistant_id` so the new agent's `AGENTS.md` is actually loaded —
+        memory, skills, thread, and system prompt all align.
 
         Args:
             agent_name: The name of the agent to switch to.
         """
         from deepagents_cli.config import settings
+
+        if agent_name == self._assistant_id:
+            return
+
+        if self._server_kwargs is None or self._server_proc is None:
+            # Remote-server mode: we don't own the subprocess, so we can't
+            # restart it. Changing identity locally would leave the running
+            # server's system prompt pointing at a different agent.
+            self.notify(
+                "Cannot switch agents against a remote server. "
+                "Relaunch the CLI with -a <name> instead.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_running or self._shell_running:
+            self.notify(
+                "Cannot switch agents while a task is running. "
+                "Interrupt or wait for it to finish first.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_switching:
+            self.notify(
+                "Agent switch already in progress.",
+                severity="warning",
+                markup=False,
+            )
+            return
 
         try:
             agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
@@ -4675,71 +4836,237 @@ class DeepAgentsApp(App):
             )
             return
 
+        self._agent_switching = True
+        self.run_worker(
+            self._restart_server_for_agent_swap(agent_name),
+            exclusive=True,
+            group="agent-switch-restart",
+        )
+
+    async def _restart_server_for_agent_swap(self, agent_name: str) -> None:
+        """Restart the langgraph server with a new `assistant_id`.
+
+        Runs in three phases so failures are attributable:
+
+        1. **UI teardown** — flip banner to connecting, clear chat, reject
+            pending HITL widgets, reset the thread. Failures here notify the
+            user and return early; the previous server is still alive and
+            identity is untouched.
+        2. **Server restart** — mutate `_assistant_id`, stage the new
+            `DEEPAGENTS_CLI_SERVER_ASSISTANT_ID` env var, call
+            `ServerProcess.restart()`, and rebuild the `RemoteAgent` against
+            the (possibly new) server URL. A failure rolls back identity and
+            posts `ServerStartFailed` because the old subprocess is dead.
+        3. **Confirmation** — show "Switched to X", optional resume hint,
+            persist the recent agent, and drain any messages queued during
+            the swap.
+
+        Args:
+            agent_name: The name of the agent to switch to.
+        """
+        from deepagents_cli._env_vars import SERVER_ENV_PREFIX
+        from deepagents_cli.remote_client import RemoteAgent as _RemoteAgent
+
+        def _build_agent(url: str) -> Any:  # noqa: ANN401  # see docstring
+            """Build a new `RemoteAgent` typed as `Any`.
+
+            Returns `Any` so `self._agent`'s attribute type stays aligned
+            with the permissive type the startup path assigns, avoiding a
+            union that would trip call-site type checks on
+            `aget_state(config)` et al.
+
+            Args:
+                url: Server base URL to point the new client at.
+
+            Returns:
+                A fresh `RemoteAgent`, exposed as `Any`.
+            """
+            return _RemoteAgent(url=url, graph_name="agent")
+
         previous_agent = self._assistant_id
+        previous_thread_id = self._lc_thread_id
+        server_proc = self._server_proc
+        if server_proc is None:
+            # Guarded in _switch_agent, but the worker runs in the next tick
+            # so re-check to keep the type narrow.
+            self._agent_switching = False
+            return
+
         try:
+            # Phase 1: UI teardown. A failure here does NOT mean the server
+            # is gone — we notify the user and bail out with the previous
+            # agent still live. Only Phase 2 escalates to ServerStartFailed.
+            try:
+                self._connecting = True
+                self._agent = None
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.set_connecting()
+                except NoMatches:
+                    pass
+
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=False)
+
+                # Reject pending HITL prompts — they're bound to the old
+                # server's in-flight request and won't be resolved after
+                # restart. Wrap each call narrowly so a widget-cleanup bug
+                # can't abort the swap.
+                if self._pending_approval_widget is not None:
+                    try:
+                        self._pending_approval_widget.action_select_reject()
+                    except Exception:
+                        logger.debug(
+                            "Failed to reject pending approval during agent swap",
+                            exc_info=True,
+                        )
+                if self._pending_ask_user_widget is not None:
+                    try:
+                        await self._pending_ask_user_widget.remove()
+                    except Exception:
+                        logger.debug(
+                            "Failed to remove pending ask_user during agent swap",
+                            exc_info=True,
+                        )
+                    self._pending_ask_user_widget = None
+
+                self._pending_messages.clear()
+                for widget in self._queued_widgets:
+                    try:
+                        await widget.remove()
+                    except Exception:
+                        logger.debug(
+                            "Failed to remove queued widget during agent swap",
+                            exc_info=True,
+                        )
+                self._queued_widgets.clear()
+                self._deferred_actions.clear()
+
+                await self._clear_messages()
+                self._context_tokens = 0
+                self._tokens_approximate = False
+                self._update_tokens(0)
+                self._update_status("")
+
+                if self._session_state:
+                    new_thread_id = self._session_state.reset_thread()
+                    self._lc_thread_id = new_thread_id
+                    self._update_welcome_banner(
+                        new_thread_id,
+                        missing_message=(
+                            "Welcome banner not found during agent switch to %s"
+                        ),
+                        warn_if_missing=False,
+                    )
+            except Exception:
+                logger.exception(
+                    "UI teardown failed during agent swap to %r", agent_name
+                )
+                # Restore the previous-agent UI state so the user isn't
+                # stuck on a permanent "Connecting..." banner.
+                self._connecting = False
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.set_connected(self._mcp_tool_count)
+                except NoMatches:
+                    pass
+                self.notify(
+                    f"Could not prepare to switch to {agent_name!r}. "
+                    "Staying on current agent.",
+                    severity="error",
+                    markup=False,
+                )
+                return
+
+            # Phase 2: server restart. Identity is mutated BEFORE
+            # `restart()` so the subprocess picks up the new assistant_id
+            # from the staged env override; on failure, both are rolled
+            # back and the old server is confirmed dead (ServerStartFailed).
             self._assistant_id = agent_name
-            if self._server_kwargs:
+            if self._server_kwargs is not None:
                 self._server_kwargs["assistant_id"] = agent_name
 
+            try:
+                server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name}
+                )
+                await server_proc.restart()
+                # `ServerProcess.restart()` may rebind to a different port
+                # if the original is still in TIME_WAIT, so rebuild the
+                # client against the current URL rather than reusing it.
+                self._agent = _build_agent(server_proc.url)
+            except Exception as exc:
+                self._assistant_id = previous_agent
+                if self._server_kwargs is not None:
+                    self._server_kwargs["assistant_id"] = previous_agent
+                self._agent = None
+                self._connecting = False
+                logger.exception(
+                    "Server restart failed during agent swap to %r", agent_name
+                )
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+
+            # Phase 3: confirmation. Past here all failures are
+            # cosmetic — the new server is healthy.
+            self._connecting = False
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connected(self._mcp_tool_count)
+            except NoMatches:
+                pass
+
+            # Refresh skills so /skill: autocomplete reflects the new agent's
+            # SKILL.md files.
             self.run_worker(
                 self._discover_skills(),
                 exclusive=True,
                 group="agent-switch-skill-discovery",
             )
 
-            self._pending_messages.clear()
-            self._queued_widgets.clear()
-            self.call_later(self._apply_agent_switch, agent_name)
-        except Exception:
-            # Roll back identity so the app is not left in a split-brain
-            # state pointing at an agent whose switch never completed.
-            self._assistant_id = previous_agent
-            if self._server_kwargs:
-                self._server_kwargs["assistant_id"] = previous_agent
-            logger.exception("Failed to schedule agent switch to %r", agent_name)
-            self.notify(
-                f"Could not switch to {agent_name!r}. Staying on current agent.",
-                severity="error",
-                markup=False,
-            )
+            # Persist the swap so a bare `deepagents` relaunch brings the
+            # user back to this agent (same pattern as `save_recent_model`).
+            # Offloaded to a thread to avoid blocking the event loop on disk I/O.
+            from deepagents_cli.model_config import save_recent_agent
 
-    async def _apply_agent_switch(self, agent_name: str) -> None:
-        """Reset conversation state and confirm the agent switch to the user.
+            saved = await asyncio.to_thread(save_recent_agent, agent_name)
+            if not saved:
+                logger.warning(
+                    "Could not persist recent agent %r to config; "
+                    "next bare launch will not return to it",
+                    agent_name,
+                )
 
-        Args:
-            agent_name: The name of the agent that was switched to.
-        """
-        try:
-            await self._clear_messages()
-            self._context_tokens = 0
-            self._tokens_approximate = False
-            self._update_tokens(0)
-            self._update_status("")
-            if self._session_state:
-                new_thread_id = self._session_state.reset_thread()
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.update_thread_id(new_thread_id)
-                except NoMatches:
-                    pass
-            # Be explicit about what actually changed: the running agent
-            # subprocess still uses the previous agent's system prompt until
-            # the CLI is relaunched. Build via `from_markup` so a directory
-            # name containing Rich markup characters can't break rendering.
             confirmation = Content.from_markup(
-                "Switched agent context to $name. "
-                "[dim]Memory, skills, and thread were reset. "
-                "Restart the CLI with -a $name to load its system prompt.[/dim]",
+                "Switched to $name. New thread started.",
                 name=agent_name,
             )
             await self._mount_message(AppMessage(confirmation))
-        except Exception:
-            logger.exception("Failed to apply agent switch to %r", agent_name)
-            self.notify(
-                f"Agent switch to {agent_name!r} did not complete cleanly.",
-                severity="error",
-                markup=False,
-            )
+
+            # Surface a resume command for the previous session so the
+            # previous thread isn't stranded out of reach. `-r <thread>`
+            # alone is enough: `_resolve_resume_thread` infers the owning
+            # agent from persisted thread metadata via `get_thread_agent`.
+            # Build via `from_markup` so a thread ID with stray brackets
+            # can't corrupt rendering.
+            if previous_thread_id:
+                resume_hint = Content.from_markup(
+                    "[dim]Relaunch with[/dim] deepagents -r $thread "
+                    "[dim]to resume the previous thread.[/dim]",
+                    thread=previous_thread_id,
+                )
+                await self._mount_message(AppMessage(resume_hint))
+
+            # Drain any messages the user typed after we cleared the queue
+            # but before the new server was ready.
+            if self._pending_messages and not self._agent_running:
+                self.call_after_refresh(
+                    lambda: asyncio.create_task(self._process_next_from_queue())
+                )
+        finally:
+            self._agent_switching = False
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=not self._agent_running)
 
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""

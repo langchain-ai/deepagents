@@ -38,6 +38,71 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AGENT_NAME = "agent"
 
 
+def _resolve_agent_arg(args: argparse.Namespace) -> str:
+    """Resolve the final agent identifier from parsed CLI args.
+
+    Precedence, highest first:
+
+    1. Explicit `-a <name>` (stored as `args.agent` by argparse).
+    2. `-r <thread>` is present → use `_DEFAULT_AGENT_NAME`. The real agent is
+        inferred later by `_resolve_resume_thread` via thread metadata
+        (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
+        it would suppress that inference.
+    3. `[agents].recent` from config, if it points at an agent whose
+        directory still exists.
+    4. `_DEFAULT_AGENT_NAME` as the final fallback.
+
+    Extracted from the `cli_main` body so it's unit-testable without
+    constructing the full arg tree.
+
+    Args:
+        args: Parsed argparse namespace from `parse_args()`.
+
+    Returns:
+        The agent identifier to hand downstream.
+    """
+    if args.agent is not None:
+        return args.agent
+    if getattr(args, "resume_thread", None) is not None:
+        return _DEFAULT_AGENT_NAME
+
+    from deepagents_cli.model_config import load_recent_agent
+
+    recent = load_recent_agent()
+    if recent and _recent_agent_is_valid(recent):
+        return recent
+    return _DEFAULT_AGENT_NAME
+
+
+def _recent_agent_is_valid(name: str) -> bool:
+    """Return `True` when `~/.deepagents/<name>/` still exists on disk.
+
+    Used to guard against a stale `[agents].recent` entry pointing at an
+    agent the user has since deleted — in that case we silently fall back
+    to the hard-coded default instead of failing at server start.
+
+    Path is rebuilt from `Path.home()` rather than `settings.user_deepagents_dir`
+    because `settings` is intentionally imported *after* argparse in `cli_main`
+    (per the startup-hot-path guidance there), and pulling it in here would
+    undo that deferral.
+
+    `is_dir()` is wrapped in `try/except OSError` so permission errors on
+    `~/.deepagents` (symlink loops, EACCES) don't crash the launch — we
+    treat them the same as "not valid" and fall back to the default.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        return (_Path.home() / ".deepagents" / name).is_dir()
+    except OSError:
+        logger.warning(
+            "Could not validate recent agent %r; falling back to default",
+            name,
+            exc_info=True,
+        )
+        return False
+
+
 def check_cli_dependencies() -> None:
     """Check if CLI optional dependencies are installed."""
     missing = []
@@ -482,9 +547,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-a",
         "--agent",
-        default=_DEFAULT_AGENT_NAME,
+        default=None,
         metavar="NAME",
-        help="Agent to use (e.g., coder, researcher).",
+        help=(
+            "Agent to use (e.g., coder, researcher). "
+            "If omitted, falls back to [agents].recent in config, then "
+            f"the '{_DEFAULT_AGENT_NAME}' default."
+        ),
     )
 
     parser.add_argument(
@@ -1250,6 +1319,7 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        args.agent = _resolve_agent_arg(args)
 
         # Import console/settings AFTER arg parsing so --help (which exits
         # inside parse_args) never pays the settings bootstrap cost.

@@ -97,6 +97,26 @@ def _build_config() -> dict:
     }
 
 
+def _parse_recursion_limit() -> int:
+    """Parse AGENT_RECURSION_LIMIT, falling back to 150 on missing/invalid values."""
+    raw = os.getenv("AGENT_RECURSION_LIMIT", "").strip()
+    if not raw:
+        return 150
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "AGENT_RECURSION_LIMIT=%r is not an int; using default 150", raw,
+        )
+        return 150
+    if value <= 0:
+        logger.warning(
+            "AGENT_RECURSION_LIMIT=%d must be positive; using default 150", value,
+        )
+        return 150
+    return value
+
+
 def _parse_skill_sources() -> list[str]:
     """Parse SKILLS_DIRS into a list of skill source paths."""
     raw = os.getenv("SKILLS_DIRS", "").strip()
@@ -115,6 +135,9 @@ async def main() -> None:
     model_name = os.getenv("AGENT_MODEL", "claude-sonnet-4-6")
     print(f"[main] Initializing model: {model_name}")
     model = init_chat_model(model_name)
+
+    recursion_limit = _parse_recursion_limit()
+    print(f"[main] Agent recursion_limit: {recursion_limit}")
 
     # --- Cron jobs path ---
     jobs_path = Path(
@@ -153,13 +176,55 @@ async def main() -> None:
     # --- Per-chat conversation history (in-memory) ---
     conversations: dict[str, list] = {}
     chat_locks: dict[str, asyncio.Lock] = {}
+    # Active agent tasks, keyed by chat_id. A chat may briefly have more than
+    # one task in flight (an in-progress run and a queued follow-up waiting on
+    # the chat lock), so we store a set and cancel all of them on /stop.
+    active_agent_tasks: dict[str, set[asyncio.Task]] = {}
 
     # --- Adapter setup ---
     config = _build_config()
     adapter = WhatsAppAdapter(config)
 
     async def handle_message(event: MessageEvent) -> None:
-        """Callback invoked for each inbound WhatsApp message."""
+        """Callback invoked for each inbound WhatsApp message.
+
+        /stop is handled inline (without the chat lock) so it can interrupt
+        a running agent. Every other message is dispatched to
+        ``_process_message`` as a cancellable task.
+        """
+        chat_id = event.chat_id
+        text = event.text.strip()
+
+        # /stop must NOT acquire the chat lock — a stuck agent is holding it.
+        if text.lower() == "/stop":
+            tasks = active_agent_tasks.get(chat_id)
+            if tasks:
+                for task in list(tasks):
+                    task.cancel()
+                await adapter.send(chat_id, "Stopping current task…")
+            else:
+                await adapter.send(chat_id, "No active task to stop.")
+            return
+
+        task = asyncio.create_task(_process_message(event))
+        active_agent_tasks.setdefault(chat_id, set()).add(task)
+
+        def _cleanup(t: asyncio.Task) -> None:
+            active_agent_tasks.get(chat_id, set()).discard(t)
+            # Surface unexpected exceptions (CancelledError is expected on /stop).
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "Unhandled exception in _process_message for %s: %s",
+                    chat_id, exc,
+                )
+
+        task.add_done_callback(_cleanup)
+
+    async def _process_message(event: MessageEvent) -> None:
+        """Run the agent for one inbound message, serialized per chat."""
         chat_id = event.chat_id
 
         # Serialize message processing per chat to avoid race conditions
@@ -209,7 +274,9 @@ async def main() -> None:
                 final_output: dict | None = None
 
                 async for ev in agent.astream_events(
-                    {"messages": history}, version="v2",
+                    {"messages": history},
+                    version="v2",
+                    config={"recursion_limit": recursion_limit},
                 ):
                     kind = ev["event"]
                     run_id = ev.get("run_id")
@@ -394,6 +461,16 @@ async def main() -> None:
                 if final_output:
                     conversations[chat_id] = final_output.get("messages", history)
 
+            except asyncio.CancelledError:
+                logger.info("Task for chat %s was cancelled by /stop", chat_id)
+                if status_msg_id:
+                    try:
+                        await adapter.edit_message(
+                            chat_id, status_msg_id, "Task stopped.",
+                        )
+                    except Exception:
+                        pass
+                raise
             except Exception:
                 logger.exception("Error processing message from %s", chat_id)
                 if status_msg_id:
@@ -421,7 +498,9 @@ async def main() -> None:
 
     tick_interval = float(os.getenv("WHATSAPP_CRON_TICK_SECONDS", "60"))
     ticker_task = start_ticker(
-        jobs_path, adapter, agent, chat_locks, tick_interval=tick_interval,
+        jobs_path, adapter, agent, chat_locks,
+        tick_interval=tick_interval,
+        recursion_limit=recursion_limit,
     )
 
     print("[main] WhatsApp channel running. Press Ctrl+C to stop.")
@@ -443,6 +522,12 @@ async def main() -> None:
         await ticker_task
     except asyncio.CancelledError:
         pass
+    # Cancel any in-flight per-message tasks so disconnect can proceed cleanly.
+    pending_tasks = [t for ts in active_agent_tasks.values() for t in ts if not t.done()]
+    for t in pending_tasks:
+        t.cancel()
+    if pending_tasks:
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
     await adapter.disconnect()
     if mcp_session_manager is not None:
         try:

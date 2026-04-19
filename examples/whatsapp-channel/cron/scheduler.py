@@ -62,6 +62,8 @@ def _extract_final_text(agent_output: Any) -> str:
 async def _run_job(
     agent: Any,
     job: dict[str, Any],
+    *,
+    recursion_limit: int | None = None,
 ) -> tuple[bool, str, str | None]:
     """Run the agent against *job*'s prompt in a fresh session.
 
@@ -71,7 +73,12 @@ async def _run_job(
     """
     try:
         prompt = _build_prompt(job.get("prompt", ""))
-        output = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]})
+        kwargs: dict[str, Any] = {}
+        if recursion_limit is not None:
+            kwargs["config"] = {"recursion_limit": recursion_limit}
+        output = await agent.ainvoke(
+            {"messages": [HumanMessage(content=prompt)]}, **kwargs,
+        )
         return True, _extract_final_text(output), None
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
@@ -118,6 +125,8 @@ async def _tick_once(
     adapter: Any,
     agent: Any,
     chat_locks: dict[str, asyncio.Lock],
+    *,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run one pass over due jobs. Returns how many were executed."""
     due = get_due_jobs(jobs_path)
@@ -137,7 +146,7 @@ async def _tick_once(
 
         lock = chat_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
-            run_coro = _run_job(agent, job)
+            run_coro = _run_job(agent, job, recursion_limit=recursion_limit)
             try:
                 success, text, error = await asyncio.shield(run_coro)
             except asyncio.CancelledError:
@@ -173,6 +182,7 @@ def start_ticker(
     chat_locks: dict[str, asyncio.Lock],
     *,
     tick_interval: float = 60.0,
+    recursion_limit: int | None = None,
 ) -> asyncio.Task:
     """Launch the cron ticker as an asyncio task on the running loop.
 
@@ -186,7 +196,10 @@ def start_ticker(
         try:
             while True:
                 try:
-                    await _tick_once(jobs_path, adapter, agent, chat_locks)
+                    await _tick_once(
+                        jobs_path, adapter, agent, chat_locks,
+                        recursion_limit=recursion_limit,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:

@@ -4671,6 +4671,23 @@ class DeepAgentsApp(App):
         screen = NotificationSettingsScreen(suppressed=suppressed)
         self.push_screen(screen, handle_result)
 
+    async def _refresh_mcp_server_info(self) -> None:
+        """Re-probe MCP servers and refresh the cached `MCPServerInfo` list.
+
+        Called after a successful `/mcp login` so the `/mcp` viewer reflects
+        the new authenticated state. No-op when MCP is disabled (no preload
+        kwargs were stored at startup). Exceptions propagate so the caller
+        can surface a warning to the user.
+        """
+        if self._mcp_preload_kwargs is None:
+            return
+
+        from deepagents_cli.main import _preload_session_mcp_server_info
+
+        info = await _preload_session_mcp_server_info(**self._mcp_preload_kwargs)
+        self._mcp_server_info = info
+        self._mcp_tool_count = sum(len(s.tools) for s in (info or []))
+
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen

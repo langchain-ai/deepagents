@@ -229,7 +229,7 @@ class TestCreateJob:
             )
 
 
-from cron.jobs import get_job, list_jobs_for_chat, remove_job
+from cron.jobs import get_job, list_jobs_for_chat, remove_job, update_job
 
 
 class TestListJobsForChat:
@@ -272,6 +272,61 @@ class TestRemoveJob:
 
     def test_missing_id_returns_false(self, jobs_path) -> None:
         assert remove_job(jobs_path, "nope", chat_id="111") is False
+
+
+class TestUpdateJob:
+    def test_partial_update(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 10m",
+                       origin={"chat_id": "111", "message_id": None})
+        updated = update_job(
+            jobs_path, j["id"], chat_id="111",
+            name="new name", enabled=False,
+        )
+        assert updated is not None
+        assert updated["name"] == "new name"
+        assert updated["enabled"] is False
+        assert updated["prompt"] == "p"  # untouched
+
+    def test_reschedule_resets_next_run(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 30m",
+                       origin={"chat_id": "111", "message_id": None})
+        updated = update_job(
+            jobs_path, j["id"], chat_id="111", schedule="every 5m",
+        )
+        assert updated["schedule"]["minutes"] == 5
+        assert updated["next_run_at"] != j["next_run_at"]
+
+    def test_repeat_zero_clears_cap(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="every 30m", repeat=3,
+                       origin={"chat_id": "111", "message_id": None})
+        updated = update_job(jobs_path, j["id"], chat_id="111", repeat=0)
+        assert updated["repeat"]["times"] is None
+
+    def test_empty_name_raises(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "111", "message_id": None})
+        with pytest.raises(ValueError):
+            update_job(jobs_path, j["id"], chat_id="111", name="   ")
+
+    def test_invalid_schedule_raises(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "111", "message_id": None})
+        with pytest.raises(ValueError):
+            update_job(jobs_path, j["id"], chat_id="111", schedule="garbage")
+
+    def test_cross_chat_returns_none(self, jobs_path) -> None:
+        j = create_job(jobs_path, prompt="p", schedule="30m",
+                       origin={"chat_id": "111", "message_id": None})
+        assert update_job(
+            jobs_path, j["id"], chat_id="222", enabled=False,
+        ) is None
+        # Unchanged on disk
+        assert load_jobs(jobs_path)[0]["enabled"] is True
+
+    def test_missing_id_returns_none(self, jobs_path) -> None:
+        assert update_job(
+            jobs_path, "nope", chat_id="111", enabled=False,
+        ) is None
 
 
 from cron.jobs import advance_next_run, get_due_jobs, mark_job_run

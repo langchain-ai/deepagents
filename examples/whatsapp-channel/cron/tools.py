@@ -18,6 +18,7 @@ from cron.jobs import (
     create_job as _db_create_job,
     list_jobs_for_chat as _db_list_jobs_for_chat,
     remove_job as _db_remove_job,
+    update_job as _db_update_job,
 )
 
 # Set by main.py before each agent dispatch.
@@ -95,26 +96,72 @@ def build_cron_tools(jobs_path: Path) -> list:
     def list_jobs() -> list[dict[str, Any]] | dict[str, str]:
         """List scheduled jobs created from this chat.
 
-        Returns a list of compact summaries. Prompt text is omitted; each row
-        includes id, name, schedule_display, next_run_at, last_run_at,
-        last_status, and repeat progress.
+        Returns the full stored payload for each job — ``id``, ``name``,
+        ``prompt``, ``schedule``, ``repeat``, ``enabled``, ``next_run_at``,
+        ``last_run_at``, ``last_status``, ``last_error``, ``created_at``, and
+        ``origin``. Use ``edit_job`` to change settings on a specific job.
         """
         origin = _current_origin()
         if origin is None:
             return {"error": "Cron tools must be called from within a chat context."}
-        rows = _db_list_jobs_for_chat(jobs_path, origin["chat_id"])
-        return [
-            {
-                "id": r["id"],
-                "name": r["name"],
-                "schedule_display": r["schedule"]["display"],
-                "next_run_at": r["next_run_at"],
-                "last_run_at": r["last_run_at"],
-                "last_status": r["last_status"],
-                "repeat": r["repeat"],
-            }
-            for r in rows
-        ]
+        return _db_list_jobs_for_chat(jobs_path, origin["chat_id"])
+
+    @tool
+    def edit_job(
+        job_id: str,
+        name: str | None = None,
+        prompt: str | None = None,
+        schedule: str | None = None,
+        repeat: int | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """Update one or more settings on an existing scheduled job.
+
+        Only fields you pass are changed; omitted fields keep their current
+        value. Only jobs scheduled from this chat can be edited.
+
+        Args:
+            job_id: The job id returned by ``create_job`` or ``list_jobs``.
+            name: Replace the short label.
+            prompt: Replace the prompt the scheduled run will execute. Must be
+                self-contained — the run does not see the current conversation.
+            schedule: Replace the schedule (``"30m"``, ``"every 2h"``, etc.).
+                Resets ``next_run_at`` to the new first run.
+            repeat: Cap on remaining runs for interval schedules. Pass a
+                positive integer to cap, or ``0`` to clear the cap (run forever).
+            enabled: Pass ``False`` to pause the job, ``True`` to resume.
+
+        Returns:
+            The updated full job payload on success, or ``{"error": "..."}``
+            on invalid input, unknown id, or cross-chat access.
+        """
+        origin = _current_origin()
+        if origin is None:
+            return {"error": "Cron tools must be called from within a chat context."}
+        if (
+            name is None
+            and prompt is None
+            and schedule is None
+            and repeat is None
+            and enabled is None
+        ):
+            return {"error": "Pass at least one field to edit."}
+        try:
+            updated = _db_update_job(
+                jobs_path,
+                job_id,
+                chat_id=origin["chat_id"],
+                name=name,
+                prompt=prompt,
+                schedule=schedule,
+                repeat=repeat,
+                enabled=enabled,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+        if updated is None:
+            return {"error": "not found"}
+        return updated
 
     @tool
     def remove_job(job_id: str) -> dict[str, Any]:
@@ -132,4 +179,4 @@ def build_cron_tools(jobs_path: Path) -> list:
             return {"removed": True, "id": job_id}
         return {"removed": False, "reason": "not found"}
 
-    return [create_job, list_jobs, remove_job]
+    return [create_job, list_jobs, edit_job, remove_job]

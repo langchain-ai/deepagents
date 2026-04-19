@@ -251,6 +251,55 @@ def get_job(jobs_path: Path, job_id: str) -> dict[str, Any] | None:
     return None
 
 
+def update_job(
+    jobs_path: Path,
+    job_id: str,
+    *,
+    chat_id: str,
+    name: str | None = None,
+    prompt: str | None = None,
+    schedule: str | None = None,
+    repeat: int | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any] | None:
+    """Apply a partial update to the job *job_id* if it belongs to *chat_id*.
+
+    Only the fields the caller names are touched. Passing ``schedule`` re-parses
+    it and resets ``next_run_at`` to the new first run; passing ``repeat=0``
+    clears the cap (run forever).
+
+    Returns the updated job, ``None`` if not found (or owned by another chat),
+    and raises ``ValueError`` on invalid input.
+    """
+    parsed_schedule = parse_schedule(schedule) if schedule is not None else None
+
+    jobs = load_jobs(jobs_path)
+    for job in jobs:
+        if job.get("id") != job_id:
+            continue
+        if job.get("origin", {}).get("chat_id") != chat_id:
+            return None
+
+        if name is not None:
+            cleaned = name.strip()
+            if not cleaned:
+                raise ValueError("name cannot be empty")
+            job["name"] = cleaned
+        if prompt is not None:
+            job["prompt"] = prompt
+        if parsed_schedule is not None:
+            job["schedule"] = parsed_schedule
+            job["next_run_at"] = compute_next_run(parsed_schedule)
+        if repeat is not None:
+            job["repeat"]["times"] = None if repeat <= 0 else repeat
+        if enabled is not None:
+            job["enabled"] = bool(enabled)
+
+        save_jobs(jobs_path, jobs)
+        return job
+    return None
+
+
 def remove_job(jobs_path: Path, job_id: str, *, chat_id: str) -> bool:
     """Remove the job with id *job_id* if it belongs to *chat_id*.
 

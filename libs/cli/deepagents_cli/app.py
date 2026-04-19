@@ -346,10 +346,7 @@ def _parse_mcp_login_argv(command: str) -> str:
         raise ValueError(msg)
     server = parts[0]
     if not _SERVER_NAME_RE.fullmatch(server):
-        msg = (
-            f"Invalid server name {server!r}. "
-            "Must match [A-Za-z0-9_-]+."
-        )
+        msg = f"Invalid server name {server!r}. Must match [A-Za-z0-9_-]+."
         raise ValueError(msg)
     return server
 
@@ -4682,7 +4679,7 @@ class DeepAgentsApp(App):
 
         # `_handle_command` routes anything matching `/mcp ...` here. Anything
         # that isn't `/mcp login` is an unknown subcommand.
-        subcommand = command[len("/mcp "):].split(maxsplit=1)
+        subcommand = command[len("/mcp ") :].split(maxsplit=1)
         if not subcommand or subcommand[0] != "login":
             await self._mount_message(
                 AppMessage("Unknown /mcp subcommand. Usage: /mcp login <server>")
@@ -4702,9 +4699,7 @@ class DeepAgentsApp(App):
                     execute=partial(self._run_mcp_login_interactive, server),
                 )
             )
-            self.notify(
-                "MCP login will run after current task completes.", timeout=3
-            )
+            self.notify("MCP login will run after current task completes.", timeout=3)
             return
 
         self.call_later(self._run_mcp_login_interactive, server)
@@ -4736,9 +4731,7 @@ class DeepAgentsApp(App):
         exit_code: int | None = None
         try:
             with self.suspend():
-                exit_code = await run_mcp_login(
-                    server=server, config_path=config_path
-                )
+                exit_code = await run_mcp_login(server=server, config_path=config_path)
         except KeyboardInterrupt:
             await self._mount_message(AppMessage("MCP login cancelled."))
             return
@@ -4772,9 +4765,7 @@ class DeepAgentsApp(App):
                 AppMessage("No MCP config found. Add one and retry.")
             )
         else:
-            await self._mount_message(
-                AppMessage("Login failed. See output above.")
-            )
+            await self._mount_message(AppMessage("Login failed. See output above."))
 
     async def _refresh_mcp_server_info(self) -> None:
         """Re-probe MCP servers and refresh the cached `MCPServerInfo` list.

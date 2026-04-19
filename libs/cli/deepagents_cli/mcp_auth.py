@@ -480,6 +480,11 @@ async def _run_device_flow(
     param is provider-dependent: GitHub Apps ignore it (permissions come from
     app config), OAuth Apps and most other IdPs require it.
 
+    Returns:
+        The issued `OAuthToken` (bearer access token, refresh token when
+        supported, and expiry). Refresh tokens are not guaranteed by the
+        Device Flow; callers must handle `refresh_token is None`.
+
     Raises:
         RuntimeError: If the provider returns a terminal error, or the user
             doesn't complete authorization before the device code expires.
@@ -529,10 +534,7 @@ async def _run_device_flow(
                 interval += 5
                 continue
             if err:
-                msg = (
-                    f"Device flow failed: {err}: "
-                    f"{body.get('error_description', '')}"
-                )
+                msg = f"Device flow failed: {err}: {body.get('error_description', '')}"
                 raise RuntimeError(msg)
             return OAuthToken.model_validate(body)
 
@@ -790,8 +792,7 @@ async def login(
     if _is_github_mcp_url(server_config["url"]):
         await _preseed_github_auth(storage)
         print(  # noqa: T201 — user-facing confirmation
-            f"Logged in to MCP server '{server_name}'. "
-            f"Tokens saved to {storage._path}."
+            f"Logged in to MCP server '{server_name}'. Tokens saved to {storage._path}."
         )
         return
 

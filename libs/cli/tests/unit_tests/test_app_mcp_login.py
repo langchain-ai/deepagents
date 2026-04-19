@@ -68,8 +68,8 @@ async def test_refresh_mcp_server_info_happy_path() -> None:
     from deepagents_cli.app import DeepAgentsApp
     from deepagents_cli.mcp_tools import MCPServerInfo
 
-    info = [MCPServerInfo(name="notion", transport="http")]
-    info[0].tools = [object(), object()]  # two "tools"
+    info: list[MCPServerInfo] = [MCPServerInfo(name="notion", transport="http")]
+    info[0].tools = [object(), object()]  # type: ignore[list-item]  # test fixture
     preload_kwargs = {
         "mcp_config_path": None,
         "no_mcp": False,
@@ -120,6 +120,10 @@ async def test_refresh_mcp_server_info_preload_failure_propagates() -> None:
 
 
 from contextlib import contextmanager  # noqa: E402
+from typing import TYPE_CHECKING  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class _RecordingApp(_StubApp):
@@ -141,11 +145,11 @@ class _RecordingApp(_StubApp):
         self.suspend_entered = 0
 
         @contextmanager
-        def _suspend() -> object:
+        def _suspend() -> Iterator[None]:
             self.suspend_entered += 1
             yield
 
-        self.suspend = _suspend  # type: ignore[method-assign]
+        self.suspend = _suspend
 
     async def _mount_message(self, msg: object) -> None:
         self.mounted.append(msg)
@@ -285,7 +289,7 @@ async def test_run_mcp_login_no_preload_kwargs_errors() -> None:
     """When MCP is disabled (no preload kwargs) the command errors cleanly."""
     from deepagents_cli.app import AppMessage, DeepAgentsApp
 
-    app = _RecordingApp(mcp_preload_kwargs=None)  # type: ignore[arg-type]
+    app = _RecordingApp(mcp_preload_kwargs=None)
     # Force the stub to actually carry None
     app._mcp_preload_kwargs = None
     app._refresh_mcp_server_info = AsyncMock()  # type: ignore[method-assign]

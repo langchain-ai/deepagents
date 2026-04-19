@@ -3179,7 +3179,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/docs", "/feedback"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -3187,7 +3187,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/tokens"):
+            for cmd in ("/help", "/clear", "/tokens", "/mcp"):
                 assert app._can_bypass_queue(cmd) is False
 
     async def test_can_bypass_queue_empty_string(self) -> None:

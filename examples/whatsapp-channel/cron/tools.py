@@ -36,6 +36,23 @@ def _current_origin() -> dict[str, Any] | None:
     return origin
 
 
+def _strip_quotes(value: str | None) -> str | None:
+    """Strip one layer of paired surrounding quotes from a tool-arg string.
+
+    Models sometimes hand us an arg like ``'"every 5m"'`` or ``"'abc'"`` when
+    the tool-call serialization double-wraps a string, which then flows
+    through the parser unchanged and trips a confusing error. Stripping
+    one paired layer is safe: a legitimate value never needs to start and
+    end with the same quote char.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
 def build_cron_tools(jobs_path: Path) -> list:
     """Return the three LangChain tools bound to *jobs_path*."""
     jobs_path = Path(jobs_path)
@@ -154,11 +171,11 @@ def build_cron_tools(jobs_path: Path) -> list:
         try:
             updated = _db_update_job(
                 jobs_path,
-                job_id,
+                _strip_quotes(job_id) or job_id,
                 chat_id=origin["chat_id"],
-                name=name,
-                prompt=prompt,
-                schedule=schedule,
+                name=_strip_quotes(name),
+                prompt=_strip_quotes(prompt),
+                schedule=_strip_quotes(schedule),
                 repeat=repeat,
                 enabled=enabled,
             )

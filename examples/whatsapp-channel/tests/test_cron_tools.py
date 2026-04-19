@@ -129,6 +129,43 @@ class TestEditJobTool:
         result = _invoke(tools["edit_job"], job_id=j["id"], repeat=0)
         assert result["repeat"]["times"] is None
 
+    def test_strips_double_quoted_schedule(self, tools, jobs_path) -> None:
+        """Tool-call serialization sometimes double-wraps string args, so the
+        model sends ``'"every 5m"'``. The tool must tolerate one quote layer."""
+        j = self._make_job(jobs_path, schedule="every 30m")
+        origin_ctx.set({"chat_id": "111", "message_id": None})
+
+        result = _invoke(tools["edit_job"], job_id=j["id"], schedule='"every 5m"')
+        assert result["schedule"]["minutes"] == 5
+
+    def test_strips_single_quoted_schedule(self, tools, jobs_path) -> None:
+        j = self._make_job(jobs_path, schedule="every 30m")
+        origin_ctx.set({"chat_id": "111", "message_id": None})
+
+        result = _invoke(tools["edit_job"], job_id=j["id"], schedule="'every 5m'")
+        assert result["schedule"]["minutes"] == 5
+
+    def test_strips_quotes_from_job_id(self, tools, jobs_path) -> None:
+        j = self._make_job(jobs_path)
+        origin_ctx.set({"chat_id": "111", "message_id": None})
+
+        result = _invoke(tools["edit_job"], job_id=f'"{j["id"]}"', enabled=False)
+        assert result["id"] == j["id"]
+        assert result["enabled"] is False
+
+    def test_strips_quotes_from_name_and_prompt(self, tools, jobs_path) -> None:
+        j = self._make_job(jobs_path)
+        origin_ctx.set({"chat_id": "111", "message_id": None})
+
+        result = _invoke(
+            tools["edit_job"],
+            job_id=j["id"],
+            name='"HN digest"',
+            prompt="'summarize top 3 HN posts'",
+        )
+        assert result["name"] == "HN digest"
+        assert result["prompt"] == "summarize top 3 HN posts"
+
     def test_bad_schedule_returns_error(self, tools, jobs_path) -> None:
         j = self._make_job(jobs_path)
         origin_ctx.set({"chat_id": "111", "message_id": None})

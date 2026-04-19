@@ -23,6 +23,7 @@ from deepagents_cli.agent import (
     _format_write_file_description,
     build_model_identity_section,
     create_cli_agent,
+    get_available_agent_names,
     get_system_prompt,
     list_agents,
     load_async_subagents,
@@ -2170,3 +2171,71 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert not any(
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
+
+
+def _mock_agents_dir(agents_dir: Path) -> Mock:
+    mock_settings = Mock()
+    mock_settings.user_deepagents_dir = agents_dir
+    return mock_settings
+
+
+class TestGetAvailableAgentNames:
+    """Tests for `get_available_agent_names`."""
+
+    def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
+        """No ~/.deepagents directory → empty list, no error."""
+        missing = tmp_path / "does_not_exist"
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(missing)):
+            assert get_available_agent_names() == []
+
+    def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
+        """Subdirectories are returned sorted."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        for name in ("zebra", "alpha", "mango"):
+            (agents_dir / name).mkdir()
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["alpha", "mango", "zebra"]
+
+    def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
+        """Files sitting next to agent directories are excluded."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / "config.toml").write_text("")
+        (agents_dir / ".DS_Store").write_text("")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_symlinks(self, tmp_path: Path) -> None:
+        """Symlinked directories are excluded — a dangling link must not show up."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "real").mkdir()
+        # Symlink to a real dir — still excluded because we only want files
+        # that live inside `~/.deepagents/` directly.
+        real_target = tmp_path / "outside"
+        real_target.mkdir()
+        (agents_dir / "linked").symlink_to(real_target, target_is_directory=True)
+        # Dangling symlink (target doesn't exist).
+        (agents_dir / "broken").symlink_to(tmp_path / "ghost")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["real"]
+
+    def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
+        """PermissionError on iterdir → logged + empty list, not raised."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        def boom(_self: Path) -> list[Path]:
+            msg = "forbidden"
+            raise PermissionError(msg)
+
+        with (
+            patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)),
+            patch.object(Path, "iterdir", boom),
+        ):
+            assert get_available_agent_names() == []

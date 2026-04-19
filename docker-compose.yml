@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  deepagents:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepagents
+    ports:
+      - "8002:8002"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_TRACING=true
+      - LANGCHAIN_PROJECT=deepagents
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./deepagents.db}
+    volumes:
+      - ./workspace:/app/workspace
+      - ./logs:/app/logs
+    restart: unless-stopped

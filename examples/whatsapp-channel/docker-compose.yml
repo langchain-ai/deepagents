@@ -15,8 +15,11 @@ services:
       - whatsapp-session:/app/session
       # Persist downloaded media
       - whatsapp-media:/app/media
+      - whatsapp-memory:/app/.deepagents/AGENTS.md
     # No ports exposed — bridge runs on localhost inside the container
 
 volumes:
   whatsapp-session:
   whatsapp-media:
+  whatsapp-memory:
+

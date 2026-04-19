@@ -4523,8 +4523,6 @@ class DeepAgentsApp(App):
         Args:
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from functools import partial
-
         from deepagents_cli.config import settings
         from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
@@ -4807,8 +4805,6 @@ class DeepAgentsApp(App):
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
-        from functools import partial
-
         from deepagents_cli.sessions import get_cached_threads, get_thread_limit
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 

@@ -2,6 +2,7 @@
 
 import io
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -255,9 +256,9 @@ class TestLoginCommand:
         from deepagents_cli.mcp_auth import login
 
         monkeypatch.setenv("MCP_GW_TOKEN", "gateway-secret")
-        captured: dict[str, object] = {}
+        captured: dict[str, dict[str, Any]] = {}
 
-        async def _capture_handshake(connections: dict) -> None:
+        async def _capture_handshake(connections: dict[str, Any]) -> None:
             captured["connections"] = connections
 
         with patch(
@@ -292,9 +293,9 @@ class TestLoginCommand:
         """SSE OAuth flow must also carry headers through."""
         from deepagents_cli.mcp_auth import login
 
-        captured: dict[str, object] = {}
+        captured: dict[str, dict[str, Any]] = {}
 
-        async def _capture_handshake(connections: dict) -> None:
+        async def _capture_handshake(connections: dict[str, Any]) -> None:
             captured["connections"] = connections
 
         with patch(

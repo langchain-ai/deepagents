@@ -59,9 +59,7 @@ def show_help() -> None:
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
     )
-    console.print(
-        "  deepagents mcp <login>                         Manage MCP servers"
-    )
+    console.print("  deepagents mcp <login>                         Manage MCP servers")
     console.print(
         "  deepagents update                              Check for and install updates"
     )

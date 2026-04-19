@@ -103,7 +103,9 @@ class TestRunMCPLogin:
 
         assert exit_code == 0
         mocked.assert_awaited_once()
-        kwargs = mocked.await_args.kwargs
+        await_args = mocked.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
         assert kwargs["server_name"] == "notion"
         assert kwargs["server_config"]["url"] == "https://mcp.notion.com/mcp"
 
@@ -135,7 +137,9 @@ class TestRunMCPLogin:
             exit_code = await run_mcp_login(server="notion", config_path=None)
 
         assert exit_code == 0
-        kwargs = mocked.await_args.kwargs
+        await_args = mocked.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
         assert kwargs["server_config"]["url"] == "https://example.invalid/higher"
 
     async def test_autodiscover_none_found_exits_2(self) -> None:

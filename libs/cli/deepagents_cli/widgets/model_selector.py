@@ -612,21 +612,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         colors = theme.get_theme_colors()
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
-        # When selected, let CSS handle contrast ($background on $primary bg).
-        # Applying colors.primary inline would collide with the selected bg.
+        # When selected, skip the inline primary color — CSS already flips the
+        # row to ($primary bg, $background fg). Keep `bold` so the default
+        # emphasis survives both states.
         if not has_creds:
             spec = Content.styled(model_spec, colors.warning)
-        elif is_default and not selected:
-            spec = Content.styled(model_spec, colors.primary)
+        elif is_default and selected:
+            spec = Content.styled(model_spec, "bold")
+        elif is_default:
+            spec = Content.styled(model_spec, f"bold {colors.primary}")
         else:
             spec = Content(model_spec)
         suffix = Content.styled(" (current)", "dim") if current else Content("")
-        if is_default:
-            default_suffix = (
-                Content(" (default)")
-                if selected
-                else Content.styled(" (default)", colors.primary)
-            )
+        if is_default and selected:
+            default_suffix = Content.styled(" (default)", "bold")
+        elif is_default:
+            default_suffix = Content.styled(" (default)", f"bold {colors.primary}")
         else:
             default_suffix = Content("")
         if status == "deprecated":

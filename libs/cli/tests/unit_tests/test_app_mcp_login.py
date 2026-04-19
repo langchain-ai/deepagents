@@ -384,3 +384,19 @@ async def test_mcp_login_dispatch_invalid_name() -> None:
         isinstance(m, AppMessage) and "Invalid server name" in m._content
         for m in app.mounted
     )
+
+
+@pytest.mark.asyncio
+async def test_mcp_login_dispatch_unknown_subcommand() -> None:
+    """`/mcp foo` reports unknown subcommand without suspending/deferring."""
+    from deepagents_cli.app import AppMessage, DeepAgentsApp
+
+    app = _DispatchApp()
+    await DeepAgentsApp._dispatch_mcp_login(app, "/mcp foo bar")  # type: ignore[arg-type]
+
+    assert not app.call_later_calls
+    assert not app._deferred_actions
+    assert any(
+        isinstance(m, AppMessage) and "Unknown /mcp subcommand" in m._content
+        for m in app.mounted
+    )

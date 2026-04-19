@@ -2830,14 +2830,7 @@ class DeepAgentsApp(App):
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
         elif cmd.startswith("/mcp "):
-            stripped = command.strip()
-            if stripped.startswith("/mcp login"):
-                await self._dispatch_mcp_login(stripped)
-            else:
-                await self._mount_message(UserMessage(command))
-                await self._mount_message(
-                    AppMessage("Unknown /mcp subcommand. Usage: /mcp login <server>")
-                )
+            await self._dispatch_mcp_login(command.strip())
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
@@ -4686,6 +4679,15 @@ class DeepAgentsApp(App):
             command: The full command string (e.g. `"/mcp login notion"`).
         """
         await self._mount_message(UserMessage(command))
+
+        # `_handle_command` routes anything matching `/mcp ...` here. Anything
+        # that isn't `/mcp login` is an unknown subcommand.
+        subcommand = command[len("/mcp "):].split(maxsplit=1)
+        if not subcommand or subcommand[0] != "login":
+            await self._mount_message(
+                AppMessage("Unknown /mcp subcommand. Usage: /mcp login <server>")
+            )
+            return
 
         try:
             server = _parse_mcp_login_argv(command)

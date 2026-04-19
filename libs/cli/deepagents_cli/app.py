@@ -15,6 +15,7 @@ import webbrowser
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -2828,6 +2829,15 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd.startswith("/mcp "):
+            stripped = command.strip()
+            if stripped.startswith("/mcp login"):
+                await self._dispatch_mcp_login(stripped)
+            else:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(
+                    AppMessage("Unknown /mcp subcommand. Usage: /mcp login <server>")
+                )
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
@@ -4670,6 +4680,34 @@ class DeepAgentsApp(App):
 
         screen = NotificationSettingsScreen(suppressed=suppressed)
         self.push_screen(screen, handle_result)
+
+    async def _dispatch_mcp_login(self, command: str) -> None:
+        """Route `/mcp login <server>`: validate, defer when busy, run when idle.
+
+        Args:
+            command: The full command string (e.g. `"/mcp login notion"`).
+        """
+        await self._mount_message(UserMessage(command))
+
+        try:
+            server = _parse_mcp_login_argv(command)
+        except ValueError as exc:
+            await self._mount_message(AppMessage(str(exc)))
+            return
+
+        if self._agent_running or self._shell_running:
+            self._defer_action(
+                DeferredAction(
+                    kind="mcp_login",
+                    execute=partial(self._run_mcp_login_interactive, server),
+                )
+            )
+            self.notify(
+                "MCP login will run after current task completes.", timeout=3
+            )
+            return
+
+        self.call_later(self._run_mcp_login_interactive, server)
 
     async def _run_mcp_login_interactive(self, server: str) -> None:
         """Run `deepagents mcp login <server>` with Textual suspended.

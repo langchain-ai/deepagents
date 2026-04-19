@@ -297,3 +297,90 @@ async def test_run_mcp_login_no_preload_kwargs_errors() -> None:
         isinstance(m, AppMessage) and "MCP is disabled" in m._content
         for m in app.mounted
     )
+
+
+from functools import partial  # noqa: E402
+
+
+class _DispatchApp(_RecordingApp):
+    """Extends `_RecordingApp` with just-enough surface for dispatch tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._agent_running = False
+        self._shell_running = False
+        self._connecting = False
+        self._deferred_actions: list = []
+        self.call_later_calls: list = []
+        self.notify_calls: list[str] = []
+        self._run_mcp_login_interactive = AsyncMock()
+
+    def _defer_action(self, action) -> None:
+        # Mirror the real dedup-by-kind behavior so the test is meaningful.
+        self._deferred_actions = [
+            a for a in self._deferred_actions if a.kind != action.kind
+        ]
+        self._deferred_actions.append(action)
+
+    def call_later(self, fn, *args: object, **kwargs: object) -> None:
+        self.call_later_calls.append((fn, args, kwargs))
+
+    def notify(self, message: str, *, timeout: float = 3) -> None:
+        self.notify_calls.append(message)
+
+
+@pytest.mark.asyncio
+async def test_mcp_login_dispatch_idle_calls_later() -> None:
+    from deepagents_cli.app import DeepAgentsApp, UserMessage
+
+    app = _DispatchApp()
+    await DeepAgentsApp._dispatch_mcp_login(app, "/mcp login notion")  # type: ignore[arg-type]
+
+    assert app.call_later_calls, "expected call_later to be scheduled"
+    _fn, args, _ = app.call_later_calls[0]
+    assert args == ("notion",)
+    assert any(isinstance(m, UserMessage) for m in app.mounted)
+    assert not app._deferred_actions
+
+
+@pytest.mark.asyncio
+async def test_mcp_login_dispatch_busy_defers() -> None:
+    from deepagents_cli.app import DeepAgentsApp
+
+    app = _DispatchApp()
+    app._agent_running = True
+    await DeepAgentsApp._dispatch_mcp_login(app, "/mcp login notion")  # type: ignore[arg-type]
+
+    assert len(app._deferred_actions) == 1
+    assert app._deferred_actions[0].kind == "mcp_login"
+    assert app.notify_calls
+    assert "MCP login will run" in app.notify_calls[0]
+    assert not app.call_later_calls
+
+
+@pytest.mark.asyncio
+async def test_mcp_login_dispatch_usage_error() -> None:
+    from deepagents_cli.app import AppMessage, DeepAgentsApp
+
+    app = _DispatchApp()
+    await DeepAgentsApp._dispatch_mcp_login(app, "/mcp login")  # type: ignore[arg-type]
+
+    assert not app.call_later_calls
+    assert not app._deferred_actions
+    assert any(
+        isinstance(m, AppMessage) and "Usage:" in m._content for m in app.mounted
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_login_dispatch_invalid_name() -> None:
+    from deepagents_cli.app import AppMessage, DeepAgentsApp
+
+    app = _DispatchApp()
+    await DeepAgentsApp._dispatch_mcp_login(app, "/mcp login bad.name")  # type: ignore[arg-type]
+
+    assert not app.call_later_calls
+    assert any(
+        isinstance(m, AppMessage) and "Invalid server name" in m._content
+        for m in app.mounted
+    )

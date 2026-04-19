@@ -1374,7 +1374,8 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        if getattr(args, "max_turns", None) is not None and not args.non_interactive_message:
+        max_turns_set = getattr(args, "max_turns", None) is not None
+        if max_turns_set and not args.non_interactive_message:
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(

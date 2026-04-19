@@ -263,7 +263,9 @@ class TestMaxTurnsArgument:
 
     def test_combined_with_non_interactive(self, mock_argv: MockArgvType) -> None:
         """--max-turns works alongside -n and other flags."""
-        with mock_argv("-n", "deploy app", "--max-turns", "10", "--shell-allow-list", "ls"):
+        with mock_argv(
+            "-n", "deploy app", "--max-turns", "10", "--shell-allow-list", "ls"
+        ):
             parsed = parse_args()
             assert parsed.non_interactive_message == "deploy app"
             assert parsed.max_turns == 10

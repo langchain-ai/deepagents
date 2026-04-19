@@ -3,19 +3,23 @@
 import io
 import sys
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 from rich.style import Style
 from rich.text import Text
 
 from deepagents_cli.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_cli.non_interactive import (
+    _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
     ThreadUrlLookupState,
-    _MAX_HITL_ITERATIONS,
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
@@ -1052,7 +1056,7 @@ def _make_looping_agent() -> MagicMock:
     """Return a mock agent whose astream always yields one interrupt chunk."""
     chunk = _make_interrupt_chunk()
     mock_agent = MagicMock()
-    mock_agent.astream = MagicMock(side_effect=lambda *a, **kw: _async_iter([chunk]))
+    mock_agent.astream = MagicMock(side_effect=lambda *_, **__: _async_iter([chunk]))
     return mock_agent
 
 
@@ -1065,7 +1069,7 @@ class TestMaxTurns:
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
-        config: dict = {"configurable": {"thread_id": "t1"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
 
         with (
             patch(
@@ -1073,15 +1077,22 @@ class TestMaxTurns:
             ),
             patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
             patch("deepagents_cli.non_interactive.settings") as mock_settings,
-            patch("deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER") as mock_adapter,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
             mock_settings.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
-                    agent, "task", config, console, file_op_tracker,
-                    quiet=True, max_turns=1,
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=1,
                 )
         assert "--max-turns 1" in str(exc_info.value)
 
@@ -1091,7 +1102,7 @@ class TestMaxTurns:
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
-        config: dict = {"configurable": {"thread_id": "t1"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
 
         with (
             patch(
@@ -1099,15 +1110,22 @@ class TestMaxTurns:
             ),
             patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
             patch("deepagents_cli.non_interactive.settings") as mock_settings,
-            patch("deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER") as mock_adapter,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
             mock_settings.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
-                    agent, "task", config, console, file_op_tracker,
-                    quiet=True, max_turns=2,
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=2,
                 )
         msg = str(exc_info.value)
         assert "--max-turns 2" in msg
@@ -1120,7 +1138,7 @@ class TestMaxTurns:
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
-        config: dict = {"configurable": {"thread_id": "t1"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
 
         with (
             patch(
@@ -1128,7 +1146,9 @@ class TestMaxTurns:
             ),
             patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
             patch("deepagents_cli.non_interactive.settings") as mock_settings,
-            patch("deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER") as mock_adapter,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
             patch("deepagents_cli.non_interactive._MAX_HITL_ITERATIONS", 2),
         ):
             mock_settings.shell_allow_list = None
@@ -1136,8 +1156,13 @@ class TestMaxTurns:
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
-                    agent, "task", config, console, file_op_tracker,
-                    quiet=True, max_turns=9999,
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=9999,
                 )
         assert "internal safety limit" in str(exc_info.value)
 
@@ -1147,7 +1172,7 @@ class TestMaxTurns:
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
-        config: dict = {"configurable": {"thread_id": "t1"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
 
         with (
             patch(
@@ -1155,7 +1180,9 @@ class TestMaxTurns:
             ),
             patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
             patch("deepagents_cli.non_interactive.settings") as mock_settings,
-            patch("deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER") as mock_adapter,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
             patch("deepagents_cli.non_interactive._MAX_HITL_ITERATIONS", 1),
         ):
             mock_settings.shell_allow_list = None
@@ -1163,8 +1190,13 @@ class TestMaxTurns:
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
-                    agent, "task", config, console, file_op_tracker,
-                    quiet=True, max_turns=None,
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=None,
                 )
         assert "internal safety limit" in str(exc_info.value)
 

@@ -55,7 +55,7 @@ def _is_slack_mcp_url(url: str) -> bool:
 # works with client_id only, so the CLI obtains a GitHub access token that
 # way and pre-seeds it into storage; the MCP SDK then treats auth as already
 # complete and attaches `Authorization: Bearer <token>` to every request.
-_GITHUB_MCP_CLIENT_ID = "Ov23lirWr31UGKF4GEo3"
+_GITHUB_MCP_CLIENT_ID = "Iv23libxz8qOApH0WQL3"
 _GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105 — OAuth endpoint URL, not a secret
 
@@ -287,6 +287,45 @@ RedirectHandler = Callable[[str], Awaitable[None]]
 CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
 
 
+class MCPReauthRequiredError(RuntimeError):
+    """Raised when an MCP server needs interactive re-authentication.
+
+    The runtime OAuth provider (used during agent tool calls) raises this
+    instead of driving the paste-back authorization-code flow — that flow
+    calls `input()`, which blocks the event loop in Textual and trips
+    blockbuster in LangGraph dev. Callers catch this, invalidate the cached
+    session, and surface a `ToolException` instructing the user to run
+    `deepagents mcp login <server>`.
+    """
+
+    def __init__(self, server_name: str) -> None:
+        """Build with *server_name* so the message tells the user what to fix."""
+        self.server_name = server_name
+        super().__init__(
+            f"MCP server {server_name!r} needs re-authentication. "
+            f"Run: deepagents mcp login {server_name}"
+        )
+
+
+def _make_reauth_required_handlers(
+    server_name: str,
+) -> tuple[RedirectHandler, CallbackHandler]:
+    """Return OAuth handlers that refuse to prompt and raise instead.
+
+    Attached by `build_oauth_provider(..., interactive=False)` on the runtime
+    path so a mid-session 401 → SDK auth-flow fallback surfaces as a clean
+    `MCPReauthRequiredError` rather than blocking on `input()`.
+    """
+
+    async def redirect(_auth_url: str) -> None:  # noqa: RUF029 — MCP SDK requires async handler
+        raise MCPReauthRequiredError(server_name)
+
+    async def callback() -> tuple[str, str | None]:  # noqa: RUF029 — MCP SDK requires async handler
+        raise MCPReauthRequiredError(server_name)
+
+    return redirect, callback
+
+
 def _make_paste_back_handlers(
     *, extra_auth_params: dict[str, str] | None = None
 ) -> tuple[RedirectHandler, CallbackHandler]:
@@ -341,12 +380,13 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
 
 def build_oauth_provider(
     *,
-    server_name: str,  # noqa: ARG001 - reserved for future error-message use
+    server_name: str,
     server_url: str,
     storage: TokenStorage,
     extra_auth_params: dict[str, str] | None = None,
+    interactive: bool = True,
 ) -> OAuthClientProvider:
-    """Construct a paste-back `OAuthClientProvider` for an MCP server.
+    """Construct an `OAuthClientProvider` for an MCP server.
 
     The metadata defaults match what most public MCP servers accept under
     Dynamic Client Registration; servers are expected to advertise scopes
@@ -355,17 +395,30 @@ def build_oauth_provider(
     so the metadata uses Slack's registered `https://localhost` redirect URI.
 
     Args:
-        server_name: The name of the MCP server (for future error messages).
+        server_name: The name of the MCP server — used in re-auth error
+            messages when ``interactive`` is false.
         server_url: The MCP server's URL (e.g., "https://mcp.notion.com/mcp").
         storage: A TokenStorage instance for persisting OAuth credentials.
         extra_auth_params: Extra query params appended to the authorization
             URL before the user is prompted to open it. Used for Slack's
-            ``team=<id>`` workspace selector.
+            ``team=<id>`` workspace selector. Ignored when
+            ``interactive=False``.
+        interactive: When true (the `deepagents mcp login` path), attach
+            paste-back handlers that prompt on stdin. When false (the
+            runtime tool-loading path), attach handlers that raise
+            `MCPReauthRequiredError` instead of prompting — prompting from a
+            tool call blocks the Textual event loop and trips blockbuster
+            in LangGraph dev.
 
     Returns:
-        An OAuthClientProvider configured for paste-back OAuth flow.
+        An OAuthClientProvider configured for the chosen flow.
     """
-    redirect, callback = _make_paste_back_handlers(extra_auth_params=extra_auth_params)
+    if interactive:
+        redirect, callback = _make_paste_back_handlers(
+            extra_auth_params=extra_auth_params
+        )
+    else:
+        redirect, callback = _make_reauth_required_handlers(server_name=server_name)
     if _is_slack_mcp_url(server_url):
         metadata = OAuthClientMetadata(
             client_name="deepagents-cli",
@@ -512,6 +565,32 @@ async def _preseed_github_auth(storage: FileTokenStorage) -> None:
             token_endpoint_auth_method="none",  # noqa: S106 — OAuth method literal, not a password
         )
     )
+
+
+def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
+    """Find an `MCPReauthRequiredError` anywhere inside *exc*'s exception tree.
+
+    The MCP SDK's auth flow runs inside anyio `TaskGroup`s, so an exception
+    raised by a `callback_handler` arrives wrapped in one or more
+    `BaseExceptionGroup` layers by the time it reaches a tool-call site.
+    Shape mirrors `_find_http_status_error`.
+
+    Returns:
+        The innermost `MCPReauthRequiredError` found, or `None` if the
+        exception tree doesn't contain one.
+    """
+    if isinstance(exc, MCPReauthRequiredError):
+        return exc
+    sub_exceptions = getattr(exc, "exceptions", None)
+    if sub_exceptions:
+        for sub in sub_exceptions:
+            found = find_reauth_required(sub)
+            if found is not None:
+                return found
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        return find_reauth_required(cause)
+    return None
 
 
 def _find_http_status_error(exc: BaseException) -> httpx.HTTPStatusError | None:

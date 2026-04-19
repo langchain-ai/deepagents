@@ -11,6 +11,7 @@ from deepagents_cli.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
+    _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
     _filter_project_stdio_servers,
@@ -1801,4 +1802,243 @@ class TestToolOrdering:
         tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["alpha_read", "beta_write"]
+        await manager.cleanup()
+
+
+def _make_prefixed_tool(name: str, description: str = "") -> MagicMock:
+    """Build a mock tool as the adapter produces with `tool_name_prefix=True`."""
+    tool = MagicMock()
+    tool.name = name
+    tool.description = description
+    return tool
+
+
+class TestToolFilterValidation:
+    """Validation of `allowedTools` / `disabledTools` server fields."""
+
+    def test_allowed_tools_accepted(self, write_config: Callable[..., str]) -> None:
+        """`allowedTools` with a list of strings is accepted."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {
+                        "command": "node",
+                        "allowedTools": ["read_file", "list_dir"],
+                    }
+                }
+            }
+        )
+        assert load_mcp_config(path)["mcpServers"]["fs"]["allowedTools"] == [
+            "read_file",
+            "list_dir",
+        ]
+
+    def test_disabled_tools_accepted(self, write_config: Callable[..., str]) -> None:
+        """`disabledTools` with a list of strings is accepted."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {"command": "node", "disabledTools": ["write_file"]}
+                }
+            }
+        )
+        assert load_mcp_config(path)["mcpServers"]["fs"]["disabledTools"] == [
+            "write_file"
+        ]
+
+    def test_accepted_on_remote_server(self, write_config: Callable[..., str]) -> None:
+        """Filter fields also apply to http/sse servers."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "allowedTools": ["search"],
+                    }
+                }
+            }
+        )
+        assert load_mcp_config(path)["mcpServers"]["api"]["allowedTools"] == ["search"]
+
+    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
+    def test_rejects_non_list(
+        self, write_config: Callable[..., str], field: str
+    ) -> None:
+        """Non-list filter field raises TypeError."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "node", field: "read_file"}}}
+        )
+        with pytest.raises(TypeError, match=rf"'{field}' must be a list of strings"):
+            load_mcp_config(path)
+
+    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
+    def test_rejects_non_string_items(
+        self, write_config: Callable[..., str], field: str
+    ) -> None:
+        """Filter list with non-string items raises TypeError."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "node", field: ["ok", 42]}}}
+        )
+        with pytest.raises(TypeError, match=rf"'{field}' must be a list of strings"):
+            load_mcp_config(path)
+
+    def test_rejects_both_set(self, write_config: Callable[..., str]) -> None:
+        """Setting both `allowedTools` and `disabledTools` on one server errors."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {
+                        "command": "node",
+                        "allowedTools": ["a"],
+                        "disabledTools": ["b"],
+                    }
+                }
+            }
+        )
+        with pytest.raises(
+            ValueError, match=r"cannot set both 'allowedTools' and 'disabledTools'"
+        ):
+            load_mcp_config(path)
+
+
+class TestApplyToolFilter:
+    """Behavior of the `_apply_tool_filter` helper."""
+
+    def test_no_filter_returns_input_unchanged(self) -> None:
+        """Absent filter fields pass tools through."""
+        tools = [
+            _make_prefixed_tool("fs_read"),
+            _make_prefixed_tool("fs_write"),
+        ]
+        assert _apply_tool_filter(tools, "fs", {"command": "node"}) is tools
+
+    def test_allowed_keeps_only_listed(self) -> None:
+        """`allowedTools` keeps only matching tools."""
+        tools = [
+            _make_prefixed_tool("fs_read"),
+            _make_prefixed_tool("fs_write"),
+            _make_prefixed_tool("fs_stat"),
+        ]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "allowedTools": ["read", "stat"]}
+        )
+        assert [t.name for t in result] == ["fs_read", "fs_stat"]
+
+    def test_allowed_matches_prefixed_name(self) -> None:
+        """`allowedTools` entries may include the server prefix."""
+        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "allowedTools": ["fs_read"]}
+        )
+        assert [t.name for t in result] == ["fs_read"]
+
+    def test_allowed_unknown_name_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Names in `allowedTools` that don't match any tool produce a warning."""
+        tools = [_make_prefixed_tool("fs_read")]
+        with caplog.at_level("WARNING", logger="deepagents_cli.mcp_tools"):
+            result = _apply_tool_filter(
+                tools, "fs", {"command": "node", "allowedTools": ["read", "gone"]}
+            )
+        assert [t.name for t in result] == ["fs_read"]
+        assert "allowedTools references unknown tools: gone" in caplog.text
+
+    def test_disabled_drops_listed(self) -> None:
+        """`disabledTools` drops matching tools, keeps the rest."""
+        tools = [
+            _make_prefixed_tool("fs_read"),
+            _make_prefixed_tool("fs_write"),
+            _make_prefixed_tool("fs_stat"),
+        ]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "disabledTools": ["write"]}
+        )
+        assert [t.name for t in result] == ["fs_read", "fs_stat"]
+
+    def test_disabled_matches_prefixed_name(self) -> None:
+        """`disabledTools` entries may include the server prefix."""
+        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "disabledTools": ["fs_write"]}
+        )
+        assert [t.name for t in result] == ["fs_read"]
+
+
+class TestToolFilterEndToEnd:
+    """`get_mcp_tools` applies filtering after loading."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_health_checks(self) -> Generator[None]:
+        with patch("deepagents_cli.mcp_tools._check_stdio_server"):
+            yield
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_allowed_tools_filters_loaded_tools(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Only tools listed in `allowedTools` end up in the returned list."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {
+                        "command": "node",
+                        "args": ["server.js"],
+                        "allowedTools": ["read_file"],
+                    }
+                }
+            }
+        )
+
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+        mock_load_tools.return_value = [
+            _make_prefixed_tool("fs_read_file", "r"),
+            _make_prefixed_tool("fs_write_file", "w"),
+        ]
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["fs_read_file"]
+        assert [t.name for t in server_infos[0].tools] == ["fs_read_file"]
+        await manager.cleanup()
+
+    @patch("langchain_mcp_adapters.tools.load_mcp_tools")
+    @patch("langchain_mcp_adapters.client.MultiServerMCPClient")
+    async def test_disabled_tools_removes_loaded_tools(
+        self,
+        mock_client_class: MagicMock,
+        mock_load_tools: AsyncMock,
+        write_config: Callable[..., str],
+        mock_mcp_client: tuple,
+    ) -> None:
+        """Tools listed in `disabledTools` are dropped from the returned list."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {
+                        "command": "node",
+                        "args": ["server.js"],
+                        "disabledTools": ["write_file"],
+                    }
+                }
+            }
+        )
+
+        mock_client, _ = mock_mcp_client
+        mock_client_class.return_value = mock_client
+        mock_load_tools.return_value = [
+            _make_prefixed_tool("fs_read_file", "r"),
+            _make_prefixed_tool("fs_write_file", "w"),
+        ]
+
+        tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["fs_read_file"]
         await manager.cleanup()

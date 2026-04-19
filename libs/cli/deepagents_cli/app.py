@@ -4671,6 +4671,73 @@ class DeepAgentsApp(App):
         screen = NotificationSettingsScreen(suppressed=suppressed)
         self.push_screen(screen, handle_result)
 
+    async def _run_mcp_login_interactive(self, server: str) -> None:
+        """Run `deepagents mcp login <server>` with Textual suspended.
+
+        Reuses the existing `run_mcp_login` CLI handler. The Textual event
+        loop's input/output is paused while the OAuth paste-back flow runs
+        on the real TTY (same pattern as `/editor`). Outcomes are translated
+        into chat messages; exceptions never propagate out.
+
+        Args:
+            server: The MCP server name from the user's config.
+        """
+        if self._mcp_preload_kwargs is None:
+            await self._mount_message(
+                AppMessage(
+                    "MCP is disabled — run without --no-mcp and with a valid "
+                    "MCP config to use /mcp login."
+                )
+            )
+            return
+
+        config_path = self._mcp_preload_kwargs.get("mcp_config_path")
+
+        from deepagents_cli.mcp_commands import run_mcp_login
+
+        exit_code: int | None = None
+        try:
+            with self.suspend():
+                exit_code = await run_mcp_login(
+                    server=server, config_path=config_path
+                )
+        except KeyboardInterrupt:
+            await self._mount_message(AppMessage("MCP login cancelled."))
+            return
+        except Exception as exc:  # any failure becomes a chat message
+            logger.exception("MCP login raised unexpectedly")
+            await self._mount_message(
+                AppMessage(f"MCP login failed: {type(exc).__name__}: {exc}")
+            )
+            return
+
+        exit_no_config = 2
+        if exit_code == 0:
+            refresh_warning = ""
+            try:
+                await self._refresh_mcp_server_info()
+            except Exception:  # cache refresh is best-effort
+                logger.warning(
+                    "Failed to refresh /mcp viewer after login", exc_info=True
+                )
+                refresh_warning = (
+                    " (couldn't refresh /mcp viewer — run /reload to retry)"
+                )
+            await self._mount_message(
+                AppMessage(
+                    f"Logged in to MCP server '{server}'. "
+                    f"Run /clear to pick up its tools.{refresh_warning}"
+                )
+            )
+        elif exit_code == exit_no_config:
+            await self._mount_message(
+                AppMessage("No MCP config found. Add one and retry.")
+            )
+        else:
+            await self._mount_message(
+                AppMessage("Login failed. See output above.")
+            )
+
     async def _refresh_mcp_server_info(self) -> None:
         """Re-probe MCP servers and refresh the cached `MCPServerInfo` list.
 

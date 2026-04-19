@@ -168,6 +168,7 @@ async def test_run_mcp_login_success_refreshes_and_notifies() -> None:
 
     assert app.suspend_entered == 1
     refresh.assert_awaited_once()
+    # AppMessage stores the raw str in `_content`; no public accessor exists.
     assert any(
         isinstance(m, AppMessage) and "Logged in to MCP server 'notion'" in m._content
         for m in app.mounted

@@ -1,9 +1,8 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
-import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -16,7 +15,6 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
-from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -345,27 +343,6 @@ class _SubagentSpec(TypedDict):
     name: str
     description: str
     runnable: Runnable
-
-
-@contextlib.contextmanager
-def _subagent_tracing_context() -> Generator[None, None, None]:
-    """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
-
-    Sets `ls_agent_type` on the langsmith tracing context `metadata`, which is
-    propagated to LangSmith runs. This mirrors
-    langchain's `ls_agent_type="root"` tagging behavior.
-
-    Forwards all other current tracing-context fields (parent, client, tags,
-    etc.) unchanged so this wrapper does not clobber the enclosing context.
-    """
-    current = get_tracing_context()
-    merged_metadata = {**(current.get("metadata") or {}), "ls_agent_type": "subagent"}
-    # Pass every field from the current tracing context through to
-    # `tracing_context` so we don't accidentally clobber fields that may be
-    # added to langsmith in the future. The only change is `metadata`.
-    kwargs: dict[str, Any] = {**current, "metadata": merged_metadata}
-    with tracing_context(**kwargs):
-        yield
 
 
 def _build_task_tool(  # noqa: C901

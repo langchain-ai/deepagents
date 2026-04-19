@@ -11,7 +11,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
@@ -927,3 +931,111 @@ def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
     assert existing_path in result["memory_contents"]
     assert missing_path not in result["memory_contents"]
     assert backend.download_files_call_count == 1
+
+
+def _build_model_request(model: BaseChatModel, system_message: SystemMessage | None) -> ModelRequest:
+    """Construct a minimal `ModelRequest` for direct `modify_request` tests."""
+    return ModelRequest(
+        model=model,
+        messages=[HumanMessage(content="hi")],
+        system_message=system_message,
+        state={"messages": [], "memory_contents": {}},  # type: ignore[typeddict-unknown-key]
+    )
+
+
+def _fake_anthropic() -> ChatAnthropic:
+    """Build a `ChatAnthropic` instance with a dummy key."""
+    return ChatAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="fake")  # type: ignore[call-arg]
+
+
+def _system_blocks(message: SystemMessage | None) -> list:
+    """Extract content blocks from a required system message; fails test if absent."""
+    assert message is not None, "modify_request must return a SystemMessage"
+    return list(message.content_blocks)
+
+
+def test_modify_request_tags_last_block_when_enabled_and_anthropic() -> None:
+    """Cache breakpoint is applied when flag is on and request model is Anthropic."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert blocks[-1].get("cache_control") == {"type": "ephemeral"}
+    assert all("cache_control" not in block for block in blocks[:-1])
+
+
+def test_modify_request_no_tag_when_add_cache_control_false() -> None:
+    """Default (flag off) leaves content blocks untouched."""
+    middleware = MemoryMiddleware(backend=StateBackend(), sources=[])
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert all("cache_control" not in block for block in blocks)
+
+
+def test_modify_request_skips_tagging_on_non_anthropic_model() -> None:
+    """Flag on + non-Anthropic model silently no-ops (avoids shipping Anthropic-only key)."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    request = _build_model_request(fake_model, SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert all("cache_control" not in block for block in blocks)
+
+
+def test_modify_request_preserves_existing_block_fields() -> None:
+    """Merging cache_control preserves the existing block's type/text keys."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="important base prompt"))
+
+    result = middleware.modify_request(request)
+    last = _system_blocks(result.system_message)[-1]
+
+    assert last.get("type") == "text"
+    assert "agent_memory" in last.get("text", "")
+    assert last.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_create_deep_agent_wires_cache_control_for_anthropic_memory(tmp_path: Path) -> None:
+    """`create_deep_agent(memory=[...])` produces a cache breakpoint on the memory block for Anthropic."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    backend.upload_files([(memory_path, b"# Memory\nBe concise.")])
+
+    captured_system_messages: list[SystemMessage] = []
+
+    class _FakeAnthropic(ChatAnthropic):
+        def _generate(self, messages: list, *args: object, **kwargs: object) -> ChatResult:
+            captured_system_messages.extend(m for m in messages if isinstance(m, SystemMessage))
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    fake_anthropic = _FakeAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="fake")  # type: ignore[call-arg]
+
+    agent = create_deep_agent(
+        backend=backend,
+        memory=[memory_path],
+        model=fake_anthropic,
+    )
+    agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+    assert captured_system_messages, "Model never received a SystemMessage"
+    last_block = captured_system_messages[0].content_blocks[-1]
+    assert last_block.get("cache_control") == {"type": "ephemeral"}

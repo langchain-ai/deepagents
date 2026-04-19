@@ -371,7 +371,9 @@ def test_memory_stale_fact_overridden_by_verified_file(model: BaseChatModel) -> 
             TrajectoryScorer()
             .expect(
                 tool_calls=[
-                    tool_call(name="read_file", args_contains={"file_path": "/project/requirements.txt"})
+                    tool_call(
+                        name="read_file", args_contains={"file_path": "/project/requirements.txt"}
+                    )
                 ]
             )
             .success(
@@ -428,8 +430,7 @@ def test_memory_user_explicit_request_overrides_saved_preference(model: BaseChat
         },
         query="Write me a simple Python function that returns the square of a number.",
         scorer=(
-            TrajectoryScorer()
-            .success(
+            TrajectoryScorer().success(
                 final_text_contains("def "),
                 final_text_excludes("function", case_insensitive=True),
             )
@@ -475,11 +476,7 @@ def test_memory_investigation_precedes_memory_save_when_required(model: BaseChat
         ),
     )
     # read_file must appear before edit_file in the flat tool-call sequence
-    tool_call_names = [
-        tc["name"]
-        for step in trajectory.steps
-        for tc in step.action.tool_calls
-    ]
+    tool_call_names = [tc["name"] for step in trajectory.steps for tc in step.action.tool_calls]
     read_idx = next((i for i, n in enumerate(tool_call_names) if n == "read_file"), None)
     edit_idx = next((i for i, n in enumerate(tool_call_names) if n == "edit_file"), None)
     if read_idx is not None and edit_idx is not None:

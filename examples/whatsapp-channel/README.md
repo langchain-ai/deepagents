@@ -116,8 +116,10 @@ Ask the agent to schedule things in plain language:
 
 Supported schedules:
 
-- Duration (one-shot): `30m`, `2h`, `1d`.
-- Interval (recurring): `every 15m`, `every 2h`, `every 1d`.
+- Duration (one-shot): any positive integer + `m`/`h`/`d` — e.g. `1m`, `30m`, `2h`, `1d`.
+- Interval (recurring): `every <duration>` — e.g. `every 1m`, `every 15m`, `every 2h`, `every 1d`.
+
+Minimum interval is `1m`. The scheduler polls every `WHATSAPP_CRON_TICK_SECONDS` (default 60s), so firing can be up to one tick late.
 
 Cron expressions (`0 9 * * *`) and absolute timestamps are not supported.
 

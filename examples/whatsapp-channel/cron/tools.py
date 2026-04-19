@@ -54,9 +54,12 @@ def build_cron_tools(jobs_path: Path) -> list:
 
         Args:
             prompt: The prompt the scheduled run should execute. Must be self-contained.
-            schedule: Either a duration for a one-shot (``"30m"``, ``"2h"``, ``"1d"``)
-                or an interval prefix (``"every 15m"``, ``"every 2h"``, ``"every 1d"``).
-                Cron expressions and absolute timestamps are not supported.
+            schedule: Either a duration for a one-shot (``"1m"``, ``"30m"``, ``"2h"``,
+                ``"1d"``) or an interval prefix (``"every 1m"``, ``"every 15m"``,
+                ``"every 2h"``, ``"every 1d"``). Any positive integer paired with
+                ``m``/``h``/``d`` works; the minimum is ``1m``. Firing can be up
+                to one scheduler tick late (default tick: 60s). Cron expressions
+                and absolute timestamps are not supported.
             name: Optional short label for this job. Defaults to the first 50
                 characters of ``prompt``.
             repeat: For interval schedules, how many times to run before the job
@@ -68,6 +71,7 @@ def build_cron_tools(jobs_path: Path) -> list:
             or ``{"error": "..."}`` on invalid schedule / missing chat context.
 
         Examples:
+            create_job(prompt="Check the build", schedule="every 1m")
             create_job(prompt="Summarize top 3 HN stories", schedule="every 6h")
             create_job(prompt="Remind me to take the bread out", schedule="45m")
         """
@@ -125,7 +129,8 @@ def build_cron_tools(jobs_path: Path) -> list:
             name: Replace the short label.
             prompt: Replace the prompt the scheduled run will execute. Must be
                 self-contained — the run does not see the current conversation.
-            schedule: Replace the schedule (``"30m"``, ``"every 2h"``, etc.).
+            schedule: Replace the schedule (``"1m"``, ``"30m"``, ``"every 2h"``,
+                etc.). Same rules as ``create_job.schedule``; minimum is ``1m``.
                 Resets ``next_run_at`` to the new first run.
             repeat: Cap on remaining runs for interval schedules. Pass a
                 positive integer to cap, or ``0`` to clear the cap (run forever).

@@ -400,3 +400,12 @@ async def test_mcp_login_dispatch_unknown_subcommand() -> None:
         isinstance(m, AppMessage) and "Unknown /mcp subcommand" in m._content
         for m in app.mounted
     )
+
+
+def test_slash_mcp_bypass_tier_is_queued() -> None:
+    """/mcp can trigger suspend now — must wait out busy states."""
+    from deepagents_cli.command_registry import COMMANDS, BypassTier
+
+    entry = next(c for c in COMMANDS if c.name == "/mcp")
+    assert entry.bypass_tier is BypassTier.QUEUED
+    assert "login" in entry.argument_hint

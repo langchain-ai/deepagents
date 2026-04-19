@@ -86,8 +86,9 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/mcp",
         description="Show active MCP servers and tools",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-        hidden_keywords="servers",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="servers login",
+        argument_hint="[login <server>]",
     ),
     SlashCommand(
         name="/model",

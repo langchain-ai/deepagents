@@ -68,14 +68,34 @@ def setup_mcp_parsers(
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     """Handler for `deepagents mcp login <server>`.
 
+    When ``config_path`` is omitted, every auto-discovered MCP config is merged
+    in the same precedence order used by the runtime loader (later discoveries
+    override earlier ones). When ``config_path`` is set, that file alone is
+    loaded — matching the existing "explicit wins" behaviour.
+
     Returns:
         Process exit code: 0 on success, 1 on config or login failure,
         2 if no config file could be found.
     """
     from deepagents_cli.mcp_auth import login
-    from deepagents_cli.mcp_tools import discover_mcp_configs, load_mcp_config
+    from deepagents_cli.mcp_tools import (
+        discover_mcp_configs,
+        load_mcp_config,
+        load_mcp_config_lenient,
+        merge_mcp_configs,
+    )
 
-    if config_path is None:
+    if config_path is not None:
+        try:
+            config = load_mcp_config(config_path)
+        except (FileNotFoundError, TypeError, ValueError, RuntimeError) as exc:
+            print(  # noqa: T201
+                f"Failed to load MCP config {config_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        search_label = config_path
+    else:
         found = discover_mcp_configs()
         if not found:
             print(  # noqa: T201
@@ -83,20 +103,26 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
                 file=sys.stderr,
             )
             return 2
-        config_path = str(found[-1])  # highest-precedence file
+        # Merge all discovered configs so `login` sees the same view the
+        # runtime loader builds — later paths override earlier ones.
+        configs = [
+            cfg
+            for cfg in (load_mcp_config_lenient(p) for p in found)
+            if cfg is not None
+        ]
+        if not configs:
+            print(  # noqa: T201
+                f"No usable MCP config found in: {', '.join(str(p) for p in found)}",
+                file=sys.stderr,
+            )
+            return 1
+        config = merge_mcp_configs(configs)
+        search_label = ", ".join(str(p) for p in found)
 
-    try:
-        config = load_mcp_config(config_path)
-    except (FileNotFoundError, TypeError, ValueError, RuntimeError) as exc:
-        print(  # noqa: T201
-            f"Failed to load MCP config {config_path}: {exc}",
-            file=sys.stderr,
-        )
-        return 1
     servers = config.get("mcpServers", {})
     if server not in servers:
         print(  # noqa: T201
-            f"Server {server!r} not found in {config_path}. "
+            f"Server {server!r} not found in {search_label}. "
             f"Known servers: {sorted(servers)}",
             file=sys.stderr,
         )

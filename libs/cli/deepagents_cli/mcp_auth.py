@@ -614,6 +614,15 @@ async def login(
     else:
         conn = SSEConnection(transport="sse", url=server_config["url"], auth=provider)
 
+    # Mirror runtime behaviour: configured static headers (with `${ENV_VAR}`
+    # references resolved) must be attached to the OAuth discovery/handshake
+    # request — some servers require them on every HTTP hit, not just tool
+    # calls. See `_load_tools_from_config` for the equivalent runtime path.
+    if "headers" in server_config:
+        conn["headers"] = resolve_headers(
+            server_config["headers"], server_name=server_name
+        )
+
     await _drive_handshake({server_name: conn})
     print(  # noqa: T201 - user-facing confirmation
         f"Logged in to MCP server '{server_name}'. Tokens saved to {storage._path}."

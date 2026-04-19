@@ -240,3 +240,105 @@ class TestLoginCommand:
                 server_name="x",
                 server_config={"command": "echo", "auth": "oauth"},
             )
+
+    async def test_login_propagates_static_headers(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Configured headers must flow into the OAuth handshake connection.
+
+        Runtime tool loading attaches resolved static headers to every remote
+        request; `login()` must do the same, including resolving `${ENV_VAR}`
+        references, so vendor handshakes that depend on those headers succeed.
+        """
+        from deepagents_cli.mcp_auth import login
+
+        monkeypatch.setenv("MCP_GW_TOKEN", "gateway-secret")
+        captured: dict[str, object] = {}
+
+        async def _capture_handshake(connections: dict) -> None:
+            captured["connections"] = connections
+
+        with patch(
+            "deepagents_cli.mcp_auth._drive_handshake",
+            new=AsyncMock(side_effect=_capture_handshake),
+        ):
+            await login(
+                server_name="gateway",
+                server_config={
+                    "transport": "http",
+                    "url": "https://example.invalid/mcp",
+                    "auth": "oauth",
+                    "headers": {
+                        "X-Gateway-Token": "${MCP_GW_TOKEN}",
+                        "X-Static": "value",
+                    },
+                },
+            )
+
+        connections = captured["connections"]
+        assert set(connections) == {"gateway"}
+        conn = connections["gateway"]
+        assert conn["headers"] == {
+            "X-Gateway-Token": "gateway-secret",
+            "X-Static": "value",
+        }
+
+    async def test_login_sse_transport_propagates_headers(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """SSE OAuth flow must also carry headers through."""
+        from deepagents_cli.mcp_auth import login
+
+        captured: dict[str, object] = {}
+
+        async def _capture_handshake(connections: dict) -> None:
+            captured["connections"] = connections
+
+        with patch(
+            "deepagents_cli.mcp_auth._drive_handshake",
+            new=AsyncMock(side_effect=_capture_handshake),
+        ):
+            await login(
+                server_name="sse_gateway",
+                server_config={
+                    "type": "sse",
+                    "url": "https://example.invalid/sse",
+                    "auth": "oauth",
+                    "headers": {"X-Tenant": "acme"},
+                },
+            )
+
+        conn = captured["connections"]["sse_gateway"]
+        assert conn["transport"] == "sse"
+        assert conn["headers"] == {"X-Tenant": "acme"}
+
+    async def test_login_unset_env_var_in_headers_raises(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Unset `${VAR}` references must fail before the handshake runs."""
+        from deepagents_cli.mcp_auth import login
+
+        monkeypatch.delenv("MCP_NO_SUCH_VAR", raising=False)
+
+        with (
+            patch(
+                "deepagents_cli.mcp_auth._drive_handshake",
+                new=AsyncMock(return_value=None),
+            ) as drive,
+            pytest.raises(RuntimeError, match="MCP_NO_SUCH_VAR"),
+        ):
+            await login(
+                server_name="gateway",
+                server_config={
+                    "transport": "http",
+                    "url": "https://example.invalid/mcp",
+                    "auth": "oauth",
+                    "headers": {"X-Gateway-Token": "${MCP_NO_SUCH_VAR}"},
+                },
+            )
+        drive.assert_not_awaited()

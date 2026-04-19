@@ -4302,10 +4302,21 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.notification_settings import (
+            NotificationSettingsScreen,
+        )
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
+            return
+        if isinstance(self.screen, (ThemeSelectorScreen, AgentSelectorScreen)):
+            self.screen.action_cursor_up()
+            return
+        if isinstance(self.screen, NotificationSettingsScreen):
+            self.screen.focus_previous()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.

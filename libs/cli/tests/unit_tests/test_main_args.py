@@ -246,6 +246,86 @@ class TestSkillFlagValidation:
         assert exc_info.value.code == 2
 
 
+class TestMaxTurnsArgument:
+    """Tests for --max-turns argument parsing and validation."""
+
+    def test_parses_integer(self, mock_argv: MockArgvType) -> None:
+        """--max-turns N stores an integer."""
+        with mock_argv("-n", "task", "--max-turns", "5"):
+            parsed = parse_args()
+            assert parsed.max_turns == 5
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        """max_turns is None when --max-turns is not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.max_turns is None
+
+    def test_combined_with_non_interactive(self, mock_argv: MockArgvType) -> None:
+        """--max-turns works alongside -n and other flags."""
+        with mock_argv("-n", "deploy app", "--max-turns", "10", "--shell-allow-list", "ls"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "deploy app"
+            assert parsed.max_turns == 10
+            assert parsed.shell_allow_list == "ls"
+
+    def test_requires_non_interactive_mode(self) -> None:
+        """--max-turns without -n or piped stdin exits with code 2."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+    def test_forwarded_to_run_non_interactive(self) -> None:
+        """--max-turns value is forwarded to run_non_interactive as max_turns."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "do the thing", "--max-turns", "3"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_cli.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["max_turns"] == 3  # type: ignore[union-attr]
+
+    def test_not_forwarded_as_none_when_omitted(self) -> None:
+        """When --max-turns is omitted, max_turns=None is forwarded."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_cli.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["max_turns"] is None  # type: ignore[union-attr]
+
+
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""
 

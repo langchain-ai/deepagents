@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
@@ -31,6 +32,27 @@ from deepagents_cli.config import (
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
 logger = logging.getLogger(__name__)
+
+_TRAILING_ANNOTATION_RE = re.compile(
+    # \u2013 = en-dash, \u2014 = em-dash.
+    r"""
+    \s*
+    (?:
+        [-\u2013\u2014]\s*(?:optional|required)
+      | \((?:optional|required)[.!?]?\)
+      | \[(?:optional|required)[.!?]?\]
+    )
+    [.!?]*
+    \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+"""Strip LLM-appended trailing annotations like ' - optional', ' (optional)',
+or ' [required]' from question text before rendering.
+
+Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
+(`ask_user.py`). The UI already renders a `*(required)*` marker based on the
+`required` field, so any LLM-authored duplicate is redundant noise."""
 
 
 class AskUserMenu(Container):
@@ -271,7 +293,7 @@ class _QuestionWidget(Vertical):
         self._is_other_selected: bool = False
 
     def compose(self) -> ComposeResult:
-        q_text = self._question.get("question", "")
+        q_text = _TRAILING_ANNOTATION_RE.sub("", self._question.get("question", ""))
         num = self._index + 1
         suffix = " *(required)*" if self._required else ""
         # q_text is agent-authored; rendered as markdown intentionally so

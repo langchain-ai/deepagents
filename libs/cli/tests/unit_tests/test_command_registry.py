@@ -114,6 +114,27 @@ class TestSlashCommands:
             assert cmd.to_entry() == entry
 
 
+class TestAgentsCommand:
+    """Validate the `/agents` entry specifically.
+
+    The `/agents` command is reachable via fuzzy hidden-keyword matches
+    (`switch`, `profile`, `persona`). Dropping any of those would silently
+    regress discoverability.
+    """
+
+    def test_agents_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/agents" in names
+
+    def test_agents_hidden_keywords(self) -> None:
+        agents_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/agents")
+        keywords = agents_cmd.hidden_keywords.split()
+        assert set(keywords) >= {"switch", "profile", "persona"}
+
+    def test_agents_classified_as_immediate_ui(self) -> None:
+        assert "/agents" in IMMEDIATE_UI
+
+
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.
 

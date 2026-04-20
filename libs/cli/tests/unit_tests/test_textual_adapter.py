@@ -969,6 +969,63 @@ class TestExecuteTaskTextualAskUser:
         assert ask_user_resume["error"] == "ask_user not supported by this UI"
         assert ask_user_resume["answers"] == [""]
 
+    async def test_spinner_reappears_after_ask_user_resume(self) -> None:
+        """Spinner should re-show Thinking on each astream iteration.
+
+        Regression for a gap where the model was working on the resume
+        payload after an ask_user response but no spinner was visible.
+        """
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return None
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        # Two astream iterations (interrupt, then resume) -> expect
+        # Thinking set before each, and nothing above that count since
+        # no tool calls stream in this test.
+        assert len(agent.stream_inputs) == 2
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            f"Expected Thinking spinner on each iteration; got {statuses}"
+        )
+
     async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
         self,
     ) -> None:

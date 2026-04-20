@@ -477,10 +477,6 @@ async def execute_task_textual(
             adapter._on_tokens_show is not None,
         )
 
-    # Show spinner
-    if adapter._set_spinner:
-        await adapter._set_spinner("Thinking")
-
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._on_tokens_hide:
         adapter._on_tokens_hide()
@@ -512,6 +508,14 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+
+            # Show the Thinking spinner before each astream iteration so
+            # both the first turn and HITL/ask_user resumes surface feedback
+            # while the model processes input. Skip when
+            # `_current_tool_messages` is non-empty so running-tool
+            # indicators remain the dominant signal.
+            if adapter._set_spinner and not adapter._current_tool_messages:
+                await adapter._set_spinner("Thinking")
 
             async for chunk in agent.astream(
                 stream_input,

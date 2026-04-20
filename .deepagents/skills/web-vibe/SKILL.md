@@ -43,6 +43,7 @@ The script is idempotent and safe to re-run. Otherwise, skip straight to step 2 
 Ground rules for the rest of the round:
 
 - The script operates inside `$VIBE_DIR`. **All of your subsequent file edits MUST go inside this directory** — always use `$VIBE_DIR/...` absolute paths (e.g., `$VIBE_DIR/index.html`), never `./index.html`, because your working directory may not be the round dir between tool calls.
+- **Never call `write_file` on a path that already exists — it will refuse.** The Vite template scaffolds these files up front: `$VIBE_DIR/index.html`, `$VIBE_DIR/src/main.js`, `$VIBE_DIR/src/style.css`, `$VIBE_DIR/src/counter.js`, `$VIBE_DIR/package.json`. To change any of them, **read first, then `edit_file`**. Use `write_file` only for genuinely new paths (e.g., a new component file you are adding). If you hit the "already exists" error, stop guessing — switch to `edit_file` on that exact path.
 - **Do not invoke `vite`, `npm run dev`, `npm create`, or any other server yourself** — always go through the script so behavior stays consistent across rounds.
 - **Do not use** `create-react-app`, `next`, or heavy frameworks -- too slow to scaffold.
 
@@ -99,12 +100,12 @@ As your very first action of the round, make **one batched `ask_user` call** wit
 
 Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the prompt and the player's answers. This is where you spend most of your time.
 
-**First**, clean up the Vite boilerplate. The template files already exist, so **read each file first, then use `edit_file`** to replace contents — do NOT call `write_file` on paths that already exist (it will refuse).
+**First**, clean up the Vite boilerplate. These files **already exist** from the template — you MUST `read_file` then `edit_file`. Do NOT `write_file` on any of them; it will refuse and burn a turn.
 
-- Replace `$VIBE_DIR/index.html` -- swap the `<body>` content for your site's HTML
-- Replace `$VIBE_DIR/src/style.css` -- swap in your site's styles
-- Replace `$VIBE_DIR/src/main.js` -- drop the boilerplate, add only the JS your site needs
-- Empty `$VIBE_DIR/src/counter.js` -- it's Vite boilerplate
+- `edit_file` `$VIBE_DIR/index.html` -- swap the `<body>` content for your site's HTML
+- `edit_file` `$VIBE_DIR/src/style.css` -- swap in your site's styles
+- `edit_file` `$VIBE_DIR/src/main.js` -- drop the boilerplate, add only the JS your site needs
+- `edit_file` `$VIBE_DIR/src/counter.js` -- empty it out; it's Vite boilerplate
 
 **Then**, iterate on the design. Apply changes incrementally so Vite HMR shows progress live.
 

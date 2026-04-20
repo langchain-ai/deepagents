@@ -639,6 +639,18 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
+    from deepagents_cli.ui import positive_int
+
+    parser.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        type=positive_int,
+        metavar="N",
+        help="Maximum number of agentic turns before stopping (must be >= 1). "
+        "Overrides the internal safety default. Useful for CI/CD pipelines "
+        "to prevent runaway agents. Requires -n or piped stdin.",
+    )
+
     parser.add_argument(
         "--stdin",
         action="store_true",
@@ -1433,6 +1445,17 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        max_turns_set = getattr(args, "max_turns", None) is not None
+        if max_turns_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --max-turns requires "
+                "--non-interactive (-n) or piped stdin\n"
+                "  deepagents -n 'refactor auth module' --max-turns 5"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -1711,6 +1734,7 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    max_turns=getattr(args, "max_turns", None),
                 )
             )
             sys.exit(exit_code)

@@ -4,6 +4,8 @@ This module is imported at CLI startup to wire `-h` actions into the
 argparse tree.  It must stay lightweight — no SDK or langchain imports.
 """
 
+import argparse
+
 from rich.markup import escape
 
 from deepagents_cli import theme
@@ -16,6 +18,29 @@ from deepagents_cli.config import (
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
 _HELP_OPTION_LINE = "  -h, --help              Show this help message"
+
+
+def positive_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 1.
+
+    Args:
+        value: Raw CLI argument string to parse.
+
+    Returns:
+        Parsed positive integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 1:
+        msg = f"must be a positive integer (>= 1), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:
@@ -112,6 +137,9 @@ def show_help() -> None:
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
+    )
+    console.print(
+        "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(

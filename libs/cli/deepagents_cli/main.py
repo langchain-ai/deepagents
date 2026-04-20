@@ -639,15 +639,16 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
+    from deepagents_cli.ui import positive_int
+
     parser.add_argument(
         "--max-turns",
         dest="max_turns",
-        type=int,
+        type=positive_int,
         metavar="N",
-        # Mirror of non_interactive._MAX_HITL_ITERATIONS — keep in sync.
-        help="Maximum number of agentic turns before stopping (max 50). "
-        "Useful for CI/CD pipelines to prevent runaway agents. "
-        "Requires -n or piped stdin.",
+        help="Maximum number of agentic turns before stopping (must be >= 1). "
+        "Overrides the internal safety default. Useful for CI/CD pipelines "
+        "to prevent runaway agents. Requires -n or piped stdin.",
     )
 
     parser.add_argument(

@@ -327,6 +327,18 @@ class TestMaxTurnsArgument:
             cli_main()
         assert mock_run.await_args.kwargs["max_turns"] is None  # type: ignore[union-attr]
 
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-50", "abc"])
+    def test_rejects_non_positive_and_non_integer(
+        self, mock_argv: MockArgvType, bad_value: str
+    ) -> None:
+        """Argparse rejects 0, negatives, and non-integers with exit 2."""
+        with (
+            mock_argv("-n", "task", "--max-turns", bad_value),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
 
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""

@@ -1348,6 +1348,9 @@ class TestLoadingSpinnerLifecycle:
             before_tick = widget._spinner._position
             await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
+            # Pre-condition: timer must be running before the reposition so
+            # the `is None` assertion below isn't vacuously satisfied.
+            assert widget._animation_timer is not None
 
             with patch.object(Widget, "remove", new=delayed_remove):
                 reposition_task = asyncio.create_task(app._set_spinner("Thinking"))

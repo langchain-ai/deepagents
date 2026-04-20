@@ -634,9 +634,11 @@ async def _run_agent_loop(
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
             a fast-follow LangSmith thread link.
-        max_turns: Optional user-supplied cap on agentic turns. Honoured only
-            up to `_MAX_HITL_ITERATIONS` — values above that are silently
-            clamped to the hard ceiling.
+        max_turns: Optional user-supplied cap on agentic turns.
+
+            When set, the user's value is honoured verbatim and overrides the
+            internal safety default; exceeding it
+            raises `HITLIterationLimitError`.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
@@ -656,12 +658,11 @@ async def _run_agent_loop(
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
-    # Honour --max-turns but never exceed the hard safety ceiling.
-    effective_limit = (
-        min(max_turns, _MAX_HITL_ITERATIONS)
-        if max_turns is not None
-        else _MAX_HITL_ITERATIONS
-    )
+    # When --max-turns is explicitly set, honour the user's value verbatim;
+    # the operator has opted in to a specific bound. The internal default
+    # only applies when no flag is provided, guarding against unbounded
+    # runaway loops in scripts that forgot to set one.
+    effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
 
     # Handle HITL interrupts
     iterations = 0
@@ -670,8 +671,8 @@ async def _run_agent_loop(
         if iterations > effective_limit:
             limit_source = (
                 f"--max-turns {max_turns}"
-                if max_turns is not None and max_turns <= _MAX_HITL_ITERATIONS
-                else f"the internal safety limit of {_MAX_HITL_ITERATIONS}"
+                if max_turns is not None
+                else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
             )
             msg = (
                 f"Exceeded {effective_limit} agentic turns ({limit_source}). "
@@ -826,9 +827,10 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
-        max_turns: Optional cap on agentic turns. Values above
-            `_MAX_HITL_ITERATIONS` are silently clamped to that ceiling so
-            the hard safety limit is always honoured.
+        max_turns: Optional cap on agentic turns.
+
+            When set, overrides the internal safety default; exceeding it
+            raises `HITLIterationLimitError`.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.

@@ -72,6 +72,8 @@ class SwarmExecutionOptions:
     synthesized_tasks_jsonl: str | None = None
     task_timeout_seconds: float = TASK_TIMEOUT_SECONDS
     """Per-subagent-task wall-clock timeout."""
+    cancel_event: asyncio.Event | None = None
+    """When set, pending dispatches short-circuit and in-flight ainvoke calls are cancelled."""
 
 
 def _filter_state_for_subagent(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -145,8 +147,20 @@ async def _dispatch_task(
     subagent: Runnable,
     filtered_state: dict[str, Any],
     task_timeout_seconds: float,
+    cancel_event: asyncio.Event | None = None,
 ) -> SwarmTaskResult:
     subagent_type = task.subagent_type or "general-purpose"
+    # Short-circuit: if the outer eval has already aborted, don't start a
+    # new ainvoke. In-flight ainvoke calls are unwound via asyncio task
+    # cancellation propagating from the outer wait_for — we don't need a
+    # separate cancel-race here.
+    if cancel_event is not None and cancel_event.is_set():
+        return SwarmTaskResult(
+            id=task.id,
+            subagent_type=subagent_type,
+            status="failed",
+            error="Aborted",
+        )
     subagent_state = {
         **filtered_state,
         "messages": [HumanMessage(content=task.description)],
@@ -221,6 +235,7 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary
                 options.subagent_graphs[subagent_type],
                 filtered_state,
                 options.task_timeout_seconds,
+                options.cancel_event,
             )
 
     results = await asyncio.gather(*[_run(task) for task in options.tasks])

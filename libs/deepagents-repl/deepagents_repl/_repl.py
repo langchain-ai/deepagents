@@ -432,6 +432,11 @@ class _ThreadREPL:
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
         self._swarm_binding: SwarmBinding | None = swarm_binding
+        # Fired when the current eval_async times out or is cancelled;
+        # read by the swarm bridge so pending task dispatches short-circuit
+        # with a clear "Aborted" label (in-flight ainvoke calls are unwound
+        # via asyncio task cancellation).
+        self._eval_cancel_event: asyncio.Event | None = None
         if capture_console:
             self._install_console()
         if swarm_binding is not None:
@@ -527,6 +532,7 @@ class _ThreadREPL:
                 current_state=current_state,
                 concurrency=concurrency,
                 synthesized_tasks_jsonl=synthesized_tasks_jsonl,
+                cancel_event=self._eval_cancel_event,
             )
             if binding.task_timeout_seconds is not None:
                 exec_options.task_timeout_seconds = binding.task_timeout_seconds
@@ -715,36 +721,66 @@ class _ThreadREPL:
           LangGraph's cancellation semantics work end-to-end.
         """
         outcome = EvalOutcome()
+        # Fresh cancel event for this eval. When set, pending swarm task
+        # dispatches short-circuit with an "Aborted" result instead of
+        # being silently cancelled. In-flight ainvoke calls are cancelled
+        # the usual way via asyncio task cancellation (propagated below
+        # by wait_for).
+        cancel_event = asyncio.Event()
+        self._eval_cancel_event = cancel_event
         try:
-            value = await self._ctx.eval_async(code, timeout=self._per_call_timeout)
-            outcome.result = _stringify(value)
-        except MarshalError:
-            outcome.result_kind = "handle"
-            outcome.result = await self._describe_via_handle_async(code)
-        except QJSTimeoutError as e:
-            outcome.error_type = "Timeout"
-            outcome.error_message = str(e)
-        except DeadlockError as e:
-            # Top-level Promise never resolved and no async host work in
-            # flight. Surface as a distinct error type because the fix
-            # is user-level (their JS has an un-resolvable Promise or a
-            # sync host fn that should be async); a plain error-type
-            # message without context would make this hard to diagnose.
-            outcome.error_type = "Deadlock"
-            outcome.error_message = str(e)
-        except HostCancellationError:
-            # JS declined to catch a cancellation — re-raise as
-            # CancelledError so asyncio unwinds the caller's task.
-            # Do not record anything in ``outcome``; the call is dead.
-            raise asyncio.CancelledError from None
-        except JSError as e:
-            self._record_js_error(outcome, e)
-        except ConcurrentEvalError as e:
-            outcome.error_type = "ConcurrentEval"
-            outcome.error_message = str(e)
-        except MemoryLimitError as e:
-            outcome.error_type = "OutOfMemory"
-            outcome.error_message = str(e)
+            try:
+                # External timeout via wait_for: cancelling the wrapped
+                # task propagates CancelledError to in-flight host
+                # coroutines, which is how swarm subagents unwind
+                # promptly. Internal timeout is the outer budget plus a
+                # small slack as a backstop for runaway JS that never
+                # yields back to the asyncio loop.
+                value = await asyncio.wait_for(
+                    self._ctx.eval_async(
+                        code, timeout=self._per_call_timeout + 60
+                    ),
+                    timeout=self._per_call_timeout,
+                )
+                outcome.result = _stringify(value)
+            except MarshalError:
+                outcome.result_kind = "handle"
+                outcome.result = await self._describe_via_handle_async(code)
+            except TimeoutError:
+                cancel_event.set()
+                outcome.error_type = "Timeout"
+                outcome.error_message = (
+                    f"eval_async exceeded {self._per_call_timeout}s"
+                )
+            except QJSTimeoutError as e:
+                cancel_event.set()
+                outcome.error_type = "Timeout"
+                outcome.error_message = str(e)
+            except DeadlockError as e:
+                # Top-level Promise never resolved and no async host work in
+                # flight. Surface as a distinct error type because the fix
+                # is user-level (their JS has an un-resolvable Promise or a
+                # sync host fn that should be async); a plain error-type
+                # message without context would make this hard to diagnose.
+                cancel_event.set()
+                outcome.error_type = "Deadlock"
+                outcome.error_message = str(e)
+            except HostCancellationError:
+                # JS declined to catch a cancellation — re-raise as
+                # CancelledError so asyncio unwinds the caller's task.
+                # Do not record anything in ``outcome``; the call is dead.
+                cancel_event.set()
+                raise asyncio.CancelledError from None
+            except JSError as e:
+                self._record_js_error(outcome, e)
+            except ConcurrentEvalError as e:
+                outcome.error_type = "ConcurrentEval"
+                outcome.error_message = str(e)
+            except MemoryLimitError as e:
+                outcome.error_type = "OutOfMemory"
+                outcome.error_message = str(e)
+        finally:
+            self._eval_cancel_event = None
         outcome.stdout = self._console.drain()
         return outcome
 

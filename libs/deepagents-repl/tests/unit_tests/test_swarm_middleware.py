@@ -7,6 +7,7 @@ call runs the executor and returns a parseable JSON summary.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -288,3 +289,36 @@ async def test_swarm_not_registered_without_binding(runtime: Runtime) -> None:
     outcome = await repl.eval_async("typeof swarm")
     # typeof on an unregistered global returns "undefined" in JS.
     assert outcome.result == "undefined"
+
+
+async def test_swarm_cancelled_on_eval_timeout(runtime: Runtime) -> None:
+    """When the outer eval_async times out, in-flight swarm subagents get aborted."""
+    cancelled_seen: list[bool] = []
+
+    subagent = AsyncMock(spec=Runnable)
+
+    async def _slow(_state: dict, _config: Any = None) -> dict:
+        try:
+            await asyncio.sleep(5.0)
+            return {"messages": [AIMessage("ok")]}
+        except asyncio.CancelledError:
+            cancelled_seen.append(True)
+            raise
+
+    subagent.ainvoke.side_effect = _slow
+
+    backend = _StubBackend()
+    binding = SwarmBinding(backend=backend, subagent_graphs={"general-purpose": subagent})
+    repl = _ThreadREPL(
+        runtime, timeout=0.3, capture_console=True, swarm_binding=binding
+    )
+
+    outcome = await repl.eval_async(
+        """
+        await swarm({ tasks: [{ id: "slow", description: "never finishes" }] });
+        "unreachable"
+        """
+    )
+    assert outcome.error_type == "Timeout"
+    # The ainvoke was cancelled when eval hit its deadline.
+    assert cancelled_seen == [True]

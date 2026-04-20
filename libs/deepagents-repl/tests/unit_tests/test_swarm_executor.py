@@ -354,6 +354,25 @@ class TestStateFiltering:
         assert len(state["messages"]) == 1  # replaced with the task HumanMessage
 
 
+class TestCancellation:
+    async def test_pending_tasks_short_circuit_when_event_set(self) -> None:
+        """Tasks that start after cancel_event fires are failed with ``Aborted``."""
+        event = asyncio.Event()
+        event.set()
+        summary = await execute_swarm(
+            _build_options(
+                tasks=[
+                    SwarmTaskSpec(id="t1", description="a"),
+                    SwarmTaskSpec(id="t2", description="b"),
+                ],
+                cancel_event=event,
+            )
+        )
+        assert summary.failed == 2
+        assert summary.completed == 0
+        assert all(r.error == "Aborted" for r in summary.results)
+
+
 class TestConcurrency:
     async def test_respects_concurrency_limit(self) -> None:
         state = {"max": 0, "current": 0}

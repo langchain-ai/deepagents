@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 import requests
 from deepagents import create_deep_agent
+from deepagents._models import get_model_identifier
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents.middleware import ModelCallLimitMiddleware
@@ -28,7 +29,7 @@ from langchain_core.load import load
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from tests.evals.utils import AgentTrajectory, run_agent
+from tests.evals.utils import AgentTrajectory, run_agent, run_agent_async
 
 pytestmark = [pytest.mark.eval_category("summarization")]
 """Apply summarization category to all tests in this module. Tier is set per-test."""
@@ -127,17 +128,22 @@ def _setup_summarization_test(
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
+async def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
     # Lowered from 15_000 so the (fraction=0.85) trigger fires reliably on
     # token-efficient / cache-heavy OpenAI Codex runs, where final-turn input
     # counts previously landed just under the threshold and compaction never
     # fired. 5_000 keeps the 0.85 fraction (~4.25K tokens) well inside one
     # 500-line chunk of the test file for both Anthropic and OpenAI models.
+    #
+    # TEMP (revert before merging the codex profile): uses the async invoke
+    # path so `CodexCompactionMiddleware.awrap_model_call` (the only path
+    # that calls `/compact`) runs. The sync entry point deliberately falls
+    # back to LLM summarization, which defeats the A/B comparison.
     agent, _, _ = _setup_summarization_test(tmp_path, model, 5_000)
     thread_id = uuid.uuid4().hex[:8]
 
-    trajectory = run_agent(
+    trajectory = await run_agent_async(
         agent,
         model=model,
         query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
@@ -172,17 +178,20 @@ def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel) -> None:
+async def test_summarization_offloads_to_filesystem(
+    tmp_path: Path, model: BaseChatModel
+) -> None:
     """Test that conversation history is offloaded to filesystem during summarization.
 
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    # See `test_summarize_continues_task` for rationale on the 5_000 cap.
+    # See `test_summarize_continues_task` for rationale on the 5_000 cap and
+    # the TEMP async-invoke switch required to actually exercise `/compact`.
     agent, _, root = _setup_summarization_test(tmp_path, model, 5_000)
     thread_id = uuid.uuid4().hex[:8]
 
-    _ = run_agent(
+    _ = await run_agent_async(
         agent,
         model=model,
         query="Can you read the entirety of summarization.py, 500 lines at a time, and summarize it?",
@@ -228,7 +237,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatMod
     # Ask about a specific detail from the beginning of the file that was read
     # before summarization. The agent should read the conversation history to find it.
     # The first standard library import in summarization.py (after `from __future__`) is `import base64`.
-    followup_trajectory = run_agent(
+    followup_trajectory = await run_agent_async(
         agent,
         model=model,
         query=(
@@ -303,6 +312,15 @@ def test_compact_tool_not_overly_sensitive(tmp_path: Path, model: BaseChatModel)
 @pytest.mark.langsmith
 def test_compact_tool_large_reads(tmp_path: Path, model: BaseChatModel) -> None:
     """Agent calls compact_conversation when asked to read another large file after a long conversation."""
+    # TEMP (revert before merging the codex profile): this test exercises the
+    # `compact_conversation` TOOL under a tight `run_limit=3` budget, which is
+    # orthogonal to the `/compact` vs. LLM-summarization A/B we're running.
+    # Codex's proactive tool-use behavior here produces noise that muddies the
+    # signal on the two tests that actually do compare compaction mechanisms.
+    model_id = get_model_identifier(model) or ""
+    if "codex" in model_id.lower():
+        pytest.skip("TEMP: skipped during codex /compact vs. summary A/B experiment")
+
     another_large_file = "https://raw.githubusercontent.com/langchain-ai/deepagents/5c90376c02754c67d448908e55d1e953f54b8acd/libs/deepagents/deepagents/middleware/filesystem.py"
 
     response = requests.get(another_large_file, timeout=30)

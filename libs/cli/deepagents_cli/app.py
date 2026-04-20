@@ -523,6 +523,7 @@ class DeepAgentsApp(App):
         resume_thread: str | None = None,
         initial_prompt: str | None = None,
         initial_skill: str | None = None,
+        startup_cmd: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -554,6 +555,11 @@ class DeepAgentsApp(App):
                 Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
             initial_skill: Optional skill name to invoke when session starts.
+            startup_cmd: Optional shell command to run at startup before the
+                first prompt is accepted.
+
+                Output is rendered in the transcript and non-zero exits warn but
+                do not abort the session.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -646,6 +652,15 @@ class DeepAgentsApp(App):
         """Skill name to auto-invoke after first paint (from `--skill`).
 
         Normalized to lowercase; `None` when not provided.
+        """
+
+        self._startup_cmd = (
+            startup_cmd.strip() if startup_cmd and startup_cmd.strip() else None
+        )
+        """Shell command to run once before the first prompt, from
+        `--startup-cmd`.
+
+        Cleared to `None` after it runs so later server swaps cannot re-run it.
         """
 
         self._mcp_server_info = mcp_server_info
@@ -781,6 +796,14 @@ class DeepAgentsApp(App):
         self._processing_pending = False
         """Re-entry guard for `_process_next_from_queue` so only one drain
         loop runs at a time."""
+
+        self._startup_sequence_running = False
+        """True while post-connect startup work is still being sequenced.
+
+        Covers resumed-history hydration, `--startup-cmd`, and the handoff to
+        the first queued or initial submission so user input stays serialized
+        until the session reaches its first stable busy/idle state.
+        """
 
         # Message queue & store
         self._pending_messages: deque[QueuedMessage] = deque()
@@ -1104,22 +1127,14 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
-        # Auto-submit initial prompt or skill if provided via -m / --skill.
-        # This check must come first because _lc_thread_id and _agent are
-        # always set (even for brand-new sessions), so an elif after the
-        # thread-history branch would never execute.
-        # When connecting, defer until on_deep_agents_app_server_ready fires.
-        # NOTE: _schedule_initial_submission() has a side effect (queues a
-        # task via call_after_refresh); short-circuit ensures it only runs
-        # when not connecting — the deferred path handles the connecting case.
-        if (
-            not self._connecting
-            and not self._schedule_initial_submission()
-            and self._lc_thread_id
-            and self._agent
-        ):
+        # Session-start sequence (history -> `--startup-cmd` -> initial prompt/
+        # skill -> queue drain). When connecting, defer until
+        # `on_deep_agents_app_server_ready` fires; otherwise run it now so the
+        # non-connecting path (pre-built agent) also honors `--startup-cmd` and
+        # serializes startup against user input.
+        if not self._connecting:
             self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
+                lambda: asyncio.create_task(self._run_session_start_sequence())
             )
 
     async def _init_session_state(self) -> None:
@@ -1425,13 +1440,14 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
-        # Handle deferred initial prompt, skill, or thread history
-        if not self._schedule_initial_submission() and (
-            self._lc_thread_id and self._agent
-        ):
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
+        # Session-start sequence: load resumed history, run `--startup-cmd`
+        # (if any), then dispatch the initial prompt/skill and drain
+        # user-typed messages. Sequenced through a single task so the
+        # startup command always resolves before the agent sees any user
+        # input.
+        self.call_after_refresh(
+            lambda: asyncio.create_task(self._run_session_start_sequence())
+        )
 
         # Drain deferred actions (e.g. model/thread switch queued during connection)
         # if the agent is not actively running. Wrapped in a helper so that
@@ -1452,13 +1468,6 @@ class DeepAgentsApp(App):
                         )
 
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
-
-        # Drain any messages the user typed while the server was starting.
-        # (If an initial submission exists, its cleanup path will drain the queue.)
-        if self._pending_messages and not self._has_initial_submission():
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._process_next_from_queue())
-            )
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
@@ -2320,18 +2329,102 @@ class DeepAgentsApp(App):
             self._initial_prompt and self._initial_prompt.strip()
         )
 
-    def _schedule_initial_submission(self) -> bool:
-        """Schedule the startup prompt or skill after the next refresh.
+    async def _run_session_start_sequence(self) -> None:
+        """Load history, run `--startup-cmd`, then dispatch initial work.
 
-        Returns:
-            `True` when a startup submission was queued, `False` otherwise.
+        Single entry point for the post-connect sequence. Sequencing the
+        startup command before any user-facing agent work guarantees the
+        agent never observes input until the command has completed.
         """
-        if not self._has_initial_submission():
-            return False
-        self.call_after_refresh(
-            lambda: asyncio.create_task(self._submit_initial_submission())
-        )
-        return True
+        self._startup_sequence_running = True
+        try:
+            should_load_history = bool(self._lc_thread_id and self._agent) and (
+                self._resume_thread_intent is not None
+                or not self._has_initial_submission()
+            )
+            if should_load_history:
+                await self._load_thread_history()
+
+            if self._startup_cmd:
+                cmd = self._startup_cmd
+                # One-shot: clear to avoid re-running on any subsequent server swap.
+                self._startup_cmd = None
+                await self._run_startup_command(cmd)
+
+            if self._has_initial_submission():
+                await self._submit_initial_submission()
+                return
+        finally:
+            self._startup_sequence_running = False
+
+        if self._agent_running or self._shell_running:
+            return
+
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception(
+                "Failed to drain deferred actions after startup sequencing"
+            )
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed during startup. "
+                        "You may need to retry the operation."
+                    )
+                )
+
+        if self._pending_messages:
+            await self._process_next_from_queue()
+
+    async def _run_startup_command(self, command: str) -> None:
+        """Execute the `--startup-cmd` and render its output in the transcript.
+
+        Uses the same worker-backed subprocess path as the interactive `!`
+        shell prefix, with an app-style header (since the user did not type
+        the command). Non-zero exit is already rendered as an error by
+        `_run_shell_task` but does not abort the session.
+
+        Raises:
+            CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
+                re-raised so `_run_shell_task`'s finally can clean up.
+        """
+        try:
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup("Running startup command: $cmd", cmd=command)
+                )
+            )
+        except Exception:
+            logger.warning("Failed to mount startup-command header", exc_info=True)
+
+        self._shell_running = True
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+
+        try:
+            worker = self.run_worker(self._run_shell_task(command), exclusive=False)
+        except Exception:
+            # `run_worker` failed synchronously — `_run_shell_task`'s finally
+            # never fires, so reset the busy flags here or the UI stays wedged.
+            logger.exception("Failed to schedule startup-command worker")
+            self._shell_running = False
+            self._shell_worker = None
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=True)
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage("Failed to start startup command; continuing session.")
+                )
+            return
+
+        self._shell_worker = worker
+        try:
+            await worker.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Startup command worker raised unexpectedly")
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
@@ -2405,10 +2498,15 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent/shell is running or server is still starting up, enqueue
-        # instead of processing. Messages queued during connection are drained
-        # once the server is ready (see on_deep_agents_app_server_ready).
-        if self._agent_running or self._shell_running or self._connecting:
+        # If the app is busy or still sequencing startup work, enqueue instead
+        # of processing. Messages queued during startup are drained once the
+        # session reaches its first stable idle/running state.
+        if (
+            self._agent_running
+            or self._shell_running
+            or self._connecting
+            or self._startup_sequence_running
+        ):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
                 return
@@ -2574,7 +2672,8 @@ class DeepAgentsApp(App):
                         "You may need to retry the operation."
                     )
                 )
-        await self._process_next_from_queue()
+        if not self._startup_sequence_running:
+            await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
         """Terminate the running shell command process.
@@ -3601,7 +3700,8 @@ class DeepAgentsApp(App):
                 )
 
         # Process next message from queue if any
-        await self._process_next_from_queue()
+        if not self._startup_sequence_running:
+            await self._process_next_from_queue()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
@@ -4194,8 +4294,8 @@ class DeepAgentsApp(App):
         self._deferred_actions.append(action)
 
     async def _maybe_drain_deferred(self) -> None:
-        """Drain deferred actions unless a server connection is still in progress."""
-        if not self._connecting:
+        """Drain deferred actions unless startup sequencing is still in progress."""
+        if not self._connecting and not self._startup_sequence_running:
             await self._drain_deferred_actions()
 
     async def _drain_deferred_actions(self) -> None:
@@ -5529,6 +5629,7 @@ async def run_textual_app(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -5559,6 +5660,9 @@ async def run_textual_app(
             Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
         initial_skill: Optional skill name to invoke when session starts.
+        startup_cmd: Optional shell command to run at startup before the first
+            prompt is accepted. Output is rendered in the transcript and
+            non-zero exits warn but do not abort the session.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -5586,6 +5690,7 @@ async def run_textual_app(
         resume_thread=resume_thread,
         initial_prompt=initial_prompt,
         initial_skill=initial_skill,
+        startup_cmd=startup_cmd,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

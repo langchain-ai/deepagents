@@ -184,6 +184,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ptc: PTCOption = False,
         backend: BackendProtocol | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+        swarm_task_timeout: float | None = None,
     ) -> None:
         super().__init__()
         self._memory_limit = memory_limit
@@ -201,7 +202,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if subagents and backend is not None:
             subagent_graphs, subagent_descriptions = compile_subagents(subagents)
             swarm_binding: SwarmBinding | None = SwarmBinding(
-                backend=backend, subagent_graphs=subagent_graphs
+                backend=backend,
+                subagent_graphs=subagent_graphs,
+                task_timeout_seconds=swarm_task_timeout,
             )
             self._swarm_subagent_descriptions = subagent_descriptions
         elif subagents and backend is None:

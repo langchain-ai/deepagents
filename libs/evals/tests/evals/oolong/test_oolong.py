@@ -215,7 +215,14 @@ async def test_oolong(
         system_prompt=SYSTEM_PROMPT,
         subagents=compiled_subagents,
         middleware=[
-            REPLMiddleware(backend=sandbox_backend, subagents=compiled_subagents),
+            REPLMiddleware(
+                backend=sandbox_backend,
+                subagents=compiled_subagents,
+                # Outer eval ceiling — must cover the whole swarm fan-out.
+                timeout=1800.0,
+                # Per-subagent-task ceiling.
+                swarm_task_timeout=600.0,
+            ),
         ],
         checkpointer=MemorySaver(),
         backend=sandbox_backend,
@@ -224,8 +231,8 @@ async def test_oolong(
     trajectory = await run_agent_async(
         agent,
         model=model,
-        # query=task.question + " Make sure to use the `swarm()` global to dispatch subagents for counting and classification as needed.",
-        query=task.question,
+        query=task.question + " Make sure to use the `swarm()` global to dispatch subagents for counting and classification as needed.",
+        # query=task.question,
         scorer=TrajectoryScorer().success(OolongCorrect(gold_answer=gold)),
         eval_metadata={
             "oolong_task_id": task.id,

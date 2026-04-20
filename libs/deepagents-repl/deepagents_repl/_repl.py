@@ -374,6 +374,8 @@ class SwarmBinding:
 
     backend: BackendProtocol
     subagent_graphs: Mapping[str, Runnable]
+    task_timeout_seconds: float | None = None
+    """Per-subagent-task wall-clock timeout. ``None`` uses the swarm default."""
 
 
 class _ThreadREPL:
@@ -518,16 +520,17 @@ class _ThreadREPL:
             if concurrency is not None and not isinstance(concurrency, int):
                 concurrency = int(concurrency)
 
-            summary = await execute_swarm(
-                SwarmExecutionOptions(
-                    tasks=tasks,
-                    subagent_graphs=binding.subagent_graphs,
-                    backend=binding.backend,
-                    current_state=current_state,
-                    concurrency=concurrency,
-                    synthesized_tasks_jsonl=synthesized_tasks_jsonl,
-                )
+            exec_options = SwarmExecutionOptions(
+                tasks=tasks,
+                subagent_graphs=binding.subagent_graphs,
+                backend=binding.backend,
+                current_state=current_state,
+                concurrency=concurrency,
+                synthesized_tasks_jsonl=synthesized_tasks_jsonl,
             )
+            if binding.task_timeout_seconds is not None:
+                exec_options.task_timeout_seconds = binding.task_timeout_seconds
+            summary = await execute_swarm(exec_options)
             # Shape the response with JS-style keys so `JSON.stringify` on
             # the JS side produces wire-compatible output with the JS port.
             return {

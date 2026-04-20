@@ -70,6 +70,8 @@ class SwarmExecutionOptions:
     current_state: dict[str, Any] = field(default_factory=dict)
     concurrency: int | None = None
     synthesized_tasks_jsonl: str | None = None
+    task_timeout_seconds: float = TASK_TIMEOUT_SECONDS
+    """Per-subagent-task wall-clock timeout."""
 
 
 def _filter_state_for_subagent(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -142,6 +144,7 @@ async def _dispatch_task(
     task: SwarmTaskSpec,
     subagent: Runnable,
     filtered_state: dict[str, Any],
+    task_timeout_seconds: float,
 ) -> SwarmTaskResult:
     subagent_type = task.subagent_type or "general-purpose"
     subagent_state = {
@@ -151,14 +154,14 @@ async def _dispatch_task(
     try:
         result = await asyncio.wait_for(
             subagent.ainvoke(subagent_state),
-            timeout=TASK_TIMEOUT_SECONDS,
+            timeout=task_timeout_seconds,
         )
     except TimeoutError:
         return SwarmTaskResult(
             id=task.id,
             subagent_type=subagent_type,
             status="failed",
-            error=f"Timed out after {int(TASK_TIMEOUT_SECONDS)}",
+            error=f"Timed out after {task_timeout_seconds:g}s",
         )
     except Exception as exc:  # noqa: BLE001 — surface subagent errors as failed tasks
         return SwarmTaskResult(
@@ -214,7 +217,10 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary
         async with semaphore:
             subagent_type = task.subagent_type or "general-purpose"
             return await _dispatch_task(
-                task, options.subagent_graphs[subagent_type], filtered_state
+                task,
+                options.subagent_graphs[subagent_type],
+                filtered_state,
+                options.task_timeout_seconds,
             )
 
     results = await asyncio.gather(*[_run(task) for task in options.tasks])

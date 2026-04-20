@@ -13,7 +13,6 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
-from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -424,8 +423,8 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
 
-        current_config: RunnableConfig = var_child_runnable_config.get() or {}
-        subagent_config: RunnableConfig = {**current_config, "configurable": {**current_config.get("configurable", {}), "ls_agent_type": "subagent"}}
+        # Don't merge all fields because this will block out manual `.with_config`
+        subagent_config: RunnableConfig = {"configurable": {**runtime.config.get("configurable", {}), "ls_agent_type": "subagent"}}
         result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 

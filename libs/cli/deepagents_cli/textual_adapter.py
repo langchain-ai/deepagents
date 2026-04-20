@@ -761,9 +761,6 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide spinner when assistant starts responding
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner(None)
                                     msg_id = f"asst-{uuid.uuid4().hex[:8]}"
                                     # Mark active BEFORE mounting so pruning
                                     # (triggered by mount) won't remove it
@@ -775,6 +772,19 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
+                                    # Keep the Thinking spinner visible after
+                                    # the streaming message so the user still
+                                    # sees activity if the model pauses between
+                                    # finishing text and emitting its next
+                                    # action (e.g. a tool call). The mount
+                                    # above placed the new message at the end
+                                    # of the container; this re-anchors the
+                                    # spinner after it.
+                                    if (
+                                        adapter._set_spinner
+                                        and not adapter._current_tool_messages
+                                    ):
+                                        await adapter._set_spinner("Thinking")
 
                                 # Append just the new text chunk for smoother
                                 # streaming (uses MarkdownStream internally for

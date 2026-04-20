@@ -66,24 +66,37 @@ _SWARM_PROMPT_TEMPLATE = """
 
 ## Parallel fan-out (`swarm()` inside `{tool_name}`)
 
-Use `{tool_name}` with `swarm()` to fan out many independent tasks across subagents and aggregate their results.
+Use `swarm()` inside `{tool_name}` to dispatch many independent subagent calls in parallel and aggregate the results. Each subagent runs in an isolated context — it sees only the description you write for it.
 
 ### When to use swarm
 
-**Trigger**: before doing anything else, check the size of your input data. If an input file exceeds ~50 KB, you MUST use swarm — do not attempt to process it inline. Reading a large file directly and summarising it yourself is wrong when swarm is available. Default to swarm; only skip it when the input is demonstrably small.
+Reach for swarm when any of these apply:
+- A dataset has many items needing the same operation (classification, extraction, transformation)
+- A collection of entities each needs its own analysis (per-document, per-PR, per-entity)
+- The same input benefits from multiple independent perspectives
+- The work exceeds what a single subagent's context can hold
 
-Also use swarm when:
-- A task requires applying intelligence to each item in a large collection.
-- Work can be decomposed into many independent, parallel subtasks.
+Don't use swarm when:
+- Fewer than ~5 independent units — use inline tool calls or the `task` tool
+- Tasks depend on each other's output
+- One end-to-end analysis with no natural decomposition
 
-### How to use swarm
+### Flow
 
-Before calling swarm, understand what you're working with. Use your file-reading tools outside `{tool_name}` to sample the data and learn its structure, format, and size. Task descriptions must be detailed enough that each subagent can execute without needing to figure anything out on its own.
+1. **Explore.** Sample — don't read in full. Use your file tools (`read_file` with offset/limit, `grep`, `ls`) outside `{tool_name}` to learn the input's shape. Finish in 2–3 tool calls.
+2. **Dispatch.** In `{tool_name}`, build task descriptions and call `swarm()`. Each description should tell its subagent exactly which slice to read.
+3. **Aggregate.** In the same or a follow-up `{tool_name}` call, combine results programmatically from `summary.results`. For qualitative output (summaries, research, narrative), read `resultsDir + "/results.jsonl"` with your file tools instead of pulling every result string into the orchestrator's context.
 
-Once you understand the data, call `swarm()` from inside `{tool_name}` with tasks that tell each subagent which slice to process. Subagents have the same filesystem access you do — they can read their assigned slice directly.
+### Hard rules
+
+- **Never read the full input that triggers swarm.** If the data is too large for one context, it reaches subagents via chunked descriptions or via per-subagent file reads, not through you.
+- **Results are final.** Do not dispatch recheck, verify, or cross-check tasks for completed results. Re-dispatching the same data with different ids is still rechecking.
+- **One retry for failures, then move on.** Fix the root cause (description, slice bounds) and re-dispatch only the failed ids. Don't retry twice.
+
+### Dispatch example
 
 ```typescript
-// After inspecting /data.txt with your read_file tool you know it has ~400 lines.
+// After inspecting /data.txt you know it has ~400 lines.
 const chunkSize = 50;
 const totalLines = 400;
 
@@ -93,14 +106,17 @@ for (let start = 0; start < totalLines; start += chunkSize) {{
     id: `chunk_${{start}}`,
     description:
       `Read /data.txt lines ${{start}}-${{start + chunkSize - 1}} ` +
-      `(use the read_file tool with offset=${{start}} and limit=${{chunkSize}}). ` +
+      `(use read_file with offset=${{start}} and limit=${{chunkSize}}). ` +
       `Count occurrences of each label.\\n\\n` +
       `Respond with ONLY a raw JSON object — no markdown fences, no ` +
       `explanation, no other text.\\nOutput schema: {{ "label": count }}`,
   }});
 }}
 
-const summary = await swarm({{ tasks }});
+const summary = await swarm({{
+  tasks,
+  concurrency: Math.min(25, tasks.length),
+}});
 console.log("completed:", summary.completed, "failed:", summary.failed);
 
 // Aggregate in-script from summary.results — no backend round-trip needed.
@@ -118,7 +134,42 @@ for (const r of summary.results) {{
 console.log(JSON.stringify(merged));
 ```
 
-**Prefer many small tasks over few large ones** — all tasks run in parallel, so 50 small tasks finish in roughly the same wall-clock time as 5 large ones. When slicing a file, aim for **30–60 lines** per chunk.
+### Writing task descriptions
+
+Each subagent sees only its description. A good description lets the subagent work mechanically, with no judgment required. Include:
+
+- What the input is and how it's structured (delimiters, format, encoding)
+- What the subagent should produce (format, fields, allowed values)
+- The rules — including edge cases and examples you found during exploration
+- The actual slice of data for this task (or the file path + range to read)
+
+Anything you discovered during exploration must be written into every description that needs it. Subagents cannot see your notes.
+
+When results will be aggregated programmatically, end descriptions with:
+
+```
+Respond with ONLY a raw JSON object — no markdown fences, no explanation, no other text.
+Output schema: {{ ... }}
+```
+
+Free-form text aggregates better when read from `results.jsonl` — skip the JSON directive for qualitative output (summaries, research, narrative).
+
+### Chunk sizing and concurrency
+
+Aim for 10–25 tasks per swarm call. Fewer, and parallelism doesn't pay for overhead. More, and a bad description affects many tasks at once.
+
+Per-task sizing depends on item size:
+- Short items (labels, one-line entries): 30–60 per task
+- Medium items (reviews, paragraphs): 10–20 per task
+- Long items (documents, articles): 1–5 per task, or one-per-task
+
+For runs with >10 tasks, set `concurrency` explicitly. Good rule: `Math.min(25, tasks.length)`.
+
+### Decomposition patterns
+
+- **One-per-item** — one task per discrete unit (file, document, entity). Use when items are naturally discrete and each needs its own analysis.
+- **Flat fan-out** — split a collection into equal chunks; all tasks have the same shape. Use when applying the same operation to many items.
+- **Dimensional** — multiple tasks examine the same input from different angles. Use for multi-criteria evaluation (code review, red-team analysis).
 
 ### API Reference — `swarm()`
 
@@ -154,40 +205,6 @@ async function swarm(input: {{
   failedTasks: Array<{{ id: string; error: string }}>;
 }}>
 ```
-
-### Task description quality
-
-Each subagent sees **only its task description** — no other context. Quality matters. Good task descriptions are prescriptive: format, processing logic, exact slice of data to work on, and expected output format. Subagents should not explore or interpret — just execute.
-
-When results need mechanical aggregation, **every task description must end with**:
-
-```
-Respond with ONLY a raw JSON object — no markdown fences, no explanation, no other text.
-Output schema: {{ ... }}
-```
-
-This prevents subagents from wrapping output in ``` fences or adding commentary, which breaks aggregation.
-
-### Aggregation
-
-Two ways:
-
-1. **In-script**: read `summary.results` in the same `{tool_name}` call and combine entries programmatically. Best for mechanical aggregation (counting, merging, dedup).
-2. **LLM-based**: after `{tool_name}` completes, read `<resultsDir>/results.jsonl` with your file tools and synthesise the outputs yourself. Best for summarisation or qualitative analysis.
-
-### Error handling
-
-Completed results are **authoritative**. Don't verify, cross-check, re-classify, or re-dispatch completed tasks. Don't compare result counts to expected counts. Aggregate what you have and move on.
-
-If tasks fail, use discretion:
-- **Many failures** (e.g. 30/50): call `swarm()` again targeting just the failures.
-- **Few failures** (e.g. 3/50): handle them individually outside `{tool_name}` — swarm is overkill for a handful.
-
-### Decomposition patterns
-
-- **Flat fan-out**: split a dataset into equal chunks. All tasks identical in structure. Good for large files, classification, extraction.
-- **One-per-item**: one task per discrete unit (file, document, URL). Good for summarising collections.
-- **Dimensional**: multiple tasks examine the same input from different angles. Good for code review, multi-criteria evaluation.
 
 Available subagent types: {available_subagents}
 """

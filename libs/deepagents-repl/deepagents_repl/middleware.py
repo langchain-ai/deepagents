@@ -64,41 +64,133 @@ _SYSTEM_PROMPT_TEMPLATE = (
 
 _SWARM_PROMPT_TEMPLATE = """
 
-### API Reference — `swarm()` global
+## Parallel fan-out (`swarm()` inside `{tool_name}`)
 
-Fan out tasks to subagents and collect all results. Returns a summary object.
+Use `{tool_name}` with `swarm()` to fan out many independent tasks across subagents and aggregate their results.
+
+### When to use swarm
+
+**Trigger**: before doing anything else, check the size of your input data. If an input file exceeds ~50 KB, you MUST use swarm — do not attempt to process it inline. Reading a large file directly and summarising it yourself is wrong when swarm is available. Default to swarm; only skip it when the input is demonstrably small.
+
+Also use swarm when:
+- A task requires applying intelligence to each item in a large collection.
+- Work can be decomposed into many independent, parallel subtasks.
+
+### How to use swarm
+
+Before calling swarm, understand what you're working with. Use your file-reading tools outside `{tool_name}` to sample the data and learn its structure, format, and size. Task descriptions must be detailed enough that each subagent can execute without needing to figure anything out on its own.
+
+Once you understand the data, call `swarm()` from inside `{tool_name}` with tasks that tell each subagent which slice to process. Subagents have the same filesystem access you do — they can read their assigned slice directly.
 
 ```typescript
-// Virtual-table form — one task per file resolved from the VFS
-const summary = await swarm({{
-  glob: "feedback/*.txt",         // glob pattern(s), or filePaths: ["/a.txt", "/b.txt"]
-  instruction: "Classify as bug, feature, or praise. Return JSON: {{category, confidence}}.",
-  subagentType: "{default_subagent}",        // optional
-  concurrency: 5,                 // optional, default {default_concurrency}
-}});
+// After inspecting /data.txt with your read_file tool you know it has ~400 lines.
+const chunkSize = 50;
+const totalLines = 400;
 
-// Pre-built tasks form — explicit task list
-const summary = await swarm({{
-  tasks: [
-    {{ id: "q1", description: "Summarize /reports/q1.txt in one sentence." }},
-    {{ id: "q2", description: "Summarize /reports/q2.txt in one sentence." }},
-  ],
-}});
+const tasks = [];
+for (let start = 0; start < totalLines; start += chunkSize) {{
+  tasks.push({{
+    id: `chunk_${{start}}`,
+    description:
+      `Read /data.txt lines ${{start}}-${{start + chunkSize - 1}} ` +
+      `(use the read_file tool with offset=${{start}} and limit=${{chunkSize}}). ` +
+      `Count occurrences of each label.\\n\\n` +
+      `Respond with ONLY a raw JSON object — no markdown fences, no ` +
+      `explanation, no other text.\\nOutput schema: {{ "label": count }}`,
+  }});
+}}
 
-// summary shape:
-//   {{
-//     total, completed, failed,
-//     resultsDir,      // VFS path — results.jsonl is also written here for durability
-//     results,         // SwarmTaskResult[] — full per-task outputs, use this to aggregate
-//     failedTasks,     // [{{ id, error }}] for quick failure inspection
-//   }}
-// Each SwarmTaskResult: {{ id, subagentType, status: "completed"|"failed", result?, error? }}
+const summary = await swarm({{ tasks }});
+console.log("completed:", summary.completed, "failed:", summary.failed);
+
+// Aggregate in-script from summary.results — no backend round-trip needed.
+const merged = {{}};
+for (const r of summary.results) {{
+  if (r.status === "completed") {{
+    try {{
+      const partial = JSON.parse(r.result);
+      for (const k of Object.keys(partial)) {{
+        merged[k] = (merged[k] || 0) + partial[k];
+      }}
+    }} catch (e) {{ /* skip unparseable */ }}
+  }}
+}}
+console.log(JSON.stringify(merged));
 ```
 
-Available subagent types: {available_subagents}
+**Prefer many small tasks over few large ones** — all tasks run in parallel, so 50 small tasks finish in roughly the same wall-clock time as 5 large ones. When slicing a file, aim for **30–60 lines** per chunk.
 
-Use `swarm()` for large batches; it handles concurrency limits, timeouts, and result persistence.
-Aggregate per-task outputs from `summary.results` in the same `js_eval` call."""
+### API Reference — `swarm()`
+
+```typescript
+/**
+ * Dispatch tasks to subagents in parallel.
+ */
+async function swarm(input: {{
+  // Pre-built tasks form
+  tasks?: Array<{{
+    id: string;            // unique task identifier
+    description: string;   // complete, self-contained prompt for the subagent
+    subagentType?: string; // which subagent to use (default: "general-purpose")
+  }}>;
+  // Virtual-table form (alternative to `tasks`): one task synthesised per file.
+  glob?: string | string[]; // glob pattern(s) to match files on the VFS
+  filePaths?: string[];     // explicit file paths
+  instruction?: string;     // shared instruction prepended to each file task
+  subagentType?: string;    // subagent type for all synthesised tasks
+  concurrency?: number;     // max concurrent subagents (default: {default_concurrency})
+}}): Promise<{{
+  total: number;
+  completed: number;
+  failed: number;
+  resultsDir: string;        // VFS path — results.jsonl is also persisted here
+  results: Array<{{
+    id: string;
+    subagentType: string;
+    status: "completed" | "failed";
+    result?: string;         // present when status is "completed"
+    error?: string;          // present when status is "failed"
+  }}>;
+  failedTasks: Array<{{ id: string; error: string }}>;
+}}>
+```
+
+### Task description quality
+
+Each subagent sees **only its task description** — no other context. Quality matters. Good task descriptions are prescriptive: format, processing logic, exact slice of data to work on, and expected output format. Subagents should not explore or interpret — just execute.
+
+When results need mechanical aggregation, **every task description must end with**:
+
+```
+Respond with ONLY a raw JSON object — no markdown fences, no explanation, no other text.
+Output schema: {{ ... }}
+```
+
+This prevents subagents from wrapping output in ``` fences or adding commentary, which breaks aggregation.
+
+### Aggregation
+
+Two ways:
+
+1. **In-script**: read `summary.results` in the same `{tool_name}` call and combine entries programmatically. Best for mechanical aggregation (counting, merging, dedup).
+2. **LLM-based**: after `{tool_name}` completes, read `<resultsDir>/results.jsonl` with your file tools and synthesise the outputs yourself. Best for summarisation or qualitative analysis.
+
+### Error handling
+
+Completed results are **authoritative**. Don't verify, cross-check, re-classify, or re-dispatch completed tasks. Don't compare result counts to expected counts. Aggregate what you have and move on.
+
+If tasks fail, use discretion:
+- **Many failures** (e.g. 30/50): call `swarm()` again targeting just the failures.
+- **Few failures** (e.g. 3/50): handle them individually outside `{tool_name}` — swarm is overkill for a handful.
+
+### Decomposition patterns
+
+- **Flat fan-out**: split a dataset into equal chunks. All tasks identical in structure. Good for large files, classification, extraction.
+- **One-per-item**: one task per discrete unit (file, document, URL). Good for summarising collections.
+- **Dimensional**: multiple tasks examine the same input from different angles. Good for code review, multi-criteria evaluation.
+
+Available subagent types: {available_subagents}
+"""
 
 
 class EvalSchema(BaseModel):
@@ -236,10 +328,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
         if swarm_binding is not None:
             available = ", ".join(s["name"] for s in self._swarm_subagent_descriptions)
-            default = self._swarm_subagent_descriptions[0]["name"]
             base_prompt += _SWARM_PROMPT_TEMPLATE.format(
+                tool_name=tool_name,
                 available_subagents=available,
-                default_subagent=default,
                 default_concurrency=DEFAULT_CONCURRENCY,
             )
         self._base_system_prompt = base_prompt

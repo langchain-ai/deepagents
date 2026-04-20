@@ -33,7 +33,7 @@ Hard caps:
 Run the idempotent startup script. It creates (or reuses) a fixed round directory, copies a pre-built Vite template when available, and starts Vite detached. Safe to re-run.
 
 ```bash
-bash /skills/web-vibe/start-server.sh
+bash "$VIBE_DIR/.deepagents/skills/web-vibe/start-server.sh"
 ```
 
 Behavior guarantees:

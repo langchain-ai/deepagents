@@ -1,0 +1,8 @@
+[project]
+name = "vibe-coding-olympics"
+version = "0.1.0"
+description = "Player-laptop tooling for the Vibe Coding Olympics (play.sh + iTerm2 orchestration)"
+requires-python = ">=3.11"
+dependencies = [
+    "iterm2>=2.7",
+]

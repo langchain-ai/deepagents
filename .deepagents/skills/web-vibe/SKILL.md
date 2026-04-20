@@ -38,7 +38,7 @@ bash "$VIBE_DIR/.deepagents/skills/web-vibe/start-server.sh"
 
 Behavior guarantees:
 
-- The script operates inside `$VIBE_DIR` (default `/tmp/vibe-round`). **All of your subsequent file edits MUST go inside this directory** — use absolute paths like `/tmp/vibe-round/index.html`, never `./index.html`, because your working directory may not be the round dir between tool calls.
+- The script operates inside `$VIBE_DIR`. **All of your subsequent file edits MUST go inside this directory** — always use `$VIBE_DIR/...` absolute paths (e.g., `$VIBE_DIR/index.html`), never `./index.html`, because your working directory may not be the round dir between tool calls.
 - On success the script prints the server URL (e.g., `http://localhost:5173`) to stdout and exits 0.
 - On failure it prints the tail of `/tmp/vite.log` to stderr and exits 1 — do not retry blindly; read the error, fix if possible, or tell the player the dev server is unreachable.
 - Re-running is a no-op when the server is already healthy and serving the round dir. A stale server from a previous round is auto-detected and replaced.
@@ -106,14 +106,12 @@ Immediately after the server script returns, make **one batched `ask_user` call*
 
 Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the prompt and the player's answers. This is where you spend most of your time.
 
-**First**, clean up the Vite boilerplate:
+**First**, clean up the Vite boilerplate. The template files already exist, so **read each file first, then use `edit_file`** to replace contents — do NOT call `write_file` on paths that already exist (it will refuse).
 
-- Rewrite `/tmp/vibe-round/index.html` completely -- replace the `<body>` content with your site's HTML
-- Rewrite `/tmp/vibe-round/src/style.css` completely -- replace with your site's styles
-- Rewrite `/tmp/vibe-round/src/main.js` -- delete the boilerplate, add any JS your site needs (or make it minimal)
-- Delete or empty `/tmp/vibe-round/src/counter.js` -- it's Vite boilerplate
-
-(Substitute the real `$VIBE_DIR` if the operator has overridden it.)
+- Replace `$VIBE_DIR/index.html` -- swap the `<body>` content for your site's HTML
+- Replace `$VIBE_DIR/src/style.css` -- swap in your site's styles
+- Replace `$VIBE_DIR/src/main.js` -- drop the boilerplate, add only the JS your site needs
+- Empty `$VIBE_DIR/src/counter.js` -- it's Vite boilerplate
 
 **Then**, iterate on the design. Apply changes incrementally so Vite HMR shows progress live.
 

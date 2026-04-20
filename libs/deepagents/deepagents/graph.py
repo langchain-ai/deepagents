@@ -6,6 +6,7 @@ middleware.
 """
 
 import logging
+import os
 import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -153,7 +154,11 @@ def _build_compaction_layer(
         A single middleware instance to slot into the agent stack in place of
         the prior `create_summarization_middleware(model, backend)` call.
     """
-    if profile.use_codex_compaction:
+    # TEMPORARY (revert before merging the codex profile): escape hatch used
+    # to A/B `/compact` vs. LLM summarization on the same codex model. When set,
+    # the codex profile is forced onto the default summarization path so the
+    # two arms differ only in compaction strategy.
+    if profile.use_codex_compaction and not os.environ.get("DEEPAGENTS_DISABLE_CODEX_COMPACTION"):
         return CodexCompactionMiddleware(model, backend)
     return create_summarization_middleware(model, backend)
 

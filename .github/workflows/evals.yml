@@ -165,6 +165,11 @@ on:
         required: false
         default: ""
         type: string
+      disable_codex_compaction:
+        description: "TEMP (remove before merging codex profile): force codex profile onto default SummarizationMiddleware path. Use to A/B compare `/compact` vs. LLM summarization on the same codex model."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -284,7 +289,9 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
+      LANGSMITH_EXPERIMENT: ${{ matrix.model }}${{ inputs.disable_codex_compaction && '-summary' || '' }}
+      # TEMP (remove with the `disable_codex_compaction` input):
+      DEEPAGENTS_DISABLE_CODEX_COMPACTION: ${{ inputs.disable_codex_compaction && '1' || '' }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"

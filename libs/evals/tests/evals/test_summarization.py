@@ -68,6 +68,20 @@ def _write_file(p: Path, content: str) -> None:
     p.write_text(content)
 
 
+def _compaction_committed(state_values: dict[str, Any]) -> bool:
+    """Return True if either compaction path committed an event to state.
+
+    The default `SummarizationMiddleware` commits `_summarization_event`; the
+    codex profile's `CodexCompactionMiddleware` commits `codex_compaction_item`
+    on `/compact` success and falls back to `_summarization_event` otherwise.
+    Either key signals that compaction ran.
+    """
+    return bool(
+        state_values.get("_summarization_event")
+        or state_values.get("codex_compaction_item")
+    )
+
+
 def _setup_summarization_test(
     tmp_path: Path,
     model: BaseChatModel,
@@ -125,10 +139,10 @@ def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
         thread_id=thread_id,
     )
 
-    # Check we summarized
+    # Check we summarized (either default summary path or codex `/compact` path).
     config = {"configurable": {"thread_id": thread_id}}
     state = agent.get_state(config)
-    assert state.values["_summarization_event"]
+    assert _compaction_committed(state.values)
 
     # Verify the agent made substantial progress reading the file after summarization.
     # We check the highest line number seen across all tool observations to confirm
@@ -169,12 +183,13 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatMod
         thread_id=thread_id,
     )
 
-    # Check we summarized
+    # Check we summarized (either default summary path or codex `/compact` path).
     config = {"configurable": {"thread_id": thread_id}}
     state = agent.get_state(config)
-    assert state.values["_summarization_event"]
+    assert _compaction_committed(state.values)
 
-    # Verify conversation history was offloaded to filesystem
+    # Verify conversation history was offloaded to filesystem. Both paths call
+    # `_aoffload_to_backend`, so the markdown transcript is written either way.
     conversation_history_root = root / "conversation_history"
     assert conversation_history_root.exists(), (
         f"Conversation history root directory not found at {conversation_history_root}"
@@ -193,10 +208,15 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatMod
     # Should contain human-readable message content (from get_buffer_string)
     assert "Human:" in content or "AI:" in content, "Missing message content in markdown file"
 
-    # Verify the summary message references the conversation_history path
-    summary_message = state.values["_summarization_event"]["summary_message"]
-    assert "conversation_history" in summary_message.content
-    assert f"{thread_id}.md" in summary_message.content
+    # The LLM-summary path injects a text pointer to the offloaded file into
+    # the summary message; the codex `/compact` path produces an opaque
+    # encrypted_content block with no prose reference. Only assert the pointer
+    # when the summary event is the one that fired.
+    summary_event = state.values.get("_summarization_event")
+    if summary_event:
+        summary_message = summary_event["summary_message"]
+        assert "conversation_history" in summary_message.content
+        assert f"{thread_id}.md" in summary_message.content
 
     # --- Needle in the haystack follow-up ---
     # Ask about a specific detail from the beginning of the file that was read

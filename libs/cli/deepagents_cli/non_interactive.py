@@ -616,8 +616,9 @@ async def _run_agent_loop(
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
-    The loop processes at most `_MAX_HITL_ITERATIONS` rounds to prevent
-    runaway retries (e.g. the agent repeatedly attempting rejected commands).
+    The loop is capped at `max_turns` when set,
+    otherwise `_MAX_HITL_ITERATIONS`, to prevent runaway retries
+    (e.g. the agent repeatedly attempting rejected commands).
 
     Args:
         agent: The agent (Pregel or RemoteAgent).
@@ -634,14 +635,13 @@ async def _run_agent_loop(
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
             a fast-follow LangSmith thread link.
-        max_turns: Optional user-supplied cap on agentic turns.
+        max_turns: Optional cap on total agentic turns (initial response plus
+            HITL resumes).
 
-            When set, the user's value is honoured verbatim and overrides the
-            internal safety default; exceeding it
-            raises `HITLIterationLimitError`.
+            When `None`, falls back to `_MAX_HITL_ITERATIONS`.
 
     Raises:
-        HITLIterationLimitError: If the HITL iteration limit is exceeded.
+        HITLIterationLimitError: If the effective turn limit is exceeded.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
     state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
@@ -658,17 +658,16 @@ async def _run_agent_loop(
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
-    # When --max-turns is explicitly set, honour the user's value verbatim;
-    # the operator has opted in to a specific bound. The internal default
-    # only applies when no flag is provided, guarding against unbounded
-    # runaway loops in scripts that forgot to set one.
+    # The internal default applies when --max-turns is omitted, guarding
+    # against unbounded runaway loops in scripts that forgot to set one.
     effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
 
-    # Handle HITL interrupts
-    iterations = 0
+    # The initial stream above counts as turn 1; each HITL resume is a further
+    # turn. Raise before starting a resume that would exceed the budget so the
+    # user-facing count matches the flag's semantics.
+    turns = 1
     while state.interrupt_occurred:
-        iterations += 1
-        if iterations > effective_limit:
+        if turns >= effective_limit:
             limit_source = (
                 f"--max-turns {max_turns}"
                 if max_turns is not None
@@ -680,6 +679,7 @@ async def _run_agent_loop(
                 "Increase --max-turns or break the task into smaller steps."
             )
             raise HITLIterationLimitError(msg)
+        turns += 1
         state.interrupt_occurred = False
         state.hitl_response.clear()
         _process_hitl_interrupts(state, console)
@@ -827,13 +827,13 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
-        max_turns: Optional cap on agentic turns.
-
-            When set, overrides the internal safety default; exceeding it
-            raises `HITLIterationLimitError`.
+        max_turns: Optional cap on total agentic turns. When `None`, the
+            internal safety default applies.
 
     Returns:
-        Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
+        Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
+            budget was exceeded (matching GNU `timeout`), 130 for keyboard
+            interrupt.
     """
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
@@ -1043,7 +1043,9 @@ async def run_non_interactive(
             "that are not in the allow-list. Consider expanding the "
             "--shell-allow-list or adjusting the task.[/yellow]"
         )
-        return 1
+        # Dedicated exit code (matches GNU `timeout`) so CI can distinguish
+        # a turn-budget hit from a generic failure that also returns 1.
+        return 124
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
         console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")

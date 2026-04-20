@@ -285,6 +285,31 @@ class TestMaxTurnsArgument:
             cli_main()
         assert exc_info.value.code == 2
 
+    def test_allowed_with_piped_stdin(self) -> None:
+        """--max-turns without -n is allowed when stdin is piped."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "piped task"
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_optional_tools", return_value=[]),
+            # Skip the /dev/tty dance — os.open would fail in test sandboxes
+            # and the real code path already tolerates that failure.
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_cli.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        assert mock_run.await_args.kwargs["max_turns"] == 5  # type: ignore[union-attr]
+
     def test_forwarded_to_run_non_interactive(self) -> None:
         """--max-turns value is forwarded to run_non_interactive as max_turns."""
         from deepagents_cli.main import cli_main

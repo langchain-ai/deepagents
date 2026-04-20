@@ -316,7 +316,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`,{delete_file_tool_list} `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -324,8 +324,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - ls: list files in a directory (requires absolute path)
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
-- delete_file: delete a file from the filesystem
+- edit_file: edit a file in the filesystem{delete_file_tool_desc}
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -335,6 +334,8 @@ When a tool result is too large, it may be offloaded into the filesystem instead
 
 FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
     large_tool_results_prefix="/large_tool_results",
+    delete_file_tool_list=" `delete_file`,",
+    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem",
 )
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
@@ -1295,6 +1296,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
+        has_delete_file_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "delete_file" for tool in request.tools
+        )
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
@@ -1303,6 +1308,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
+                    delete_file_tool_list=" `delete_file`," if has_delete_file_tool else "",
+                    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem" if has_delete_file_tool else "",
                 )
             ]
 
@@ -1360,6 +1367,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
+        has_delete_file_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "delete_file" for tool in request.tools
+        )
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
@@ -1368,6 +1379,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
+                    delete_file_tool_list=" `delete_file`," if has_delete_file_tool else "",
+                    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem" if has_delete_file_tool else "",
                 )
             ]
 

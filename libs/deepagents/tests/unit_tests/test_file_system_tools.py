@@ -617,3 +617,55 @@ def test_delete_file_registered_when_opted_in() -> None:
     mw = FilesystemMiddleware(additional_tools={"delete_file"})
     tool_names = {t.name for t in mw.tools}
     assert "delete_file" in tool_names
+
+
+def _capture_filesystem_system_prompt(*, include_delete_file_tool: bool) -> str:
+    """Invoke FilesystemMiddleware.wrap_model_call and return the injected system prompt text."""
+    from langchain.agents.middleware.types import ModelRequest
+
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    tools: list = [t for t in FilesystemMiddleware().tools if t.name != "delete_file"]
+    if include_delete_file_tool:
+        delete_tool = FilesystemMiddleware(additional_tools={"delete_file"})._create_delete_file_tool()
+        tools.append(delete_tool)
+
+    mw = FilesystemMiddleware(
+        additional_tools={"delete_file"} if include_delete_file_tool else None,
+    )
+
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="hi")])),
+        messages=[HumanMessage(content="hi")],
+        system_message=None,
+        tools=tools,
+        state={"messages": [HumanMessage(content="hi")]},  # type: ignore[typeddict-unknown-key]
+    )
+
+    captured: dict = {}
+
+    def handler(req):  # noqa: ANN001, ANN202
+        captured["system_message"] = req.system_message
+        return AIMessage(content="ok")
+
+    mw.wrap_model_call(request, handler)
+
+    msg = captured["system_message"]
+    assert msg is not None
+    content = msg.content
+    return content if isinstance(content, str) else "\n".join(
+        str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content
+    )
+
+
+def test_system_prompt_omits_delete_file_when_tool_absent() -> None:
+    """Prompt should not mention delete_file when the tool is not registered."""
+    prompt = _capture_filesystem_system_prompt(include_delete_file_tool=False)
+    assert "delete_file" not in prompt
+
+
+def test_system_prompt_includes_delete_file_when_tool_present() -> None:
+    """Prompt should advertise delete_file in the header and bullet list when registered."""
+    prompt = _capture_filesystem_system_prompt(include_delete_file_tool=True)
+    assert "`delete_file`" in prompt
+    assert "- delete_file: delete a file from the filesystem" in prompt

@@ -342,14 +342,37 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
-def _identify_files_needed(patch_text: str) -> list[str]:
-    """Extract file paths that need to be read before applying a patch."""
-    paths: list[str] = []
-    for line in patch_text.split("\n"):
-        for prefix in ("*** Update File: ", "*** Delete File: "):
-            if line.startswith(prefix):
-                paths.append(line[len(prefix):])
-    return paths
+# Upper bound passed as ``limit=`` when the apply_patch helpers need the
+# entire file. Backends treat ``limit`` as a line-count cap; ~1M is large
+# enough that any realistic source file fits in a single request while
+# still guarding against pathological inputs.
+_APPLY_PATCH_READ_LIMIT = 999_999
+
+# Fuzz scoring thresholds (see `PatchResult.fuzz`). A single hunk matched
+# via the whitespace-insensitive ``strip()`` fallback contributes 100, so
+# anything at or above this level means at least one hunk required that
+# aggressive fallback and the result warrants a stronger verification hint
+# in the tool output.
+_FUZZ_STRIP_FALLBACK_THRESHOLD = 100
+
+
+def _format_fuzz_note(fuzz: int) -> str:
+    """Build a trailing note describing non-zero context-match fuzz.
+
+    Returns an empty string for exact matches so the happy path output
+    stays clean. For fuzz >= :data:`_FUZZ_STRIP_FALLBACK_THRESHOLD`, the
+    note flags that at least one hunk needed whitespace-insensitive
+    matching so the model can verify the result.
+    """
+    if fuzz <= 0:
+        return ""
+    if fuzz >= _FUZZ_STRIP_FALLBACK_THRESHOLD:
+        return (
+            f"\nNote: applied with fuzz={fuzz}; at least one hunk "
+            "matched via whitespace-insensitive fallback. "
+            "Verify the patched file is correct."
+        )
+    return f"\nNote: applied with fuzz={fuzz} (minor whitespace drift)."
 
 
 def _apply_file_changes(
@@ -370,7 +393,7 @@ def _apply_file_changes(
         existing = backend.read(safe, offset=0, limit=1)
         has_file = not (isinstance(existing, str) or existing.error)
         if has_file:
-            raw = backend.read(safe, offset=0, limit=999_999)
+            raw = backend.read(safe, offset=0, limit=_APPLY_PATCH_READ_LIMIT)
             old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
             result = backend.edit(safe, old, content)
             if result.error:
@@ -404,7 +427,7 @@ async def _aapply_file_changes(
         existing = await backend.aread(safe, offset=0, limit=1)
         has_file = not (isinstance(existing, str) or existing.error)
         if has_file:
-            raw = await backend.aread(safe, offset=0, limit=999_999)
+            raw = await backend.aread(safe, offset=0, limit=_APPLY_PATCH_READ_LIMIT)
             old = raw.file_data["content"] if not isinstance(raw, str) and raw.file_data else ""
             result = await backend.aedit(safe, old, content)
             if result.error:
@@ -1005,7 +1028,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_apply_patch_tool(self) -> BaseTool:
         """Create the apply_patch tool (V4A diff format)."""
-        from deepagents.utils._apply_patch import PatchError, apply_patch
+        from deepagents.utils._apply_patch import (
+            PatchError,
+            apply_patch,
+            list_referenced_files,
+        )
 
         tool_description = (
             self._custom_tool_descriptions.get("apply_patch")
@@ -1015,7 +1042,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def _read_raw(backend: BackendProtocol, path: str) -> str | None:
             """Read raw file content from the backend (no line numbers)."""
             path = validate_path(path)
-            result = backend.read(path, offset=0, limit=999_999)
+            result = backend.read(path, offset=0, limit=_APPLY_PATCH_READ_LIMIT)
             if isinstance(result, str):
                 return result or None
             if result.error or result.file_data is None:
@@ -1026,7 +1053,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def _aread_raw(backend: BackendProtocol, path: str) -> str | None:
             """Async variant of `_read_raw`."""
             path = validate_path(path)
-            result = await backend.aread(path, offset=0, limit=999_999)
+            result = await backend.aread(path, offset=0, limit=_APPLY_PATCH_READ_LIMIT)
             if isinstance(result, str):
                 return result or None
             if result.error or result.file_data is None:
@@ -1042,13 +1069,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             backend = self._get_backend(runtime)
 
             try:
-                changes = apply_patch(
+                result = apply_patch(
                     patch, file_reader=lambda p: _read_raw(backend, p)
                 )
             except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 
-            return _apply_file_changes(backend, changes)
+            return _apply_file_changes(backend, result.changes) + _format_fuzz_note(result.fuzz)
 
         async def async_apply_patch(
             patch: Annotated[str, "The V4A format patch string to apply."],
@@ -1057,8 +1084,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             """Apply a V4A patch asynchronously."""
             backend = self._get_backend(runtime)
 
-            # file_reader must be sync for the parser; read files upfront
-            needed = _identify_files_needed(patch)
+            # The parser consumes a synchronous `file_reader` callback and
+            # cannot `await` mid-parse, so prefetch every referenced file
+            # concurrently and hand the parser a cache-backed reader.
+            needed = list_referenced_files(patch)
             file_cache: dict[str, str | None] = {}
             for p in needed:
                 try:
@@ -1068,13 +1097,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 file_cache[p] = await _aread_raw(backend, validated)
 
             try:
-                changes = apply_patch(
-                    patch, file_reader=lambda p: file_cache.get(p, None)
+                result = apply_patch(
+                    patch, file_reader=lambda p: file_cache.get(p)
                 )
             except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 
-            return await _aapply_file_changes(backend, changes)
+            applied = await _aapply_file_changes(backend, result.changes)
+            return applied + _format_fuzz_note(result.fuzz)
 
         return StructuredTool.from_function(
             name="apply_patch",

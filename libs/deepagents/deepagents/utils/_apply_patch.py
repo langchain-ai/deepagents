@@ -62,61 +62,114 @@ class _ContextMatch:
     fuzz: int
 
 
+@dataclass(frozen=True)
+class PatchResult:
+    """Outcome of applying a V4A patch.
+
+    Attributes:
+        changes: File changes keyed by path. ``None`` values indicate
+            the file should be deleted.
+        fuzz: Total accumulated fuzz across every hunk. ``0`` means
+            every context line matched exactly. Higher values signal
+            progressively weaker matches (``1`` per hunk that required
+            trailing-whitespace tolerance, ``100`` per hunk that needed
+            full whitespace-insensitive matching, plus ``1`` per anchor
+            that required strip fallback). A high aggregate fuzz means
+            the patch context barely resembles the current file — a
+            useful signal that the patch may be stale.
+    """
+
+    changes: dict[str, str | None]
+    fuzz: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
+_BEGIN_PATCH = "*** Begin Patch"
 _END_PATCH = "*** End Patch"
 _END_FILE = "*** End of File"
+
+# File-operation prefixes (with trailing space; path follows).
+_ADD_FILE_PREFIX = "*** Add File: "
+_DELETE_FILE_PREFIX = "*** Delete File: "
+_UPDATE_FILE_PREFIX = "*** Update File: "
+_MOVE_TO_PREFIX = "*** Move to: "
+
+# Section start markers: the file-op prefixes without their trailing space,
+# used to detect when a new section begins while scanning hunk bodies.
 _SECTION_TERMINATORS = (
     _END_PATCH,
-    "*** Update File:",
-    "*** Delete File:",
-    "*** Add File:",
+    _UPDATE_FILE_PREFIX.rstrip(),
+    _DELETE_FILE_PREFIX.rstrip(),
+    _ADD_FILE_PREFIX.rstrip(),
 )
 _END_SECTION_MARKERS = (*_SECTION_TERMINATORS, _END_FILE)
+
+# Prefixes whose path argument must be read from the backend before the
+# parser can process the corresponding section.
+_FILE_READ_PREFIXES = (_UPDATE_FILE_PREFIX, _DELETE_FILE_PREFIX)
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
+def _normalize_line_endings(text: str) -> str:
+    r"""Normalize CRLF and lone CR line endings to LF.
+
+    Models and clients often emit patch text (or file content) with
+    Windows-style CRLF or, rarely, classic-Mac-style CR terminators.
+    The parser splits on ``\n`` exclusively, so any stray ``\r``
+    would leak into extracted paths, section markers, and context
+    comparisons. Normalizing at the single entry point keeps the
+    internal invariants simple: every line is clean.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def apply_patch(
     patch_text: str,
     *,
     file_reader: Callable[[str], str | None],
-) -> dict[str, str | None]:
-    """Parse and apply a V4A patch, returning the resulting file changes.
+) -> PatchResult:
+    r"""Parse and apply a V4A patch, returning the resulting file changes.
 
     Args:
         patch_text: Full V4A patch string (``*** Begin Patch`` ...
-            ``*** End Patch``).
+            ``*** End Patch``). Any ``\r\n`` or lone ``\r`` line
+            endings are normalized to ``\n`` before parsing.
         file_reader: Callback that returns file content for a given
             absolute path, or ``None`` if the file does not exist.
             Called only for ``*** Update File`` and ``*** Delete File``
-            operations.
+            operations. The callback receives the path string exactly
+            as it appears in the patch; callers are responsible for
+            validating the path before touching real storage.
 
     Returns:
-        Mapping of file path to new content. ``None`` values indicate
-        file deletion.
+        A :class:`PatchResult` whose ``changes`` map file paths to new
+        content (``None`` values mean delete) and whose ``fuzz`` field
+        aggregates how far context matching drifted from exactness —
+        see :class:`PatchResult` for the scale.
 
     Raises:
         PatchError: If the patch is malformed or context cannot be matched.
     """
-    lines = patch_text.strip().split("\n")
-    if len(lines) < 2 or not lines[0].startswith("*** Begin Patch"):
-        msg = "Invalid patch: missing '*** Begin Patch' header"
+    lines = _normalize_line_endings(patch_text).strip().split("\n")
+    if len(lines) < 2 or not lines[0].startswith(_BEGIN_PATCH):
+        msg = f"Invalid patch: missing '{_BEGIN_PATCH}' header"
         raise PatchError(msg)
     if lines[-1] != _END_PATCH:
-        msg = "Invalid patch: missing '*** End Patch' footer"
+        msg = f"Invalid patch: missing '{_END_PATCH}' footer"
         raise PatchError(msg)
 
     state = _ParserState(lines=lines, index=1)
     results: dict[str, str | None] = {}
 
-    while not _is_done(state, _SECTION_TERMINATORS[:1]):
+    while not _is_done(state, (_END_PATCH,)):
         # *** Add File
-        path = _read_prefix(state, "*** Add File: ")
+        path = _read_prefix(state, _ADD_FILE_PREFIX)
         if path:
             if path in results:
                 msg = f"Add File Error: Duplicate Path: {path}"
@@ -125,7 +178,7 @@ def apply_patch(
             continue
 
         # *** Delete File
-        path = _read_prefix(state, "*** Delete File: ")
+        path = _read_prefix(state, _DELETE_FILE_PREFIX)
         if path:
             if path in results:
                 msg = f"Delete File Error: Duplicate Path: {path}"
@@ -138,7 +191,7 @@ def apply_patch(
             continue
 
         # *** Update File
-        path = _read_prefix(state, "*** Update File: ")
+        path = _read_prefix(state, _UPDATE_FILE_PREFIX)
         if path:
             if path in results:
                 msg = f"Update File Error: Duplicate Path: {path}"
@@ -148,8 +201,8 @@ def apply_patch(
                 msg = f"Update File Error: Missing File: {path}"
                 raise PatchError(msg)
             # Consume optional *** Move to: (acknowledged but not used by this tool)
-            _read_prefix(state, "*** Move to: ")
-            normalized = content.replace("\r\n", "\n")
+            _read_prefix(state, _MOVE_TO_PREFIX)
+            normalized = _normalize_line_endings(content)
             chunks = _parse_update_file(state, normalized)
             results[path] = _apply_chunks(normalized, chunks)
             continue
@@ -158,7 +211,37 @@ def apply_patch(
         msg = f"Unknown Line: {current}"
         raise PatchError(msg)
 
-    return results
+    return PatchResult(changes=results, fuzz=state.fuzz)
+
+
+def list_referenced_files(patch_text: str) -> list[str]:
+    """Return paths the patch must read from the backend before applying.
+
+    Performs a lightweight prescan identifying every ``*** Update File:``
+    and ``*** Delete File:`` operation so async callers can pre-fetch
+    file contents (the main ``apply_patch`` entry point consumes a
+    synchronous ``file_reader`` callback and cannot ``await`` mid-parse).
+
+    This intentionally shares the same prefix constants as the main
+    parser so the two stay in lock-step if the V4A format evolves. It
+    does **not** fully validate the patch structure; callers should
+    still invoke :func:`apply_patch` to surface parse errors.
+
+    Args:
+        patch_text: Full V4A patch string.
+
+    Returns:
+        Paths in the order they appear in the patch. Paths may repeat
+        if the patch is malformed; :func:`apply_patch` will reject such
+        duplicates when it runs.
+    """
+    paths: list[str] = []
+    for line in _normalize_line_endings(patch_text).split("\n"):
+        for prefix in _FILE_READ_PREFIXES:
+            if line.startswith(prefix):
+                paths.append(line[len(prefix):])
+                break
+    return paths
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +370,7 @@ def _read_section(lines: list[str], start: int) -> _SectionResult:
 
     while index < len(lines):
         raw = lines[index]
-        if raw.startswith(("@@", _END_PATCH, "*** Update File:", "*** Delete File:", "*** Add File:", _END_FILE)):
+        if raw.startswith(("@@", *_END_SECTION_MARKERS)):
             break
         if raw == "***":
             break
@@ -359,14 +442,31 @@ def _find_context(
     *,
     eof: bool,
 ) -> _ContextMatch:
-    """Find where *context* lines appear in *lines*, starting at *start*."""
+    """Find where *context* lines appear in *lines*, starting at *start*.
+
+    When *eof* is ``True`` the patch claimed ``*** End of File`` and we
+    first try to match against the tail of the file. If that fails but
+    the same context matches earlier in the file, the patch is almost
+    certainly stale — the model thought it was editing the last lines
+    but the file now has content after them. Rather than silently
+    accept that mismatch (the previous behavior, flagged by a dead
+    ``+10000`` fuzz sentinel), we raise so the caller sees it and can
+    re-read the file.
+    """
     if eof:
         end_start = max(0, len(lines) - len(context))
         match = _find_context_core(lines, context, end_start)
         if match.index != -1:
             return match
         fallback = _find_context_core(lines, context, start)
-        return _ContextMatch(index=fallback.index, fuzz=fallback.fuzz + 10000)
+        if fallback.index == -1:
+            return fallback
+        msg = (
+            "EOF context did not match at end of file, but matched earlier. "
+            "The '*** End of File' marker suggests the patch is stale; "
+            "re-read the file and regenerate the patch."
+        )
+        raise PatchError(msg)
     return _find_context_core(lines, context, start)
 
 

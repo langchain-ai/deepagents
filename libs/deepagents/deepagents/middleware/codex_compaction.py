@@ -36,13 +36,30 @@ via the standard LangGraph update mechanism:
 {
     "cutoff_index": int,  # absolute index in state messages
     "output": list[dict],  # /compact output items (model_dump'd)
-    "file_path": str | None,  # backend path for offloaded history
+    "file_path": str,  # backend path for offloaded history (non-null)
 }
 ```
 
-The ``_summarization_event`` key from the inner middleware is orthogonal. If a
-thread switches profiles mid-run, one of the two keys may become stale but
-neither is removed — both remain safe no-ops when inapplicable.
+### Mutual exclusion with ``_summarization_event``
+
+``codex_compaction_item`` and the inner middleware's ``_summarization_event``
+are **mutually exclusive**: at most one is live in state at a time. Whenever a
+successful compaction commits ``codex_compaction_item`` it also clears
+``_summarization_event``; whenever the fallback path commits
+``_summarization_event`` it also clears ``codex_compaction_item``. This
+prevents a subtle correctness bug where a mid-conversation switch between the
+two paths leaves both keys set and each path silently ignores the other's
+state, producing duplicated or dropped context on subsequent turns.
+
+## Recovery invariant
+
+A compaction event is only committed when BOTH the ``/compact`` call and the
+offload-to-backend step succeed. If the ``/compact`` call succeeds but offload
+fails, the event is **not** committed and the turn falls back to LLM
+summarization. This guarantees that every persisted ``codex_compaction_item``
+has a recoverable transcript file in the backend — without this invariant, a
+failed offload would leave users with an opaque blob and no way to retrieve
+the raw pre-compaction messages.
 
 ## Phase metadata
 
@@ -55,7 +72,6 @@ continues to lift ``block["phase"]`` onto the outbound input item.
 from __future__ import annotations
 
 import logging
-import warnings
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
@@ -63,6 +79,7 @@ from langchain_core.messages import AIMessage, AnyMessage, BaseMessage
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
+from deepagents._models import get_model_identifier
 from deepagents.middleware.summarization import (
     _DeepAgentsSummarizationMiddleware,
     create_summarization_middleware,
@@ -92,6 +109,11 @@ to trip the LLM-summarization fallback if the endpoint hangs.
 class _CodexCompactionEvent(TypedDict):
     """Event payload persisted in state after a successful `/compact` call.
 
+    A compaction event is only committed when both the ``/compact`` call and
+    the offload-to-backend step succeed, so every event carries a recoverable
+    backend path. ``file_path`` is typed permissively to tolerate legacy state
+    written by older versions of this middleware.
+
     Attributes:
         cutoff_index: Absolute index in state messages where compaction
             occurred. Messages before this index are superseded by the
@@ -101,7 +123,8 @@ class _CodexCompactionEvent(TypedDict):
             back to Responses input items via
             ``_construct_responses_api_input``.
         file_path: Backend path where the pre-compaction messages were
-            offloaded, or ``None`` if offload failed.
+            offloaded. Expected to be non-null for events committed by this
+            version; ``None`` may appear in legacy state from older versions.
     """
 
     cutoff_index: int
@@ -125,6 +148,31 @@ class CodexCompactionMiddleware(AgentMiddleware):
 
     Composes a ``_DeepAgentsSummarizationMiddleware`` for all non-compaction
     concerns (arg truncation, offload, partitioning, thread ID, fallback).
+
+    ### Inner-middleware contract
+
+    This class reaches into the composed ``_DeepAgentsSummarizationMiddleware``
+    for the following helpers; they must remain stable or this middleware
+    breaks silently:
+
+    - ``token_counter`` (public)
+    - ``_truncate_args``
+    - ``_should_summarize``
+    - ``_determine_cutoff_index``
+    - ``_partition_messages``
+    - ``_get_backend``
+    - ``_aoffload_to_backend``
+    - ``awrap_model_call`` (as the fallback entry point)
+
+    If you rename or change the signature of any of these, update this class
+    in lockstep.
+
+    ### Client configuration
+
+    For custom OpenAI configuration (``base_url``, proxy, custom API key,
+    etc.), construct the middleware manually and pass a pre-configured
+    ``AsyncOpenAI`` client. The standard wiring in ``graph.py`` does not
+    expose client configuration through the harness profile.
 
     Args:
         model: Resolved chat model instance. Must be an OpenAI model that
@@ -159,6 +207,7 @@ class CodexCompactionMiddleware(AgentMiddleware):
         self._model = model
         self._inner: _DeepAgentsSummarizationMiddleware = create_summarization_middleware(model, backend)
         self._client = client
+        self._sync_warned = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -175,18 +224,25 @@ class CodexCompactionMiddleware(AgentMiddleware):
     def _resolve_model_name(self) -> str:
         """Extract the OpenAI model identifier from the resolved chat model.
 
+        Delegates to `get_model_identifier`, which reads ``model_dump()`` and
+        therefore works for wrapped/bound models (e.g. ``RunnableBinding``
+        from ``.bind_tools()``) that ``getattr`` would miss. If the returned
+        identifier is qualified with a provider prefix (``"openai:gpt-X"``),
+        strip the prefix — the `/compact` endpoint expects the bare provider
+        identifier.
+
         Raises:
             RuntimeError: If no model name can be discovered. This is a
                 configuration error — compaction requires an OpenAI model.
         """
-        for attr in ("model_name", "model"):
-            value = getattr(self._model, attr, None)
-            if isinstance(value, str) and value:
-                return value
+        identifier = get_model_identifier(self._model)
+        if identifier:
+            return identifier.split(":", 1)[-1]
         msg = (
             "CodexCompactionMiddleware could not determine the OpenAI model "
             f"name from {type(self._model).__name__}. Configure the profile "
-            "with a ChatOpenAI instance."
+            "with a ChatOpenAI instance (or a compatible model that exposes "
+            "`model_name` or `model` via `model_dump()`)."
         )
         raise RuntimeError(msg)
 
@@ -314,6 +370,42 @@ class CodexCompactionMiddleware(AgentMiddleware):
         )
         return [item.model_dump(exclude_none=True, mode="json") for item in result.output]
 
+    async def _fall_back_to_summarization(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Delegate to the inner summarization middleware and maintain mutual exclusion.
+
+        When the inner middleware commits a ``_summarization_event`` we must
+        clear any stale ``codex_compaction_item`` in the same state update, so
+        the two keys never coexist. If the inner returns a plain
+        ``ModelResponse`` (no summarization happened this turn), any existing
+        ``codex_compaction_item`` is still structurally valid — the raw
+        messages behind the old cutoff are unchanged — so we pass the
+        response through untouched.
+
+        Args:
+            request: Original request, forwarded unchanged.
+            handler: Downstream handler.
+
+        Returns:
+            The inner middleware's response, with a ``codex_compaction_item:
+            None`` clear merged into the command when the inner committed a
+            summarization event.
+        """
+        result = await self._inner.awrap_model_call(request, handler)
+        if not isinstance(result, ExtendedModelResponse):
+            return result
+        existing_update: dict[str, Any] = {}
+        if result.command is not None and result.command.update:
+            existing_update.update(result.command.update)
+        existing_update["codex_compaction_item"] = None
+        return ExtendedModelResponse(
+            model_response=result.model_response,
+            command=Command(update=existing_update),
+        )
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -329,10 +421,11 @@ class CodexCompactionMiddleware(AgentMiddleware):
         2. Delegate tool-call arg truncation to the inner middleware.
         3. If under the compaction trigger, forward unchanged.
         4. If over the trigger, call `/compact`:
-            - On success, rebuild state with a new compaction event and a
-                synthetic head message.
-            - On failure, delegate the full turn to the inner summarization
-                middleware (LLM-based fallback).
+            - On success AND successful offload, commit a new compaction event
+                (clearing any stale ``_summarization_event``).
+            - On `/compact` API failure OR offload failure, delegate the full
+                turn to the inner summarization middleware (LLM-based
+                fallback), clearing any stale ``codex_compaction_item``.
 
         Args:
             request: Incoming model request from LangGraph.
@@ -342,7 +435,8 @@ class CodexCompactionMiddleware(AgentMiddleware):
         Returns:
             A plain `ModelResponse` when no compaction happens this turn, or
                 an `ExtendedModelResponse` whose command updates
-                ``codex_compaction_item`` in state.
+                ``codex_compaction_item`` in state and clears
+                ``_summarization_event``.
         """
         inner = self._inner
 
@@ -369,24 +463,38 @@ class CodexCompactionMiddleware(AgentMiddleware):
         backend = inner._get_backend(request.state, request.runtime)
 
         # Sequence compact before offload: if ``/compact`` fails, we delegate
-        # the whole turn to ``inner.awrap_model_call`` which performs its own
-        # offload. Running the wrapper's offload in parallel (or before the
-        # fallback) would append the same pre-compaction window to the
-        # history file twice.
+        # the whole turn to the fallback helper, which invokes
+        # ``inner.awrap_model_call`` and performs its own offload. Running
+        # the wrapper's offload in parallel (or before the fallback) would
+        # append the same pre-compaction window to the history file twice.
         try:
             compact_output_items = await self._do_compact(to_compact)
-        except Exception:
+        except Exception as exc:
+            # Only absorb OpenAI SDK errors (rate limits, timeouts, 5xx, etc.)
+            # Programming errors (AttributeError, KeyError, ImportError) must
+            # surface loudly rather than hide behind the summarization
+            # fallback, which would silently mask real bugs.
+            from openai import APIError  # noqa: PLC0415
+
+            if not isinstance(exc, APIError):
+                raise
             logger.exception(
                 "Codex /compact call failed; falling back to LLM summarization",
             )
-            return await inner.awrap_model_call(request, handler)
+            return await self._fall_back_to_summarization(request, handler)
 
         file_path = await inner._aoffload_to_backend(backend, to_compact)
 
+        # Recovery invariant: only commit a compaction event if the transcript
+        # was also offloaded. A persisted compaction event without a backing
+        # file leaves users with an opaque blob and no recoverable history.
+        # Fall back to LLM summarization, which produces human-readable
+        # summary content and retries the offload on its own path.
         if file_path is None:
-            msg = "Offloading conversation history to backend failed during Codex compaction. Older messages will not be recoverable."
-            logger.error(msg)
-            warnings.warn(msg, stacklevel=2)
+            logger.error(
+                "Offload to backend failed after /compact succeeded; falling back to LLM summarization to preserve recoverable state.",
+            )
+            return await self._fall_back_to_summarization(request, handler)
 
         state_cutoff_index = self._compute_state_cutoff(prior_event, effective_cutoff)
         new_event: _CodexCompactionEvent = {
@@ -399,9 +507,17 @@ class CodexCompactionMiddleware(AgentMiddleware):
         modified_messages: list[BaseMessage] = [compaction_head, *preserved]
         response = await handler(request.override(messages=modified_messages))
 
+        # Mutual-exclusion: clearing ``_summarization_event`` ensures any
+        # stale state from a prior fallback turn does not coexist with the
+        # new compaction event. See module docstring for the invariant.
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"codex_compaction_item": new_event}),
+            command=Command(
+                update={
+                    "codex_compaction_item": new_event,
+                    "_summarization_event": None,
+                },
+            ),
         )
 
     def wrap_model_call(
@@ -412,8 +528,10 @@ class CodexCompactionMiddleware(AgentMiddleware):
         """Synchronous entry point — unsupported for compaction.
 
         The `/compact` endpoint is async-only via the OpenAI SDK. Sync callers
-        should not be common on the Codex path, but for safety we fall back
-        entirely to the inner summarization middleware's sync path.
+        on the Codex profile silently downgrade to LLM summarization via the
+        inner middleware's sync path. We emit a one-shot warning per
+        middleware instance so this downgrade is discoverable rather than
+        invisible.
 
         Args:
             request: Incoming model request.
@@ -422,4 +540,12 @@ class CodexCompactionMiddleware(AgentMiddleware):
         Returns:
             Whatever the inner summarization middleware returns.
         """
+        if not self._sync_warned:
+            logger.warning(
+                "CodexCompactionMiddleware was invoked synchronously; the "
+                "/compact endpoint is async-only. Falling back to LLM "
+                "summarization for all sync calls on this instance. Use the "
+                "async agent entry points to get true compaction behavior.",
+            )
+            self._sync_warned = True
         return self._inner.wrap_model_call(request, handler)

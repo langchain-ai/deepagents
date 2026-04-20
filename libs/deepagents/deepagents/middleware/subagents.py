@@ -540,6 +540,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._backend = backend
         self._subagents = subagents
         subagent_specs = self._get_subagents()
+        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
+        """Declared subagent names. Public so streamers can discover them
+        without introspecting the `task` tool's closure."""
 
         task_tool = _build_task_tool(subagent_specs, task_description)
 

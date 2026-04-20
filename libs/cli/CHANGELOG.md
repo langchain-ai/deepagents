@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.40](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.39...deepagents-cli==0.0.40) (2026-04-20)
+
+
+### Features
+
+* **cli:** `--max-turns` flag on non-interactive mode ([#2832](https://github.com/langchain-ai/deepagents/issues/2832)) ([567bcd8](https://github.com/langchain-ai/deepagents/commit/567bcd8f2065e089f4905a901efe7154add23121))
+* **cli:** `/agents` switcher ([#2558](https://github.com/langchain-ai/deepagents/issues/2558)) ([3a2b777](https://github.com/langchain-ai/deepagents/commit/3a2b77773a19dd48f9c51dfb35cdfc5c33126d77))
+
+
+### Bug Fixes
+
+* **cli:** normalize serialized message dicts in `/offload` ([#2808](https://github.com/langchain-ai/deepagents/issues/2808)) ([0d11bd4](https://github.com/langchain-ai/deepagents/commit/0d11bd46fd682c7aa3f008918771e9759dca7352))
+
 ## [0.0.39](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.38...deepagents-cli==0.0.39) (2026-04-17)
 
 

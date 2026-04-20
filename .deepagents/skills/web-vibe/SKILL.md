@@ -50,7 +50,7 @@ Ground rules for the rest of the round:
 
 As your very first action of the round, make **one batched `ask_user` call** with 3-4 open-ended questions to lock in the creative direction. The server is already up — don't waste a turn confirming it. Keep questions short, specific to the prompt, and in plain language. **Do not pre-fill answer options — let the player write what they actually want.**
 
-**Template — ask the player in their own words. Do NOT suggest example answers inside the question text; a short clarifying parenthetical about what you're asking is fine, but do not list choices.**
+**Template — ask the player in their own words. Do NOT suggest example answers inside the question text. No `e.g.`, no "(dark/playful/minimal)", no "etc." trailing a list. If the question is unclear on its own, reword the question itself — do not patch it with a parenthetical of examples.**
 
 ```json
 {
@@ -79,12 +79,21 @@ As your very first action of the round, make **one batched `ask_user` call** wit
 }
 ```
 
-**Rules:**
+**Rules (apply to EVERY `ask_user` call in this skill, not just this one):**
 
 - **Batch questions into ONE `ask_user` call.** Each call pauses the whole run.
-- **Never suggest answers.** No multi-choice, no "e.g. dark/playful/minimal" hints inside the question. The player's taste drives the output — don't anchor them to yours.
+- **Never suggest answers.** No multi-choice, no "e.g. ...", no "(dark/playful/minimal)", no trailing "etc." The player's taste drives the output — don't anchor them to yours. The instant you type `e.g.` or `(` after the `?`, stop and rewrite.
 - Do NOT ask what you can decide yourself (font pairings, grid layout, animation timing). Only ask about things that reflect the player's taste.
 - Honor free-form answers literally, even if unusual.
+
+**Examples:**
+
+- ✅ `"What should I push on next?"`
+- ❌ `"What should I push on next? (e.g. make it grungier, change copy, different vibe)"` — lists choices
+- ✅ `"Color palette direction?"`
+- ❌ `"Color palette direction? (dark, playful, minimal)"` — lists choices
+- ✅ `"Which section matters most after the hero?"`
+- ❌ `"Which section matters most? e.g. features, pricing, about"` — lists choices
 
 ## 3. Build the site (THIS IS THE MAIN WORK)
 
@@ -115,7 +124,9 @@ Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the 
 
 ### 3a. Check in once a coherent draft exists (ask #2 of max 3)
 
-As soon as the first complete draft is live (hero + 1-2 secondary sections, all boilerplate gone), and you still have comfortable time left (roughly ≤60% of the round elapsed), call `ask_user` once with a batched set of refinement questions. Describe what you built in one sentence and ask the player what to push on — **do not pre-fill directions.**
+As soon as the first complete draft is live (hero + 1-2 secondary sections, all boilerplate gone), and you still have comfortable time left (roughly ≤60% of the round elapsed), call `ask_user` once with a batched set of refinement questions. Describe what you built in one sentence, then ask the player what to push on.
+
+**The no-suggestions rule from section 2 applies here too.** No `e.g.`, no parenthetical list of directions, no "etc." after the `?`. Describe the draft, then ask an open question and stop.
 
 **Template — rewrite the description to match what you actually shipped:**
 

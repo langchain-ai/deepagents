@@ -2,8 +2,8 @@
 # Launch a fresh player round in a new iTerm2 window.
 #
 # Layout:
-#   top pane    — deepagents CLI (optionally pre-loaded with web-vibe + prompt)
-#   bottom pane — tail -f of the Vite log, so server activity is visible
+#   tab 1 — deepagents CLI, auto-invoking the web-vibe skill with PROMPT
+#   tab 2 — tail -f of the Vite log, so server activity is visible
 #
 # Requires (one-time per laptop):
 #   - iTerm2 installed
@@ -51,6 +51,20 @@ echo "Port:       $PORT"
 echo "Log:        $LOG"
 
 export VIBE_PORT="$PORT" VIBE_DIR="$DIR" VIBE_PROMPT="$PROMPT" VIBE_LOG="$LOG"
+
+# Poll for the Vite server in the background, open the browser as soon as
+# it's reachable. Fire-and-forget — waits up to ~60s, then gives up quietly
+# so a failed round doesn't leave a zombie poller around.
+(
+  for _ in $(seq 1 60); do
+    if curl -fs -o /dev/null -m 1 "http://localhost:$PORT"; then
+      open "http://localhost:$PORT"
+      exit 0
+    fi
+    sleep 1
+  done
+) >/dev/null 2>&1 &
+disown
 
 # Bring iTerm2 to the foreground before the Python API connects.
 open -a iTerm
@@ -105,9 +119,14 @@ async def main(connection):
     cli_cmd = f"deepagents -y --skill web-vibe -m {shlex.quote(PROMPT)}"
     await top.async_send_text(cli_cmd + "\n")
 
-    # Bottom pane follows the Vite log so a crash is visible without alt-tab.
-    bottom = await top.async_split_pane(vertical=False)
-    await bottom.async_send_text(f"tail -f {shlex.quote(LOG)}\n")
+    # Second tab follows the Vite log so a crash is visible by switching tabs.
+    log_tab = await window.async_create_tab()
+    if log_tab is None or not log_tab.sessions:
+        raise RuntimeError("iterm2 did not return a log tab with sessions")
+    await log_tab.sessions[0].async_send_text(f"tail -f {shlex.quote(LOG)}\n")
+
+    # Refocus tab 1 — creating the log tab leaves it active otherwise.
+    await tab.async_activate()
 
 
 iterm2.run_until_complete(main)

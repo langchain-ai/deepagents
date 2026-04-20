@@ -28,6 +28,12 @@ dependencies = [
     "wcmatch",
 ]
 
+[project.optional-dependencies]
+# Required by `CodexCompactionMiddleware` — specifically the `>=1.1.12` bound,
+# which is where `_construct_responses_api_input` started round-tripping the
+# `phase` field on content blocks that the middleware relies on.
+codex = ["langchain-openai>=1.1.12,<2.0.0"]
+
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

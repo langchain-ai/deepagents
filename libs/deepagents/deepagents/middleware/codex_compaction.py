@@ -216,7 +216,15 @@ class CodexCompactionMiddleware(AgentMiddleware):
     def _get_client(self) -> AsyncOpenAI:
         """Return the cached `AsyncOpenAI` client, constructing one if needed."""
         if self._client is None:
-            from openai import AsyncOpenAI  # noqa: PLC0415
+            try:
+                from openai import AsyncOpenAI  # noqa: PLC0415
+            except ImportError as e:
+                msg = (
+                    "CodexCompactionMiddleware requires the `openai` package. "
+                    "Install it with `pip install 'deepagents[codex]'` or "
+                    "`pip install openai`."
+                )
+                raise ImportError(msg) from e
 
             self._client = AsyncOpenAI()
         return self._client
@@ -357,7 +365,16 @@ class CodexCompactionMiddleware(AgentMiddleware):
             Any exception from the OpenAI SDK is surfaced for the caller to
             handle (typically triggers fallback to summarization).
         """
-        from langchain_openai.chat_models.base import _construct_responses_api_input  # noqa: PLC0415
+        try:
+            from langchain_openai.chat_models.base import _construct_responses_api_input  # noqa: PLC0415
+        except ImportError as e:
+            msg = (
+                "CodexCompactionMiddleware requires `langchain-openai>=1.1.12` "
+                "(needed for `phase` field round-tripping on content blocks). "
+                "Install it with `pip install 'deepagents[codex]'` or "
+                "`pip install 'langchain-openai>=1.1.12,<2.0.0'`."
+            )
+            raise ImportError(msg) from e
 
         input_items = _construct_responses_api_input(to_compact)
 

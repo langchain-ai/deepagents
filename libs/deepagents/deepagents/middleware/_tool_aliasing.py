@@ -75,8 +75,9 @@ def _rename_tool(
         copied = cast("dict[str, Any]", tool).copy()
         copied["name"] = new_name
         return copied
-    if hasattr(tool, "model_copy"):
-        return tool.model_copy(update={"name": new_name})
+    model_copy = getattr(tool, "model_copy", None)
+    if model_copy is not None:
+        return model_copy(update={"name": new_name})
     logger.warning(
         "Tool %r matched alias target %r but cannot be renamed (no "
         "`model_copy` support and not a dict). Model will see the original "
@@ -106,7 +107,7 @@ def _rewrite_ai_message_tool_calls(
             rewritten.append({**tc, "name": aliases[tc["name"]]})
             changed = True
         else:
-            rewritten.append(tc)
+            rewritten.append(cast("dict[str, Any]", tc))
 
     rewritten_invalid: list[dict[str, Any]] = []
     for tc in message.invalid_tool_calls:
@@ -114,7 +115,7 @@ def _rewrite_ai_message_tool_calls(
             rewritten_invalid.append({**tc, "name": aliases[tc["name"]]})
             changed = True
         else:
-            rewritten_invalid.append(tc)
+            rewritten_invalid.append(cast("dict[str, Any]", tc))
 
     if not changed:
         return message
@@ -191,7 +192,7 @@ def _rewrite_response_tool_names(
     if isinstance(result_msgs, list):
         new_msgs, changed = _rewrite_message_list(result_msgs, aliases)
         if changed:
-            return replace(response, result=new_msgs)
+            return replace(cast("Any", response), result=new_msgs)
         return response
 
     # ExtendedModelResponse: wraps a ModelResponse in .model_response
@@ -201,7 +202,10 @@ def _rewrite_response_tool_names(
         if isinstance(inner_msgs, list):
             new_msgs, changed = _rewrite_message_list(inner_msgs, aliases)
             if changed:
-                return replace(response, model_response=replace(inner, result=new_msgs))
+                return replace(
+                    cast("Any", response),
+                    model_response=replace(cast("Any", inner), result=new_msgs),
+                )
         return response
 
     return response

@@ -53,6 +53,11 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.utils._apply_patch import (
+    PatchError,
+    apply_patch,
+    list_referenced_files,
+)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -367,11 +372,7 @@ def _format_fuzz_note(fuzz: int) -> str:
     if fuzz <= 0:
         return ""
     if fuzz >= _FUZZ_STRIP_FALLBACK_THRESHOLD:
-        return (
-            f"\nNote: applied with fuzz={fuzz}; at least one hunk "
-            "matched via whitespace-insensitive fallback. "
-            "Verify the patched file is correct."
-        )
+        return f"\nNote: applied with fuzz={fuzz}; at least one hunk matched via whitespace-insensitive fallback. Verify the patched file is correct."
     return f"\nNote: applied with fuzz={fuzz} (minor whitespace drift)."
 
 
@@ -1026,18 +1027,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_apply_patch_tool(self) -> BaseTool:
+    def _create_apply_patch_tool(self) -> BaseTool:  # noqa: C901  # single factory wiring sync+async variants of the apply_patch tool; splitting duplicates the closure over `self`/`backend`
         """Create the apply_patch tool (V4A diff format)."""
-        from deepagents.utils._apply_patch import (
-            PatchError,
-            apply_patch,
-            list_referenced_files,
-        )
-
-        tool_description = (
-            self._custom_tool_descriptions.get("apply_patch")
-            or APPLY_PATCH_TOOL_DESCRIPTION
-        )
+        tool_description = self._custom_tool_descriptions.get("apply_patch") or APPLY_PATCH_TOOL_DESCRIPTION
 
         def _read_raw(backend: BackendProtocol, path: str) -> str | None:
             """Read raw file content from the backend (no line numbers)."""
@@ -1048,7 +1040,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if result.error or result.file_data is None:
                 return None
             content = result.file_data["content"]
-            return content if content else None
+            return content or None
 
         async def _aread_raw(backend: BackendProtocol, path: str) -> str | None:
             """Async variant of `_read_raw`."""
@@ -1059,7 +1051,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if result.error or result.file_data is None:
                 return None
             content = result.file_data["content"]
-            return content if content else None
+            return content or None
 
         def sync_apply_patch(
             patch: Annotated[str, "The V4A format patch string to apply."],
@@ -1069,9 +1061,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             backend = self._get_backend(runtime)
 
             try:
-                result = apply_patch(
-                    patch, file_reader=lambda p: _read_raw(backend, p)
-                )
+                result = apply_patch(patch, file_reader=lambda p: _read_raw(backend, p))
             except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 
@@ -1097,9 +1087,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 file_cache[p] = await _aread_raw(backend, validated)
 
             try:
-                result = apply_patch(
-                    patch, file_reader=lambda p: file_cache.get(p)
-                )
+                result = apply_patch(patch, file_reader=file_cache.get)
             except (PatchError, ValueError) as e:
                 return f"Error applying patch: {e}"
 

@@ -11,10 +11,13 @@ directly.
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+MIN_PATCH_LINES = 2
 
 
 class PatchError(ValueError):
@@ -129,7 +132,7 @@ def _normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def apply_patch(
+def apply_patch(  # noqa: C901  # single-dispatch over 4 patch operations; splitting obscures the ported V4A state machine
     patch_text: str,
     *,
     file_reader: Callable[[str], str | None],
@@ -157,7 +160,7 @@ def apply_patch(
         PatchError: If the patch is malformed or context cannot be matched.
     """
     lines = _normalize_line_endings(patch_text).strip().split("\n")
-    if len(lines) < 2 or not lines[0].startswith(_BEGIN_PATCH):
+    if len(lines) < MIN_PATCH_LINES or not lines[0].startswith(_BEGIN_PATCH):
         msg = f"Invalid patch: missing '{_BEGIN_PATCH}' header"
         raise PatchError(msg)
     if lines[-1] != _END_PATCH:
@@ -239,7 +242,7 @@ def list_referenced_files(patch_text: str) -> list[str]:
     for line in _normalize_line_endings(patch_text).split("\n"):
         for prefix in _FILE_READ_PREFIXES:
             if line.startswith(prefix):
-                paths.append(line[len(prefix):])
+                paths.append(line[len(prefix) :])
                 break
     return paths
 
@@ -262,7 +265,7 @@ def _read_prefix(state: _ParserState, prefix: str) -> str:
     line = state.lines[state.index]
     if line.startswith(prefix):
         state.index += 1
-        return line[len(prefix):]
+        return line[len(prefix) :]
     return ""
 
 
@@ -313,14 +316,14 @@ def _parse_update_file(state: _ParserState, text: str) -> list[_Chunk]:
         state.index = section.end_index
         cursor = match.index + len(section.context)
 
-        for ch in section.chunks:
-            chunks.append(
-                _Chunk(
-                    orig_index=ch.orig_index + match.index,
-                    del_lines=list(ch.del_lines),
-                    ins_lines=list(ch.ins_lines),
-                )
+        chunks.extend(
+            _Chunk(
+                orig_index=ch.orig_index + match.index,
+                del_lines=list(ch.del_lines),
+                ins_lines=list(ch.ins_lines),
             )
+            for ch in section.chunks
+        )
 
     # Consume optional *** End of File
     if state.index < len(state.lines) and state.lines[state.index] == _END_FILE:
@@ -359,7 +362,7 @@ def _advance_cursor_to_anchor(
     return cursor
 
 
-def _read_section(lines: list[str], start: int) -> _SectionResult:
+def _read_section(lines: list[str], start: int) -> _SectionResult:  # noqa: C901, PLR0912  # linearly consumes the ported V4A section grammar; splitting by branch obscures the state transitions
     """Read one context+change section until the next terminator."""
     context: list[str] = []
     del_lines: list[str] = []
@@ -380,7 +383,7 @@ def _read_section(lines: list[str], start: int) -> _SectionResult:
 
         index += 1
         last_mode = mode
-        line = raw if raw else " "
+        line = raw or " "
         prefix = line[0]
 
         if prefix == "+":
@@ -396,11 +399,13 @@ def _read_section(lines: list[str], start: int) -> _SectionResult:
         content = line[1:]
 
         if mode == "keep" and last_mode != mode and (del_lines or ins_lines):
-            chunks.append(_Chunk(
-                orig_index=len(context) - len(del_lines),
-                del_lines=list(del_lines),
-                ins_lines=list(ins_lines),
-            ))
+            chunks.append(
+                _Chunk(
+                    orig_index=len(context) - len(del_lines),
+                    del_lines=list(del_lines),
+                    ins_lines=list(ins_lines),
+                )
+            )
             del_lines = []
             ins_lines = []
 
@@ -413,11 +418,13 @@ def _read_section(lines: list[str], start: int) -> _SectionResult:
             context.append(content)
 
     if del_lines or ins_lines:
-        chunks.append(_Chunk(
-            orig_index=len(context) - len(del_lines),
-            del_lines=list(del_lines),
-            ins_lines=list(ins_lines),
-        ))
+        chunks.append(
+            _Chunk(
+                orig_index=len(context) - len(del_lines),
+                del_lines=list(del_lines),
+                ins_lines=list(ins_lines),
+            )
+        )
 
     if index == start:
         next_line = lines[index] if index < len(lines) else ""
@@ -503,10 +510,7 @@ def _slice_matches(
     """Check if *source[start:start+len(target)]* matches *target* after *transform*."""
     if start + len(target) > len(source):
         return False
-    return all(
-        transform(source[start + i]) == transform(target[i])
-        for i in range(len(target))
-    )
+    return all(transform(source[start + i]) == transform(target[i]) for i in range(len(target)))
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +532,7 @@ def _apply_chunks(text: str, chunks: list[_Chunk]) -> str:
             msg = f"Overlapping chunk at {chunk.orig_index} (cursor at {cursor})"
             raise PatchError(msg)
 
-        dest.extend(orig_lines[cursor:chunk.orig_index])
+        dest.extend(orig_lines[cursor : chunk.orig_index])
         cursor = chunk.orig_index
 
         if chunk.ins_lines:

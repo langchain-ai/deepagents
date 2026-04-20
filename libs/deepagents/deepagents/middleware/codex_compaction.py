@@ -72,7 +72,7 @@ continues to lift ``block["phase"]`` onto the outbound input item.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage
@@ -270,7 +270,7 @@ class CodexCompactionMiddleware(AgentMiddleware):
             A synthetic `AIMessage` that stands in for all compacted turns.
         """
         return AIMessage(
-            content=output_items,
+            content=cast("list[str | dict[str, Any]]", output_items),
             additional_kwargs={"lc_source": "codex_compaction"},
         )
 

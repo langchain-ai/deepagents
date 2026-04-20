@@ -129,7 +129,12 @@ def _setup_summarization_test(
 @pytest.mark.langsmith
 def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
     """Test that summarization triggers and the agent can continue reading a large file."""
-    agent, _, _ = _setup_summarization_test(tmp_path, model, 15_000)
+    # Lowered from 15_000 so the (fraction=0.85) trigger fires reliably on
+    # token-efficient / cache-heavy OpenAI Codex runs, where final-turn input
+    # counts previously landed just under the threshold and compaction never
+    # fired. 5_000 keeps the 0.85 fraction (~4.25K tokens) well inside one
+    # 500-line chunk of the test file for both Anthropic and OpenAI models.
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 5_000)
     thread_id = uuid.uuid4().hex[:8]
 
     trajectory = run_agent(
@@ -173,7 +178,8 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatMod
     This verifies the summarization middleware correctly writes conversation history
     as markdown to the backend at /conversation_history/{thread_id}.md.
     """
-    agent, _, root = _setup_summarization_test(tmp_path, model, 15_000)
+    # See `test_summarize_continues_task` for rationale on the 5_000 cap.
+    agent, _, root = _setup_summarization_test(tmp_path, model, 5_000)
     thread_id = uuid.uuid4().hex[:8]
 
     _ = run_agent(

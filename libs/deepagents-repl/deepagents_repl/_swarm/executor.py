@@ -1,13 +1,12 @@
-"""Parallel subagent dispatch.
-
-Ported from ``libs/deepagents/src/swarm/executor.ts``.
-"""
+"""Parallel subagent dispatch."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +28,14 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.runnables import Runnable
+
+
+SubagentFactory = Callable[[Any], "Runnable"]
+"""Compile a subagent variant bound to a given ``response_format``.
+
+Passed ``None`` to produce the default (no structured output) graph.
+Used by the swarm executor to lazily compile per-schema variants.
+"""
 
 
 # State keys excluded when passing state to subagents.
@@ -74,6 +81,14 @@ class SwarmExecutionOptions:
     """Per-subagent-task wall-clock timeout."""
     cancel_event: asyncio.Event | None = None
     """When set, pending dispatches short-circuit and in-flight ainvoke calls are cancelled."""
+    subagent_factories: Mapping[str, SubagentFactory] | None = None
+    """Optional factories keyed by subagent type.
+
+    When a task has a ``response_schema``, the executor calls the matching
+    factory to compile a variant bound to that schema and caches it for
+    the rest of the swarm call. A task with a schema targeting a type
+    that has no factory falls back to the default graph.
+    """
 
 
 def _filter_state_for_subagent(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -199,11 +214,78 @@ async def _dispatch_task(
     )
 
 
+def _validate_subagent_types(
+    tasks: list[SwarmTaskSpec], subagent_graphs: Mapping[str, Runnable]
+) -> None:
+    unknown: set[str] = set()
+    for task in tasks:
+        subagent_type = task.subagent_type or "general-purpose"
+        if subagent_type not in subagent_graphs:
+            unknown.add(subagent_type)
+    if unknown:
+        available = ", ".join(subagent_graphs.keys())
+        unknown_str = ", ".join(sorted(unknown))
+        msg = f"Unknown subagent type(s): {unknown_str}. Available: {available}"
+        raise ValueError(msg)
+
+
+def _validate_response_schemas(tasks: list[SwarmTaskSpec]) -> None:
+    """Enforce top-level ``type: object`` with non-empty ``properties``.
+
+    Open schemas (no explicit properties) are rejected — they aren't
+    supported reliably by structured-output runtimes across providers.
+    """
+    invalid_type: list[str] = []
+    missing_properties: list[str] = []
+    for task in tasks:
+        schema = task.response_schema
+        if not schema:
+            continue
+        if schema.get("type") != "object":
+            invalid_type.append(f'"{task.id}" has type "{schema.get("type")}"')
+            continue
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or not properties:
+            missing_properties.append(f'"{task.id}"')
+
+    if invalid_type:
+        msg = (
+            'responseSchema must have type "object" at the top level. '
+            "Wrap array schemas in an object "
+            '(e.g., { "type": "object", "properties": { "results": { "type": "array", ... } } }). '
+            f"Invalid tasks: {', '.join(invalid_type)}."
+        )
+        raise ValueError(msg)
+
+    if missing_properties:
+        msg = (
+            'responseSchema must define "properties" with at least one field. '
+            "Open schemas (additionalProperties alone with no properties) are not supported — "
+            "declare each expected field explicitly. "
+            f"Invalid tasks: {', '.join(missing_properties)}."
+        )
+        raise ValueError(msg)
+
+
+def _schema_cache_key(subagent_type: str, schema: dict[str, Any]) -> str:
+    """Stable cache key for a (subagent_type, schema) pair.
+
+    The ``::`` separator guarantees no collision with the plain type
+    names used as default-graph keys.
+    """
+    digest = hashlib.sha256(
+        json.dumps(schema, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{subagent_type}::{digest}"
+
+
 async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary:
     """Dispatch tasks to subagents in parallel, write results.jsonl, return summary.
 
     Raises:
-        ValueError: when any task references an unknown subagent type.
+        ValueError: when any task references an unknown subagent type,
+            or when a ``response_schema`` violates the structural rules
+            enforced by ``_validate_response_schemas``.
     """
     resolved_concurrency = min(
         options.concurrency if options.concurrency is not None else DEFAULT_CONCURRENCY,
@@ -212,16 +294,32 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary
     if resolved_concurrency < 1:
         resolved_concurrency = 1
 
-    unknown: set[str] = set()
-    for task in options.tasks:
+    _validate_subagent_types(options.tasks, options.subagent_graphs)
+    _validate_response_schemas(options.tasks)
+
+    # Variant cache for the duration of this swarm call. Pre-seed with the
+    # default (no-schema) graphs so every lookup — with or without a
+    # response_schema — flows through a single code path.
+    variant_cache: dict[str, Runnable] = dict(options.subagent_graphs)
+    factories = options.subagent_factories or {}
+
+    def resolve_subagent(task: SwarmTaskSpec) -> Runnable:
         subagent_type = task.subagent_type or "general-purpose"
-        if subagent_type not in options.subagent_graphs:
-            unknown.add(subagent_type)
-    if unknown:
-        available = ", ".join(options.subagent_graphs.keys())
-        unknown_str = ", ".join(sorted(unknown))
-        msg = f"Unknown subagent type(s): {unknown_str}. Available: {available}"
-        raise ValueError(msg)
+        if not task.response_schema:
+            return variant_cache[subagent_type]
+        cache_key = _schema_cache_key(subagent_type, task.response_schema)
+        cached = variant_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        factory = factories.get(subagent_type)
+        if factory is None:
+            # No factory available — fall back to the default graph. The
+            # subagent will still try to honour the schema via the
+            # description, just without API-level enforcement.
+            return variant_cache[subagent_type]
+        variant = factory(task.response_schema)
+        variant_cache[cache_key] = variant
+        return variant
 
     filtered_state = _filter_state_for_subagent(options.current_state)
 
@@ -229,10 +327,9 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary
 
     async def _run(task: SwarmTaskSpec) -> SwarmTaskResult:
         async with semaphore:
-            subagent_type = task.subagent_type or "general-purpose"
             return await _dispatch_task(
                 task,
-                options.subagent_graphs[subagent_type],
+                resolve_subagent(task),
                 filtered_state,
                 options.task_timeout_seconds,
                 options.cancel_event,

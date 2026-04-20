@@ -204,7 +204,7 @@ async def test_oolong(
             "model": SUBAGENT_MODEL,
         }
     ]
-    compiled_subagents = build_subagents(
+    compiled_subagents, subagent_factories = build_subagents(
         subagent_specs,
         model=model,
         backend=sandbox_backend,
@@ -218,6 +218,7 @@ async def test_oolong(
             REPLMiddleware(
                 backend=sandbox_backend,
                 subagents=compiled_subagents,
+                subagent_factories=subagent_factories,
                 # Outer eval ceiling — must cover the whole swarm fan-out.
                 timeout=1800.0,
                 # Per-subagent-task ceiling.

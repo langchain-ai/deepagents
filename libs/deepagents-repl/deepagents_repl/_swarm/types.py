@@ -1,12 +1,9 @@
-"""Swarm task/result/summary dataclasses and constants.
-
-Ported from ``libs/deepagents/src/swarm/types.ts``.
-"""
+"""Swarm task/result/summary dataclasses and constants."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 DEFAULT_CONCURRENCY = 10
 """Default number of concurrent subagent invocations per swarm call."""
@@ -15,7 +12,7 @@ MAX_CONCURRENCY = 50
 """Maximum allowed concurrency. Higher values risk rate limits."""
 
 TASK_TIMEOUT_SECONDS = 300.0
-"""Per-task timeout (300 seconds). Mirrors TASK_TIMEOUT_MS=300_000 in the JS port."""
+"""Per-task timeout (300 seconds)."""
 
 
 @dataclass
@@ -30,6 +27,15 @@ class SwarmTaskSpec:
 
     subagent_type: str | None = None
     """Which subagent type to dispatch to. Defaults to ``general-purpose``."""
+
+    response_schema: dict[str, Any] | None = None
+    """JSON Schema enforcing structured output from the subagent.
+
+    Must be a top-level object schema with a non-empty ``properties`` map
+    (array schemas must be wrapped in an object). Requires a subagent
+    factory to be available for the target subagent type; a task with a
+    schema but no factory falls back to the default graph.
+    """
 
 
 @dataclass

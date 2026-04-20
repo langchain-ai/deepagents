@@ -18,6 +18,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
@@ -335,19 +336,21 @@ def build_subagents(
     permissions: list[FilesystemPermission] | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     skills: list[str] | None = None,
-) -> list[CompiledSubAgent]:
-    """Compile user-provided subagent specs into runnable graphs.
+) -> tuple[list[CompiledSubAgent], dict[str, Callable[[Any], Runnable]]]:
+    """Compile user-provided subagent specs into runnable graphs plus factories.
 
     Exposes the same spec-normalization and compilation `create_deep_agent`
-    uses internally. Useful when you want the *same* compiled subagent
-    graphs wired into more than one place — e.g. into
-    `SubAgentMiddleware` (for the `task` tool) **and** into
-    `REPLMiddleware` (for the REPL's `swarm()` global) — without paying
-    the compile cost twice or risking drift between the two sets.
+    uses internally. Useful when a caller wants the *same* compiled
+    subagent graphs wired into more than one place without paying the
+    compile cost twice or risking drift between the two sets.
 
-    Async subagents are intentionally excluded from the returned list:
-    they're compiled separately by `AsyncSubAgentMiddleware`, and
-    `REPLMiddleware`'s swarm only dispatches to sync subagents.
+    Each returned factory takes an optional `response_format` and
+    produces a variant of its subagent bound to that format. Factories
+    are only produced for declarative `SubAgent` specs; pre-compiled
+    `CompiledSubAgent` entries are pass-through and have no factory.
+
+    Async subagents are intentionally excluded from the returned list —
+    they're compiled separately by `AsyncSubAgentMiddleware`.
 
     Args:
         subagents: Subagent specs in any of the forms `create_deep_agent`
@@ -365,8 +368,13 @@ def build_subagents(
             subagent's middleware stack.
 
     Returns:
-        A list of `CompiledSubAgent` — one per sync spec, each with a
-        pre-built `runnable`.
+        A tuple `(compiled, factories)`:
+
+        - `compiled`: one `CompiledSubAgent` per sync spec, each with a
+          pre-built `runnable`.
+        - `factories`: `{name: factory}` where each factory accepts an
+          optional `response_format` and returns a fresh compiled
+          graph. Only populated for declarative `SubAgent` inputs.
     """
     from langchain.agents import create_agent as _create_agent  # noqa: PLC0415
 
@@ -389,6 +397,7 @@ def build_subagents(
     )
 
     compiled: list[CompiledSubAgent] = []
+    factories: dict[str, Callable[[Any], Runnable]] = {}
     for spec in inline_subagents:
         if "runnable" in spec:
             compiled.append(cast("CompiledSubAgent", spec))
@@ -398,21 +407,43 @@ def build_subagents(
         sub_interrupt_on = sub.get("interrupt_on")
         if sub_interrupt_on:
             sub_middleware.append(HumanInTheLoopMiddleware(interrupt_on=sub_interrupt_on))
+
+        # Factory closure: captures (model, system_prompt, tools,
+        # middleware, name) and builds a fresh graph with the given
+        # response_format. Same model/tools/middleware as the default
+        # graph below, so per-schema variants behave identically modulo
+        # the schema enforcement at the model layer.
+        def _factory(
+            response_format: Any,
+            *,
+            _sub_model: Any = sub["model"],
+            _sub_prompt: str = sub["system_prompt"],
+            _sub_tools: Any = sub["tools"],
+            _sub_middleware: list = sub_middleware,
+            _sub_name: str = sub["name"],
+        ) -> Runnable:
+            return _create_agent(
+                _sub_model,
+                system_prompt=_sub_prompt,
+                tools=_sub_tools,
+                middleware=_sub_middleware,
+                name=_sub_name,
+                response_format=response_format,
+            )
+
+        # Default (no response_format) graph: if the spec declares its
+        # own response_format we honour it here; factories override at
+        # swarm-call time when a task carries a schema.
+        default_graph = _factory(sub.get("response_format"))
         compiled.append(
             {
                 "name": sub["name"],
                 "description": sub["description"],
-                "runnable": _create_agent(
-                    sub["model"],
-                    system_prompt=sub["system_prompt"],
-                    tools=sub["tools"],
-                    middleware=sub_middleware,
-                    name=sub["name"],
-                    response_format=sub.get("response_format"),
-                ),
+                "runnable": default_graph,
             }
         )
-    return compiled
+        factories[sub["name"]] = _factory
+    return compiled, factories
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches

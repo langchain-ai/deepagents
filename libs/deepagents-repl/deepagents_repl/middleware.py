@@ -17,7 +17,7 @@ the full design rationale.
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any
 
 from deepagents.backends.protocol import BackendProtocol
@@ -43,6 +43,7 @@ from deepagents_repl._ptc import (
 )
 from deepagents_repl._repl import SwarmBinding, _Registry, format_outcome
 from deepagents_repl._swarm import DEFAULT_CONCURRENCY, compile_subagents
+from deepagents_repl._swarm.executor import SubagentFactory
 
 logger = logging.getLogger(__name__)
 
@@ -145,14 +146,45 @@ Each subagent sees only its description. A good description lets the subagent wo
 
 Anything you discovered during exploration must be written into every description that needs it. Subagents cannot see your notes.
 
-When results will be aggregated programmatically, end descriptions with:
+When results will be aggregated programmatically, prefer `responseSchema` over prompt-only JSON directives (see next section). For qualitative output (summaries, research, narrative), free-form text aggregates better when read from `results.jsonl`.
 
-```
-Respond with ONLY a raw JSON object — no markdown fences, no explanation, no other text.
-Output schema: {{ ... }}
+### Structured output (`responseSchema`)
+
+Use `responseSchema` when results will be aggregated programmatically. It enforces the schema at the model API level — stricter than asking for JSON in prose. The subagent remains fully agentic (tools, reasoning) — only its final response is constrained.
+
+```typescript
+{{
+  id: "t1",
+  description: "...",
+  responseSchema: {{
+    type: "object",
+    properties: {{
+      results: {{
+        type: "array",
+        items: {{
+          type: "object",
+          properties: {{
+            id:    {{ type: "string" }},
+            label: {{ type: "string", enum: ["a", "b", "c"] }}
+          }},
+          required: ["id", "label"]
+        }}
+      }}
+    }},
+    required: ["results"]
+  }}
+}}
 ```
 
-Free-form text aggregates better when read from `results.jsonl` — skip the JSON directive for qualitative output (summaries, research, narrative).
+Schema tips:
+- `enum` on categorical fields prevents label drift across subagents.
+- `description` on properties — models read them during generation.
+- `minItems` / `maxItems` on arrays — ensures the expected count.
+
+Schema rules (enforced at dispatch time — violations throw before any subagent runs):
+- Top-level `type` must be `"object"`. Wrap arrays under a `results` field.
+- `properties` must be defined with at least one explicit field. Open schemas (`additionalProperties` alone, no `properties`) are rejected.
+- Declare every field you expect. If you don't know keys ahead of time, use `results: {{ type: "array", items: {{...}} }}` instead of an open object.
 
 ### Chunk sizing and concurrency
 
@@ -180,9 +212,10 @@ For runs with >10 tasks, set `concurrency` explicitly. Good rule: `Math.min(25, 
 async function swarm(input: {{
   // Pre-built tasks form
   tasks?: Array<{{
-    id: string;            // unique task identifier
-    description: string;   // complete, self-contained prompt for the subagent
-    subagentType?: string; // which subagent to use (default: "general-purpose")
+    id: string;              // unique task identifier
+    description: string;     // complete, self-contained prompt for the subagent
+    subagentType?: string;   // which subagent to use (default: "general-purpose")
+    responseSchema?: object; // JSON Schema for structured output (top-level must be `type: "object"`)
   }}>;
   // Virtual-table form (alternative to `tasks`): one task synthesised per file.
   glob?: string | string[]; // glob pattern(s) to match files on the VFS
@@ -299,6 +332,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ptc: PTCOption = False,
         backend: BackendProtocol | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+        subagent_factories: Mapping[str, SubagentFactory] | None = None,
         swarm_task_timeout: float | None = None,
     ) -> None:
         super().__init__()
@@ -320,6 +354,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 backend=backend,
                 subagent_graphs=subagent_graphs,
                 task_timeout_seconds=swarm_task_timeout,
+                subagent_factories=subagent_factories,
             )
             self._swarm_subagent_descriptions = subagent_descriptions
         elif subagents and backend is None:

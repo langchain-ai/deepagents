@@ -291,6 +291,56 @@ async def test_swarm_not_registered_without_binding(runtime: Runtime) -> None:
     assert outcome.result == "undefined"
 
 
+async def test_swarm_response_schema_dispatches_to_factory(runtime: Runtime) -> None:
+    """A task with ``responseSchema`` in JS reaches a factory on the Python side."""
+    factory_calls: list[Any] = []
+    variant = _make_subagent("structured")
+    default = _make_subagent("default")
+
+    def factory(response_format: Any) -> Any:
+        factory_calls.append(response_format)
+        return variant
+
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend,
+        subagent_graphs={"general-purpose": default},
+        subagent_factories={"general-purpose": factory},
+    )
+    repl = _ThreadREPL(
+        runtime, timeout=10.0, capture_console=True, swarm_binding=binding
+    )
+
+    outcome = await repl.eval_async(
+        """
+        const summary = await swarm({
+            tasks: [{
+                id: "t1",
+                description: "do",
+                responseSchema: {
+                    type: "object",
+                    properties: { label: { type: "string" } },
+                    required: ["label"],
+                },
+            }],
+        });
+        JSON.stringify(summary.results[0])
+        """
+    )
+    assert outcome.error_type is None, outcome.error_message
+    parsed = json.loads(outcome.result)
+    assert parsed["result"] == "structured"
+    # Factory was invoked exactly once with the schema from JS.
+    assert len(factory_calls) == 1
+    assert factory_calls[0] == {
+        "type": "object",
+        "properties": {"label": {"type": "string"}},
+        "required": ["label"],
+    }
+    # The default graph was not invoked for this task.
+    assert default.ainvoke.call_count == 0
+
+
 async def test_swarm_cancelled_on_eval_timeout(runtime: Runtime) -> None:
     """When the outer eval_async times out, in-flight swarm subagents get aborted."""
     cancelled_seen: list[bool] = []

@@ -354,6 +354,88 @@ class TestStateFiltering:
         assert len(state["messages"]) == 1  # replaced with the task HumanMessage
 
 
+class TestResponseSchema:
+    async def test_rejects_non_object_top_level(self) -> None:
+        bad_schema = {"type": "array", "items": {"type": "string"}}
+        with pytest.raises(ValueError, match='must have type "object"'):
+            await execute_swarm(
+                _build_options(
+                    tasks=[
+                        SwarmTaskSpec(
+                            id="t1",
+                            description="x",
+                            response_schema=bad_schema,
+                        )
+                    ],
+                )
+            )
+
+    async def test_rejects_missing_properties(self) -> None:
+        bad_schema = {"type": "object", "additionalProperties": {"type": "string"}}
+        with pytest.raises(ValueError, match='must define "properties"'):
+            await execute_swarm(
+                _build_options(
+                    tasks=[
+                        SwarmTaskSpec(
+                            id="t1",
+                            description="x",
+                            response_schema=bad_schema,
+                        )
+                    ],
+                )
+            )
+
+    async def test_factory_called_once_per_distinct_schema(self) -> None:
+        """Two tasks with the same schema share a single compiled variant."""
+        call_count = {"n": 0}
+        variant = _make_mock_subagent({"messages": [AIMessage("v")]})
+
+        def factory(_response_format: Any) -> Any:
+            call_count["n"] += 1
+            return variant
+
+        schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+        summary = await execute_swarm(
+            _build_options(
+                tasks=[
+                    SwarmTaskSpec(id="t1", description="a", response_schema=schema),
+                    SwarmTaskSpec(id="t2", description="b", response_schema=schema),
+                    SwarmTaskSpec(
+                        id="t3",
+                        description="c",
+                        response_schema={"type": "object", "properties": {"y": {"type": "string"}}},
+                    ),
+                ],
+                subagent_factories={"general-purpose": factory},
+            )
+        )
+        # Two calls: once per distinct schema hash. t1 & t2 share, t3 is new.
+        assert call_count["n"] == 2
+        assert summary.completed == 3
+
+    async def test_falls_back_to_default_without_factory(self) -> None:
+        """Tasks with a schema but no factory still run on the default graph."""
+        default = _make_mock_subagent({"messages": [AIMessage("defaulted")]})
+        summary = await execute_swarm(
+            _build_options(
+                tasks=[
+                    SwarmTaskSpec(
+                        id="t1",
+                        description="a",
+                        response_schema={
+                            "type": "object",
+                            "properties": {"x": {"type": "string"}},
+                        },
+                    )
+                ],
+                subagent_graphs={"general-purpose": default},
+                # No subagent_factories.
+            )
+        )
+        assert summary.completed == 1
+        assert summary.results[0].result == "defaulted"
+
+
 class TestCancellation:
     async def test_pending_tasks_short_circuit_when_event_set(self) -> None:
         """Tasks that start after cancel_event fires are failed with ``Aborted``."""

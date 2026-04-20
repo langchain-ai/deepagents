@@ -1,7 +1,4 @@
-"""Parse and serialize tasks.jsonl / results.jsonl.
-
-Ported from ``libs/deepagents/src/swarm/parse.ts``.
-"""
+"""Parse and serialize tasks.jsonl / results.jsonl."""
 
 from __future__ import annotations
 
@@ -65,8 +62,10 @@ def parse_tasks_jsonl(content: str) -> list[SwarmTaskSpec]:
 def _validate_task(parsed: Any) -> tuple[SwarmTaskSpec | None, list[str]]:
     """Validate one parsed JSON row. Returns (spec, errors) — never both truthy.
 
-    Mirrors the zod schema in the JS port: strips unknown keys, rejects
-    non-string / empty required fields, allows optional ``subagentType``.
+    Strips unknown keys, rejects non-string / empty required fields, allows
+    optional ``subagentType`` and ``responseSchema``. Schema shape itself
+    is validated later by the executor (not here) so parse errors stay
+    focused on JSONL-level issues.
     """
     errors: list[str] = []
     if not isinstance(parsed, dict):
@@ -81,6 +80,9 @@ def _validate_task(parsed: Any) -> tuple[SwarmTaskSpec | None, list[str]]:
     raw_subagent = parsed.get("subagentType")
     if raw_subagent is not None and not isinstance(raw_subagent, str):
         errors.append("subagentType must be a string when provided")
+    raw_schema = parsed.get("responseSchema")
+    if raw_schema is not None and not isinstance(raw_schema, dict):
+        errors.append("responseSchema must be an object when provided")
 
     if errors:
         return None, errors
@@ -90,6 +92,7 @@ def _validate_task(parsed: Any) -> tuple[SwarmTaskSpec | None, list[str]]:
             id=raw_id,  # type: ignore[arg-type]
             description=raw_description,  # type: ignore[arg-type]
             subagent_type=raw_subagent,
+            response_schema=raw_schema,
         ),
         [],
     )
@@ -98,8 +101,8 @@ def _validate_task(parsed: Any) -> tuple[SwarmTaskSpec | None, list[str]]:
 def serialize_tasks_jsonl(tasks: Iterable[SwarmTaskSpec]) -> str:
     """Serialize a list of task specs to JSONL with a trailing newline.
 
-    Wire format uses the JS-style ``subagentType`` key so JSONL produced
-    by Python and JS round-trips across both runtimes.
+    Wire format uses camelCase keys (``subagentType``, ``responseSchema``)
+    to match what the model writes inside the QuickJS REPL.
     """
     lines = [json.dumps(_spec_to_wire(t), separators=(",", ":")) for t in tasks]
     return "\n".join(lines) + "\n"
@@ -115,11 +118,14 @@ def _spec_to_wire(spec: SwarmTaskSpec) -> dict[str, Any]:
     out: dict[str, Any] = {"id": spec.id, "description": spec.description}
     if spec.subagent_type is not None:
         out["subagentType"] = spec.subagent_type
+    if spec.response_schema is not None:
+        out["responseSchema"] = spec.response_schema
     return out
 
 
 def _result_to_wire(result: SwarmTaskResult) -> dict[str, Any]:
-    # Use JS-side key names on the wire so JSONL files are portable.
+    # camelCase keys on the wire — matches what JS code reading
+    # results.jsonl would expect.
     payload: dict[str, Any] = {
         "id": result.id,
         "subagentType": result.subagent_type,

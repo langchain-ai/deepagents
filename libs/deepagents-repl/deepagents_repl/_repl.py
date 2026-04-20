@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
+    from deepagents_repl._swarm.executor import SubagentFactory
+
 logger = logging.getLogger(__name__)
 
 # Sentinel returned by the formatter when the underlying value was a
@@ -270,8 +272,17 @@ def _coerce_task_list(raw: Any) -> list[Any]:
         if subagent_type is not None and not isinstance(subagent_type, str):
             msg = f"swarm().tasks[{idx}].subagentType must be a string when provided"
             raise ValueError(msg)
+        response_schema = entry.get("responseSchema") or entry.get("response_schema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = f"swarm().tasks[{idx}].responseSchema must be an object when provided"
+            raise ValueError(msg)
         tasks.append(
-            SwarmTaskSpec(id=task_id, description=description, subagent_type=subagent_type)
+            SwarmTaskSpec(
+                id=task_id,
+                description=description,
+                subagent_type=subagent_type,
+                response_schema=response_schema,
+            )
         )
     return tasks
 
@@ -367,15 +378,18 @@ def _inject_tool_args_for_ptc(
 class SwarmBinding:
     """Bundle of state needed by the in-REPL ``swarm()`` global.
 
-    ``backend`` and ``subagent_graphs`` are fixed for the lifetime of the
-    REPL middleware; ``current_state`` is pulled from the outer
-    ``ToolRuntime`` at call time (see ``_register_swarm_bridge``).
+    ``backend``, ``subagent_graphs``, and ``subagent_factories`` are
+    fixed for the lifetime of the REPL middleware; ``current_state`` is
+    pulled from the outer ``ToolRuntime`` at call time (see
+    ``_register_swarm_bridge``).
     """
 
     backend: BackendProtocol
     subagent_graphs: Mapping[str, Runnable]
     task_timeout_seconds: float | None = None
     """Per-subagent-task wall-clock timeout. ``None`` uses the swarm default."""
+    subagent_factories: Mapping[str, SubagentFactory] | None = None
+    """Factories for per-schema subagent variants. See ``SubagentFactory``."""
 
 
 class _ThreadREPL:
@@ -533,6 +547,7 @@ class _ThreadREPL:
                 concurrency=concurrency,
                 synthesized_tasks_jsonl=synthesized_tasks_jsonl,
                 cancel_event=self._eval_cancel_event,
+                subagent_factories=binding.subagent_factories,
             )
             if binding.task_timeout_seconds is not None:
                 exec_options.task_timeout_seconds = binding.task_timeout_seconds

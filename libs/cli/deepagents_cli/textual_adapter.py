@@ -677,12 +677,6 @@ async def execute_task_textual(
                                 tool_id,
                             )
 
-                        # Reshow spinner only when all in-flight tools have
-                        # completed (avoids premature "Thinking..." when
-                        # parallel tool calls are active).
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
-
                         # Show file operation results - always show diffs in chat
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -698,6 +692,14 @@ async def execute_task_textual(
                                 await adapter._mount_message(
                                     DiffMessage(record.diff, record.display_path)
                                 )
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active). Must happen after
+                        # the diff is mounted so the spinner stays at the
+                        # bottom of the messages container.
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
                         continue
 
                     # Extract token usage (before content_blocks check

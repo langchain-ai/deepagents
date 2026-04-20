@@ -1939,7 +1939,68 @@ class TestApplyToolFilter:
                 tools, "fs", {"command": "node", "allowedTools": ["read", "gone"]}
             )
         assert [t.name for t in result] == ["fs_read"]
-        assert "allowedTools references unknown tools: gone" in caplog.text
+        assert "allowedTools entries matched no tools: gone" in caplog.text
+
+    def test_allowed_glob_against_bare_name(self) -> None:
+        """Glob entries match against the bare (unprefixed) tool name."""
+        tools = [
+            _make_prefixed_tool("fs_read_file"),
+            _make_prefixed_tool("fs_read_dir"),
+            _make_prefixed_tool("fs_write_file"),
+        ]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "allowedTools": ["read_*"]}
+        )
+        assert [t.name for t in result] == ["fs_read_file", "fs_read_dir"]
+
+    def test_allowed_glob_against_prefixed_name(self) -> None:
+        """Glob entries may include the server prefix."""
+        tools = [
+            _make_prefixed_tool("fs_read_file"),
+            _make_prefixed_tool("fs_write_file"),
+        ]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "allowedTools": ["fs_read_*"]}
+        )
+        assert [t.name for t in result] == ["fs_read_file"]
+
+    def test_disabled_glob_drops_matching(self) -> None:
+        """Glob entries in `disabledTools` drop all matching tools."""
+        tools = [
+            _make_prefixed_tool("fs_read_file"),
+            _make_prefixed_tool("fs_write_file"),
+            _make_prefixed_tool("fs_write_dir"),
+        ]
+        result = _apply_tool_filter(
+            tools, "fs", {"command": "node", "disabledTools": ["write_*"]}
+        )
+        assert [t.name for t in result] == ["fs_read_file"]
+
+    def test_glob_with_no_matches_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Glob patterns that match zero tools also produce a warning."""
+        tools = [_make_prefixed_tool("fs_read_file")]
+        with caplog.at_level("WARNING", logger="deepagents_cli.mcp_tools"):
+            result = _apply_tool_filter(
+                tools,
+                "fs",
+                {"command": "node", "allowedTools": ["read_*", "search_*"]},
+            )
+        assert [t.name for t in result] == ["fs_read_file"]
+        assert "allowedTools entries matched no tools: search_*" in caplog.text
+
+    def test_glob_question_mark_and_charclass(self) -> None:
+        """`?` and `[...]` metachars are honored."""
+        tools = [
+            _make_prefixed_tool("srv_t1"),
+            _make_prefixed_tool("srv_t2"),
+            _make_prefixed_tool("srv_tx"),
+        ]
+        result = _apply_tool_filter(
+            tools, "srv", {"command": "node", "allowedTools": ["t[12]"]}
+        )
+        assert [t.name for t in result] == ["srv_t1", "srv_t2"]
 
     def test_disabled_drops_listed(self) -> None:
         """`disabledTools` drops matching tools, keeps the rest."""

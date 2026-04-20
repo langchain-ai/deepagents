@@ -49,41 +49,27 @@ Behavior guarantees:
 
 ## 2. Ask the player for direction (ask #1 of max 3)
 
-Immediately after the server script returns, make **one batched `ask_user` call** with 3-4 questions to lock in the creative direction. Keep questions fast (mostly multi-choice), specific to the prompt, and in plain language. Multi-choice always appends an "Other" option, so players can redirect you freely.
+Immediately after the server script returns, make **one batched `ask_user` call** with 3-4 open-ended questions to lock in the creative direction. Keep questions short, specific to the prompt, and in plain language. **Do not pre-fill answer options — let the player write what they actually want.**
 
-**Template — rewrite every question and every choice to suit the current prompt. The choices shown here are illustrative, NOT literal. For "haunted house" offer spooky palettes; for "luxury hotel" offer elegant ones; etc.**
+**Template — ask the player in their own words. Do NOT suggest example answers inside the question text; a short clarifying parenthetical about what you're asking is fine, but do not list choices.**
 
 ```json
 {
   "questions": [
     {
-      "question": "What visual vibe should we go for? (adapt to the prompt)",
-      "type": "multiple_choice",
-      "choices": [
-        {"value": "OPTION_A appropriate to the prompt"},
-        {"value": "OPTION_B appropriate to the prompt"},
-        {"value": "OPTION_C appropriate to the prompt"},
-        {"value": "OPTION_D appropriate to the prompt"}
-      ]
+      "question": "What visual vibe are we going for?",
+      "type": "text",
+      "required": true
     },
     {
       "question": "Color palette direction?",
-      "type": "multiple_choice",
-      "choices": [
-        {"value": "PALETTE_A fitting the prompt's mood"},
-        {"value": "PALETTE_B fitting the prompt's mood"},
-        {"value": "PALETTE_C fitting the prompt's mood"},
-        {"value": "PALETTE_D fitting the prompt's mood"}
-      ]
+      "type": "text",
+      "required": true
     },
     {
       "question": "Besides the hero, which section matters most?",
-      "type": "multiple_choice",
-      "choices": [
-        {"value": "SECTION_A relevant to the prompt"},
-        {"value": "SECTION_B relevant to the prompt"},
-        {"value": "SECTION_C relevant to the prompt"}
-      ]
+      "type": "text",
+      "required": true
     },
     {
       "question": "Any specific detail we MUST include? (tagline, character, quirk) -- optional",
@@ -97,10 +83,9 @@ Immediately after the server script returns, make **one batched `ask_user` call*
 **Rules:**
 
 - **Batch questions into ONE `ask_user` call.** Each call pauses the whole run.
-- Prefer multi-choice over text -- one tap beats typing in a speed round.
-- Ground every choice in the prompt. Never use the placeholder strings above verbatim.
+- **Never suggest answers.** No multi-choice, no "e.g. dark/playful/minimal" hints inside the question. The player's taste drives the output — don't anchor them to yours.
 - Do NOT ask what you can decide yourself (font pairings, grid layout, animation timing). Only ask about things that reflect the player's taste.
-- If the player picks "Other" or types free-form, honor it literally.
+- Honor free-form answers literally, even if unusual.
 
 ## 3. Build the site (THIS IS THE MAIN WORK)
 
@@ -131,22 +116,17 @@ Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the 
 
 ### 3a. Check in once a coherent draft exists (ask #2 of max 3)
 
-As soon as the first complete draft is live (hero + 1-2 secondary sections, all boilerplate gone), and you still have comfortable time left (roughly ≤60% of the round elapsed), call `ask_user` once with a batched set of refinement questions. Describe what you built in one sentence and offer concrete next moves.
+As soon as the first complete draft is live (hero + 1-2 secondary sections, all boilerplate gone), and you still have comfortable time left (roughly ≤60% of the round elapsed), call `ask_user` once with a batched set of refinement questions. Describe what you built in one sentence and ask the player what to push on — **do not pre-fill directions.**
 
-**Template — rewrite the description and all choices to match what you actually shipped:**
+**Template — rewrite the description to match what you actually shipped:**
 
 ```json
 {
   "questions": [
     {
       "question": "Draft is live: [ONE-SENTENCE DESCRIPTION OF WHAT YOU BUILT]. What should I push on next?",
-      "type": "multiple_choice",
-      "choices": [
-        {"value": "CONCRETE_REFINEMENT_A based on what exists"},
-        {"value": "CONCRETE_REFINEMENT_B based on what exists"},
-        {"value": "CONCRETE_REFINEMENT_C based on what exists"},
-        {"value": "CONCRETE_REFINEMENT_D based on what exists"}
-      ]
+      "type": "text",
+      "required": true
     },
     {
       "question": "Anything specific to change in the copy? -- optional",
@@ -157,11 +137,11 @@ As soon as the first complete draft is live (hero + 1-2 secondary sections, all 
 }
 ```
 
-After the answer, execute the chosen direction. Do not ask again unless criterion 3b fires.
+After the answer, execute the player's direction. Do not ask again unless criterion 3b fires.
 
 ### 3b. Disambiguate follow-up requests (ask #3 of max 3, only if needed)
 
-If the player types a free-form instruction mid-build that is genuinely ambiguous ("make it cooler", "change the vibe", "fix the header"), call `ask_user` **at most once** with multi-choice options interpreting the request before editing. After that one call, commit to your best interpretation and ship.
+If the player types a free-form instruction mid-build that is genuinely ambiguous ("make it cooler", "change the vibe", "fix the header"), call `ask_user` **at most once** with a short text question asking them to clarify what they mean before editing. Do not suggest interpretations — let them say it in their own words. After that one call, commit to your best interpretation and ship.
 
 Do NOT ask for clarification on requests that are already concrete ("make the heading red" -- just do it).
 

@@ -85,14 +85,20 @@ const summary = await swarm({{
   ],
 }});
 
-// summary shape: {{ total, completed, failed, resultsDir, failedTasks }}
-// Read individual results from resultsDir/results.jsonl
+// summary shape:
+//   {{
+//     total, completed, failed,
+//     resultsDir,      // VFS path — results.jsonl is also written here for durability
+//     results,         // SwarmTaskResult[] — full per-task outputs, use this to aggregate
+//     failedTasks,     // [{{ id, error }}] for quick failure inspection
+//   }}
+// Each SwarmTaskResult: {{ id, subagentType, status: "completed"|"failed", result?, error? }}
 ```
 
 Available subagent types: {available_subagents}
 
 Use `swarm()` for large batches; it handles concurrency limits, timeouts, and result persistence.
-Read `<resultsDir>/results.jsonl` after the call to access per-task outputs."""
+Aggregate per-task outputs from `summary.results` in the same `js_eval` call."""
 
 
 class EvalSchema(BaseModel):

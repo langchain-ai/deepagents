@@ -115,6 +115,10 @@ class TestHappyPath:
         assert summary.failed == 0
         assert summary.failed_tasks == []
         assert summary.results_dir.startswith("/swarm_runs/")
+        # summary.results exposes per-task outputs for in-memory aggregation.
+        assert len(summary.results) == 2
+        assert {r.id for r in summary.results} == {"t1", "t2"}
+        assert all(r.status == "completed" and r.result == "result" for r in summary.results)
         assert subagent.ainvoke.call_count == 2
 
     async def test_passes_description_as_human_message(self) -> None:

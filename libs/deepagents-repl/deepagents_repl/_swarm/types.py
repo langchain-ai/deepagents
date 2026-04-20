@@ -59,4 +59,10 @@ class SwarmExecutionSummary:
     completed: int
     failed: int
     results_dir: str
+    results: list[SwarmTaskResult]
+    """Per-task results including both completed and failed entries.
+
+    Present so callers can aggregate in-memory without reading
+    ``results.jsonl`` back off the backend.
+    """
     failed_tasks: list[FailedTaskInfo]

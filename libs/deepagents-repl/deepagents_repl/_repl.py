@@ -531,13 +531,14 @@ class _ThreadREPL:
             if binding.task_timeout_seconds is not None:
                 exec_options.task_timeout_seconds = binding.task_timeout_seconds
             summary = await execute_swarm(exec_options)
-            # Shape the response with JS-style keys so `JSON.stringify` on
-            # the JS side produces wire-compatible output with the JS port.
+            # camelCase keys on the wire because the model writes JS
+            # against this object inside the REPL.
             return {
                 "total": summary.total,
                 "completed": summary.completed,
                 "failed": summary.failed,
                 "resultsDir": summary.results_dir,
+                "results": [_task_result_to_wire(r) for r in summary.results],
                 "failedTasks": [
                     _failed_task_to_wire(f) for f in summary.failed_tasks
                 ],
@@ -545,6 +546,20 @@ class _ThreadREPL:
 
         def _failed_task_to_wire(f: FailedTaskInfo) -> dict[str, str]:
             return {"id": f.id, "error": f.error}
+
+        def _task_result_to_wire(r: Any) -> dict[str, Any]:
+            # Omit None-valued optional fields so JS code can use
+            # `in` / truthy checks without tripping on explicit null.
+            wire: dict[str, Any] = {
+                "id": r.id,
+                "subagentType": r.subagent_type,
+                "status": r.status,
+            }
+            if r.result is not None:
+                wire["result"] = r.result
+            if r.error is not None:
+                wire["error"] = r.error
+            return wire
 
         self._ctx.register("swarm", _swarm, is_async=True)
 

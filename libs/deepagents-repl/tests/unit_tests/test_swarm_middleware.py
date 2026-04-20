@@ -79,6 +79,33 @@ def runtime() -> Runtime:
         rt.close()
 
 
+async def test_swarm_summary_exposes_results_inline(runtime: Runtime) -> None:
+    """JS-facing summary should include ``results`` so the model can aggregate
+    without a second backend round-trip through ``results.jsonl``."""
+    backend = _StubBackend()
+    subagent = _make_subagent("classification")
+    binding = SwarmBinding(backend=backend, subagent_graphs={"general-purpose": subagent})
+    repl = _ThreadREPL(
+        runtime, timeout=10.0, capture_console=True, swarm_binding=binding
+    )
+
+    outcome = await repl.eval_async(
+        """
+        const summary = await swarm({
+            tasks: [
+                { id: "a", description: "A." },
+                { id: "b", description: "B." },
+            ],
+        });
+        JSON.stringify(summary.results.map(r => ({ id: r.id, result: r.result })))
+        """
+    )
+    assert outcome.error_type is None, outcome.error_message
+    parsed = json.loads(outcome.result)
+    assert {r["id"] for r in parsed} == {"a", "b"}
+    assert all(r["result"] == "classification" for r in parsed)
+
+
 async def test_swarm_direct_tasks_form(runtime: Runtime) -> None:
     backend = _StubBackend()
     subagent = _make_subagent("hello")

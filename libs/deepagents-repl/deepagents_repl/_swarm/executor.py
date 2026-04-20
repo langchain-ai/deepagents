@@ -246,5 +246,6 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmExecutionSummary
         completed=completed,
         failed=failed,
         results_dir=results_dir,
+        results=list(results),
         failed_tasks=failed_tasks,
     )

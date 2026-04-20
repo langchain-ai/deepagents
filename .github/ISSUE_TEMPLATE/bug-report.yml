@@ -26,7 +26,7 @@ body:
   - type: checkboxes
     id: checks
     attributes:
-      label: Checked other resources
+      label: Submission checklist
       description: Please confirm the following.
       options:
         - label: This is a bug, not a usage question.
@@ -47,6 +47,16 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+        - label: acp
+        - label: evals
+        - label: harbor
+        - label: repl
+        - label: daytona
+        - label: modal
+        - label: quickjs
+        - label: runloop
+        - label: langsmith-sandbox
+        - label: Other / not sure / general
   - type: textarea
     id: related
     validations:

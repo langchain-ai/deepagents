@@ -35,7 +35,8 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/repl"
 
 [dependency-groups]
 test = [
-    "pytest>=7.3.0,<9.0.0",
+    "pytest>=7.3.0,<10.0.0",
+    "pytest-benchmark",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",
@@ -90,6 +91,7 @@ markers = [
     "requires: mark tests as requiring a specific library",
     "compile: mark placeholder test used to compile integration tests without running them",
     "scheduled: mark tests to run in scheduled testing",
+    "benchmark: mark wall-time benchmark tests",
 ]
 asyncio_mode = "auto"
 filterwarnings = []

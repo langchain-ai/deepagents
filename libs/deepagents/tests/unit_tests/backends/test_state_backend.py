@@ -39,3 +39,10 @@ def test_state_backend_raises_outside_graph_context():
     be = StateBackend()
     with pytest.raises(RuntimeError, match="inside a LangGraph graph execution"):
         be.read("/anything.txt")
+
+
+def test_upload_files_raises_outside_graph_context():
+    """upload_files outside a graph context should raise RuntimeError."""
+    be = StateBackend()
+    with pytest.raises(RuntimeError, match="inside a LangGraph graph execution"):
+        be.upload_files([("/hello.txt", b"hello")])

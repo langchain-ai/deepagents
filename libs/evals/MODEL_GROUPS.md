@@ -10,7 +10,6 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 ### `set0` (33 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -40,10 +39,11 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
 - `openai:gpt-5.4-mini`
 
-### `set1` (12 models)
+### `set1` (13 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-6`
@@ -56,6 +56,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:qwen3.5:397b-cloud`
 - `openai:gpt-4.1`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
 
 ### `set2` (17 models)
@@ -99,10 +100,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Provider groups
 
-### `anthropic` (7 models)
+### `anthropic` (6 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -160,7 +160,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:qwen3-coder:480b-cloud`
 - `ollama:deepseek-v3.2:cloud`
 
-### `openai` (9 models)
+### `openai` (10 models)
 
 - `openai:gpt-4o`
 - `openai:gpt-4o-mini`
@@ -169,6 +169,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
 - `openai:gpt-5.4-mini`
 
@@ -186,7 +187,6 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 ## `all` (54 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
-- `anthropic:claude-sonnet-4-20250514`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
@@ -232,6 +232,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
 - `openai:gpt-5.4-mini`
 - `openrouter:minimax/minimax-m2.7`

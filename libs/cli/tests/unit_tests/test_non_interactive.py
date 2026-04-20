@@ -3,20 +3,27 @@
 import io
 import sys
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 from rich.style import Style
 from rich.text import Text
 
 from deepagents_cli.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_cli.non_interactive import (
+    _MAX_HITL_ITERATIONS,
+    HITLIterationLimitError,
     ThreadUrlLookupState,
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
+    _run_agent_loop,
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
 )
@@ -1027,6 +1034,352 @@ class TestNonInteractivePrompt:
 
         assert result == 1
         mock_start_server.assert_not_awaited()
+
+
+def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:
+    """Return a stream chunk that triggers one HITL interrupt.
+
+    The interrupt value is a dict that would normally need to pass the
+    HITLRequest Pydantic validator. Tests that call this helper must also
+    patch `_HITL_REQUEST_ADAPTER.validate_python` to pass-through so that
+    validation is bypassed and `state.interrupt_occurred` is set correctly.
+    """
+    interrupt = MagicMock()
+    interrupt.id = interrupt_id
+    interrupt.value = {
+        "action_requests": [{"name": "read_file", "args": {"path": "/tmp/f"}}]
+    }
+    return ("", "updates", {"__interrupt__": [interrupt]})
+
+
+def _make_looping_agent() -> MagicMock:
+    """Return a mock agent whose astream always yields one interrupt chunk."""
+    chunk = _make_interrupt_chunk()
+    mock_agent = MagicMock()
+    mock_agent.astream = MagicMock(side_effect=lambda *_, **__: _async_iter([chunk]))
+    return mock_agent
+
+
+class TestMaxTurns:
+    """Tests for max_turns parameter in _run_agent_loop."""
+
+    async def test_raises_after_user_limit(self) -> None:
+        """HITLIterationLimitError is raised after max_turns HITL iterations."""
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError) as exc_info:
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=1,
+                )
+        assert "--max-turns 1" in str(exc_info.value)
+
+    async def test_error_message_names_user_flag(self) -> None:
+        """Error message references --max-turns and tells the user how to fix it."""
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError) as exc_info:
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=2,
+                )
+        msg = str(exc_info.value)
+        assert "--max-turns 2" in msg
+        assert "Increase --max-turns" in msg
+
+    async def test_max_turns_above_default_is_honored(self) -> None:
+        """User's --max-turns overrides the internal safety default (no clamp)."""
+        # Pin the no-clamp invariant: with _MAX_HITL_ITERATIONS patched to 2
+        # and max_turns=4, the loop must run 4 astream calls (1 initial + 3
+        # HITL resumes) before the guard trips. If max_turns were clamped by
+        # the internal default, we'd see only 2 calls.
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+            patch("deepagents_cli.non_interactive._MAX_HITL_ITERATIONS", 2),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError) as exc_info:
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=4,
+                )
+        msg = str(exc_info.value)
+        assert "Exceeded 4 agentic turns" in msg
+        assert "--max-turns 4" in msg
+        assert "internal safety default" not in msg
+        assert agent.astream.call_count == 4
+
+    async def test_no_max_turns_uses_internal_default(self) -> None:
+        """Omitting max_turns falls back to the internal safety default."""
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+            patch("deepagents_cli.non_interactive._MAX_HITL_ITERATIONS", 1),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError) as exc_info:
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=None,
+                )
+        msg = str(exc_info.value)
+        assert "internal safety default of 1" in msg
+
+    async def test_max_turns_forwarded_from_run_non_interactive(self) -> None:
+        """run_non_interactive passes max_turns through to _run_agent_loop."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+            ) as mock_loop,
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="task", max_turns=7)
+
+        _, kwargs = mock_loop.call_args
+        assert kwargs.get("max_turns") == 7
+
+    async def test_max_turns_none_forwarded_by_default(self) -> None:
+        """run_non_interactive forwards max_turns=None when not supplied."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+            ) as mock_loop,
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="task")
+
+        _, kwargs = mock_loop.call_args
+        assert kwargs.get("max_turns") is None
+
+    async def test_honors_full_user_budget_before_raising(self) -> None:
+        """With max_turns=N, exactly N agentic turns run before the guard trips.
+
+        Pins the counting semantics: the initial stream is turn 1, each HITL
+        resume adds one more turn, and the guard trips on the (N+1)-th call.
+        Flipping the check from `>=` to `>` would allow N+1 astream calls.
+        """
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_cli.non_interactive.dispatch_hook_fire_and_forget"),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError):
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=3,
+                )
+        assert agent.astream.call_count == 3  # 1 initial + 2 HITL resumes = 3 turns
+
+    async def test_limit_hit_returns_exit_code_124(self) -> None:
+        """run_non_interactive returns 124 when --max-turns is exhausted.
+
+        A dedicated exit code (matching GNU `timeout`) lets CI distinguish
+        budget exhaustion from generic failures, which still return 1.
+        """
+        looping_agent = _make_looping_agent()
+        mock_server_proc = MagicMock()
+
+        async def fake_run_agent_loop(*_args: Any, **_kwargs: Any) -> None:  # noqa: RUF029
+            msg = "Exceeded 1 agentic turns (--max-turns 1)."
+            raise HITLIterationLimitError(msg)
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_cli.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive._run_agent_loop",
+                new=fake_run_agent_loop,
+            ),
+            patch(
+                "deepagents_cli.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(looping_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="task", max_turns=1)
+
+        assert result == 124
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

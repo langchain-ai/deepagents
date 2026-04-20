@@ -257,6 +257,45 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+def get_available_agent_names() -> list[str]:
+    """Return a sorted list of available agent names from `~/.deepagents/`.
+
+    Scans the user's `.deepagents` directory and returns each real
+    subdirectory found there. Symlinks excluded so a dangling link does not
+    masquerade as an agent.
+
+    Filesystem errors (missing parent, permission denied, broken entries) are
+    logged and surfaced as an empty list rather than raised — the caller shows
+    an empty modal instead of crashing mid-render.
+
+    Returns:
+        Sorted list of agent names. Empty when no agents exist yet or the
+            directory is unreadable (see log for the underlying cause).
+    """
+    agents_dir = settings.user_deepagents_dir
+    try:
+        entries = list(agents_dir.iterdir())
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.warning("Could not list agents in %s", agents_dir, exc_info=True)
+        return []
+
+    names: list[str] = []
+    for entry in entries:
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                names.append(entry.name)
+        except OSError:
+            logger.debug(
+                "Skipping unreadable entry in %s: %s",
+                agents_dir,
+                entry.name,
+                exc_info=True,
+            )
+    return sorted(names)
+
+
 def list_agents(*, output_format: OutputFormat = "text") -> None:
     """List all available agents.
 

@@ -505,9 +505,7 @@ def _apply_tool_filter(
         wanted = set(names)
         if tool_name in wanted:
             return True
-        if tool_name.startswith(prefix) and tool_name[len(prefix) :] in wanted:
-            return True
-        return False
+        return tool_name.startswith(prefix) and tool_name[len(prefix) :] in wanted
 
     if allowed is not None:
         filtered = [t for t in tools if _matches(t.name, allowed)]

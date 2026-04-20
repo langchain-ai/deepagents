@@ -13,6 +13,10 @@ from pathlib import Path
 import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -376,7 +380,9 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # newline="" disables Windows CRLF translation so callers that
+            # pass LF-only content get LF-only bytes on disk.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
 
             return WriteResult(path=file_path)
@@ -435,7 +441,7 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
             return EditResult(path=file_path, occurrences=int(occurrences))
@@ -745,6 +751,9 @@ class FilesystemBackend(BackendProtocol):
         for path in paths:
             try:
                 resolved_path = self._resolve_path(path)
+                if resolved_path.is_dir():
+                    responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
+                    continue
                 # Use flags to optionally prevent symlink following if
                 # supported by the OS
                 fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -773,13 +782,13 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
         A `FileOperationError` literal, or `None` if unrecognized.
     """
     if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
+        return FILE_NOT_FOUND
     if isinstance(exc, PermissionError):
-        return "permission_denied"
+        return PERMISSION_DENIED
     if isinstance(exc, IsADirectoryError):
-        return "is_directory"
+        return IS_DIRECTORY
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return "invalid_path"
+        return INVALID_PATH
     if isinstance(exc, ValueError):
-        return "invalid_path"
+        return INVALID_PATH
     return None

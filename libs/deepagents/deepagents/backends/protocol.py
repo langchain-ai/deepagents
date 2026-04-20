@@ -13,7 +13,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Literal, NotRequired, TypeAlias
+from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
@@ -46,6 +46,14 @@ potentially fix:
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
 """
+
+# Named constants for each `FileOperationError` literal. Use these instead of
+# bare string literals at producer/consumer sites so a rename in one place
+# surfaces as a type error (rather than silently reverting to a fallback branch).
+FILE_NOT_FOUND: Final = "file_not_found"
+PERMISSION_DENIED: Final = "permission_denied"
+IS_DIRECTORY: Final = "is_directory"
+INVALID_PATH: Final = "invalid_path"
 
 
 @dataclass

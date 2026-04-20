@@ -1471,17 +1471,15 @@ class TestLoadingSpinnerLifecycle:
 
             assert app._loading_widget is None
 
-    async def test_reposition_stops_spinner_before_remove_completes(self) -> None:
-        """Repositioning should stop animation before delayed removal completes."""
+    async def test_reposition_preserves_spinner_state(self) -> None:
+        """Repositioning should reorder without disturbing widget state.
+
+        Repositioning uses `move_child`, which keeps the same LoadingWidget
+        instance mounted. Its animation timer and `_start_time` must carry
+        through unchanged so the "(Ns, esc to interrupt)" hint doesn't jump
+        back to 0s mid-stream.
+        """
         app = DeepAgentsApp()
-        original_remove = Widget.remove
-
-        def delayed_remove(widget: Widget) -> Awaitable[None]:
-            async def do_remove() -> None:
-                await asyncio.sleep(0.3)
-                await original_remove(widget)
-
-            return do_remove()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1497,29 +1495,61 @@ class TestLoadingSpinnerLifecycle:
             app._queued_widgets.append(queued_widget)
 
             before_tick = widget._spinner._position
+            original_timer = widget._animation_timer
+            original_start_time = widget._start_time
             await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
-            # Pre-condition: timer must be running before the reposition so
-            # the `is None` assertion below isn't vacuously satisfied.
-            assert widget._animation_timer is not None
+            assert original_timer is not None
 
-            with patch.object(Widget, "remove", new=delayed_remove):
-                reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
-                # Sleep while delayed_remove is blocking (0.3s).  Check that the
-                # timer flag is None rather than a frozen position counter: the
-                # Textual timer may fire one final tick before cancellation on slow
-                # CI runners, making a position equality check inherently racy.
-                await asyncio.sleep(0.25)
-                assert widget._animation_timer is None
-                await reposition_task
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            # Same instance, same timer, same start time — only DOM order changed.
+            assert app._loading_widget is widget
+            assert widget._animation_timer is original_timer
+            assert widget._start_time == original_start_time
 
             children = list(messages.children)
             assert children.index(widget) == children.index(queued_widget) - 1
 
+    async def test_reposition_moves_spinner_after_last_message_when_no_queue(
+        self,
+    ) -> None:
+        """No queued widgets: spinner must move after the last non-spinner child.
+
+        This is the common streaming case — an `AssistantMessage` mounts at
+        the end of `#messages` (landing below the spinner), and the next
+        `_set_spinner("Thinking")` call must re-anchor the spinner after it
+        via `move_child(..., after=non_spinner[-1])`. Covers the no-queued
+        branch of `_reposition_spinner` that the queued-widget test doesn't.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
             await pilot.pause()
-            new_widget = app._loading_widget
-            assert new_widget is not None
-            assert new_widget._animation_timer is not None
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+            assert not app._queued_widgets
+
+            messages = app.query_one("#messages", Container)
+            new_message = AppMessage("streamed")
+            await messages.mount(new_message)
+            await pilot.pause()
+
+            # Sanity: mount appended at the end, so spinner is now above it.
+            children = list(messages.children)
+            assert children.index(widget) < children.index(new_message)
+
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            # Same widget instance; spinner now sits at the end.
+            assert app._loading_widget is widget
+            children = list(messages.children)
+            assert children[-1] is widget
 
 
 class TestTraceCommand:

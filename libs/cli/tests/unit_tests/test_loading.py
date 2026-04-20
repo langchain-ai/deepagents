@@ -63,3 +63,24 @@ class TestLoadingWidget:
 
             assert widget._animation_timer is None
             assert not pilot.app.query("LoadingWidget")
+
+    async def test_on_mount_preserves_start_time_across_remount(self) -> None:
+        """`on_mount` must not reset `_start_time` when it is already set.
+
+        The spinner is repositioned by reordering children (preserving state),
+        but if any code path falls back to remove + re-mount, the elapsed-time
+        counter must not restart — that would visibly jump the "(Ns)" hint
+        back to 0s mid-stream.
+        """
+        async with LoadingWidgetApp().run_test() as pilot:
+            widget = pilot.app.query_one("#loading", LoadingWidget)
+            original_start = widget._start_time
+            assert original_start is not None
+
+            await widget.remove()
+            await pilot.pause()
+
+            await pilot.app.mount(widget)
+            await pilot.pause()
+
+            assert widget._start_time == original_start

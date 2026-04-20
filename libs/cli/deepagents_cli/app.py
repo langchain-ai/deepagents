@@ -1981,7 +1981,12 @@ class DeepAgentsApp(App):
                 self._loading_widget = None
             return
 
-        messages = self.query_one("#messages", Container)
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            # Container was torn down (e.g. shutdown mid-stream). Skip
+            # silently so the streaming loop doesn't crash.
+            return
 
         if self._loading_widget is None:
             # Create new
@@ -1990,12 +1995,44 @@ class DeepAgentsApp(App):
         else:
             # Update existing
             self._loading_widget.set_status(status)
-            # Reposition if not already at the correct location
+            # Reposition via move_child so elapsed-time and animation state
+            # carry through; remove + re-mount would reset both.
             if not self._is_spinner_at_correct_position(messages):
-                await self._loading_widget.remove()
-                await self._mount_before_queued(messages, self._loading_widget)
+                self._reposition_spinner(messages)
         # NOTE: Don't call anchor() here - it would re-anchor and drag user back
         # to bottom if they've scrolled away during streaming
+
+    def _reposition_spinner(self, container: Container) -> None:
+        """Move the spinner to its correct position without resetting state.
+
+        The spinner must sit immediately before the first queued widget, or
+        at the very end of the container when no widgets are queued. Using
+        `move_child` preserves the widget's internal state (elapsed time,
+        animation frame) that a remove + re-mount would reset.
+
+        Args:
+            container: The messages container that hosts the spinner.
+        """
+        if self._loading_widget is None:
+            return
+        if self._loading_widget not in container.children:
+            # The caller holds a spinner reference that isn't in this
+            # container — the widget was reparented or removed by another
+            # code path. Log so the desync is visible instead of silently
+            # leaving the spinner in the wrong place.
+            logger.debug(
+                "Spinner widget not in container children; skipping reposition"
+            )
+            return
+        first_queued = self._queued_widgets[0] if self._queued_widgets else None
+        if first_queued is not None and first_queued.parent is container:
+            container.move_child(self._loading_widget, before=first_queued)
+            return
+        non_spinner = [
+            child for child in container.children if child is not self._loading_widget
+        ]
+        if non_spinner:
+            container.move_child(self._loading_widget, after=non_spinner[-1])
 
     async def _request_approval(
         self,

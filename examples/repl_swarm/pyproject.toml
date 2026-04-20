@@ -1,0 +1,14 @@
+[project]
+name = "repl-swarm-example"
+version = "0.1.0"
+description = "REPL swarm example — fan out subagent tasks from inside the REPL via a skill module"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.2.6",
+    "deepagents-repl",
+    "langchain-anthropic>=0.3.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+deepagents-repl = { path = "../../libs/deepagents-repl", editable = true }

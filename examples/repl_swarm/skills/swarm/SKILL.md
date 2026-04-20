@@ -1,6 +1,6 @@
 ---
 name: swarm
-description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency, then collect results.
+description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency. Returns a summary object with {total, completed, failed, results[]} — iterate `.results` for per-task output.
 module: ./index.ts
 ---
 
@@ -8,6 +8,15 @@ module: ./index.ts
 
 Fan out a list of tasks to subagents with bounded
 concurrency, collect results, and return a compact summary.
+
+## Loading
+
+**The REPL's `eval` tool supports ES module imports from `@/skills/*`.**
+Use `await import("@/skills/swarm")` to load this skill — the REPL
+installs a custom module loader that resolves those paths against the
+skills backend. Do **not** inline `index.ts` into your eval body.
+Importing is the supported, tested path; copying the source is an
+anti-pattern that duplicates logic and drifts on skill updates.
 
 ## When to use
 
@@ -17,10 +26,13 @@ topics") and want them to run concurrently rather than sequentially.
 
 ## Usage
 
+`runSwarm(...)` returns a **summary object**, not an array. Destructure
+`.results` for the per-task output — the summary itself is not iterable.
+
 ```javascript
 const { runSwarm } = await import("@/skills/swarm");
 
-const summary = await runSwarm({
+const { results, completed, failed } = await runSwarm({
   tasks: [
     { description: "Summarize /notes/alpha.md" },
     { description: "Summarize /notes/beta.md" },
@@ -30,7 +42,10 @@ const summary = await runSwarm({
   subagentType: "general-purpose",  // optional; per-task override wins
 });
 
-console.log(summary);
+console.log(`${completed} ok, ${failed} failed`);
+for (const r of results) {
+  console.log(r.id, r.status, r.output ?? r.error);
+}
 ```
 
 ## Contract
@@ -54,7 +69,7 @@ Returns a summary object:
   results: {              // one entry per task, in input order
     id: number;           // 0-indexed position in `tasks`
     status: "completed" | "failed";
-    result?: string;      // on success — subagent's final message
+    output?: string;      // on success — subagent's final message
     error?: string;       // on failure — error message
   }[];
 }

@@ -18,24 +18,41 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-
+from deepagents.backends.state import StateBackend
 from deepagents_repl import REPLMiddleware
 
-SKILLS_ROOT = str(Path(__file__).parent / "skills")
+SKILLS_DIR = str(Path(__file__).parent / "skills")
+DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
-def _build_agent(model: str | None) -> object:
-    """Build a Deep Agent with a subagent + the swarm skill."""
-    backend = FilesystemBackend(root_dir=str(Path(__file__).parent), virtual_mode=False)
+def _build_agent(model: str) -> object:
+    """Build a Deep Agent with a subagent + the swarm skill.
+
+    Backend shape: ``CompositeBackend`` that sends ``/skills/*`` to a
+    ``FilesystemBackend`` rooted at this example's ``skills/`` dir, and
+    everything else to ``StateBackend``. Task files the model writes
+    (``/tmp_swarm/a`` in the default demo) land in agent state rather
+    than on the host — avoiding SIP/read-only-root issues on macOS and
+    keeping the demo self-cleaning across runs. The skills backend is
+    still a real filesystem because ``SkillsMiddleware`` scans for
+    SKILL.md at agent-build time, before any graph state exists.
+    """
+    skill_backend = FilesystemBackend(root_dir=SKILLS_DIR, virtual_mode=True)
+    backend = CompositeBackend(
+        default=StateBackend(),
+        routes={"/skills/": skill_backend},
+    )
     return create_deep_agent(
         model=model,
         backend=backend,
-        skills=[SKILLS_ROOT],
-        middleware=[REPLMiddleware(ptc=True, skills_backend=backend)],
+        skills=["/skills/"],
+        middleware=[REPLMiddleware(ptc=True, skills_backend=backend, timeout=None)],
     )
 
 
@@ -51,14 +68,19 @@ def _parse_args() -> argparse.Namespace:
             "(3) write the number 3 to /tmp_swarm/c."
         ),
     )
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     return parser.parse_args()
 
 
-def _main() -> None:
+async def _amain() -> None:
     args = _parse_args()
     agent = _build_agent(args.model)
-    result = agent.invoke(
+    # ``ainvoke`` (not ``invoke``) so REPL tool calls stay on the
+    # caller's thread. ``ToolNode``'s sync path routes tool calls
+    # through a ``ThreadPoolExecutor``, and ``quickjs_rs.Context`` is
+    # ``!Send`` — invoking the REPL's ``eval`` tool from a different
+    # thread than the one that built the context panics.
+    result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": args.task}]},
     )
     for message in result["messages"]:
@@ -67,4 +89,4 @@ def _main() -> None:
 
 
 if __name__ == "__main__":
-    _main()
+    asyncio.run(_amain())

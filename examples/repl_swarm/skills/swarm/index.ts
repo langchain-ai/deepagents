@@ -17,7 +17,7 @@ export interface SwarmTask {
 export interface SwarmResult {
   id: number;
   status: "completed" | "failed";
-  result?: string;
+  output?: string;
   error?: string;
 }
 
@@ -68,7 +68,7 @@ export async function runSwarm(opts: RunSwarmOptions): Promise<SwarmSummary> {
           description: task.description,
           subagent_type: subagentType,
         });
-        results[idx] = { id: idx, status: "completed", result: String(out) };
+        results[idx] = { id: idx, status: "completed", output: String(out) };
       } catch (err: any) {
         results[idx] = {
           id: idx,

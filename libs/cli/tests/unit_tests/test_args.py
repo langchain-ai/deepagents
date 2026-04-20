@@ -71,6 +71,39 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestStartupCmdArg:
+    """Tests for `--startup-cmd` pre-prompt shell command argument."""
+
+    def test_flag_sets_startup_cmd(self) -> None:
+        """Verify `--startup-cmd` stores the requested command."""
+        with patch.object(sys, "argv", ["deepagents", "--startup-cmd", "git status"]):
+            args = parse_args()
+        assert args.startup_cmd == "git status"
+
+    def test_no_flag(self) -> None:
+        """Verify `startup_cmd` defaults to `None`."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.startup_cmd is None
+
+    def test_with_non_interactive(self) -> None:
+        """Verify `--startup-cmd` works alongside `-n`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--startup-cmd",
+                "echo hi",
+                "-n",
+                "do the thing",
+            ],
+        ):
+            args = parse_args()
+        assert args.startup_cmd == "echo hi"
+        assert args.non_interactive_message == "do the thing"
+
+
 class TestResumeArg:
     """Tests for -r/--resume thread resume argument."""
 

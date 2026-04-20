@@ -615,6 +615,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--startup-cmd",
+        dest="startup_cmd",
+        metavar="CMD",
+        help="Shell command to run at startup, before the first prompt "
+        "(output shown, non-zero exit warns but does not abort)",
+    )
+
+    parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
@@ -777,6 +785,7 @@ async def run_textual_cli_async(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -813,6 +822,10 @@ async def run_textual_cli_async(
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         initial_skill: Optional skill name to invoke when the session starts.
+        startup_cmd: Shell command to run at startup before the first prompt.
+
+            Output is rendered in the transcript; non-zero exits warn but
+            do not abort the session.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -899,6 +912,7 @@ async def run_textual_cli_async(
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
+            startup_cmd=startup_cmd,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -1729,6 +1743,7 @@ def cli_main() -> None:
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     initial_skill=getattr(args, "initial_skill", None),
+                    startup_cmd=getattr(args, "startup_cmd", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -1795,6 +1810,7 @@ def cli_main() -> None:
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
+                        startup_cmd=getattr(args, "startup_cmd", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,

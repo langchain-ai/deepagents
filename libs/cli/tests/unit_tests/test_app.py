@@ -129,9 +129,151 @@ class TestInitialPromptOnMount:
                 mcp_server_info=[],
             )
         )
-        await asyncio.sleep(0)
+        # Server-ready schedules `_run_session_start_sequence` onto the loop.
+        # A few yields keep the test stable across that async handoff.
+        for _ in range(3):
+            await asyncio.sleep(0)
 
         assert submitted == [("code-review", "review this diff", None)]
+
+
+class TestStartupSequence:
+    """Tests for post-connect startup sequencing."""
+
+    async def test_resumed_history_loads_before_startup_command(self) -> None:
+        """Resumed threads should mount prior history before startup output."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+            startup_cmd="echo hi",
+        )
+        order: list[str] = []
+
+        async def capture_history(  # noqa: RUF029
+            *,
+            thread_id: str | None = None,
+            preloaded_payload: object | None = None,
+        ) -> None:
+            del thread_id, preloaded_payload
+            order.append("history")
+
+        async def capture_startup(command: str) -> None:  # noqa: RUF029
+            assert command == "echo hi"
+            order.append("startup")
+
+        app._load_thread_history = capture_history  # type: ignore[assignment]
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["history", "startup"]
+        assert app._startup_sequence_running is False
+
+    async def test_startup_cleanup_defers_queue_until_initial_submission(self) -> None:
+        """Queued input should wait until startup submission owns the agent slot."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello world",
+            startup_cmd="echo hi",
+        )
+        order: list[str] = []
+
+        async def capture_startup(command: str) -> None:
+            assert command == "echo hi"
+            order.append("startup")
+            app._pending_messages.append(
+                QueuedMessage(text="typed during startup", mode="normal")
+            )
+            await app._cleanup_shell_task()
+
+        async def capture_initial_submission() -> None:  # noqa: RUF029
+            order.append("initial")
+            app._agent_running = True
+
+        queue_mock = AsyncMock()
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+        app._submit_initial_submission = (  # type: ignore[assignment]
+            capture_initial_submission
+        )
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["startup", "initial"]
+        queue_mock.assert_not_awaited()
+        assert len(app._pending_messages) == 1
+        assert app._pending_messages[0].text == "typed during startup"
+        assert app._startup_sequence_running is False
+
+    async def test_cleanup_shell_task_defers_queue_during_startup(self) -> None:
+        """`_cleanup_shell_task` must not drain the queue while sequencing."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._startup_sequence_running = True
+        app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+
+        await app._cleanup_shell_task()
+
+        queue_mock.assert_not_awaited()
+        assert app._shell_running is False
+
+    async def test_cleanup_agent_task_defers_queue_during_startup(self) -> None:
+        """`_cleanup_agent_task` must not drain the queue while sequencing."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._startup_sequence_running = True
+        app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        spinner_mock = AsyncMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._set_spinner = spinner_mock  # type: ignore[assignment]
+
+        await app._cleanup_agent_task()
+
+        queue_mock.assert_not_awaited()
+        assert app._agent_running is False
+
+    def test_empty_startup_cmd_is_normalized_to_none(self) -> None:
+        """Empty or whitespace-only `--startup-cmd` should be treated as unset."""
+        for raw in ("", "   ", "\t\n"):
+            app = DeepAgentsApp(
+                agent=MagicMock(), thread_id="thread-123", startup_cmd=raw
+            )
+            assert app._startup_cmd is None, f"Expected {raw!r} to normalize to None"
+
+    async def test_startup_cmd_cleared_after_execution(self) -> None:
+        """`_startup_cmd` should be cleared before the command runs (one-shot)."""
+        app = DeepAgentsApp(
+            agent=MagicMock(), thread_id="thread-123", startup_cmd="echo hi"
+        )
+        observed_cmd: list[str] = []
+        observed_attr_during_run: list[str | None] = []
+
+        async def capture_startup(command: str) -> None:  # noqa: RUF029
+            observed_cmd.append(command)
+            observed_attr_during_run.append(app._startup_cmd)
+
+        async def stub_history(  # noqa: RUF029
+            *,
+            thread_id: str | None = None,
+            preloaded_payload: object | None = None,
+        ) -> None:
+            del thread_id, preloaded_payload
+
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+        app._load_thread_history = stub_history  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert observed_cmd == ["echo hi"]
+        assert observed_attr_during_run == [None]
+        assert app._startup_cmd is None
 
 
 class TestAppCSSValidation:

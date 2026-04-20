@@ -7,7 +7,11 @@ ASCII prefix and ``DEFAULT_EXECUTE_TIMEOUT`` to a known value.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 import pytest
 
@@ -168,7 +172,7 @@ class TestFormatToolDisplay:
     """Tests for format_tool_display() — one test per tool branch."""
 
     @pytest.fixture(autouse=True)
-    def _patch_glyphs(self) -> None:
+    def _patch_glyphs(self) -> Generator[None, None, None]:
         with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
             yield
 
@@ -226,9 +230,7 @@ class TestFormatToolDisplay:
 
     def test_execute_omits_timeout_when_default(self) -> None:
         with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display(
-                "execute", {"command": "ls", "timeout": 120}
-            )
+            result = format_tool_display("execute", {"command": "ls", "timeout": 120})
         assert "timeout" not in result
 
     # --- ls ---
@@ -308,15 +310,11 @@ class TestFormatToolDisplay:
 
     def test_hidden_unicode_in_command_stripped(self) -> None:
         with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display(
-                "execute", {"command": "echo he\u200bllo"}
-            )
+            result = format_tool_display("execute", {"command": "echo he\u200bllo"})
         assert _HIDDEN_CHAR_MARKER in result
 
     def test_hidden_unicode_in_file_path_stripped(self) -> None:
-        result = format_tool_display(
-            "read_file", {"file_path": "/tmp/fi\u200ble.py"}
-        )
+        result = format_tool_display("read_file", {"file_path": "/tmp/fi\u200ble.py"})
         assert _HIDDEN_CHAR_MARKER in result
 
 

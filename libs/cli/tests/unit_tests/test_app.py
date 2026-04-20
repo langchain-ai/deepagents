@@ -880,6 +880,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()
@@ -918,6 +919,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()
@@ -962,6 +964,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()

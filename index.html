@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangChain Deep Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --bg-elevated: #222230;
+            --accent-primary: #7c3aed;
+            --accent-secondary: #a78bfa;
+            --accent-glow: rgba(124, 58, 237, 0.3);
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --border-accent: rgba(124, 58, 237, 0.5);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --info: #3b82f6;
+            --gradient-start: #7c3aed;
+            --gradient-end: #2563eb;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated background */
+        .bg-grid {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .bg-gradient {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(124, 58, 237, 0.15), transparent),
+                radial-gradient(ellipse 60% 40% at 100% 100%, rgba(37, 99, 235, 0.1), transparent);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .app-container {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 280px 1fr 320px;
+            min-height: 100vh;
+            gap: 1px;
+            background: var(--border-subtle);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            background: var(--bg-secondary);
+            padding: 24px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            overflow-y: auto;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 4px;
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .logo-text {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .logo-text span {
+            background: linear-gradient(135deg, var(--accent-secondary), #60a5fa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: rgba(124, 58, 237, 0.15);
+            color: var(--accent-secondary);
+            border: 1px solid var(--border-accent);
+        }
+
+        .nav-item svg {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        .section-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            padding: 0 14px;
+            margin-top: 16px;
+        }
+
+        .tools-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .tool-item {
+            padding: 12px 14px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            border: 1px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .tool-item:hover {
+            border-color: var(--border-subtle);
+            background: var(--bg-elevated);
+        }
+
+        .tool-item.active {
+            border-color: var(--accent-primary);
+            background: rgba(124, 58, 237, 0.1);
+        }
+
+        .tool-icon {
+            width: 24px;
+            height: 24px;
+            background: var(--bg-elevated);
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            font-size: 12px;
+        }
+
+        /* Main chat area */
+        .main-area {
+            background: var(--bg-secondary);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--bg-secondary);
+        }
+
+        .chat-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .agent-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .message {
+            display: flex;
+            gap: 16px;
+            max-width: 85%;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .message.user .message-avatar {
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+        }
+
+        .message.assistant .message-avatar {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle);
+        }
+
+        .message-content {
+            background: var(--bg-tertiary);
+            border-radius: 14px;
+            padding: 14px 18px;
+            font-size: 14px;
+            line-height: 1.6;
+            border: 1px solid var(--border-subtle);
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, rgba(124, 58, 237, 0.2), rgba(37, 99, 235, 0.2));
+            border-color: var(--border-accent);
+        }
+
+        .message.tool .message-content {
+            background: var(--bg-elevated);
+            border-color: var(--warning);
+        }
+
+        .message-system .message-content {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: rgba(59, 130, 246, 0.3);
+            font-size: 13px;
+        }
+
+        .thinking-process {
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .thinking-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 4px 0;
+        }
+
+        .thinking-step::before {
+            content: '→';
+            color: var(--accent-secondary);
+        }
+
+        .chat-input-area {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-secondary);
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            background: var(--bg-tertiary);
+            border-radius: 14px;
+            padding: 12px 16px;
+            border: 1px solid var(--border-subtle);
+            transition: all 0.2s ease;
+        }
+
+        .chat-input-wrapper:focus-within {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: inherit;
+            resize: none;
+            max-height: 120px;
+            line-height: 1.5;
+        }
+
+        .chat-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .send-button {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            border: none;
+            border-radius: 10px;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .send-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px var(--accent-glow);
+        }
+
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Right panel */
+        .right-panel {
+            background: var(--bg-secondary);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+        }
+
+        .panel-section {
+            background: var(--bg-tertiary);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid var(--border-subtle);
+        }
+
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-title svg {
+            width: 16px;
+            height: 16px;
+            color: var(--accent-secondary);
+        }
+
+        .config-group {
+            margin-bottom: 14px;
+        }
+
+        .config-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .config-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        .config-select, .config-input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .config-select:focus, .config-input:focus {
+            border-color: var(--accent-primary);
+        }
+
+        .config-slider {
+            width: 100%;
+            -webkit-appearance: none;
+            height: 6px;
+            background: var(--bg-primary);
+            border-radius: 3px;
+            outline: none;
+        }
+
+        .config-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 8px var(--accent-glow);
+        }
+
+        .slider-value {
+            font-size: 13px;
+            color: var(--accent-secondary);
+            font-weight: 600;
+            margin-top: 6px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .metric-card {
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .trace-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .trace-item {
+            padding: 10px 12px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+            font-size: 12px;
+            border-left: 3px solid var(--accent-primary);
+        }
+
+        .trace-item.success {
+            border-left-color: var(--success);
+        }
+
+        .trace-item.error {
+            border-left-color: var(--error);
+        }
+
+        .trace-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-elevated);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Loading indicator */
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 4px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-secondary);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0.6); }
+            40% { transform: scale(1); }
+        }
+
+        /* Empty state */
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-size: 18px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            font-size: 14px;
+            max-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-gradient"></div>
+    
+    <div class="app-container">
+        <!-- Left Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🧠</div>
+                <div class="logo-text">Deep<span>Agent</span></div>
+            </div>
+            
+            <nav>
+                <div class="nav-item active">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    Chat
+                </div>
+                <div class="nav-item">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    Settings
+                </div>
+                <div class="nav-item">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                    History
+                </div>
+            </nav>
+            
+            <div class="section-title">Available Tools</div>
+            <div class="tools-list">
+                <div class="tool-item active">
+                    <span class="tool-icon">🔍</span>
+                    Search Docs
+                </div>
+                <div class="tool-item">
+                    <span class="tool-icon">🌐</span>
+                    Web Search
+                </div>
+                <div class="tool-item">
+                    <span class="tool-icon">📄</span>
+                    Read URL
+                </div>
+                <div class="tool-item">
+                    <span class="tool-icon">🧮</span>
+                    Calculator
+                </div>
+                <div class="tool-item">
+                    <span class="tool-icon">📝</span>
+                    Code Exec
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Main Chat Area -->
+        <main class="main-area">
+            <header class="chat-header">
+                <h1 class="chat-title">New Chat</h1>
+                <div class="agent-status">
+                    <span class="status-dot"></span>
+                    <span>Agent Ready</span>
+                </div>
+            </header>
+            
+            <div class="chat-messages" id="chatMessages">
+                <div class="empty-state" id="emptyState">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <h3>Start a conversation</h3>
+                    <p>Ask me anything or describe a task you'd like help with.</p>
+                </div>
+            </div>
+            
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea class="chat-input" id="chatInput" placeholder="Type your message..." rows="1"></textarea>
+                    <button class="send-button" id="sendButton">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Right Panel -->
+        <aside class="right-panel">
+            <div class="panel-section">
+                <h3 class="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    Configuration
+                </h3>
+                <div class="config-group">
+                    <label class="config-label">Model</label>
+                    <select class="config-select" id="modelSelect">
+                        <option value="gpt-4o">GPT-4o</option>
+                        <option value="gpt-4o-mini">GPT-4o Mini</option>
+                        <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                        <option value="claude-3-5-haiku">Claude 3.5 Haiku</option>
+                    </select>
+                </div>
+                <div class="config-group">
+                    <label class="config-label">Temperature</label>
+                    <input type="range" class="config-slider" id="temperatureSlider" min="0" max="100" value="70">
+                    <div class="slider-value" id="temperatureValue">0.7</div>
+                </div>
+                <div class="config-group">
+                    <label class="config-label">Max Tokens</label>
+                    <input type="number" class="config-input" id="maxTokens" value="4096" min="1" max="128000">
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <h3 class="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                    </svg>
+                    Metrics
+                </h3>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value" id="totalTokens">0</div>
+                        <div class="metric-label">Tokens</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="totalCalls">0</div>
+                        <div class="metric-label">API Calls</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="toolCalls">0</div>
+                        <div class="metric-label">Tools Used</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="latency">0ms</div>
+                        <div class="metric-label">Latency</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel-section">
+                <h3 class="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    Execution Trace
+                </h3>
+                <div class="trace-list" id="traceList">
+                    <div class="trace-item">
+                        <div>Agent initialized</div>
+                        <div class="trace-time">--:--:--</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        // Chat functionality
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        const chatMessages = document.getElementById('chatMessages');
+        const emptyState = document.getElementById('emptyState');
+        
+        // Metrics
+        const totalTokensEl = document.getElementById('totalTokens');
+        const totalCallsEl = document.getElementById('totalCalls');
+        const toolCallsEl = document.getElementById('toolCalls');
+        const latencyEl = document.getElementById('latency');
+        const traceList = document.getElementById('traceList');
+        
+        // Config
+        const temperatureSlider = document.getElementById('temperatureSlider');
+        const temperatureValue = document.getElementById('temperatureValue');
+        
+        let metrics = {
+            tokens: 0,
+            calls: 0,
+            tools: 0
+        };
+
+        let chatHistory = [];
+
+        // Temperature slider
+        temperatureSlider.addEventListener('input', (e) => {
+            temperatureValue.textContent = (e.target.value / 100).toFixed(1);
+        });
+
+        // Auto-resize textarea
+        chatInput.addEventListener('input', () => {
+            chatInput.style.height = 'auto';
+            chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+        });
+
+        // Send message on Enter (Shift+Enter for newline)
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        sendButton.addEventListener('click', sendMessage);
+
+        function sendMessage() {
+            const message = chatInput.value.trim();
+            if (!message) return;
+            
+            chatInput.value = '';
+            chatInput.style.height = 'auto';
+            
+            addMessage(message, 'user');
+            chatHistory.push({ role: 'user', content: message });
+            
+            // Hide empty state
+            emptyState.style.display = 'none';
+            
+            // Show loading
+            showLoading();
+            
+            // Simulate agent response
+            setTimeout(() => {
+                processMessage(message);
+            }, 500);
+        }
+
+        function addMessage(content, role, showThinking = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            
+            const avatarEmoji = role === 'user' ? '👤' : '🤖';
+            
+            let thinkingHTML = '';
+            if (showThinking) {
+                thinkingHTML = `
+                    <div class="thinking-process">
+                        <div class="thinking-step">Analyzing request: "${content.substring(0, 50)}..."</div>
+                        <div class="thinking-step">Evaluating available tools</div>
+                        <div class="thinking-step">Formulating response</div>
+                    </div>
+                `;
+            }
+            
+            messageDiv.innerHTML = `
+                <div class="message-avatar">${avatarEmoji}</div>
+                <div class="message-content">${content}</div>
+                ${thinkingHTML}
+            `;
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            return messageDiv;
+        }
+
+        function showLoading() {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message assistant';
+            loadingDiv.id = 'loadingMessage';
+            loadingDiv.innerHTML = `
+                <div class="message-avatar">🤖</div>
+                <div class="message-content">
+                    <div class="typing-indicator">
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                    </div>
+                </div>
+            `;
+            chatMessages.appendChild(loadingDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function removeLoading() {
+            const loading = document.getElementById('loadingMessage');
+            if (loading) loading.remove();
+        }
+
+        function processMessage(userMessage) {
+            removeLoading();
+            
+            const startTime = Date.now();
+            const messageLower = userMessage.toLowerCase();
+            
+            // Simulate tool usage
+            let toolUsed = null;
+            let response = '';
+            
+            if (messageLower.includes('search') || messageLower.includes('find')) {
+                toolUsed = 'Search Docs';
+                response = `I searched for relevant information about "${userMessage}". Here's what I found:\n\nBased on my search, I can help you with this. Let me provide a detailed response...`;
+            } else if (messageLower.includes('calculate') || messageLower.includes('math') || /\d+[\s+\-*/]/.test(messageLower)) {
+                toolUsed = 'Calculator';
+                response = `I've processed your calculation. The result is ready. Let me explain the steps...`;
+            } else if (messageLower.includes('code') || messageLower.includes('program')) {
+                toolUsed = 'Code Exec';
+                response = `I'll help you write and execute code for this task. Here's my approach:\n\n1. First, I'll analyze the requirements\n2. Then implement the solution\n3. Test with various inputs`;
+            } else if (messageLower.includes('web') || messageLower.includes('internet')) {
+                toolUsed = 'Web Search';
+                response = `I performed a web search for "${userMessage}". Here's the most relevant information I found...`;
+            } else {
+                response = `I understand you're asking about "${userMessage}". Let me analyze this and provide you with a comprehensive response.\n\nBased on my understanding, here's what I can tell you...`;
+            }
+            
+            // Add response
+            const responseEl = addMessage(response, 'assistant', true);
+            chatHistory.push({ role: 'assistant', content: response });
+            
+            // Update metrics
+            metrics.calls++;
+            metrics.tokens += Math.floor(response.length / 4);
+            if (toolUsed) {
+                metrics.tools++;
+            }
+            
+            updateMetrics(Date.now() - startTime);
+            addTrace(toolUsed || 'Response generated', toolUsed ? 'success' : 'pending');
+        }
+
+        function updateMetrics(latency) {
+            totalTokensEl.textContent = metrics.tokens.toLocaleString();
+            totalCallsEl.textContent = metrics.calls;
+            toolCallsEl.textContent = metrics.tools;
+            latencyEl.textContent = latency + 'ms';
+        }
+
+        function addTrace(action, status = 'success') {
+            const traceItem = document.createElement('div');
+            traceItem.className = `trace-item ${status}`;
+            const time = new Date().toLocaleTimeString();
+            traceItem.innerHTML = `
+                <div>${action}</div>
+                <div class="trace-time">${time}</div>
+            `;
+            traceList.insertBefore(traceItem, traceList.firstChild);
+            
+            // Keep only last 10 traces
+            while (traceList.children.length > 10) {
+                traceList.removeChild(traceList.lastChild);
+            }
+        }
+
+        // Tool items interaction
+        document.querySelectorAll('.tool-item').forEach(item => {
+            item.addEventListener('click', () => {
+                document.querySelectorAll('.tool-item').forEach(i => i.classList.remove('active'));
+                item.classList.add('active');
+            });
+        });
+
+        // Nav items interaction
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+                item.classList.add('active');
+            });
+        });
+    </script>
+</body>
+</html>

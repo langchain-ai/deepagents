@@ -17,7 +17,7 @@ The `ask_user` tool's base description tells you to "use sparingly." **That inst
 
 Budget roughly:
 
-- ~0:00-0:20 — dev server ready + first `ask_user` fired
+- ~0:00-0:10 — server already up (handled pre-turn); fire first `ask_user`
 - ~0:20-3:30 — first complete draft
 - ~3:30-4:15 — check-in + refinement
 - ~4:15-5:00 — final polish, no more questions
@@ -28,28 +28,27 @@ Hard caps:
 - Never issue two `ask_user` calls back-to-back without writing/editing files in between.
 - If you believe more than ~60% of the round has elapsed, skip any remaining questions and keep building.
 
-## 1. Scaffold + start dev server
+## 1. Dev server (already running)
 
-Run the idempotent startup script. It creates (or reuses) a fixed round directory, copies a pre-built Vite template when available, and starts Vite detached. Safe to re-run.
+The round launcher starts the Vite dev server **before** your first turn via the CLI's `--startup-cmd` flag, which runs the idempotent `start-server.sh` script. By the time you read this, the server URL (e.g., `http://localhost:5173`) is already in the transcript above — skim for it and move on.
+
+**Only re-run the script if** the startup output shows a failure (the script prints `ERROR:` + a log tail to stderr and exits non-zero). To retry:
 
 ```bash
 bash "$VIBE_DIR/.deepagents/skills/web-vibe/start-server.sh"
 ```
 
-Behavior guarantees:
+The script is idempotent and safe to re-run. Otherwise, skip straight to step 2 — do **not** re-run it "just to check".
+
+Ground rules for the rest of the round:
 
 - The script operates inside `$VIBE_DIR`. **All of your subsequent file edits MUST go inside this directory** — always use `$VIBE_DIR/...` absolute paths (e.g., `$VIBE_DIR/index.html`), never `./index.html`, because your working directory may not be the round dir between tool calls.
-- On success the script prints the server URL (e.g., `http://localhost:5173`) to stdout and exits 0.
-- On failure it prints the tail of `/tmp/vite.log` to stderr and exits 1 — do not retry blindly; read the error, fix if possible, or tell the player the dev server is unreachable.
-- Re-running is a no-op when the server is already healthy and serving the round dir. A stale server from a previous round is auto-detected and replaced.
-
-**Do not invoke `vite`, `npm run dev`, `npm create`, or any other server yourself** — always go through the script so behavior stays consistent across rounds.
-
-**Do not use** `create-react-app`, `next`, or heavy frameworks -- too slow to scaffold.
+- **Do not invoke `vite`, `npm run dev`, `npm create`, or any other server yourself** — always go through the script so behavior stays consistent across rounds.
+- **Do not use** `create-react-app`, `next`, or heavy frameworks -- too slow to scaffold.
 
 ## 2. Ask the player for direction (ask #1 of max 3)
 
-Immediately after the server script returns, make **one batched `ask_user` call** with 3-4 open-ended questions to lock in the creative direction. Keep questions short, specific to the prompt, and in plain language. **Do not pre-fill answer options — let the player write what they actually want.**
+As your very first action of the round, make **one batched `ask_user` call** with 3-4 open-ended questions to lock in the creative direction. The server is already up — don't waste a turn confirming it. Keep questions short, specific to the prompt, and in plain language. **Do not pre-fill answer options — let the player write what they actually want.**
 
 **Template — ask the player in their own words. Do NOT suggest example answers inside the question text; a short clarifying parenthetical about what you're asking is fine, but do not list choices.**
 

@@ -116,7 +116,15 @@ async def main(connection):
     )
     await top.async_send_text(f"cd {shlex.quote(DIR)}\n")
 
-    cli_cmd = f"deepagents -y --skill web-vibe -m {shlex.quote(PROMPT)}"
+    # Prime the dev server before the first agent turn. `--startup-cmd` runs
+    # the idempotent start-server.sh before the skill begins, so the agent
+    # can spend its round on building the site instead of scaffolding.
+    startup_cmd = 'bash "$VIBE_DIR/.deepagents/skills/web-vibe/start-server.sh"'
+    cli_cmd = (
+        "deepagents -y --skill web-vibe "
+        f"--startup-cmd {shlex.quote(startup_cmd)} "
+        f"-m {shlex.quote(PROMPT)}"
+    )
     await top.async_send_text(cli_cmd + "\n")
 
     # Second tab follows the Vite log so a crash is visible by switching tabs.

@@ -1836,11 +1836,7 @@ class TestToolFilterValidation:
     def test_disabled_tools_accepted(self, write_config: Callable[..., str]) -> None:
         """`disabledTools` with a list of strings is accepted."""
         path = write_config(
-            {
-                "mcpServers": {
-                    "fs": {"command": "node", "disabledTools": ["write_file"]}
-                }
-            }
+            {"mcpServers": {"fs": {"command": "node", "disabledTools": ["write_file"]}}}
         )
         assert load_mcp_config(path)["mcpServers"]["fs"]["disabledTools"] == [
             "write_file"

@@ -1,5 +1,6 @@
 """Unit tests for LocalShellBackend."""
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import pytest
 
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
 
 
 def test_local_shell_backend_initialization() -> None:

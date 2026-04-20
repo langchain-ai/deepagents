@@ -1,7 +1,7 @@
 """Unified slash-command registry.
 
 Every slash command is declared once as a `SlashCommand` entry in `COMMANDS`.
-Bypass-tier frozensets and autocomplete tuples are derived automatically — no
+Bypass-tier frozensets and autocomplete entries are derived automatically — no
 other file should hard-code command metadata.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from deepagents_cli.skills.load import ExtendedSkillMetadata
@@ -50,11 +50,34 @@ class SlashCommand:
     hidden_keywords: str = ""
     """Space-separated terms for fuzzy matching (never displayed)."""
 
+    argument_hint: str = ""
+    """Placeholder text for autocomplete when the command accepts args."""
+
     aliases: tuple[str, ...] = ()
     """Alternative names (e.g. `("/q",)` for `/quit`)."""
 
+    def to_entry(self) -> CommandEntry:
+        """Project this command into a `CommandEntry` for autocomplete.
+
+        Returns:
+            A `CommandEntry` carrying only the fields the autocomplete
+                layer needs.
+        """
+        return CommandEntry(
+            name=self.name,
+            description=self.description,
+            hidden_keywords=self.hidden_keywords,
+            argument_hint=self.argument_hint,
+        )
+
 
 COMMANDS: tuple[SlashCommand, ...] = (
+    SlashCommand(
+        name="/agents",
+        description="Browse and switch between available agents",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="switch profile persona",
+    ),
     SlashCommand(
         name="/clear",
         description="Clear chat and start new thread",
@@ -94,11 +117,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/remember",
         description="Update memory and skills from conversation",
         bypass_tier=BypassTier.QUEUED,
+        argument_hint="[context]",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",
         description="Guide for creating effective agent skills",
         bypass_tier=BypassTier.QUEUED,
+        argument_hint="[task]",
     ),
     SlashCommand(
         name="/threads",
@@ -228,13 +253,28 @@ ALL_CLASSIFIED: frozenset[str] = (
 
 
 # ---------------------------------------------------------------------------
-# Autocomplete tuples
+# Autocomplete entries
 # ---------------------------------------------------------------------------
 
-SLASH_COMMANDS: list[tuple[str, str, str]] = [
-    (cmd.name, cmd.description, cmd.hidden_keywords) for cmd in COMMANDS
-]
-"""`(name, description, hidden_keywords)` tuples for `SlashCommandController`."""
+
+class CommandEntry(NamedTuple):
+    """A single autocomplete entry for the slash-command controller."""
+
+    name: str
+    """Canonical command name (e.g. `/quit`)."""
+
+    description: str
+    """Short user-facing description."""
+
+    hidden_keywords: str
+    """Space-separated terms for fuzzy matching (never displayed)."""
+
+    argument_hint: str
+    """Placeholder text shown when the command accepts arguments (e.g. `[context]`)."""
+
+
+SLASH_COMMANDS: list[CommandEntry] = [cmd.to_entry() for cmd in COMMANDS]
+"""Autocomplete entries derived from `COMMANDS` for `SlashCommandController`."""
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:
@@ -271,8 +311,8 @@ appear as `/skill:model`).
 
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
-) -> list[tuple[str, str, str]]:
-    """Build autocomplete tuples for discovered skills.
+) -> list[CommandEntry]:
+    """Build autocomplete entries for discovered skills.
 
     Each skill becomes a `/skill:<name>` entry with its description
     and the skill name as a hidden keyword for fuzzy matching.
@@ -285,10 +325,15 @@ def build_skill_commands(
         skills: List of discovered skill metadata.
 
     Returns:
-        List of `(name, description, hidden_keywords)` tuples.
+        List of `CommandEntry` instances.
     """
     return [
-        (f"/skill:{skill['name']}", skill["description"], skill["name"])
+        CommandEntry(
+            name=f"/skill:{skill['name']}",
+            description=skill["description"],
+            hidden_keywords=skill["name"],
+            argument_hint="",
+        )
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES
     ]

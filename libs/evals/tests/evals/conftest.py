@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from langchain.chat_models import init_chat_model
@@ -30,6 +30,10 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "eval_tier(name): tag an eval as 'baseline' (regression gate) or 'hillclimb' (progress tracking)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs|langchain",
     )
 
     tracing_enabled = any(
@@ -76,6 +80,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
+    )
+    parser.addoption(
+        "--repl",
+        action="store",
+        choices=("quickjs", "langchain"),
+        default=None,
+        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests run without a REPL.",
     )
 
 
@@ -139,6 +150,25 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 @pytest.fixture
 def model_name(request: pytest.FixtureRequest) -> str:
     return str(request.param)
+
+
+ReplName = Literal["quickjs", "langchain"]
+
+
+@pytest.fixture
+def repl_name(request: pytest.FixtureRequest) -> ReplName | None:
+    marker = request.node.get_closest_marker("repl")
+    selected = request.config.getoption("--repl")
+    if selected is None:
+        return None
+    if marker is None or not marker.args:
+        pytest.skip("--repl was provided but this test is not marked with @pytest.mark.repl(...)")
+    allowed = tuple(str(arg) for arg in marker.args)
+    if selected not in allowed:
+        pytest.skip(
+            f"--repl={selected} is not supported for this test; allowed values: {', '.join(allowed)}"
+        )
+    return selected
 
 
 @pytest.fixture(scope="session")

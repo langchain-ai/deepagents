@@ -1,12 +1,13 @@
 """Unit tests for deepagents_cli/tool_display.py.
 
-All functions under test are pure (no I/O, no async, no TUI), so no fixtures
-or mocks are needed beyond patching ``get_glyphs()`` to force a deterministic
-ASCII prefix and ``DEFAULT_EXECUTE_TIMEOUT`` to a known value.
+All functions under test are pure (no I/O, no async, no TUI). A single
+module-level autouse fixture pins `get_glyphs()` to `ASCII_GLYPHS` so
+assertions are deterministic regardless of terminal configuration.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -14,8 +15,9 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 import pytest
+from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
-from deepagents_cli.config import ASCII_GLYPHS
+from deepagents_cli.config import ASCII_GLYPHS, MAX_ARG_LENGTH
 from deepagents_cli.tool_display import (
     _HIDDEN_CHAR_MARKER,
     _coerce_timeout_seconds,
@@ -27,9 +29,14 @@ from deepagents_cli.tool_display import (
     truncate_value,
 )
 
-# Deterministic prefix for all format_tool_display tests.
-_PREFIX = ASCII_GLYPHS.tool_prefix  # "(*)
-_ELLIPSIS = ASCII_GLYPHS.ellipsis  # "..."
+_PREFIX = ASCII_GLYPHS.tool_prefix
+_ELLIPSIS = ASCII_GLYPHS.ellipsis
+
+
+@pytest.fixture(autouse=True)
+def _pin_ascii_glyphs() -> Generator[None, None, None]:
+    with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,10 @@ class TestCoerceTimeoutSeconds:
     def test_int_zero(self) -> None:
         assert _coerce_timeout_seconds(0) == 0
 
+    def test_negative_int_passthrough(self) -> None:
+        # `type(x) is int` accepts negatives; coercion does not validate sign.
+        assert _coerce_timeout_seconds(-30) == -30
+
     def test_valid_string(self) -> None:
         assert _coerce_timeout_seconds("300") == 300
 
@@ -96,7 +107,7 @@ class TestCoerceTimeoutSeconds:
         assert _coerce_timeout_seconds(None) is None
 
     def test_float_type_returns_none(self) -> None:
-        # Only exact int type passes (type(x) is int check)
+        # `type(x) is int` rejects floats (and bool subclass isn't int either).
         assert _coerce_timeout_seconds(1.5) is None  # type: ignore[arg-type]
 
 
@@ -109,23 +120,25 @@ class TestTruncateValue:
     """Tests for truncate_value()."""
 
     def test_short_value_unchanged(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            assert truncate_value("hello", max_length=10) == "hello"
+        assert truncate_value("hello", max_length=10) == "hello"
 
     def test_exactly_at_limit_unchanged(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            value = "a" * 10
-            assert truncate_value(value, max_length=10) == value
+        value = "a" * 10
+        assert truncate_value(value, max_length=10) == value
 
     def test_over_limit_truncated_with_ellipsis(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            value = "a" * 15
-            result = truncate_value(value, max_length=10)
-            assert result == "a" * 10 + _ELLIPSIS
+        value = "a" * 15
+        result = truncate_value(value, max_length=10)
+        assert result == "a" * 10 + _ELLIPSIS
 
     def test_empty_string_unchanged(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            assert truncate_value("", max_length=10) == ""
+        assert truncate_value("", max_length=10) == ""
+
+    def test_default_max_length_uses_max_arg_length(self) -> None:
+        under = "a" * MAX_ARG_LENGTH
+        over = "a" * (MAX_ARG_LENGTH + 1)
+        assert truncate_value(under) == under
+        assert truncate_value(over) == "a" * MAX_ARG_LENGTH + _ELLIPSIS
 
 
 # ---------------------------------------------------------------------------
@@ -137,30 +150,25 @@ class TestSanitizeDisplayValue:
     """Tests for _sanitize_display_value()."""
 
     def test_clean_value_returned_as_is(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            assert _sanitize_display_value("hello world") == "hello world"
+        assert _sanitize_display_value("hello world") == "hello world"
 
     def test_hidden_unicode_stripped_and_marker_appended(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            # U+200B is a zero-width space — stripped by strip_dangerous_unicode
-            result = _sanitize_display_value("hello\u200bworld")
-            assert "helloworld" in result
-            assert _HIDDEN_CHAR_MARKER in result
+        # U+200B is a zero-width space — stripped by strip_dangerous_unicode.
+        result = _sanitize_display_value("hello\u200bworld")
+        assert "helloworld" in result
+        assert _HIDDEN_CHAR_MARKER in result
 
     def test_long_clean_value_truncated(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            long_value = "x" * 200
-            result = _sanitize_display_value(long_value, max_length=50)
-            assert len(result) == 50 + len(_ELLIPSIS)
-            assert result.endswith(_ELLIPSIS)
+        long_value = "x" * 200
+        result = _sanitize_display_value(long_value, max_length=50)
+        assert len(result) == 50 + len(_ELLIPSIS)
+        assert result.endswith(_ELLIPSIS)
 
     def test_non_string_value_coerced(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            assert _sanitize_display_value(42) == "42"
+        assert _sanitize_display_value(42) == "42"
 
     def test_none_value_coerced(self) -> None:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            assert _sanitize_display_value(None) == "None"
+        assert _sanitize_display_value(None) == "None"
 
 
 # ---------------------------------------------------------------------------
@@ -169,12 +177,7 @@ class TestSanitizeDisplayValue:
 
 
 class TestFormatToolDisplay:
-    """Tests for format_tool_display() — one test per tool branch."""
-
-    @pytest.fixture(autouse=True)
-    def _patch_glyphs(self) -> Generator[None, None, None]:
-        with patch("deepagents_cli.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
-            yield
+    """Tests for format_tool_display()."""
 
     # --- file tools ---
 
@@ -196,6 +199,21 @@ class TestFormatToolDisplay:
         assert _PREFIX in result
         assert tool_name in result
 
+    def test_file_tool_uses_relative_path_when_shorter(self) -> None:
+        # Path under cwd should render as a relative path if it's shorter.
+        abs_path = str(Path.cwd() / "subdir" / "file.py")
+        result = format_tool_display("read_file", {"file_path": abs_path})
+        assert "subdir/file.py" in result
+        # Full absolute path should not appear when relative form was chosen.
+        assert abs_path not in result
+
+    def test_file_tool_long_path_falls_back_to_basename(self) -> None:
+        # Path exceeds max_length=60 and is not under cwd → basename fallback.
+        long_path = "/" + ("a" * 100) + "/deeply/nested/target.py"
+        result = format_tool_display("read_file", {"file_path": long_path})
+        assert "target.py" in result
+        assert "a" * 100 not in result
+
     # --- web_search ---
 
     def test_web_search_shows_query(self) -> None:
@@ -215,22 +233,28 @@ class TestFormatToolDisplay:
     # --- execute ---
 
     def test_execute_shows_command(self) -> None:
-        # DEFAULT_EXECUTE_TIMEOUT is a deferred import inside the function body;
-        # patch it at the source module.
-        with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display("execute", {"command": "ls -la"})
+        result = format_tool_display("execute", {"command": "ls -la"})
         assert 'execute("ls -la")' in result
 
     def test_execute_shows_timeout_when_non_default(self) -> None:
-        with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display(
-                "execute", {"command": "sleep 5", "timeout": 300}
-            )
-        assert "timeout=5m" in result
+        non_default = DEFAULT_EXECUTE_TIMEOUT + 180
+        result = format_tool_display(
+            "execute", {"command": "sleep 5", "timeout": non_default}
+        )
+        assert f"timeout={_format_timeout(non_default)}" in result
 
     def test_execute_omits_timeout_when_default(self) -> None:
-        with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display("execute", {"command": "ls", "timeout": 120})
+        result = format_tool_display(
+            "execute", {"command": "ls", "timeout": DEFAULT_EXECUTE_TIMEOUT}
+        )
+        assert "timeout" not in result
+
+    def test_execute_omits_timeout_when_none(self) -> None:
+        result = format_tool_display("execute", {"command": "ls", "timeout": None})
+        assert "timeout" not in result
+
+    def test_execute_omits_timeout_when_invalid_string(self) -> None:
+        result = format_tool_display("execute", {"command": "ls", "timeout": "abc"})
         assert "timeout" not in result
 
     # --- ls ---
@@ -265,6 +289,13 @@ class TestFormatToolDisplay:
     def test_task_without_subagent_type(self) -> None:
         result = format_tool_display("task", {})
         assert result.endswith("task")
+        assert "[" not in result
+
+    def test_task_with_empty_subagent_type(self) -> None:
+        # Empty string is falsy → same fallback as missing key.
+        result = format_tool_display("task", {"subagent_type": ""})
+        assert result.endswith("task")
+        assert "[" not in result
 
     # --- ask_user ---
 
@@ -294,6 +325,17 @@ class TestFormatToolDisplay:
         )
         assert "3 items" in result
 
+    def test_write_todos_non_list_falls_back_to_generic(self) -> None:
+        # Non-list `todos` fails the isinstance check → generic fallback.
+        result = format_tool_display("write_todos", {"todos": "not-a-list"})
+        assert "write_todos(" in result
+        assert "todos=not-a-list" in result
+        assert "items" not in result
+
+    def test_write_todos_missing_falls_back_to_generic(self) -> None:
+        result = format_tool_display("write_todos", {})
+        assert result.endswith("write_todos()")
+
     # --- generic fallback ---
 
     def test_unknown_tool_generic_fallback(self) -> None:
@@ -309,8 +351,7 @@ class TestFormatToolDisplay:
     # --- Unicode sanitization in tool args ---
 
     def test_hidden_unicode_in_command_stripped(self) -> None:
-        with patch("deepagents.backends.DEFAULT_EXECUTE_TIMEOUT", 120):
-            result = format_tool_display("execute", {"command": "echo he\u200bllo"})
+        result = format_tool_display("execute", {"command": "echo he\u200bllo"})
         assert _HIDDEN_CHAR_MARKER in result
 
     def test_hidden_unicode_in_file_path_stripped(self) -> None:
@@ -326,26 +367,30 @@ class TestFormatToolDisplay:
 class TestFormatContentBlock:
     """Tests for _format_content_block()."""
 
-    def test_image_block_with_base64(self) -> None:
-        # ~100 bytes of base64 → ~75 decoded bytes → 0 KB
-        b64 = "A" * 100
+    @pytest.mark.parametrize(
+        ("b64_len", "expected_kb"),
+        [
+            pytest.param(100, 0, id="sub-kb-rounds-down"),
+            pytest.param(1400, 1, id="just-over-1kb"),
+            pytest.param(8192, 6, id="8kb-payload"),
+        ],
+    )
+    def test_image_block_size_formula(self, b64_len: int, expected_kb: int) -> None:
+        # size_kb = len(b64) * 3 // 4 // 1024 (approx decoded size).
         result = _format_content_block(
-            {"type": "image", "base64": b64, "mime_type": "image/png"}
+            {"type": "image", "base64": "A" * b64_len, "mime_type": "image/png"}
         )
-        assert result.startswith("[Image: image/png")
-        assert "KB]" in result
+        assert result == f"[Image: image/png, ~{expected_kb}KB]"
 
     def test_video_block_with_base64(self) -> None:
-        b64 = "A" * 400
         result = _format_content_block(
-            {"type": "video", "base64": b64, "mime_type": "video/mp4"}
+            {"type": "video", "base64": "A" * 400, "mime_type": "video/mp4"}
         )
         assert result.startswith("[Video: video/mp4")
 
     def test_file_block_with_base64(self) -> None:
-        b64 = "A" * 400
         result = _format_content_block(
-            {"type": "file", "base64": b64, "mime_type": "application/pdf"}
+            {"type": "file", "base64": "A" * 400, "mime_type": "application/pdf"}
         )
         assert result.startswith("[File: application/pdf")
 
@@ -353,15 +398,22 @@ class TestFormatContentBlock:
         result = _format_content_block({"type": "image", "base64": "AAAA"})
         assert "[Image: image," in result
 
+    def test_image_block_non_str_base64_falls_through_to_json(self) -> None:
+        # Non-str base64 fails the isinstance check → JSON fallback, no placeholder.
+        result = _format_content_block({"type": "image", "base64": 123})
+        assert "[Image" not in result
+        assert '"base64": 123' in result
+
     def test_plain_dict_serialized_as_json(self) -> None:
         result = _format_content_block({"type": "text", "text": "hello"})
         assert "hello" in result
 
-    def test_non_serialisable_falls_back_to_str(self) -> None:
+    def test_non_serializable_falls_back_to_str(self) -> None:
         obj = object()
         result = _format_content_block({"type": "custom", "data": obj})
-        # Falls back to str() since object() is not JSON serialisable
-        assert isinstance(result, str)
+        # json.dumps raises TypeError for `object()` → falls back to `str(block)`,
+        # which renders the repr including "object at 0x...".
+        assert "object" in result
 
     def test_preserves_non_ascii_in_json(self) -> None:
         result = _format_content_block({"type": "text", "text": "日本語"})
@@ -406,9 +458,10 @@ class TestFormatToolMessageContent:
         assert "prefix" in result
         assert "body" in result
 
-    def test_list_with_non_serialisable_item(self) -> None:
+    def test_list_with_non_serializable_item(self) -> None:
+        # json.dumps raises TypeError for `object()` → falls back to str(item).
         result = format_tool_message_content([object()])
-        assert isinstance(result, str)
+        assert "object" in result
 
     def test_preserves_non_ascii(self) -> None:
         assert format_tool_message_content("日本語") == "日本語"

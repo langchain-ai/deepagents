@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.39"
+version = "0.0.41"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -50,7 +50,7 @@ dependencies = [
     "markdownify>=0.13.0,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.7.7",
+    "langsmith[sandbox]>=0.7.32",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",

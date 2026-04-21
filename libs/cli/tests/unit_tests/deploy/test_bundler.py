@@ -24,6 +24,7 @@ from deepagents_cli.deploy.config import (
     SUBAGENTS_DIRNAME,
     USER_DIRNAME,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
 )
@@ -46,10 +47,12 @@ def _minimal_config(
     *,
     provider: str = "none",
     model: str = "anthropic:claude-sonnet-4-6",
+    auth: AuthConfig | None = None,
 ) -> DeployConfig:
     return DeployConfig(
         agent=AgentConfig(name="test-agent", model=model),
         sandbox=SandboxConfig(provider=provider),  # type: ignore[arg-type]
+        auth=auth,
     )
 
 
@@ -220,6 +223,45 @@ class TestRenderDeployGraph:
             config = _minimal_config(provider=provider)
             result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
+
+    def test_langsmith_block_uses_snapshot_api(self) -> None:
+        """Generated langsmith block must reference the snapshot API surface.
+
+        Catches drift between the `sandbox_snapshot` bundler variable and the
+        `SANDBOX_SNAPSHOT` reference inside the generated block, as well as
+        silent removal of the snapshot env vars.
+        """
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        # Snapshot API symbols must appear (not the old template API).
+        assert "SANDBOX_SNAPSHOT" in result
+        assert "list_snapshots()" in result
+        assert "create_snapshot(" in result
+        assert "snapshot_id=snapshot_id" in result
+        assert "LANGSMITH_SANDBOX_SNAPSHOT_ID" in result
+        assert "LANGSMITH_SANDBOX_SNAPSHOT_NAME" in result
+
+        # Legacy template API must be gone.
+        assert "SANDBOX_TEMPLATE" not in result
+        assert "template_name=" not in result
+        assert "get_template(" not in result
+
+    def test_langsmith_block_wraps_errors_with_runtime_error(self) -> None:
+        """Generated langsmith block must wrap SDK calls in RuntimeError.
+
+        Mirrors `_LangSmithProvider._ensure_snapshot` so deployed agents
+        surface actionable errors instead of raw SDK tracebacks.
+        """
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert "Failed to list snapshots" in result
+        assert "Failed to build snapshot" in result
+        assert "Failed to create sandbox from snapshot" in result
+        # API-key fallback must not raise KeyError on missing env vars.
+        assert 'os.environ["LANGCHAIN_API_KEY"]' not in result
+        assert "No LangSmith sandbox API key found" in result
 
     def test_skills_prefix_under_memories(self) -> None:
         config = _minimal_config()
@@ -415,6 +457,91 @@ class TestPrintBundleSummary:
         out = capsys.readouterr().out
         assert "Subagents (1)" in out
         assert "researcher" in out
+
+
+class TestRenderLanggraphJsonAuth:
+    def test_without_auth(self) -> None:
+        result = json.loads(
+            _render_langgraph_json(env_present=False, auth_present=False)
+        )
+        assert "auth" not in result
+
+    def test_with_auth(self) -> None:
+        result = json.loads(_render_langgraph_json(env_present=True, auth_present=True))
+        assert result["auth"] == {"path": "./auth.py:auth"}
+
+
+class TestRenderPyprojectAuth:
+    def test_no_auth_dep(self) -> None:
+        config = _minimal_config(model="bare-model")
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" not in result
+
+    def test_clerk_adds_pyjwt(self) -> None:
+        config = _minimal_config(model="bare-model", auth=AuthConfig(provider="clerk"))
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" in result
+
+    def test_supabase_no_extra_dep(self) -> None:
+        config = _minimal_config(
+            model="bare-model", auth=AuthConfig(provider="supabase")
+        )
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" not in result
+
+
+class TestBundleAuth:
+    def test_auth_py_generated(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        assert (build / "auth.py").exists()
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        assert "auth = Auth()" in content
+        assert "SUPABASE_URL" in content
+        assert "add_owner" in content
+
+    def test_auth_py_not_generated_without_auth(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        assert not (build / "auth.py").exists()
+
+    def test_langgraph_json_includes_auth(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        lg = json.loads((build / "langgraph.json").read_text(encoding="utf-8"))
+        assert lg["auth"] == {"path": "./auth.py:auth"}
+
+    def test_langgraph_json_no_auth_without_config(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        lg = json.loads((build / "langgraph.json").read_text(encoding="utf-8"))
+        assert "auth" not in lg
+
+    def test_clerk_auth_py_valid_python(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="clerk"))
+        bundle(config, project, build)
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        compile(content, "<auth.py>", "exec")
+        assert "CLERK_SECRET_KEY" in content
+        assert "add_owner" in content
+
+    def test_supabase_auth_py_valid_python(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        compile(content, "<auth.py>", "exec")
 
 
 def _add_subagent(

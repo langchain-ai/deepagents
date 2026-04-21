@@ -15,9 +15,9 @@ Reads the canonical project layout:
 
 ...and writes everything `langgraph deploy` needs to a build directory.
 
-AGENTS.md and skills are read-only at runtime.  When a ``user/``
-directory is present, a per-user ``AGENTS.md`` is seeded (from
-``user/AGENTS.md`` if provided, otherwise empty) and is writable
+AGENTS.md and skills are read-only at runtime.  When a `user/`
+directory is present, a per-user `AGENTS.md` is seeded (from
+`user/AGENTS.md` if provided, otherwise empty) and is writable
 at runtime.
 """
 
@@ -39,6 +39,8 @@ from deepagents_cli.deploy.config import (
     load_subagents,
 )
 from deepagents_cli.deploy.templates import (
+    AUTH_BLOCKS,
+    AUTH_ON_HANDLER,
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
@@ -125,9 +127,18 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 6. Render langgraph.json.
+    # 6. Generate auth.py if [auth] is configured.
+    auth_present = config.auth is not None
+    if config.auth is not None:
+        (build_dir / "auth.py").write_text(
+            _render_auth_py(config.auth.provider),
+            encoding="utf-8",
+        )
+        logger.info("Generated auth.py (%s)", config.auth.provider)
+
+    # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
-        _render_langgraph_json(env_present=env_present),
+        _render_langgraph_json(env_present=env_present, auth_present=auth_present),
         encoding="utf-8",
     )
 
@@ -204,10 +215,10 @@ def _build_seed(
             "user_memories":  { "/AGENTS.md": "..." }
         }
 
-    ``memories`` and ``skills`` are read-only at runtime.
-    ``user_memories`` contains a single writable ``AGENTS.md`` mounted at
-    ``/memories/user/``, namespaced per user_id.  If the project has a
-    ``user/`` directory (even if empty), an ``AGENTS.md`` is always seeded.
+    `memories` and `skills` are read-only at runtime.
+    `user_memories` contains a single writable `AGENTS.md` mounted at
+    `/memories/user/`, namespaced per user_id.  If the project has a
+    `user/` directory (even if empty), an `AGENTS.md` is always seeded.
     """
     memories: dict[str, str] = {f"/{AGENTS_MD_FILENAME}": system_prompt}
     skills: dict[str, str] = {}
@@ -279,7 +290,7 @@ def _render_deploy_graph(
 
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
-        sandbox_template=config.sandbox.template,
+        sandbox_snapshot=config.sandbox.template,
         sandbox_image=config.sandbox.image,
         sandbox_scope=config.sandbox.scope,
         sandbox_block=sandbox_block,
@@ -292,8 +303,17 @@ def _render_deploy_graph(
     )
 
 
-def _render_langgraph_json(*, env_present: bool) -> str:
-    """Render `langgraph.json` — adds `"env": ".env"` when a `.env` was copied."""
+def _render_auth_py(provider: str) -> str:
+    """Render the generated `auth.py` for the given auth provider."""
+    if provider not in AUTH_BLOCKS:
+        msg = f"Unknown auth provider {provider!r}. Valid: {sorted(AUTH_BLOCKS)}"
+        raise ValueError(msg)
+    auth_block, _ = AUTH_BLOCKS[provider]
+    return auth_block + AUTH_ON_HANDLER
+
+
+def _render_langgraph_json(*, env_present: bool, auth_present: bool = False) -> str:
+    """Render `langgraph.json` — adds `"env"` and `"auth"` when applicable."""
     data: dict = {
         "dependencies": ["."],
         "graphs": {"agent": "./deploy_graph.py:make_graph"},
@@ -301,6 +321,8 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     }
     if env_present:
         data["env"] = ".env"
+    if auth_present:
+        data["auth"] = {"path": "./auth.py:auth"}
     return json.dumps(data, indent=2) + "\n"
 
 
@@ -340,6 +362,11 @@ def _render_pyproject(
     if partner_pkg:
         deps.append(partner_pkg)
 
+    if config.auth is not None:
+        _, auth_pkg = AUTH_BLOCKS.get(config.auth.provider, (None, None))
+        if auth_pkg:
+            deps.append(auth_pkg)
+
     extra_deps_lines = "".join(f'    "{dep}",\n' for dep in deps)
 
     return PYPROJECT_TEMPLATE.format(
@@ -364,6 +391,8 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")
+    if config.auth is not None:
+        print(f"  Auth: {config.auth.provider}")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

@@ -34,6 +34,15 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     ],
 }
 
+# Subdirectories under ``tests/evals/`` that are intentionally **not**
+# part of the cataloged eval set. They're co-located with the base
+# suite so ``pytest tests/evals/<dir>/`` picks them up by path, but
+# they don't register an ``eval_category`` or ``eval_tier``, and they
+# don't appear in ``EXPECTED_CATEGORY_MODULES``, the radar, or the
+# generated ``EVAL_CATALOG.md``. Use this sparingly — the default is
+# that evals under ``tests/evals/`` should be tagged.
+OFF_CATALOG_EVAL_DIRS: frozenset[str] = frozenset({"oolong", "swarm"})
+
 
 def test_all_categories_have_labels():
     for cat in ALL_CATEGORIES:
@@ -95,6 +104,11 @@ def test_expected_modules_match_filesystem():
         discovered.setdefault(cat, set()).add(stem)
 
     for path in sorted(evals_dir.rglob("test_*.py")):
+        # Skip off-catalog directories — these are co-located evals
+        # that intentionally don't register a category. See
+        # OFF_CATALOG_EVAL_DIRS.
+        if any(part in OFF_CATALOG_EVAL_DIRS for part in path.relative_to(evals_dir).parts):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.iter_child_nodes(tree):
             # Module-level pytestmark = [pytest.mark.eval_category("...")]
@@ -172,6 +186,11 @@ def test_all_eval_modules_have_eval_tier():
     missing: list[str] = []
 
     for path in sorted(evals_dir.rglob("test_*.py")):
+        # Off-catalog suites are intentionally untagged — skip them
+        # here the same way ``test_expected_modules_match_filesystem``
+        # does. See ``OFF_CATALOG_EVAL_DIRS``.
+        if any(part in OFF_CATALOG_EVAL_DIRS for part in path.relative_to(evals_dir).parts):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if not _has_eval_tier_marker(tree):
             missing.append(str(path.relative_to(evals_dir)))

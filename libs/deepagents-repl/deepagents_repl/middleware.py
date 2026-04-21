@@ -16,6 +16,7 @@ the full design rationale.
 # annotations here matches what FilesystemMiddleware does.
 
 import logging
+import math
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any
@@ -59,7 +60,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- State (variables, functions) persists across calls within this conversation.\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Sandboxed: no filesystem, no stdlib, no network, no real clock, no `fetch`, no `require`.\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
+    "- Timeout: {timeout} per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
 
@@ -108,7 +109,12 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call wall-clock timeout in seconds. Applied to every
-            ``eval`` on every context. Default 5.
+            ``eval`` on every context. Default 5. Pass ``None`` to
+            disable the deadline entirely — useful for REPL code that
+            awaits tool calls (e.g. ``tools.task``) whose latency is
+            dominated by model round-trips, not JS work. ``None`` is
+            coerced to ``math.inf`` before reaching the QuickJS
+            context, which treats it as "no deadline."
         tool_name: Name of the tool exposed to the model. Default ``eval``.
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
@@ -146,7 +152,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = _DEFAULT_TIMEOUT,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
@@ -169,8 +175,12 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 store.
         """
         super().__init__()
+        # ``None`` means "no deadline." Coerce once here so every downstream
+        # layer (Registry, _ThreadREPL, quickjs_rs.Context) keeps the strict
+        # ``float`` contract it's written against.
+        effective_timeout = math.inf if timeout is None else timeout
         self._memory_limit = memory_limit
-        self._timeout = timeout
+        self._timeout = effective_timeout
         self._tool_name = tool_name
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
@@ -178,12 +188,17 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._skills_backend = skills_backend
         self._registry = _Registry(
             memory_limit=memory_limit,
-            timeout=timeout,
+            timeout=effective_timeout,
             capture_console=capture_console,
+        )
+        timeout_desc = (
+            "disabled"
+            if not math.isfinite(effective_timeout)
+            else f"{effective_timeout}s"
         )
         self._base_system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             tool_name=tool_name,
-            timeout=timeout,
+            timeout=timeout_desc,
             memory_limit_mb=memory_limit // (1024 * 1024),
         )
         # Backwards-compatible alias used in tests / external introspection.

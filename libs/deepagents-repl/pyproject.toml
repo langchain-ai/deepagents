@@ -31,7 +31,7 @@ dependencies = [
 # repo on disk, the package name is what pip/uv installs).
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
-quickjs-rs = { path = "../../../quickjs-wasm", editable = true }
+quickjs-rs = { path = "../../../../../quickjs-wasm", editable = true }
 
 [dependency-groups]
 test = [

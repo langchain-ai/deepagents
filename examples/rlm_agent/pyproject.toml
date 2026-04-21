@@ -1,0 +1,14 @@
+[project]
+name = "rlm-agent-example"
+version = "0.1.0"
+description = "RLM agent example — recursive Deep Agents with a compiled general-purpose chain and REPL at every level"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.2.6",
+    "deepagents-repl",
+    "langchain-anthropic>=0.3.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+deepagents-repl = { path = "../../libs/deepagents-repl", editable = true }

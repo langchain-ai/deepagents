@@ -33,6 +33,7 @@ several sums in parallel via the REPL.
 from __future__ import annotations
 
 import argparse
+import asyncio
 from typing import Any
 
 from deepagents import create_deep_agent
@@ -45,11 +46,12 @@ from deepagents_repl import REPLMiddleware
 from langchain_core.tools import BaseTool, tool
 
 _MAX_DEPTH_LIMIT = 8  # guard against typos that would build thousands of agents
+DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 def create_rlm_agent(
     *,
-    model: str | None = None,
+    model: str = DEFAULT_MODEL,
     tools: list[BaseTool] | None = None,
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     max_depth: int = 1,
@@ -110,7 +112,7 @@ def create_rlm_agent(
 
 def _build(
     *,
-    model: str | None,
+    model: str,
     tools: list[BaseTool] | None,
     extra_subagents: list[SubAgent | CompiledSubAgent],
     max_depth: int,
@@ -131,7 +133,7 @@ def _build(
             model=model,
             tools=tools,
             subagents=extra_subagents,
-            middleware=[REPLMiddleware(ptc=True)],
+            middleware=[REPLMiddleware(ptc=True, timeout=None)],
             **kwargs,
         )
 
@@ -151,7 +153,7 @@ def _build(
         model=model,
         tools=tools,
         subagents=[compiled_gp, *extra_subagents],
-        middleware=[REPLMiddleware(ptc=True)],
+        middleware=[REPLMiddleware(ptc=True, timeout=None)],
         **kwargs,
     )
 
@@ -177,18 +179,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--max-depth", type=int, default=1)
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     return parser.parse_args()
 
 
-def _main() -> None:
+async def _amain() -> None:
     args = _parse_args()
     agent = create_rlm_agent(
         model=args.model,
         tools=[add],
         max_depth=args.max_depth,
     )
-    result = agent.invoke(
+    # ``ainvoke`` (not ``invoke``) so REPL tool calls stay on the
+    # caller's thread. ``ToolNode``'s sync path routes tool calls
+    # through a ``ThreadPoolExecutor``, and ``quickjs_rs.Context`` is
+    # ``!Send`` — invoking the REPL's ``eval`` tool from a different
+    # thread than the one that built the context panics.
+    result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": args.task}]},
     )
     for message in result["messages"]:
@@ -197,4 +204,4 @@ def _main() -> None:
 
 
 if __name__ == "__main__":
-    _main()
+    asyncio.run(_amain())

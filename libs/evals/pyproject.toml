@@ -47,6 +47,9 @@ dependencies = [
     "nltk>=3.9.0",
     "openevals>=0.1.3",
     "tiktoken>=0.8.0",
+    # Needed by the `rlm` and `swarm` runners in tests/evals/oolong/;
+    # the `baseline` and `shell` runners do not import it.
+    "deepagents-repl",
 ]
 
 [project.optional-dependencies]
@@ -104,9 +107,10 @@ override-dependencies = [
 [tool.uv.sources]
 deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
+deepagents-repl = { path = "../deepagents-repl", editable = true }
 
 [tool.ty.environment]
-extra-paths = ["../deepagents", "../cli"]
+extra-paths = ["../deepagents", "../cli", "../deepagents-repl"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

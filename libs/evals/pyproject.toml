@@ -95,7 +95,13 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 override-dependencies = [
-    "openai>=1.109.1,<2.0.0",
+    # TEMP (revert before merging codex profile): bumped to openai 2.x so
+    # `client.responses.compact` is available for the codex `/compact` vs
+    # LLM-summarization A/B. The stale pin (inherited from the initial
+    # harbor port) fought with langchain-openai>=1.1.14's own openai>=2.26.0
+    # requirement and was the direct cause of `AsyncResponses has no
+    # attribute 'compact'` when CodexCompactionMiddleware hit the async path.
+    "openai>=2.26.0,<3.0.0",
     "e2b==2.4.3",
     # CVE-2026-24486: path traversal vulnerability in < 0.0.22
     "python-multipart>=0.0.22",

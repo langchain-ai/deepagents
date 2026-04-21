@@ -68,7 +68,9 @@ def test_tool_registered_with_default_name() -> None:
     )
     tools = agent.nodes["tools"].bound._tools_by_name
     assert "eval" in tools
-    assert "persistent" in tools["eval"].description.lower()
+    desc = tools["eval"].description.lower()
+    assert "typescript/javascript code in a sandboxed repl" in desc
+    assert "swarm.create" in desc and "swarm.execute" in desc
 
 
 def test_tool_registered_with_custom_name() -> None:

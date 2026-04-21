@@ -522,11 +522,12 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return StructuredTool.from_function(
             name=tool_name,
             description=(
-                "Execute JavaScript in a persistent sandboxed REPL. "
-                "Variables and functions defined in one call are visible to "
-                "subsequent calls in this conversation. No filesystem, "
-                "network, or real clock. Synchronous only — top-level `await` "
-                "will not resolve."
+                "Evaluate TypeScript/JavaScript code in a sandboxed REPL. "
+                "State persists across calls.\n"
+                "Use readFile(path) and writeFile(path, content) for file access.\n"
+                "Use swarm.create(file, source) and swarm.execute(file, options) "
+                "for parallel fan-out.\n"
+                "Use console.log() for output. Returns the result of the last expression."
             ),
             func=sync_eval,
             coroutine=async_eval,

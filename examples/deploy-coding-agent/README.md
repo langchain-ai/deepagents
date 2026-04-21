@@ -43,6 +43,39 @@ deploy-coding-agent/
     └── planning/              # Task planning skill
 ```
 
+## Query via SDK
+
+After deploying, use the [LangGraph SDK](https://pypi.org/project/langgraph-sdk/) to call the agent programmatically:
+
+```python
+import asyncio
+from langgraph_sdk import get_client
+
+DEPLOY_URL = "https://<your-deployment-url>"
+
+async def main():
+    client = get_client(url=DEPLOY_URL)
+    assistants = await client.assistants.search()
+    assistant_id = assistants[0]["assistant_id"]
+
+    thread = await client.threads.create()
+
+    async for event in client.runs.stream(
+        thread["thread_id"],
+        assistant_id,
+        input={"messages": [{"role": "user", "content": "Add a hello_world function and test it"}]},
+        stream_mode="values",
+    ):
+        if isinstance(event.data, dict):
+            for msg in event.data.get("messages", []):
+                if isinstance(msg, dict) and msg.get("type") == "ai" and msg.get("content"):
+                    print(msg["content"])
+
+asyncio.run(main())
+```
+
+Find your deployment URL in LangSmith under **Deployments**.
+
 ## Resources
 
 - [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)

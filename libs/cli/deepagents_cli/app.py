@@ -1689,6 +1689,7 @@ class DeepAgentsApp(App):
                     )
             else:
                 from deepagents_cli.update_check import (
+                    format_age_suffix,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -1697,8 +1698,10 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
+                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
                 self.notify(
-                    f"Update available: v{latest} (current: v{cli_version}). "
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}{age_suffix}). "
                     f"Run: {cmd}\n\n"
                     f"Enable auto-updates: /auto-update",
                     severity="information",
@@ -1754,26 +1757,51 @@ class DeepAgentsApp(App):
         """Handle the `/update` slash command — check for and install updates."""
         await self._mount_message(UserMessage("/update"))
         try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
+                format_age_suffix,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
             )
 
+            if await asyncio.to_thread(_is_editable_install):
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        "Updates are not available for editable installs. "
+                        f"Currently on v{cli_version}{age_suffix}."
+                    )
+                )
+                return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available, bypass_cache=True
             )
+            if latest is None:
+                await self._mount_message(
+                    AppMessage(
+                        "Could not determine the latest version. "
+                        "Check your network and try again."
+                    )
+                )
+                return
             if not available:
-                await self._mount_message(AppMessage("Already on the latest version."))
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        f"Already on the latest version (v{cli_version}{age_suffix})."
+                    )
+                )
                 return
 
-            from deepagents_cli._version import __version__ as cli_version
-
+            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} (current: v{cli_version}). "
-                    "Upgrading..."
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
                 )
             )
             success, output = await perform_upgrade()
@@ -1793,6 +1821,83 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
             )
+
+    async def _handle_version_command(self) -> None:
+        """Handle the `/version` slash command — show versions and update status.
+
+        The CLI release age is served from the cache populated by the
+        background update check. The SDK release age is served from its own
+        cache; on the first call for a given SDK version (or on a cache
+        miss) this triggers a one-off PyPI fetch bounded by a 3s timeout,
+        then persists the result so subsequent calls stay local. The
+        update-available hint is sourced from `self._update_available`,
+        which reflects the last completed background check.
+        """
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        lines: list[str] = []
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.update_check import format_age_suffix
+
+            age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+            lines.append(f"deepagents-cli version: {cli_version}{age_suffix}")
+        except ImportError:
+            logger.debug("deepagents_cli._version module not found")
+            lines.append("deepagents-cli version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up CLI version", exc_info=True)
+            lines.append("deepagents-cli version: unknown")
+
+        try:
+            from deepagents_cli.update_check import format_sdk_age_suffix
+
+            sdk_version = _pkg_version("deepagents")
+            sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
+            lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
+        except PackageNotFoundError:
+            logger.debug("deepagents SDK package not found in environment")
+            lines.append("deepagents (SDK) version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up SDK version", exc_info=True)
+            lines.append("deepagents (SDK) version: unknown")
+
+        available, latest = self._update_available
+        if available and latest:
+            try:
+                from deepagents_cli.update_check import upgrade_command
+
+                cmd = upgrade_command()
+            except Exception:
+                logger.warning(
+                    "Could not resolve upgrade command for /version; "
+                    "falling back to generic pip hint",
+                    exc_info=True,
+                )
+                from deepagents_cli.update_check import FALLBACK_UPGRADE_COMMAND
+
+                cmd = FALLBACK_UPGRADE_COMMAND
+            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+
+        await self._mount_message(AppMessage("\n".join(lines)))
+
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status,
+                get_extras_status,
+            )
+
+            extras_markdown = format_extras_status(get_extras_status())
+        except Exception:
+            logger.warning(
+                "Failed to collect optional dependency status", exc_info=True
+            )
+            extras_markdown = ""
+        if extras_markdown:
+            await self._mount_message(AppMessage(extras_markdown, markdown=True))
 
     async def _handle_auto_update_toggle(self) -> None:
         """Handle the `/auto-update` slash command — persist toggle immediately."""
@@ -3020,34 +3125,7 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI and SDK package versions
-            try:
-                from deepagents_cli._version import (
-                    __version__ as cli_version,
-                )
-
-                cli_line = f"deepagents-cli version: {cli_version}"
-            except ImportError:
-                logger.debug("deepagents_cli._version module not found")
-                cli_line = "deepagents-cli version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up CLI version", exc_info=True)
-                cli_line = "deepagents-cli version: unknown"
-            try:
-                from importlib.metadata import (
-                    PackageNotFoundError,
-                    version as _pkg_version,
-                )
-
-                sdk_version = _pkg_version("deepagents")
-                sdk_line = f"deepagents (SDK) version: {sdk_version}"
-            except PackageNotFoundError:
-                logger.debug("deepagents SDK package not found in environment")
-                sdk_line = "deepagents (SDK) version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up SDK version", exc_info=True)
-                sdk_line = "deepagents (SDK) version: unknown"
-            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
+            await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
         elif cmd == "/clear":

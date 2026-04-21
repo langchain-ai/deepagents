@@ -8,6 +8,13 @@ DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
 PYPI_URL = "https://pypi.org/pypi/deepagents-cli/json"
 """PyPI JSON API endpoint for version checks."""
 
+SDK_PYPI_URL = "https://pypi.org/pypi/deepagents/json"
+"""PyPI JSON API endpoint for reading `deepagents` SDK release metadata.
+
+The CLI only reads release-age metadata from this endpoint; it never
+performs SDK update checks.
+"""
+
 CHANGELOG_URL = (
     "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
 )

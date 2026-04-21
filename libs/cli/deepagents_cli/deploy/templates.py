@@ -202,6 +202,147 @@ SANDBOX_BLOCKS = {
 }
 """Map of `provider -> (sandbox_block, requires_partner_package)`."""
 
+# ---------------------------------------------------------------------------
+# Per-provider auth blocks
+#
+# Each block defines the `@auth.authenticate` handler for a provider.
+# The shared `@auth.on` handler is appended to all providers automatically.
+# ---------------------------------------------------------------------------
+
+AUTH_ON_HANDLER = '''\
+
+
+@auth.on.threads
+async def add_owner(
+    ctx: Auth.types.AuthContext,
+    value: dict,
+):
+    """Scope all resources to the authenticated user."""
+    if is_studio_user(ctx.user):
+        return {}
+
+    filters = {"owner": ctx.user.identity}
+    metadata = value.setdefault("metadata", {})
+    metadata.update(filters)
+    return filters
+'''
+
+AUTH_BLOCK_SUPABASE = '''\
+"""Supabase auth for LangGraph deploy.
+
+Validates the Bearer token against Supabase's /auth/v1/user endpoint
+and scopes resources per authenticated user.
+"""
+
+import os
+
+import httpx
+from langgraph_sdk import Auth
+from langgraph_sdk.auth import is_studio_user
+
+auth = Auth()
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_PUBLISHABLE_DEFAULT_KEY = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
+
+_http_client = httpx.AsyncClient()
+
+
+@auth.authenticate
+async def get_current_user(
+    authorization: str | None,
+) -> Auth.types.MinimalUserDict:
+    """Validate Supabase token and return user identity."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise Auth.exceptions.HTTPException(
+            status_code=401, detail="Missing or invalid authorization header"
+        )
+
+    token = authorization.removeprefix("Bearer ").strip()
+
+    response = await _http_client.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "apikey": SUPABASE_PUBLISHABLE_DEFAULT_KEY,
+        },
+    )
+
+    if response.status_code != 200:
+        raise Auth.exceptions.HTTPException(
+            status_code=401, detail="Invalid or expired token"
+        )
+
+    user = response.json()
+    return {
+        "identity": user["id"],
+        "display_name": user.get("email", ""),
+    }
+'''
+
+AUTH_BLOCK_CLERK = '''\
+"""Clerk auth for LangGraph deploy.
+
+Fetches JWKS from Clerk's API, caches the signing keys, and verifies
+the session JWT locally. Scopes resources per authenticated user.
+"""
+
+import os
+
+import jwt as pyjwt
+from jwt import PyJWKClient
+from langgraph_sdk import Auth
+from langgraph_sdk.auth import is_studio_user
+
+auth = Auth()
+
+CLERK_SECRET_KEY = os.environ["CLERK_SECRET_KEY"]
+
+_jwks_client = PyJWKClient(
+    "https://api.clerk.com/v1/jwks",
+    headers={
+        "Authorization": f"Bearer {CLERK_SECRET_KEY}",
+        "User-Agent": "deepagents-deploy/1.0",
+    },
+)
+
+
+@auth.authenticate
+async def get_current_user(
+    authorization: str | None,
+) -> Auth.types.MinimalUserDict:
+    """Validate Clerk session JWT and return user identity."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise Auth.exceptions.HTTPException(
+            status_code=401, detail="Missing or invalid authorization header"
+        )
+
+    token = authorization.removeprefix("Bearer ").strip()
+
+    try:
+        signing_key = _jwks_client.get_signing_key_from_jwt(token)
+        payload = pyjwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+        )
+    except pyjwt.exceptions.PyJWTError as exc:
+        raise Auth.exceptions.HTTPException(
+            status_code=401, detail=f"Invalid token: {exc}"
+        )
+
+    return {
+        "identity": payload["sub"],
+        "display_name": payload.get("email", payload.get("name", "")),
+    }
+'''
+
+AUTH_BLOCKS: dict[str, tuple[str, str | None]] = {
+    "supabase": (AUTH_BLOCK_SUPABASE, None),
+    "clerk": (AUTH_BLOCK_CLERK, "pyjwt"),
+}
+"""Map of auth provider -> (auth_block_template, optional_pip_dependency)."""
+
 
 # ---------------------------------------------------------------------------
 # MCP tools loader (only emitted when mcp.json is present)

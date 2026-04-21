@@ -22,6 +22,13 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from deepagents_cli.notifications import (
+    ActionId,
+    MissingDepPayload,
+    NotificationAction,
+    PendingNotification,
+)
+
 if TYPE_CHECKING:
     from deepagents_cli.app import AppResult
     from deepagents_cli.mcp_tools import MCPServerInfo
@@ -134,9 +141,6 @@ def check_cli_dependencies() -> None:
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
 """Fallback installation URL when no platform package manager is detected."""
 
-_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
-"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
-
 _SUPPRESS_HINT_CLI = (
     'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
 )
@@ -214,29 +218,77 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     return missing
 
 
-def format_tool_warning_tui(tool: str) -> str:
-    """Format a missing-tool warning for the TUI toast.
+def build_missing_tool_notification(tool: str) -> PendingNotification:
+    """Build a `PendingNotification` for a missing optional tool.
+
+    The returned entry carries the install hint (or URL) in a typed payload so
+    the notification center action handler can copy it / open it without
+    re-running platform detection.
 
     Args:
-        tool: Name of the missing tool.
+        tool: Name of the missing tool (e.g. `"ripgrep"`, `"tavily"`).
 
     Returns:
-        Plain-text warning suitable for `App.notify`.
+        A registry entry ready for `NotificationRegistry.add`.
     """
+    suppress_action = NotificationAction(ActionId.SUPPRESS, "Don't show this again")
     if tool == "ripgrep":
         hint = _ripgrep_install_hint()
-        return (
+        if hint.startswith("http"):
+            actions: tuple[NotificationAction, ...] = (
+                NotificationAction(
+                    ActionId.OPEN_WEBSITE, "Open installation guide", primary=True
+                ),
+                suppress_action,
+            )
+            payload = MissingDepPayload(tool="ripgrep", url=hint)
+        else:
+            actions = (
+                NotificationAction(
+                    ActionId.COPY_INSTALL, "Copy install command", primary=True
+                ),
+                suppress_action,
+            )
+            payload = MissingDepPayload(tool="ripgrep", install_command=hint)
+        body = (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {hint}\n\n"
-            f"{_SUPPRESS_HINT_TUI}"
+            f"Install: {hint}"
+        )
+        return PendingNotification(
+            key="dep:ripgrep",
+            title="ripgrep is not installed",
+            body=body,
+            actions=actions,
+            payload=payload,
         )
     if tool == "tavily":
-        return (
-            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
-            "\nGet a key at https://tavily.com\n\n"
-            f"{_SUPPRESS_HINT_TUI}"
+        return PendingNotification(
+            key="dep:tavily",
+            title="Web search disabled",
+            body=(
+                "TAVILY_API_KEY is not set, so web search is disabled.\n"
+                "Get a key at https://tavily.com"
+            ),
+            actions=(
+                NotificationAction(
+                    ActionId.OPEN_WEBSITE, "Open tavily.com", primary=True
+                ),
+                suppress_action,
+            ),
+            payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
         )
-    return f"{tool} is not installed."
+    logger.warning("No install hint configured for tool %r", tool)
+    return PendingNotification(
+        key=f"dep:{tool}",
+        title=f"{tool} is not installed",
+        body=f"{tool} is not installed.",
+        actions=(
+            NotificationAction(
+                ActionId.SUPPRESS, "Don't show this again", primary=True
+            ),
+        ),
+        payload=MissingDepPayload(tool=tool),
+    )
 
 
 def format_tool_warning_cli(tool: str) -> str:

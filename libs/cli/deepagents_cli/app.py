@@ -3765,6 +3765,10 @@ class DeepAgentsApp(App):
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
         self._show_tokens(approximate=self._tokens_approximate)
 
+        # Agent-executed commands and tools can mutate repo state (e.g. git
+        # checkout inside an execute call), so refresh the footer on turn end.
+        self._schedule_git_branch_refresh()
+
         try:
             await self._maybe_drain_deferred()
         except Exception:

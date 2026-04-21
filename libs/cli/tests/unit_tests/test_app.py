@@ -249,6 +249,24 @@ class TestStartupSequence:
         queue_mock.assert_not_awaited()
         assert app._agent_running is False
 
+    async def test_cleanup_agent_task_schedules_git_branch_refresh(self) -> None:
+        """Agent cleanup should refresh repo state after a turn completes."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        spinner_mock = AsyncMock()
+        refresh_mock = MagicMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._set_spinner = spinner_mock  # type: ignore[assignment]
+        app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
+
+        await app._cleanup_agent_task()
+
+        refresh_mock.assert_called_once_with()
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
+
     def test_empty_startup_cmd_is_normalized_to_none(self) -> None:
         """Empty or whitespace-only `--startup-cmd` should be treated as unset."""
         for raw in ("", "   ", "\t\n"):

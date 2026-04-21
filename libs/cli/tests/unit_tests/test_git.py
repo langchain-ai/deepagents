@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from deepagents_cli._git import (
     _abbreviate_git_ref,
     _normalize_lookup_path,
@@ -122,7 +123,7 @@ class TestFindGitDirAndRoot:
 
         subdir = repo_root / "src"
         subdir.mkdir()
-        
+
         # Test passing a file instead of a dir to trigger `not current.is_dir()`
         some_file = subdir / "file.txt"
         some_file.touch()

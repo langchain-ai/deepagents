@@ -53,15 +53,67 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 
-_SYSTEM_PROMPT_TEMPLATE = (
-    "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
-    "REPL backed by QuickJS.\n"
-    "- State (variables, functions) persists across calls within this conversation.\n"
-    "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Sandboxed: no filesystem, no stdlib, no network, no real clock, no `fetch`, no `require`.\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
-    "- `console.log` output is captured and returned alongside the result."
+_LARGE_FILE_RULE_SWARM = (
+    "- **Check inputs before processing** — for any file, use `ls` or "
+    "`read_file` with offset/limit to understand its size and shape. "
+    "If the work involves many independent items, multiple entities, "
+    "or data that exceeds a single context, use "
+    "`swarm.create`/`swarm.execute` — see \"Parallel fan-out\" below."
 )
+
+_LARGE_FILE_RULE_NO_SWARM = (
+    "- **Check file size before processing** — before working with any "
+    "input file, check its size. If it exceeds ~50,000 characters, "
+    "decompose the work into chunks and process them separately."
+)
+
+_BASE_PROMPT_TEMPLATE = """\
+## TypeScript/JavaScript REPL (`{tool_name}`)
+
+You have access to a sandboxed TypeScript/JavaScript REPL running in an isolated interpreter.
+TypeScript syntax (type annotations, interfaces, generics, `as` casts) is supported and stripped at evaluation time.
+Variables, functions, and closures persist across calls within the same session.
+
+### Hard rules
+
+{large_file_rule}
+- **No network, no imports** — do not attempt `fetch`, `require`, or `import` inside `{tool_name}`. Use your file tools (`read_file`, `grep`, `ls`, etc.) for exploration and `readFile`/`writeFile` for direct REPL file I/O.
+- **Cite your sources** — when reporting values from files, include the path and key/index so the user can verify.
+- **Use console.log()** for output — it is captured and returned. `console.warn()` and `console.error()` are also available.
+- **Reuse state from previous cells** — variables, functions, and results from earlier `{tool_name}` calls persist across calls. Reference them by name in follow-up cells instead of re-embedding data as inline JSON literals.
+
+### First-time usage
+
+```typescript
+// Read a file from the agent's virtual filesystem
+const raw: string = await readFile("/data.json");
+const data = JSON.parse(raw) as {{ n: number }};
+console.log(data);
+
+// Write results back
+await writeFile("/output.txt", JSON.stringify({{ result: data.n }}));
+```
+
+### API Reference — built-in globals
+
+```typescript
+/**
+ * Read a file from the agent's virtual filesystem. Throws if the file does not exist.
+ */
+async readFile(path: string): Promise<string>
+
+/**
+ * Write a file to the agent's virtual filesystem.
+ */
+async writeFile(path: string, content: string): Promise<void>
+```
+
+### Limitations
+
+- ES2023+ syntax with TypeScript support. No Node.js APIs, no `require`, no `import`.
+- Output is truncated beyond a fixed character limit — be selective about what you log.
+- Execution timeout per call: {timeout:g} s.
+"""
 
 
 _SWARM_PROMPT_TEMPLATE = """
@@ -382,10 +434,13 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             capture_console=capture_console,
             swarm_binding=swarm_binding,
         )
-        base_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        has_swarm = swarm_binding is not None
+        base_prompt = _BASE_PROMPT_TEMPLATE.format(
             tool_name=tool_name,
             timeout=timeout,
-            memory_limit_mb=memory_limit // (1024 * 1024),
+            large_file_rule=(
+                _LARGE_FILE_RULE_SWARM if has_swarm else _LARGE_FILE_RULE_NO_SWARM
+            ),
         )
         if swarm_binding is not None:
             available = ", ".join(s["name"] for s in subagent_descriptions)

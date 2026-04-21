@@ -114,9 +114,33 @@ def test_system_prompt_injected_once() -> None:
         for block in seen[0].system_message.content_blocks
         if block["type"] == "text"
     )
-    assert "`eval` tool" in sys_text
-    assert "7.0s per call" in sys_text
-    assert "32 MB total" in sys_text
+    assert "TypeScript/JavaScript REPL (`eval`)" in sys_text
+    assert "Execution timeout per call: 7 s." in sys_text
+    # No-swarm variant of the large-file rule appears when swarm is off.
+    assert "Check file size before processing" in sys_text
+    # The swarm-variant directive should NOT leak into non-swarm REPLs.
+    assert "Check inputs before processing" not in sys_text
+
+
+def test_system_prompt_large_file_rule_points_to_swarm_when_configured() -> None:
+    """When swarm is configured, the large-file hard rule directs to
+    swarm.create/swarm.execute instead of generic chunking advice."""
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.subagents import CompiledSubAgent
+    from langchain_core.runnables import RunnableLambda
+
+    # Pre-compiled graph — avoids needing a real model in this unit test.
+    compiled: CompiledSubAgent = {
+        "name": "general-purpose",
+        "description": "d",
+        "runnable": RunnableLambda(lambda x: x),
+    }
+    mw = REPLMiddleware(backend=StateBackend(), subagents=[compiled])
+    prompt = mw._base_system_prompt
+    assert "Check inputs before processing" in prompt
+    assert "swarm.create`/`swarm.execute" in prompt
+    # The no-swarm variant must not appear in this configuration.
+    assert "Check file size before processing" not in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -9,11 +9,12 @@ import os
 import signal
 import time
 import webbrowser
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+    from pathlib import Path
 
     from deepagents_cli.sessions import ThreadInfo
 
@@ -44,6 +45,16 @@ from deepagents_cli.widgets.messages import (
     QueuedUserMessage,
     UserMessage,
 )
+
+
+async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
+    """Wait until the status bar reports the expected git branch."""
+    for _ in range(100):
+        if app._status_bar is not None and app._status_bar.branch == branch:
+            return
+        await asyncio.sleep(0.01)
+    msg = f"Timed out waiting for branch {branch!r}"
+    raise AssertionError(msg)
 
 
 class TestInitialPromptOnMount:
@@ -128,9 +139,225 @@ class TestInitialPromptOnMount:
                 mcp_server_info=[],
             )
         )
-        await asyncio.sleep(0)
+        # Server-ready schedules `_run_session_start_sequence` onto the loop.
+        # A few yields keep the test stable across that async handoff.
+        for _ in range(3):
+            await asyncio.sleep(0)
 
         assert submitted == [("code-review", "review this diff", None)]
+
+
+class TestStartupSequence:
+    """Tests for post-connect startup sequencing."""
+
+    async def test_resumed_history_loads_before_startup_command(self) -> None:
+        """Resumed threads should mount prior history before startup output."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+            startup_cmd="echo hi",
+        )
+        order: list[str] = []
+
+        async def capture_history(  # noqa: RUF029
+            *,
+            thread_id: str | None = None,
+            preloaded_payload: object | None = None,
+        ) -> None:
+            del thread_id, preloaded_payload
+            order.append("history")
+
+        async def capture_startup(command: str) -> None:  # noqa: RUF029
+            assert command == "echo hi"
+            order.append("startup")
+
+        app._load_thread_history = capture_history  # type: ignore[assignment]
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["history", "startup"]
+        assert app._startup_sequence_running is False
+
+    async def test_startup_cleanup_defers_queue_until_initial_submission(self) -> None:
+        """Queued input should wait until startup submission owns the agent slot."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello world",
+            startup_cmd="echo hi",
+        )
+        order: list[str] = []
+
+        async def capture_startup(command: str) -> None:
+            assert command == "echo hi"
+            order.append("startup")
+            app._pending_messages.append(
+                QueuedMessage(text="typed during startup", mode="normal")
+            )
+            await app._cleanup_shell_task()
+
+        async def capture_initial_submission() -> None:  # noqa: RUF029
+            order.append("initial")
+            app._agent_running = True
+
+        queue_mock = AsyncMock()
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+        app._submit_initial_submission = (  # type: ignore[assignment]
+            capture_initial_submission
+        )
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["startup", "initial"]
+        queue_mock.assert_not_awaited()
+        assert len(app._pending_messages) == 1
+        assert app._pending_messages[0].text == "typed during startup"
+        assert app._startup_sequence_running is False
+
+    async def test_cleanup_shell_task_defers_queue_during_startup(self) -> None:
+        """`_cleanup_shell_task` must not drain the queue while sequencing."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._startup_sequence_running = True
+        app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+
+        await app._cleanup_shell_task()
+
+        queue_mock.assert_not_awaited()
+        assert app._shell_running is False
+
+    async def test_cleanup_agent_task_defers_queue_during_startup(self) -> None:
+        """`_cleanup_agent_task` must not drain the queue while sequencing."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._startup_sequence_running = True
+        app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        spinner_mock = AsyncMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._set_spinner = spinner_mock  # type: ignore[assignment]
+
+        await app._cleanup_agent_task()
+
+        queue_mock.assert_not_awaited()
+        assert app._agent_running is False
+
+    async def test_cleanup_agent_task_schedules_git_branch_refresh(self) -> None:
+        """Agent cleanup should refresh repo state after a turn completes."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+        spinner_mock = AsyncMock()
+        refresh_mock = MagicMock()
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._set_spinner = spinner_mock  # type: ignore[assignment]
+        app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
+
+        await app._cleanup_agent_task()
+
+        refresh_mock.assert_called_once_with()
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
+
+    async def test_schedule_git_branch_refresh_noops_during_exit(self) -> None:
+        """Shutdown should prevent new background git refresh tasks."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._exit = True
+
+        with patch("deepagents_cli.app.asyncio.create_task") as mock_create_task:
+            app._schedule_git_branch_refresh()
+
+        assert app._git_branch_refresh_task is None
+        mock_create_task.assert_not_called()
+
+    async def test_schedule_git_branch_refresh_inline_fast_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Filesystem probe should update the footer without spawning a task."""
+        repo = tmp_path / "repo"
+        git_dir = repo / ".git"
+        git_dir.mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+        app._cwd = str(repo)
+
+        with patch("deepagents_cli.app.asyncio.create_task") as mock_create_task:
+            app._schedule_git_branch_refresh()
+
+        assert status_bar.branch == "feature"
+        mock_create_task.assert_not_called()
+        assert app._git_branch_refresh_task is None
+
+    async def test_schedule_git_branch_refresh_falls_back_to_subprocess(
+        self,
+    ) -> None:
+        """Unusual repo layouts should spawn the off-thread subprocess fallback."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+
+        fallback_mock = AsyncMock()
+        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+            fallback_mock
+        )
+
+        with patch(
+            "deepagents_cli.app.read_git_branch_from_filesystem",
+            return_value=None,
+        ):
+            app._schedule_git_branch_refresh()
+
+        refresh_task = app._git_branch_refresh_task
+        assert refresh_task is not None
+        await refresh_task
+        fallback_mock.assert_awaited_once_with(app._cwd)
+
+    def test_empty_startup_cmd_is_normalized_to_none(self) -> None:
+        """Empty or whitespace-only `--startup-cmd` should be treated as unset."""
+        for raw in ("", "   ", "\t\n"):
+            app = DeepAgentsApp(
+                agent=MagicMock(), thread_id="thread-123", startup_cmd=raw
+            )
+            assert app._startup_cmd is None, f"Expected {raw!r} to normalize to None"
+
+    async def test_startup_cmd_cleared_after_execution(self) -> None:
+        """`_startup_cmd` should be cleared before the command runs (one-shot)."""
+        app = DeepAgentsApp(
+            agent=MagicMock(), thread_id="thread-123", startup_cmd="echo hi"
+        )
+        observed_cmd: list[str] = []
+        observed_attr_during_run: list[str | None] = []
+
+        async def capture_startup(command: str) -> None:  # noqa: RUF029
+            observed_cmd.append(command)
+            observed_attr_during_run.append(app._startup_cmd)
+
+        async def stub_history(  # noqa: RUF029
+            *,
+            thread_id: str | None = None,
+            preloaded_payload: object | None = None,
+        ) -> None:
+            del thread_id, preloaded_payload
+
+        app._run_startup_command = capture_startup  # type: ignore[assignment]
+        app._load_thread_history = stub_history  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert observed_cmd == ["echo hi"]
+        assert observed_attr_during_run == [None]
+        assert app._startup_cmd is None
 
 
 class TestAppCSSValidation:
@@ -737,6 +964,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()
@@ -775,6 +1003,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()
@@ -819,6 +1048,7 @@ class TestModalScreenCtrlCHandling:
             with (
                 patch.object(app, "notify") as notify_mock,
                 patch.object(app, "exit") as exit_mock,
+                patch.object(app, "set_timer"),
             ):
                 await pilot.press("ctrl+c")
                 await pilot.pause()
@@ -1309,27 +1539,31 @@ class TestLoadingSpinnerLifecycle:
             before_tick = widget._spinner._position
             await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
+            # Pre-condition: timer must be running before hide so the `is None`
+            # assertion below isn't vacuously satisfied.
+            assert widget._animation_timer is not None
 
-            frozen_position = widget._spinner._position
             with patch.object(Widget, "remove", new=delayed_remove):
                 hide_task = asyncio.create_task(app._set_spinner(None))
+                # Sleep while delayed_remove is blocking (0.3s).  Check the
+                # timer flag rather than a frozen position counter: the
+                # Textual timer may fire one final tick before cancellation
+                # on slow CI runners, making position equality racy.
                 await asyncio.sleep(0.25)
-                assert widget._spinner._position == frozen_position
+                assert widget._animation_timer is None
                 await hide_task
 
             assert app._loading_widget is None
 
-    async def test_reposition_stops_spinner_before_remove_completes(self) -> None:
-        """Repositioning should stop animation before delayed removal completes."""
+    async def test_reposition_preserves_spinner_state(self) -> None:
+        """Repositioning should reorder without disturbing widget state.
+
+        Repositioning uses `move_child`, which keeps the same LoadingWidget
+        instance mounted. Its animation timer and `_start_time` must carry
+        through unchanged so the "(Ns, esc to interrupt)" hint doesn't jump
+        back to 0s mid-stream.
+        """
         app = DeepAgentsApp()
-        original_remove = Widget.remove
-
-        def delayed_remove(widget: Widget) -> Awaitable[None]:
-            async def do_remove() -> None:
-                await asyncio.sleep(0.3)
-                await original_remove(widget)
-
-            return do_remove()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1345,23 +1579,61 @@ class TestLoadingSpinnerLifecycle:
             app._queued_widgets.append(queued_widget)
 
             before_tick = widget._spinner._position
+            original_timer = widget._animation_timer
+            original_start_time = widget._start_time
             await asyncio.sleep(0.25)
             assert widget._spinner._position != before_tick
+            assert original_timer is not None
 
-            frozen_position = widget._spinner._position
-            with patch.object(Widget, "remove", new=delayed_remove):
-                reposition_task = asyncio.create_task(app._set_spinner("Thinking"))
-                await asyncio.sleep(0.25)
-                assert widget._spinner._position == frozen_position
-                await reposition_task
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            # Same instance, same timer, same start time — only DOM order changed.
+            assert app._loading_widget is widget
+            assert widget._animation_timer is original_timer
+            assert widget._start_time == original_start_time
 
             children = list(messages.children)
             assert children.index(widget) == children.index(queued_widget) - 1
 
+    async def test_reposition_moves_spinner_after_last_message_when_no_queue(
+        self,
+    ) -> None:
+        """No queued widgets: spinner must move after the last non-spinner child.
+
+        This is the common streaming case — an `AssistantMessage` mounts at
+        the end of `#messages` (landing below the spinner), and the next
+        `_set_spinner("Thinking")` call must re-anchor the spinner after it
+        via `move_child(..., after=non_spinner[-1])`. Covers the no-queued
+        branch of `_reposition_spinner` that the queued-widget test doesn't.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
             await pilot.pause()
-            new_widget = app._loading_widget
-            assert new_widget is not None
-            assert new_widget._animation_timer is not None
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            widget = app._loading_widget
+            assert widget is not None
+            assert not app._queued_widgets
+
+            messages = app.query_one("#messages", Container)
+            new_message = AppMessage("streamed")
+            await messages.mount(new_message)
+            await pilot.pause()
+
+            # Sanity: mount appended at the end, so spinner is now above it.
+            children = list(messages.children)
+            assert children.index(widget) < children.index(new_message)
+
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+            # Same widget instance; spinner now sits at the end.
+            assert app._loading_widget is widget
+            children = list(messages.children)
+            assert children[-1] is widget
 
 
 class TestTraceCommand:
@@ -1760,6 +2032,189 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             assert app._shell_running is False
             assert app._shell_worker is None
+
+    async def test_cleanup_refreshes_git_branch(self, tmp_path: Path) -> None:
+        """Verify branch refresh on shell cleanup.
+
+        `_cleanup_shell_task` must re-resolve the branch so commands like
+        `git checkout` are reflected in the footer.
+        """
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def _init_repo_on_feature_branch() -> None:
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+            }
+            for args in (
+                ["git", "init", "-q", "-b", "main"],
+                ["git", "add", "f"],
+                ["git", "commit", "-q", "-m", "init"],
+                ["git", "checkout", "-q", "-b", "feature"],
+            ):
+                if args[1] == "add":
+                    (repo / "f").write_text("x")
+                subprocess.run(args, cwd=repo, env=env, check=True, capture_output=True)
+
+        await asyncio.to_thread(_init_repo_on_feature_branch)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._status_bar is not None
+            app._cwd = str(repo)
+            app._status_bar.branch = "stale"
+            app._shell_running = True
+            app._shell_worker = MagicMock()
+            app._shell_worker.is_cancelled = False
+            app._shell_process = None
+
+            await app._cleanup_shell_task()
+            await asyncio.wait_for(_wait_for_branch(app, "feature"), timeout=1)
+
+            assert app._status_bar.branch == "feature"
+
+    async def test_refresh_git_branch_reads_gitdir_pointer(
+        self, tmp_path: Path
+    ) -> None:
+        """Worktree-style `.git` files should resolve to the pointed git dir."""
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "worktree"
+        nested = worktree / "src"
+        git_dir = repo / ".git" / "worktrees" / "feature"
+
+        nested.mkdir(parents=True)
+        git_dir.mkdir(parents=True)
+        (worktree / ".git").write_text(
+            "gitdir: ../repo/.git/worktrees/feature\n",
+            encoding="utf-8",
+        )
+        (git_dir / "HEAD").write_text(
+            "ref: refs/heads/feature/nested\n",
+            encoding="utf-8",
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._status_bar is not None
+            app._cwd = str(nested)
+
+            await app._refresh_git_branch()
+
+            assert app._status_bar.branch == "feature/nested"
+
+    async def test_refresh_git_branch_uses_inline_filesystem_fast_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Common branch reads should avoid the thread-offloaded fallback."""
+        repo = tmp_path / "repo"
+        git_dir = repo / ".git"
+        git_dir.mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+        app = DeepAgentsApp()
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+        app._cwd = str(repo)
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new=AsyncMock(side_effect=AssertionError("unexpected thread hop")),
+        ):
+            await app._refresh_git_branch()
+
+        assert status_bar.branch == "feature"
+
+    async def test_cleanup_does_not_wait_for_git_branch_refresh(self) -> None:
+        """Queue cleanup should not block on the subprocess fallback refresh."""
+        app = DeepAgentsApp()
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+
+        async def block_refresh(_cwd: str) -> None:
+            refresh_started.set()
+            await release_refresh.wait()
+
+        # Force the subprocess fallback path so the test can observe whether
+        # cleanup awaits the background task.
+        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+            block_refresh
+        )
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._shell_running = True
+        app._shell_worker = MagicMock()
+        app._shell_worker.is_cancelled = False
+        app._shell_process = None
+
+        with patch(
+            "deepagents_cli.app.read_git_branch_from_filesystem",
+            return_value=None,
+        ):
+            await app._cleanup_shell_task()
+            await asyncio.wait_for(refresh_started.wait(), timeout=1)
+
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
+
+        release_refresh.set()
+        refresh_task = app._git_branch_refresh_task
+        if refresh_task is not None:
+            await refresh_task
+
+    async def test_run_shell_task_starts_branch_refresh_before_render(self) -> None:
+        """Successful shell runs should overlap branch refresh with rendering."""
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        refresh_mock = MagicMock()
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+
+        def assert_refresh_started(message: object) -> None:
+            if type(message).__name__ == "AssistantMessage":
+                assert refresh_mock.call_count == 1
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
+            app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+            app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_cli.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    app,
+                    "_mount_message",
+                    AsyncMock(side_effect=assert_refresh_started),
+                ),
+            ):
+                await app._run_shell_task("echo hi")
+
+        refresh_mock.assert_called_once_with()
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
 
     async def test_messages_queued_during_shell(self) -> None:
         """Messages should be queued while shell command runs."""
@@ -3370,3 +3825,303 @@ class TestRememberRequiresMessages:
                 await pilot.pause()
 
             mock_skill.assert_called_once_with("/skill:remember")
+
+
+class TestSwitchAgentGuards:
+    """Guards in `_switch_agent` before the restart worker is launched."""
+
+    async def test_noop_when_same_agent(self) -> None:
+        """Switching to the already-active agent should do nothing."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        async with app.run_test():
+            with patch.object(app, "run_worker") as worker:
+                app._switch_agent("coder")
+            worker.assert_not_called()
+            assert app._agent_switching is False
+
+    async def test_rejects_remote_server_mode(self) -> None:
+        """Without a local `server_proc` the CLI can't restart the agent."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs=None,
+            server_proc=None,
+        )
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+            assert any("remote server" in m for m in notifications)
+            assert app._assistant_id == "coder"
+            assert app._agent_switching is False
+
+    async def test_defers_while_local_server_is_connecting(self) -> None:
+        """Local startup should queue the swap instead of warning as remote."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=None,
+        )
+
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+
+            worker.assert_not_called()
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "agent_switch"
+            assert any("connection completes" in m for m in notifications)
+            assert all("remote server" not in m for m in notifications)
+            assert app._assistant_id == "coder"
+            assert app._agent_switching is False
+
+            with patch.object(app, "_switch_agent") as switch:
+                await action.execute()
+            switch.assert_called_once_with("researcher")
+
+    async def test_rejects_while_agent_running(self) -> None:
+        """Mid-run swaps are rejected so in-flight streams aren't orphaned."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        app._agent_running = True
+        async with app.run_test():
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app, "notify", side_effect=lambda m, **_: notifications.append(m)
+                ),
+                patch.object(app, "run_worker") as worker,
+            ):
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+            assert any("task is running" in m for m in notifications)
+
+    async def test_rejects_reentry_while_switching(self) -> None:
+        """A second switch while the first is in flight is a no-op."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        app._agent_switching = True
+        async with app.run_test():
+            with patch.object(app, "run_worker") as worker:
+                app._switch_agent("researcher")
+            worker.assert_not_called()
+        # Reset the flag so the test app can tear down cleanly.
+        app._agent_switching = False
+
+    async def test_rejects_missing_agent_dir(self, tmp_path: Path) -> None:
+        """Missing `~/.deepagents/<name>/` rejects before launching a worker."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        (tmp_path / "coder").mkdir()
+        async with app.run_test():
+            with (
+                patch("deepagents_cli.config.settings") as mock_settings,
+                patch.object(app, "run_worker") as worker,
+            ):
+                mock_settings.user_deepagents_dir = tmp_path
+                app._switch_agent("ghost")
+            worker.assert_not_called()
+            assert app._assistant_id == "coder"
+
+    async def test_launches_worker_on_valid_switch(self, tmp_path: Path) -> None:
+        """A valid switch enqueues the restart worker and sets the guard flag."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=MagicMock(),
+        )
+        (tmp_path / "researcher").mkdir()
+        async with app.run_test():
+            with (
+                patch("deepagents_cli.config.settings") as mock_settings,
+                patch.object(app, "run_worker") as worker,
+            ):
+                mock_settings.user_deepagents_dir = tmp_path
+                app._switch_agent("researcher")
+            worker.assert_called_once()
+            assert app._agent_switching is True
+            # Close the coroutine that the mocked run_worker never awaited,
+            # otherwise pytest emits "coroutine was never awaited".
+            coro = worker.call_args.args[0]
+            coro.close()
+        app._agent_switching = False
+
+
+class TestRestartServerForAgentSwap:
+    """End-to-end wiring for the agent-swap worker."""
+
+    @staticmethod
+    def _make_app() -> tuple[DeepAgentsApp, MagicMock]:
+        """Return `(app, server_proc_mock)`.
+
+        Returning the mock directly keeps its `.url` / `.restart` /
+        `.update_env` mutable attributes typed as `Any` (via `MagicMock`)
+        so tests can reassign them without fighting `ServerProcess`'s
+        static type.
+        """
+        server_proc = MagicMock()
+        server_proc.update_env = MagicMock()
+        server_proc.restart = AsyncMock()
+        server_proc.url = "http://127.0.0.1:54321"
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="old-thread",
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=server_proc,
+        )
+        return app, server_proc
+
+    async def test_happy_path_rebuilds_agent_and_updates_identity(
+        self,
+    ) -> None:
+        """Successful restart stages env, calls restart, and rewires client."""
+        app, server_proc = self._make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Simulate port rebind during restart (TIME_WAIT) so the test
+            # catches any regression that reuses the old URL.
+            def _rebind_port() -> None:
+                server_proc.url = "http://127.0.0.1:60000"
+
+            server_proc.restart = AsyncMock(side_effect=_rebind_port)
+
+            mounted: list[object] = []
+            spawned_workers: list[tuple[object, dict]] = []
+            real_run_worker = app.run_worker
+
+            def _run_worker_spy(coro_or_fn: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # test spy — accepts whatever run_worker does
+                spawned_workers.append((coro_or_fn, kwargs))
+                # Close the coroutine so pytest doesn't warn about it being
+                # unawaited — we only care that the worker was scheduled.
+                if hasattr(coro_or_fn, "close"):
+                    coro_or_fn.close()
+                return real_run_worker(asyncio.sleep(0))
+
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ) as save_mock,
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_run_worker_spy),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+            server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CLI_SERVER_ASSISTANT_ID="researcher"
+            )
+            server_proc.restart.assert_awaited_once()
+            assert app._assistant_id == "researcher"
+            assert app._server_kwargs is not None
+            assert app._server_kwargs["assistant_id"] == "researcher"
+            assert app._agent is not None
+            # RemoteAgent must target the URL that `server_proc.url` holds
+            # *after* restart, not the original.
+            assert app._agent._url == "http://127.0.0.1:60000"  # type: ignore[union-attr]
+            assert app._connecting is False
+            assert app._agent_switching is False
+            assert app._lc_thread_id != "old-thread"
+
+            save_mock.assert_called_once_with("researcher")
+
+            # Skill-discovery worker launched with the dedicated group.
+            groups = {kw.get("group") for _, kw in spawned_workers}
+            assert "agent-switch-skill-discovery" in groups
+
+            # Confirmation + resume-hint messages reached the user.
+            plain = [str(getattr(m, "_content", m)) for m in mounted]
+            assert any("Switched to researcher" in s for s in plain)
+            assert any(
+                "deepagents -r old-thread" in s and "to resume" in s for s in plain
+            )
+
+    async def test_no_resume_hint_when_no_previous_thread(self) -> None:
+        """Fresh session (no previous thread) skips the resume hint."""
+        server_proc = MagicMock()
+        server_proc.update_env = MagicMock()
+        server_proc.restart = AsyncMock()
+        server_proc.url = "http://127.0.0.1:54321"
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id=None,
+            server_kwargs={"assistant_id": "coder"},
+            server_proc=server_proc,
+        )
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker"),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+        assert not any("to resume" in s for s in plain)
+
+    async def test_failure_rolls_back_identity_and_posts_failed(
+        self,
+    ) -> None:
+        """If restart raises, identity reverts and the banner failure fires."""
+        app, server_proc = self._make_app()
+        boom = RuntimeError("langgraph dev exited")
+        server_proc.restart = AsyncMock(side_effect=boom)
+        posted: list[object] = []
+        with patch.object(app, "post_message", side_effect=lambda m: posted.append(m)):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._restart_server_for_agent_swap("researcher")
+
+        assert app._assistant_id == "coder"
+        assert app._server_kwargs is not None
+        assert app._server_kwargs["assistant_id"] == "coder"
+        assert app._agent is None
+        assert app._agent_switching is False
+        # The ServerStartFailed handler sets _connecting=False on message
+        # dispatch, but the worker itself must also clear it synchronously
+        # before posting so any code reading the flag in between sees the
+        # correct value.
+        assert app._connecting is False
+        failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
+        assert len(failures) == 1
+        assert failures[0].error is boom

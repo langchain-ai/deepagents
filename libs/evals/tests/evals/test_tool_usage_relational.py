@@ -17,14 +17,18 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_repl.middleware import ReplMiddleware
+
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
     run_agent,
+    run_agent_async,
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_use")]
+pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.repl("quickjs", "langchain")]
 """Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
@@ -431,19 +435,21 @@ RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
 # ---------------------------------------------------------------------------
 
 
-def _create_agent(model: BaseChatModel):
+def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create agent."""
-    return create_deep_agent(
-        model=model,
-        tools=RELATIONAL_TOOLS,
-    )
+    middleware = []
+    if repl_name == "langchain":
+        middleware = [ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
+    elif repl_name == "quickjs":
+        middleware = [QuickJSMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
+    return create_deep_agent(model=model, middleware=middleware)
 
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
+def test_single_tool_list_user_ids(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent lists all user IDs with a single tool call."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -470,9 +476,9 @@ def test_single_tool_list_user_ids(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_single_tool_get_user_email(model: BaseChatModel) -> None:
+def test_single_tool_get_user_email(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent retrieves a user's email by ID."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -494,9 +500,9 @@ def test_single_tool_get_user_email(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
+def test_single_tool_get_food_calories(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent retrieves calorie info for a food by ID."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -518,9 +524,9 @@ def test_single_tool_get_food_calories(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
+def test_two_tools_user_name_from_current_id(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent gets the current user ID, then looks up the name."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -546,9 +552,9 @@ def test_two_tools_user_name_from_current_id(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_two_tools_city_for_user(model: BaseChatModel) -> None:
+def test_two_tools_city_for_user(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent resolves user 1's location ID, then gets the city name."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -578,9 +584,9 @@ def test_two_tools_city_for_user(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
+def test_two_tools_find_user_then_email(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent searches for a user by name, then gets their email."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -606,9 +612,9 @@ def test_two_tools_find_user_then_email(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_three_tools_current_user_city(model: BaseChatModel) -> None:
+def test_three_tools_current_user_city(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent resolves current user -> location ID -> city name."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -640,9 +646,9 @@ def test_three_tools_current_user_city(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
+def test_three_tools_find_user_then_city(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent searches for Alice by name, gets her location ID, then resolves the city."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -674,9 +680,9 @@ def test_three_tools_find_user_then_city(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
+def test_three_tools_current_user_weather(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent resolves current user -> location ID -> weather."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -708,9 +714,11 @@ def test_three_tools_current_user_weather(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> None:
+def test_four_tools_current_user_favorite_food_names(
+    model: BaseChatModel, repl_name: str | None
+) -> None:
     """Agent resolves current user -> favorite food IDs -> food names (parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -747,10 +755,12 @@ def test_four_tools_current_user_favorite_food_names(model: BaseChatModel) -> No
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> None:
+async def test_four_tools_find_user_food_name_and_calories(
+    model: BaseChatModel, repl_name: str | None
+) -> None:
     """Agent finds Frank The Cat -> fav foods -> food name + calories (parallel)."""
-    agent = _create_agent(model)
-    run_agent(
+    agent = _create_agent(model, repl_name)
+    await run_agent_async(
         agent,
         model=model,
         query=(
@@ -788,9 +798,10 @@ def test_four_tools_find_user_food_name_and_calories(model: BaseChatModel) -> No
 @pytest.mark.langsmith
 def test_four_tools_current_user_location_time_and_weather(
     model: BaseChatModel,
+    repl_name: str | None,
 ) -> None:
     """Agent resolves current user -> location -> time + weather (parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -830,9 +841,11 @@ def test_four_tools_current_user_location_time_and_weather(
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -> None:
+def test_five_steps_current_user_food_names_and_calories(
+    model: BaseChatModel, repl_name: str | None
+) -> None:
     """Agent resolves current user -> fav foods -> names + calories (all parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -876,9 +889,9 @@ def test_five_steps_current_user_food_names_and_calories(model: BaseChatModel) -
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
+def test_four_steps_find_user_city_and_weather(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent finds Bob -> location -> city + time + weather (parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -926,9 +939,9 @@ def test_four_steps_find_user_city_and_weather(model: BaseChatModel) -> None:
 
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
-def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
+def test_four_steps_find_user_food_allergies(model: BaseChatModel, repl_name: str | None) -> None:
     """Agent finds Alice -> fav foods -> food names + allergies (all parallel)."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -981,9 +994,10 @@ def test_four_steps_find_user_food_allergies(model: BaseChatModel) -> None:
 @pytest.mark.langsmith
 def test_four_steps_current_user_food_names_calories_and_allergies(
     model: BaseChatModel,
+    repl_name: str | None,
 ) -> None:
     """Agent resolves current user -> favorite foods -> all requested food details in parallel."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -1045,9 +1059,10 @@ def test_four_steps_current_user_food_names_calories_and_allergies(
 @pytest.mark.langsmith
 def test_four_steps_find_user_city_weather_time_and_food_details(
     model: BaseChatModel,
+    repl_name: str | None,
 ) -> None:
     """Agent finds Donna and gathers location plus detailed favorite-food info."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,
@@ -1115,9 +1130,10 @@ def test_four_steps_find_user_city_weather_time_and_food_details(
 @pytest.mark.langsmith
 def test_four_steps_find_user_email_city_foods_calories_and_allergies(
     model: BaseChatModel,
+    repl_name: str | None,
 ) -> None:
     """Agent finds Eve and returns contact, location, and detailed food facts."""
-    agent = _create_agent(model)
+    agent = _create_agent(model, repl_name)
     run_agent(
         agent,
         model=model,

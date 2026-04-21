@@ -3,7 +3,7 @@
 import base64
 import json
 import warnings
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -19,6 +19,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+from pydantic import Field
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
@@ -91,6 +92,15 @@ def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
     """Fixed version of GenericFakeChatModel that properly handles bind_tools."""
+
+    messages: Iterator[AIMessage | str] = Field(exclude=True)
+    """Override parent field to exclude from pydantic serialization.
+
+    Without this, LangSmith tracing (which dumps the model via
+    `model_dump(mode="json")`) consumes the iterator before `_generate`
+    pulls from it, exhausting the iterator and raising `StopIteration` on
+    the first real model call.
+    """
 
     def bind_tools(
         self,

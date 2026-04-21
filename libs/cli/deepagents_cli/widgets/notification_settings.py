@@ -37,6 +37,16 @@ class NotificationSettingsScreen(ModalScreen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False),
+        Binding("up", "app.focus_previous", "Previous", show=False, priority=True),
+        Binding("down", "app.focus_next", "Next", show=False, priority=True),
+        Binding("tab", "app.focus_next", "Next", show=False, priority=True),
+        Binding(
+            "shift+tab",
+            "app.focus_previous",
+            "Previous",
+            show=False,
+            priority=True,
+        ),
     ]
 
     CSS = """
@@ -103,7 +113,11 @@ class NotificationSettingsScreen(ModalScreen[None]):
                     value=key not in self._suppressed,
                     id=f"ns-{key}",
                 )
-            help_text = f"Tab navigate {glyphs.bullet} Esc close"
+            help_text = (
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
+                f" {glyphs.bullet} Space toggle"
+                f" {glyphs.bullet} Esc close"
+            )
             yield Static(help_text, classes="ns-help")
 
     def on_mount(self) -> None:

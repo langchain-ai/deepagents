@@ -12,21 +12,27 @@ from deepagents_cli.deploy.config import (
     DEFAULT_CONFIG_FILENAME,
     MCP_FILENAME,
     SKILLS_DIRNAME,
+    SUBAGENTS_DIRNAME,
+    VALID_AUTH_PROVIDERS,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
+    SubAgentConfig,
+    SubAgentProject,
     _parse_config,
+    _validate_auth_credentials,
     _validate_mcp_for_deploy,
     _validate_model_credentials,
     _validate_sandbox_credentials,
     find_config,
     load_config,
+    load_subagents,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # AgentConfig
@@ -50,6 +56,14 @@ class TestAgentConfig:
     def test_whitespace_only_name_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):
             AgentConfig(name="   ")
+
+    def test_description_default(self) -> None:
+        cfg = AgentConfig(name="my-agent")
+        assert cfg.description == ""
+
+    def test_description_custom(self) -> None:
+        cfg = AgentConfig(name="my-agent", description="A helpful bot")
+        assert cfg.description == "A helpful bot"
 
     def test_frozen(self) -> None:
         cfg = AgentConfig(name="x")
@@ -84,6 +98,26 @@ class TestSandboxConfig:
         cfg = SandboxConfig()
         with pytest.raises(AttributeError):
             cfg.provider = "modal"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# AuthConfig
+# ---------------------------------------------------------------------------
+
+
+class TestAuthConfig:
+    def test_valid_construction(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        assert cfg.provider == "supabase"
+
+    def test_clerk_provider(self) -> None:
+        cfg = AuthConfig(provider="clerk")
+        assert cfg.provider == "clerk"
+
+    def test_frozen(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        with pytest.raises(AttributeError):
+            cfg.provider = "clerk"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +156,19 @@ class TestDeployConfig:
         cfg = DeployConfig(agent=AgentConfig(name="x"))
         errors = cfg.validate(tmp_path)
         assert any("stdio" in e for e in errors)
+
+    def test_validate_auth_missing_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        cfg = DeployConfig(
+            agent=AgentConfig(name="x"),
+            auth=AuthConfig(provider="supabase"),
+        )
+        errors = cfg.validate(tmp_path)
+        assert any("SUPABASE_URL" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +219,52 @@ class TestParseConfig:
                 }
             )
 
+    def test_description_parsed(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot", "description": "A bot"}})
+        assert cfg.agent.description == "A bot"
+
+    def test_description_optional(self) -> None:
+        cfg = _parse_config({"agent": {"name": "bot"}})
+        assert cfg.agent.description == ""
+
+    def test_async_subagents_section_raises(self) -> None:
+        data: dict[str, Any] = {
+            "agent": {"name": "bot"},
+            "async_subagents": [{"name": "x", "description": "d", "graph_id": "g"}],
+        }
+        with pytest.raises(ValueError, match="Unknown section"):
+            _parse_config(data)
+
     def test_defaults_come_from_dataclass(self) -> None:
         """Ensure _parse_config without optional keys uses dataclass defaults."""
         cfg = _parse_config({"agent": {"name": "x"}})
         assert cfg.agent.model == AgentConfig(name="x").model
         assert cfg.sandbox == SandboxConfig()
+
+    def test_auth_section_parsed(self) -> None:
+        data = {"agent": {"name": "bot"}, "auth": {"provider": "supabase"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is not None
+        assert cfg.auth.provider == "supabase"
+
+    def test_auth_section_optional(self) -> None:
+        data = {"agent": {"name": "bot"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is None
+
+    def test_auth_missing_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"provider.*required"):
+            _parse_config({"agent": {"name": "x"}, "auth": {}})
+
+    def test_auth_invalid_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown auth provider"):
+            _parse_config({"agent": {"name": "x"}, "auth": {"provider": "firebase"}})
+
+    def test_auth_unknown_key_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown key.*\[auth\]"):
+            _parse_config(
+                {"agent": {"name": "x"}, "auth": {"provider": "supabase", "extra": 1}}
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +377,186 @@ class TestValidateSandboxCredentials:
         assert _validate_sandbox_credentials("langsmith") == []
 
 
+class TestValidateAuthCredentials:
+    def test_unknown_provider_skips(self) -> None:
+        assert _validate_auth_credentials("unknown") == []
+
+    def test_supabase_missing_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_URL" in errors[0]
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_missing_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_all_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "pk-test")
+        assert _validate_auth_credentials("supabase") == []
+
+    def test_clerk_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+        errors = _validate_auth_credentials("clerk")
+        assert len(errors) == 1
+        assert "CLERK_SECRET_KEY" in errors[0]
+
+    def test_clerk_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_xxx")
+        assert _validate_auth_credentials("clerk") == []
+
+
 # ---------------------------------------------------------------------------
 # Cross-module consistency
 # ---------------------------------------------------------------------------
+
+
+class TestStarterTemplates:
+    def test_starter_config_mentions_auth(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_config
+
+        result = generate_starter_config()
+        assert "[auth]" in result
+        assert "supabase" in result
+        assert "clerk" in result
+
+    def test_starter_env_mentions_auth_vars(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_env
+
+        result = generate_starter_env()
+        assert "SUPABASE_URL" in result
+        assert "CLERK_SECRET_KEY" in result
+
+
+# ---------------------------------------------------------------------------
+# Cross-module consistency
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# load_subagents
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSubagents:
+    @staticmethod
+    def _make_subagent(
+        parent: Path, name: str, *, description: str = "A subagent"
+    ) -> Path:
+        """Create a minimal valid subagent directory structure."""
+        sub_dir = parent / SUBAGENTS_DIRNAME / name
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        toml_content = f'[agent]\nname = "{name}"\ndescription = "{description}"\n'
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(toml_content, encoding="utf-8")
+        (sub_dir / AGENTS_MD_FILENAME).write_text(
+            "# Subagent instructions", encoding="utf-8"
+        )
+        return sub_dir
+
+    def test_no_subagents_dir(self, tmp_path: Path) -> None:
+        result = load_subagents(tmp_path)
+        assert result == {}
+
+    def test_empty_subagents_dir(self, tmp_path: Path) -> None:
+        (tmp_path / SUBAGENTS_DIRNAME).mkdir()
+        result = load_subagents(tmp_path)
+        assert result == {}
+
+    def test_single_subagent(self, tmp_path: Path) -> None:
+        self._make_subagent(tmp_path, "helper")
+        result = load_subagents(tmp_path)
+        assert len(result) == 1
+        assert "helper" in result
+        proj = result["helper"]
+        assert isinstance(proj, SubAgentProject)
+        assert isinstance(proj.config, SubAgentConfig)
+        assert proj.config.agent.name == "helper"
+        assert proj.config.agent.description == "A subagent"
+        assert proj.root == tmp_path / SUBAGENTS_DIRNAME / "helper"
+
+    def test_multiple_subagents(self, tmp_path: Path) -> None:
+        self._make_subagent(tmp_path, "alpha", description="First")
+        self._make_subagent(tmp_path, "beta", description="Second")
+        result = load_subagents(tmp_path)
+        assert len(result) == 2
+        assert result["alpha"].config.agent.description == "First"
+        assert result["beta"].config.agent.description == "Second"
+
+    def test_missing_agents_md_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n', encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match=r"(?i)AGENTS\.md.*required"):
+            load_subagents(tmp_path)
+
+    def test_missing_toml_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"(?i)deepagents\.toml.*required"):
+            load_subagents(tmp_path)
+
+    def test_missing_description_raises(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "nodesc"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "nodesc"\n', encoding="utf-8"
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"(?i)description.*required"):
+            load_subagents(tmp_path)
+
+    def test_sandbox_section_rejected(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n\n'
+            '[sandbox]\nprovider = "none"\n',
+            encoding="utf-8",
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"sandbox.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_async_subagents_section_rejected(self, tmp_path: Path) -> None:
+        sub_dir = tmp_path / SUBAGENTS_DIRNAME / "bad"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / DEFAULT_CONFIG_FILENAME).write_text(
+            '[agent]\nname = "bad"\ndescription = "d"\n\n'
+            '[[async_subagents]]\nname = "x"\ndescription = "x"\ngraph_id = "x"\n',
+            encoding="utf-8",
+        )
+        (sub_dir / AGENTS_MD_FILENAME).write_text("# hi", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"async_subagents.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_nested_subagents_rejected(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "outer")
+        (sub_dir / SUBAGENTS_DIRNAME).mkdir()
+        with pytest.raises(ValueError, match=r"Nested.*not allowed"):
+            load_subagents(tmp_path)
+
+    def test_subagent_with_skills(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "skilled")
+        (sub_dir / SKILLS_DIRNAME).mkdir()
+        result = load_subagents(tmp_path)
+        assert "skilled" in result
+        assert result["skilled"].root == sub_dir
+
+    def test_subagent_mcp_validated(self, tmp_path: Path) -> None:
+        sub_dir = self._make_subagent(tmp_path, "mcpbad")
+        mcp = {"mcpServers": {"local": {"type": "stdio", "command": "node"}}}
+        (sub_dir / MCP_FILENAME).write_text(json.dumps(mcp), encoding="utf-8")
+        with pytest.raises(ValueError, match="stdio"):
+            load_subagents(tmp_path)
 
 
 class TestCrossModuleConsistency:
@@ -300,3 +565,9 @@ class TestCrossModuleConsistency:
         from deepagents_cli.deploy.templates import SANDBOX_BLOCKS
 
         assert frozenset(SANDBOX_BLOCKS.keys()) == VALID_SANDBOX_PROVIDERS
+
+    def test_auth_blocks_matches_valid_providers(self) -> None:
+        """AUTH_BLOCKS keys in templates.py must match VALID_AUTH_PROVIDERS."""
+        from deepagents_cli.deploy.templates import AUTH_BLOCKS
+
+        assert frozenset(AUTH_BLOCKS.keys()) == VALID_AUTH_PROVIDERS

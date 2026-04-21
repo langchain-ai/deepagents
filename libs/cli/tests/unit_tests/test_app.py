@@ -4577,6 +4577,10 @@ class TestNotificationCenterIntegration:
                 "deepagents_cli.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -4586,3 +4590,137 @@ class TestNotificationCenterIntegration:
         entry = app._notice_registry.get("dep:ripgrep")
         assert entry is not None
         assert entry.toast_identity is not None
+
+    async def test_tool_toasts_suppressed_when_update_available(self) -> None:
+        """When update check finds an update, missing-dep toasts are silent.
+
+        Entry is still added to the registry so ctrl+n surfaces it
+        after the update modal is dismissed; only the toast is skipped
+        so the update modal's `clear_notifications` call doesn't cause
+        a visible flicker at startup.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._update_available = (True, "9.9.9")
+        app._update_check_done.set()
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_cli.main._ripgrep_install_hint",
+                return_value="brew install ripgrep",
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        entry = app._notice_registry.get("dep:ripgrep")
+        assert entry is not None
+        assert entry.toast_identity is None
+
+    async def test_update_check_auto_opens_dedicated_modal(self) -> None:
+        """A detected update auto-opens the dedicated update modal after first paint."""
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.update_check.mark_update_notified",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_age_suffix",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.upgrade_command",
+                return_value="pip install -U deepagents-cli",
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates()
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_open_update_available_modal_over_modal_is_noop(self) -> None:
+        """Another modal already open: dedicated update modal is skipped."""
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        class _Dummy(ModalScreen[None]):
+            def compose(self) -> ComposeResult:
+                yield Static("modal")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(_Dummy())
+            await pilot.pause()
+            app._open_update_available_modal(entry)
+            await pilot.pause()
+            assert not isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_update_modal_install_dispatches_action(self) -> None:
+        """Picking 'Install now' in the dedicated modal routes to the dispatcher."""
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry(latest="3.1.4")
+        app._notice_registry.add(entry)
+
+        with patch.object(app, "_dispatch_notification_action") as mock_dispatch:
+            mock_dispatch.return_value = asyncio.sleep(0)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._open_update_available_modal(entry)
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateAvailableScreen)
+                await pilot.press("enter")
+                await pilot.pause()
+
+        mock_dispatch.assert_called_once_with(entry.key, ActionId.INSTALL)
+
+    async def test_update_modal_shift_tab_moves_to_changelog(self) -> None:
+        """App-level shift+tab priority binding routes to the modal's move_up."""
+        from deepagents_cli.widgets.update_available import (
+            UpdateAvailableScreen,
+            _ChangelogOption,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._open_update_available_modal(entry)
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, UpdateAvailableScreen)
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert isinstance(screen._options[screen._selected], _ChangelogOption)

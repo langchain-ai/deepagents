@@ -926,6 +926,12 @@ class DeepAgentsApp(App):
         self._update_available: tuple[bool, str | None] = (False, None)
         """Update availability state — set by _check_for_updates, read on exit."""
 
+        self._update_check_done = asyncio.Event()
+        """Set by `_check_for_updates` when it returns (success, failure, or
+        no-op). Lets `_check_optional_tools_background` defer posting
+        missing-dep toasts until we know whether the update modal is about
+        to clear them."""
+
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
         """Cached skill metadata (populated by startup discovery worker,
@@ -1298,15 +1304,17 @@ class DeepAgentsApp(App):
     async def _check_optional_tools_background(self) -> None:
         """Check for optional tools and register actionable notices.
 
-        Missing tools are added to the notifications registry; a toast
-        is posted for each whose click or `ctrl+n` opens the notification
-        center for install / suppress actions.
+        Missing tools are added to the notifications registry. Toasts
+        are posted only if no update modal is about to open; otherwise
+        the modal would immediately clear them and cause visible
+        flicker. Entries remain reachable via ctrl+n either way.
         """
         try:
             from deepagents_cli.main import (
                 build_missing_tool_notification,
                 check_optional_tools,
             )
+            from deepagents_cli.update_check import is_update_check_enabled
         except ImportError:
             logger.warning(
                 "Could not import optional tools checker",
@@ -1320,13 +1328,32 @@ class DeepAgentsApp(App):
             logger.debug("Failed to check for optional tools", exc_info=True)
             return
 
+        if not missing:
+            return
+
+        # Wait for the update check so we know whether the update
+        # modal is about to clear any toasts we post. Bounded by a
+        # short timeout to avoid blocking indefinitely if PyPI hangs.
+        if is_update_check_enabled():
+            try:
+                await asyncio.wait_for(self._update_check_done.wait(), timeout=5.0)
+            except TimeoutError:
+                logger.debug("Update check timed out; posting tool toasts anyway")
+
+        suppress_toasts = self._update_available[0]
+
         for tool in missing:
             notification = build_missing_tool_notification(tool)
-            self._notify_actionable(
-                notification,
-                severity="warning",
-                timeout=15,
-            )
+            if suppress_toasts:
+                # Register silently; the update modal's dismissal
+                # leaves these reachable via ctrl+n (notification center).
+                self._notice_registry.add(notification)
+            else:
+                self._notify_actionable(
+                    notification,
+                    severity="warning",
+                    timeout=15,
+                )
 
     async def _discover_skills(self) -> None:
         """Discover skills, cache metadata, and update autocomplete.
@@ -1718,6 +1745,15 @@ class DeepAgentsApp(App):
 
     async def _check_for_updates(self) -> None:
         """Check PyPI for a newer version and optionally auto-update."""
+        try:
+            await self._check_for_updates_impl()
+        finally:
+            # Always signal completion — the optional-tools worker
+            # waits on this before deciding whether to post toasts.
+            self._update_check_done.set()
+
+    async def _check_for_updates_impl(self) -> None:
+        """Implementation body for `_check_for_updates`."""
         # Phase 1: version check (benign failure)
         try:
             from deepagents_cli.update_check import (
@@ -1789,12 +1825,13 @@ class DeepAgentsApp(App):
                     age_suffix=age_suffix,
                     upgrade_cmd=cmd,
                 )
-                self._notify_actionable(
-                    notification,
-                    severity="information",
-                    timeout=15,
-                )
+                # Register without a toast: the dedicated modal is
+                # the update's UI, so a parallel toast would be
+                # redundant. Registration still makes the entry
+                # reachable via ctrl+n if the modal is dismissed.
+                self._notice_registry.add(notification)
                 await asyncio.to_thread(mark_update_notified, latest)
+                self.call_after_refresh(self._open_update_available_modal, notification)
         except Exception:
             logger.warning("Update check/notify failed unexpectedly", exc_info=True)
             if is_auto_update_enabled():
@@ -1823,10 +1860,7 @@ class DeepAgentsApp(App):
         Returns:
             Registry entry ready to pass to `_notify_actionable`.
         """
-        body = (
-            f"v{latest} is available (current: v{cli_version}{age_suffix}).\n"
-            f"Run: {upgrade_cmd}"
-        )
+        body = f"v{latest} is available (current: v{cli_version}{age_suffix})."
         return PendingNotification(
             key="update:available",
             title=f"Update available: v{latest}",
@@ -4871,6 +4905,7 @@ class DeepAgentsApp(App):
         )
         from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
@@ -4880,6 +4915,9 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, NotificationSettingsScreen):
             self.screen.focus_previous()
+            return
+        if isinstance(self.screen, UpdateAvailableScreen):
+            self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -5606,30 +5644,27 @@ class DeepAgentsApp(App):
         """Register sample notifications so the center UI can be exercised.
 
         Gated by `DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS`; no-op without it.
-        Covers every registered `NotificationKind` and action.
+        Covers every registered `NotificationKind` and action, and
+        auto-opens the dedicated update modal so the startup flow can
+        be exercised without waiting for a real PyPI release.
+
+        Mirrors the real startup flow: when an update is being
+        surfaced, missing-dep entries register silently (no toast)
+        so they don't flicker before the modal's
+        `clear_notifications` fires.
         """
         from deepagents_cli.main import build_missing_tool_notification
 
-        self._notify_actionable(
-            build_missing_tool_notification("ripgrep"),
-            severity="warning",
-            timeout=30,
+        self._notice_registry.add(build_missing_tool_notification("ripgrep"))
+        self._notice_registry.add(build_missing_tool_notification("tavily"))
+        update_notification = self._build_update_notification(
+            latest="9.9.9",
+            cli_version="0.0.1",
+            age_suffix=", released 2 days ago",
+            upgrade_cmd="uv tool upgrade deepagents-cli",
         )
-        self._notify_actionable(
-            build_missing_tool_notification("tavily"),
-            severity="warning",
-            timeout=30,
-        )
-        self._notify_actionable(
-            self._build_update_notification(
-                latest="9.9.9",
-                cli_version="0.0.1",
-                age_suffix=" (released 2 days ago)",
-                upgrade_cmd="uv tool upgrade deepagents-cli",
-            ),
-            severity="information",
-            timeout=30,
-        )
+        self._notice_registry.add(update_notification)
+        self.call_after_refresh(self._open_update_available_modal, update_notification)
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
@@ -5675,6 +5710,36 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         self.push_screen(NotificationCenterScreen(pending), handle_result)
+
+    def _open_update_available_modal(self, entry: PendingNotification) -> None:
+        """Push the dedicated update-available modal for *entry*.
+
+        Skips silently when another modal is already open; the entry
+        remains registered so the user can still reach it via ctrl+n
+        once the blocking modal closes.
+        """
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
+
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        # Textual layers are per-screen, so base-screen toasts visually
+        # bleed through the modal's dim. Drop them before opening so
+        # the modal reads cleanly; underlying notification entries
+        # stay in the registry and remain reachable via ctrl+n.
+        self.clear_notifications()
+
+        def handle_result(result: ActionId | None) -> None:
+            if result is not None:
+                self.run_worker(
+                    self._dispatch_notification_action(entry.key, result),
+                    exclusive=False,
+                    group=f"notification-action-{entry.key}",
+                )
+            elif self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(UpdateAvailableScreen(entry), handle_result)
 
     async def _dispatch_notification_action(self, key: str, action_id: str) -> None:
         """Execute the side effect for a notification action.

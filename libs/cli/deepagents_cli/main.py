@@ -251,7 +251,7 @@ def build_missing_tool_notification(tool: str) -> PendingNotification:
             )
             payload = MissingDepPayload(tool="ripgrep", install_command=hint)
         body = (
-            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n\n"
             f"Install: {hint}"
         )
         return PendingNotification(
@@ -266,7 +266,7 @@ def build_missing_tool_notification(tool: str) -> PendingNotification:
             key="dep:tavily",
             title="Web search disabled",
             body=(
-                "TAVILY_API_KEY is not set, so web search is disabled.\n"
+                "TAVILY_API_KEY is not set, so web search is disabled.\n\n"
                 "Get a key at https://tavily.com"
             ),
             actions=(

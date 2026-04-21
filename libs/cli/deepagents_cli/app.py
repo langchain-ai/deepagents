@@ -59,6 +59,7 @@ from deepagents_cli.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
+from deepagents_cli.widgets._links import open_url_async
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -411,7 +412,7 @@ def _action_label(entry: PendingNotification, action_id: ActionId) -> str:
     for action in entry.actions:
         if action.action_id == action_id:
             return action.label
-    return str(action_id)
+    return action_id.value
 
 
 def _truncate(text: str, *, limit: int) -> str:
@@ -461,8 +462,8 @@ _COMMAND_URLS: dict[str, str] = {
 _toast_internals_warned: list[bool] = [False]
 """Single-slot flag; once `_Toast._notification` is missing, log warning once.
 
-Reset by `DeepAgentsApp.reset_toast_internals_warned` before tests so the
-one-shot semantics can be exercised deterministically.
+Tests reset this directly (`_toast_internals_warned[0] = False`) when
+they need to exercise the one-shot semantics deterministically.
 """
 
 
@@ -5838,12 +5839,10 @@ class DeepAgentsApp(App):
     ) -> None:
         """Execute the side effect for a notification action.
 
-        Resolves the registry entry and runs the payload-specific
-        handler. Catches `Exception` broadly (not just `OSError`) so
-        browser-launch failures, clipboard backend errors, TOML write
-        errors, and any unhandled-payload `TypeError` surface as a
-        user-visible warning toast instead of vanishing into the
-        background worker's logs.
+        Catches `Exception` broadly so any failure in the handler
+        surfaces as a warning toast instead of vanishing into the
+        background worker's log — this is the user-visibility guarantee
+        the registry is designed to provide.
 
         Args:
             key: Registry key of the notification.
@@ -5876,9 +5875,7 @@ class DeepAgentsApp(App):
         """Dispatch *action_id* to the payload-specific handler.
 
         Raises:
-            TypeError: When `entry.payload` has no registered handler —
-                programming error; the caller converts it into a
-                user-facing warning toast.
+            TypeError: When `entry.payload` has no registered handler.
         """
         if isinstance(entry.payload, MissingDepPayload):
             await self._handle_missing_dep_action(entry, entry.payload, action_id)
@@ -5888,6 +5885,16 @@ class DeepAgentsApp(App):
             return
         msg = f"unhandled payload type {type(entry.payload).__name__}"
         raise TypeError(msg)
+
+    @staticmethod
+    def _log_unknown_action(entry: PendingNotification, action_id: ActionId) -> None:
+        """Log a warning for an action id the handler does not recognize."""
+        logger.warning(
+            "Unknown action_id %r for %s entry %s",
+            action_id,
+            type(entry.payload).__name__,
+            entry.key,
+        )
 
     async def _handle_missing_dep_action(
         self,
@@ -5954,34 +5961,15 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
                 return
-            try:
-                opened = await asyncio.to_thread(webbrowser.open, payload.url)
-            except (webbrowser.Error, OSError) as exc:
-                logger.warning(
-                    "webbrowser.open failed for %s: %s",
-                    payload.url,
-                    exc,
-                    exc_info=True,
-                )
-                opened = False
-            if opened:
+            if await open_url_async(payload.url, app=self):
                 self.notify(
                     f"Opened {payload.url}",
                     severity="information",
                     timeout=3,
                     markup=False,
                 )
-            else:
-                self.notify(
-                    f"Could not open a browser. URL: {payload.url}",
-                    severity="warning",
-                    timeout=8,
-                    markup=False,
-                )
             return
-        logger.warning(
-            "Unknown action_id %r for missing-dep entry %s", action_id, entry.key
-        )
+        self._log_unknown_action(entry, action_id)
 
     async def _handle_update_action(
         self,
@@ -6045,7 +6033,7 @@ class DeepAgentsApp(App):
             await asyncio.to_thread(clear_update_notified)
             self._notice_registry.remove(entry.key)
             return
-        logger.warning("Unknown action_id %r for update entry %s", action_id, entry.key)
+        self._log_unknown_action(entry, action_id)
 
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""

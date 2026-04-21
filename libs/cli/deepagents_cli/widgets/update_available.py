@@ -9,9 +9,6 @@ notification list.
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import webbrowser
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -31,8 +28,7 @@ from deepagents_cli import theme
 from deepagents_cli._version import CHANGELOG_URL
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 from deepagents_cli.notifications import ActionId
-
-logger = logging.getLogger(__name__)
+from deepagents_cli.widgets._links import open_url_async
 
 
 class ChangelogClicked(Message):
@@ -307,34 +303,9 @@ class UpdateAvailableScreen(ModalScreen[ActionId | None]):
         self._open_changelog()
 
     def _open_changelog(self) -> None:
-        """Open `CHANGELOG_URL` in a browser without closing the modal.
-
-        On failure (no registered browser, platform returns False),
-        surface a toast with the URL so the user can copy it manually
-        instead of the worker failing silently.
-        """
+        """Open `CHANGELOG_URL` in a browser without closing the modal."""
         self.run_worker(
-            self._open_changelog_worker(),
+            open_url_async(CHANGELOG_URL, app=self.app),
             exclusive=False,
             group="update-available-changelog",
         )
-
-    async def _open_changelog_worker(self) -> None:
-        """Async worker body that opens the changelog URL with error handling."""
-        try:
-            opened = await asyncio.to_thread(webbrowser.open, CHANGELOG_URL)
-        except (webbrowser.Error, OSError) as exc:
-            logger.warning(
-                "webbrowser.open failed for %s: %s",
-                CHANGELOG_URL,
-                exc,
-                exc_info=True,
-            )
-            opened = False
-        if not opened:
-            self.app.notify(
-                f"Could not open a browser. URL: {CHANGELOG_URL}",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )

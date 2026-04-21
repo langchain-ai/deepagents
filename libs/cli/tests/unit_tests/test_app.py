@@ -267,6 +267,17 @@ class TestStartupSequence:
         drain_mock.assert_awaited_once()
         queue_mock.assert_awaited_once()
 
+    async def test_schedule_git_branch_refresh_noops_during_exit(self) -> None:
+        """Shutdown should prevent new background git refresh tasks."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._exit = True
+
+        with patch("deepagents_cli.app.asyncio.create_task") as mock_create_task:
+            app._schedule_git_branch_refresh()
+
+        assert app._git_branch_refresh_task is None
+        mock_create_task.assert_not_called()
+
     def test_empty_startup_cmd_is_normalized_to_none(self) -> None:
         """Empty or whitespace-only `--startup-cmd` should be treated as unset."""
         for raw in ("", "   ", "\t\n"):

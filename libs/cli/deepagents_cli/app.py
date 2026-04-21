@@ -1031,6 +1031,9 @@ class DeepAgentsApp(App):
 
     def _schedule_git_branch_refresh(self) -> None:
         """Refresh the git branch in the background without stalling cleanup."""
+        if self._exit:
+            return
+
         prior_task = self._git_branch_refresh_task
         if prior_task is not None and not prior_task.done():
             prior_task.cancel()

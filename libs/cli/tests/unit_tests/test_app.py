@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Iterator
     from pathlib import Path
 
     from deepagents_cli.notifications import PendingNotification
@@ -4177,6 +4177,28 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
 
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
+
+    @pytest.fixture(autouse=True)
+    def _quiet_startup_workers(self) -> Iterator[None]:
+        """Silence the registry-populating startup workers.
+
+        `_check_optional_tools_background` would otherwise replace
+        test-constructed notifications by key (the host's real install
+        hint differs from what tests assert), and `_check_for_updates`
+        would race PyPI. These tests manage the registry themselves
+        and only want to exercise the dispatcher / modal wiring.
+        """
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+        ):
+            yield
 
     async def test_ctrl_n_with_empty_registry_emits_toast(self) -> None:
         """ctrl+n with nothing pending notifies and doesn't push a modal."""

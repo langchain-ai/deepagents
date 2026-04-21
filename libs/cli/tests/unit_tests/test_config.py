@@ -276,16 +276,42 @@ class TestSettingsGetProjectAgentMdPath:
 
 
 class TestNewlineShortcut:
-    """Tests for platform-specific newline shortcut labels."""
+    """Tests for newline shortcut labels.
+
+    The label depends on both the platform and whether the attached
+    terminal advertises kitty-keyboard-protocol support. Each test
+    patches the cached capability probe so the platform-fallback logic
+    is exercised in isolation.
+    """
+
+    def test_returns_shift_enter_when_kitty_supported(self) -> None:
+        """Should show Shift+Enter on any platform when kitty kbd is negotiated."""
+        with patch(
+            "deepagents_cli.terminal_capabilities.supports_kitty_keyboard_protocol",
+            return_value=True,
+        ):
+            assert newline_shortcut() == "Shift+Enter"
 
     def test_returns_option_enter_on_macos(self) -> None:
-        """Should show Option+Enter on darwin."""
-        with patch("deepagents_cli.config.sys.platform", "darwin"):
+        """Should show Option+Enter on darwin when kitty kbd is unavailable."""
+        with (
+            patch(
+                "deepagents_cli.terminal_capabilities.supports_kitty_keyboard_protocol",
+                return_value=False,
+            ),
+            patch("deepagents_cli.config.sys.platform", "darwin"),
+        ):
             assert newline_shortcut() == "Option+Enter"
 
     def test_returns_ctrl_j_on_non_macos(self) -> None:
-        """Should show Ctrl+J on non-darwin platforms."""
-        with patch("deepagents_cli.config.sys.platform", "linux"):
+        """Should show Ctrl+J on non-darwin platforms when kitty kbd is unavailable."""
+        with (
+            patch(
+                "deepagents_cli.terminal_capabilities.supports_kitty_keyboard_protocol",
+                return_value=False,
+            ),
+            patch("deepagents_cli.config.sys.platform", "linux"),
+        ):
             assert newline_shortcut() == "Ctrl+J"
 
 

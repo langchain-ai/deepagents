@@ -42,7 +42,6 @@ dependencies = [
     "langchain-openai>=1.1.12,<2.0.0",
 
     # UI/Terminal
-    # When bumping: re-check _textual_patches.py vs upstream #6378.
     "textual>=8.0.0,<9.0.0",
     "textual-autocomplete>=3.0.0,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",

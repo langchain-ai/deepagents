@@ -22,16 +22,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from deepagents_cli.notifications import (
-    ActionId,
-    MissingDepPayload,
-    NotificationAction,
-    PendingNotification,
-)
-
 if TYPE_CHECKING:
     from deepagents_cli.app import AppResult
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.notifications import PendingNotification
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -218,7 +212,7 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     return missing
 
 
-def build_missing_tool_notification(tool: str) -> PendingNotification:
+def build_missing_tool_notification(tool: str) -> "PendingNotification":
     """Build a `PendingNotification` for a missing optional tool.
 
     The returned entry carries the install hint (or URL) in a typed payload so
@@ -231,6 +225,15 @@ def build_missing_tool_notification(tool: str) -> PendingNotification:
     Returns:
         A registry entry ready for `NotificationRegistry.add`.
     """
+    # Deferred import: keeps `--version` and other hot-path commands off the
+    # `deepagents_cli.notifications` -> `dataclasses`/`logging` chain.
+    from deepagents_cli.notifications import (
+        ActionId,
+        MissingDepPayload,
+        NotificationAction,
+        PendingNotification,
+    )
+
     suppress_action = NotificationAction(ActionId.SUPPRESS, "Don't show this again")
     if tool == "ripgrep":
         hint = _ripgrep_install_hint()

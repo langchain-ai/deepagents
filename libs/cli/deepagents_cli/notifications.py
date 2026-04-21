@@ -202,6 +202,21 @@ class NotificationRegistry:
         """Return the toast identity bound to *key*, or `None`."""
         return self._key_to_toast.get(key)
 
+    def unbind_toast(self, toast_identity: str) -> None:
+        """Drop the binding for *toast_identity*, if any.
+
+        Does not remove the underlying notification entry; used when the
+        toast is being dismissed (e.g. the user opened the notification
+        center) but the entry should stay in the registry.
+
+        Args:
+            toast_identity: `Notification.identity` of the toast to unbind.
+                Unknown identities are a no-op.
+        """
+        key = self._toast_to_key.pop(toast_identity, None)
+        if key is not None:
+            self._key_to_toast.pop(key, None)
+
     def key_for_toast(self, toast_identity: str) -> str | None:
         """Return the registered key for *toast_identity*, or `None`."""
         return self._toast_to_key.get(toast_identity)

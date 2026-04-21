@@ -5822,6 +5822,8 @@ class DeepAgentsApp(App):
             )
             return
 
+        self._dismiss_registered_toasts()
+
         def handle_result(result: NotificationActionResult | None) -> None:
             if result is not None:
                 self.run_worker(
@@ -5833,6 +5835,27 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         self.push_screen(NotificationCenterScreen(pending), handle_result)
+
+    def _dismiss_registered_toasts(self) -> None:
+        """Drop toasts bound to pending notifications.
+
+        Called when the notification center opens so the live toast
+        surface doesn't duplicate the modal list. Only toasts classified
+        as actionable by `NotificationRegistry.is_actionable_toast` are
+        dismissed; unrelated toasts (errors, generic info toasts) stay
+        visible.
+        """
+        to_dismiss = [
+            notif
+            for notif in list(self._notifications)
+            if self._notice_registry.is_actionable_toast(notif.identity)
+        ]
+        if not to_dismiss:
+            return
+        for notif in to_dismiss:
+            self._unnotify(notif, refresh=False)
+            self._notice_registry.unbind_toast(notif.identity)
+        self._refresh_notifications()
 
     async def on_notification_suppress_requested(
         self,

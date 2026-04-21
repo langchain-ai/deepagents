@@ -163,6 +163,28 @@ class TestNotificationRegistry:
             for record in caplog.records
         )
 
+    def test_unbind_toast_drops_binding_but_keeps_entry(self) -> None:
+        reg = NotificationRegistry()
+        entry = _dep_entry("dep:ripgrep")
+        reg.add(entry)
+        reg.bind_toast("dep:ripgrep", "toast-1")
+
+        reg.unbind_toast("toast-1")
+
+        assert reg.get("dep:ripgrep") is entry
+        assert reg.key_for_toast("toast-1") is None
+        assert reg.toast_identity_for("dep:ripgrep") is None
+        assert reg.is_actionable_toast("toast-1") is False
+
+    def test_unbind_unknown_toast_is_noop(self) -> None:
+        reg = NotificationRegistry()
+        reg.add(_dep_entry("dep:ripgrep"))
+        reg.bind_toast("dep:ripgrep", "toast-1")
+
+        reg.unbind_toast("toast-unknown")
+
+        assert reg.key_for_toast("toast-1") == "dep:ripgrep"
+
     def test_clear_removes_everything(self) -> None:
         reg = NotificationRegistry()
         reg.add(_dep_entry("dep:ripgrep"))

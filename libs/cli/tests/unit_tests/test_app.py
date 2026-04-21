@@ -4336,6 +4336,81 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             assert not isinstance(app.screen, NotificationCenterScreen)
 
+    async def test_open_center_dismisses_bound_toasts_keeps_others(self) -> None:
+        """Opening the center dismisses registered toasts, leaves unrelated ones."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notification = _missing_dep_entry()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._notify_actionable(notification, severity="warning", timeout=30)
+            app.notify("something unrelated", severity="error", timeout=30)
+            await pilot.pause()
+
+            bound_identity = app._notice_registry.toast_identity_for(notification.key)
+            assert bound_identity is not None
+            identities_before = {n.identity for n in app._notifications}
+            assert bound_identity in identities_before
+
+            app._open_notification_center()
+            await pilot.pause()
+
+            identities_after = {n.identity for n in app._notifications}
+            assert bound_identity not in identities_after
+            # The unrelated error toast stays up.
+            assert len(identities_after) == 1
+            # Registry entry persists; only the toast binding is cleared.
+            assert app._notice_registry.get(notification.key) is not None
+            assert app._notice_registry.toast_identity_for(notification.key) is None
+
+    async def test_open_center_dismisses_all_bound_toasts(self) -> None:
+        """Multiple actionable toasts are all dismissed when the center opens."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        ripgrep = _missing_dep_entry("ripgrep")
+        tavily = _missing_dep_entry("tavily")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._notify_actionable(ripgrep, severity="warning", timeout=30)
+            app._notify_actionable(tavily, severity="warning", timeout=30)
+            await pilot.pause()
+
+            ripgrep_identity = app._notice_registry.toast_identity_for(ripgrep.key)
+            tavily_identity = app._notice_registry.toast_identity_for(tavily.key)
+            assert ripgrep_identity is not None
+            assert tavily_identity is not None
+
+            app._open_notification_center()
+            await pilot.pause()
+
+            identities_after = {n.identity for n in app._notifications}
+            assert ripgrep_identity not in identities_after
+            assert tavily_identity not in identities_after
+            assert app._notice_registry.toast_identity_for(ripgrep.key) is None
+            assert app._notice_registry.toast_identity_for(tavily.key) is None
+            # Registry entries persist.
+            assert app._notice_registry.get(ripgrep.key) is not None
+            assert app._notice_registry.get(tavily.key) is not None
+
+    async def test_dismiss_registered_toasts_noop_when_no_bound(self) -> None:
+        """_dismiss_registered_toasts leaves unbound toasts untouched."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.notify("unrelated info", severity="information", timeout=30)
+            app.notify("unrelated error", severity="error", timeout=30)
+            await pilot.pause()
+
+            identities_before = {n.identity for n in app._notifications}
+            assert len(identities_before) == 2
+
+            app._dismiss_registered_toasts()
+            await pilot.pause()
+
+            identities_after = {n.identity for n in app._notifications}
+            assert identities_after == identities_before
+
     async def test_suppress_action_removes_entry_and_persists(self) -> None:
         """Selecting 'suppress' calls suppress_warning and removes the entry."""
         from deepagents_cli.notifications import ActionId

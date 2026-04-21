@@ -32,7 +32,7 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
     assert str(f2) not in paths  # File in subdirectory should NOT be listed
-    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    assert (str(root / "dir") + "/") in paths  # Directory should be listed
 
     # aread, aedit, awrite
     read_result = await be.aread(str(f1))

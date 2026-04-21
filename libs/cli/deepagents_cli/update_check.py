@@ -1,7 +1,8 @@
 """Update lifecycle for `deepagents-cli`.
 
 Handles version checking against PyPI (with caching), install-method detection,
-auto-upgrade execution, config-driven opt-in/out, and "what's new" tracking.
+auto-upgrade execution, config-driven opt-in/out, notification throttling, and
+"what's new" tracking.
 
 Most public entry points absorb errors and return sentinel values.
 `set_auto_update` raises on write failures so callers can surface
@@ -32,7 +33,7 @@ from deepagents_cli.model_config import DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_PATH
 logger = logging.getLogger(__name__)
 
 CACHE_FILE: Path = DEFAULT_CONFIG_DIR / "latest_version.json"
-SEEN_VERSION_FILE: Path = DEFAULT_CONFIG_DIR / "seen_version.json"
+UPDATE_STATE_FILE: Path = DEFAULT_CONFIG_DIR / "update_state.json"
 CACHE_TTL = 86_400  # 24 hours
 
 InstallMethod = Literal["uv", "pip", "brew", "unknown"]
@@ -172,6 +173,76 @@ def get_latest_version(
         logger.debug("Failed to write update-check cache", exc_info=True)
 
     return prerelease if include_prereleases else stable
+
+
+def _read_update_state() -> dict[str, object]:
+    """Read the shared update state file.
+
+    Returns:
+        Parsed dict, or empty dict on missing/corrupt file.
+    """
+    try:
+        if UPDATE_STATE_FILE.exists():
+            raw = json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+    except (OSError, json.JSONDecodeError):
+        logger.debug("Failed to read update state file", exc_info=True)
+    return {}
+
+
+def _write_update_state(patch: dict[str, object]) -> None:
+    """Merge *patch* into the shared update state file (shallow, top-level only).
+
+    Args:
+        patch: Keys to merge into the existing state.
+    """
+    data = _read_update_state()
+    data.update(patch)
+    try:
+        UPDATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        UPDATE_STATE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "Failed to write update state to %s",
+            UPDATE_STATE_FILE,
+            exc_info=True,
+        )
+
+
+def should_notify_update(latest: str) -> bool:
+    """Return whether the user should be notified about version *latest*.
+
+    Throttles notifications to at most once per `CACHE_TTL` period for a
+    given version, preventing repeated banners every session.
+
+    Args:
+        latest: The version string to check against.
+
+    Returns:
+        `True` if the user should see the update banner, `False` if the
+            notification was already shown within the `CACHE_TTL` window.
+    """
+    data = _read_update_state()
+    notified_at = data.get("notified_at", 0)
+    notified_version = data.get("notified_version")
+    return not (
+        isinstance(notified_at, (int, float))
+        and notified_version == latest
+        and time.time() - notified_at < CACHE_TTL
+    )
+
+
+def mark_update_notified(latest: str) -> None:
+    """Record that the user was notified about version *latest*.
+
+    Writes into the shared update state file so a subsequent
+    `should_notify_update` call can suppress duplicate banners.
+
+    Args:
+        latest: The version string that was shown.
+    """
+    _write_update_state({"notified_at": time.time(), "notified_version": latest})
 
 
 def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
@@ -419,25 +490,13 @@ def _read_update_config() -> dict[str, bool]:
 
 def get_seen_version() -> str | None:
     """Return the last version the user saw the "what's new" banner for."""
-    try:
-        if SEEN_VERSION_FILE.exists():
-            data = json.loads(SEEN_VERSION_FILE.read_text(encoding="utf-8"))
-            return data.get("version")
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        logger.debug("Failed to read seen-version file", exc_info=True)
-    return None
+    value = _read_update_state().get("seen_version")
+    return value if isinstance(value, str) else None
 
 
 def mark_version_seen(version: str) -> None:
     """Record that the user has seen the "what's new" banner for *version*."""
-    try:
-        SEEN_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SEEN_VERSION_FILE.write_text(
-            json.dumps({"version": version, "seen_at": time.time()}),
-            encoding="utf-8",
-        )
-    except OSError:
-        logger.debug("Failed to write seen-version file", exc_info=True)
+    _write_update_state({"seen_version": version, "seen_at": time.time()})
 
 
 def should_show_whats_new() -> bool:

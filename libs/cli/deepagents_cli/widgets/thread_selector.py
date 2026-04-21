@@ -392,6 +392,11 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         Binding("enter", "confirm", "Confirm", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
+    """Key bindings for the delete-confirmation overlay.
+
+    Enter confirms deletion, Esc cancels. Both use `priority=True` so they take
+    precedence over bindings on the underlying thread selector.
+    """
 
     CSS = """
     DeleteThreadConfirmScreen {
@@ -417,6 +422,7 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         text-style: italic;
     }
     """
+    """Styling for the centered confirmation dialog, red border, and help text."""
 
     def __init__(self, thread_id: str) -> None:
         """Initialize the confirmation modal.
@@ -466,9 +472,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
-        Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("j", "move_down", "Down", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
@@ -483,6 +487,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             priority=True,
         ),
     ]
+    """Key bindings for thread navigation, selection, deletion, and filter focus.
+
+    Arrows move the cursor, Page Up/Down jump by a visual page, Enter
+    selects the highlighted thread, Ctrl+D opens the delete-confirmation
+    overlay, Tab/Shift+Tab rotate focus through the filter input and
+    column toggle checkboxes, and Esc dismisses. All bindings use
+    `priority=True` so they take precedence over the embedded filter
+    `Input` and checkbox widgets; vim-style `j`/`k` bindings are
+    deliberately omitted because they would prevent typing those letters
+    into the always-focused filter input.
+    """
 
     CSS = """
     ThreadSelectorScreen {
@@ -654,6 +669,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     }
 
     """
+    """Styling for the modal shell, filter input, two-pane body (thread table
+    and column controls), per-column widths, and help footer."""
 
     def __init__(
         self,

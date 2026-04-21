@@ -34,7 +34,7 @@ Each question can be either:
 
 For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
 
-By default all questions are required. Set "required" to false for optional questions that the user can skip.
+By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
 Use this tool when:
 - You need clarification on ambiguous requirements

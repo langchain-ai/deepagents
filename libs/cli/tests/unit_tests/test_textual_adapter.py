@@ -589,6 +589,11 @@ def _tool_call_message(
     )
 
 
+def _text_message(text: str) -> SimpleNamespace:
+    """Build a message-like object with content_blocks containing one text block."""
+    return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
 class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
@@ -833,6 +838,174 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
 
+class TestExecuteTaskTextualTextThenToolSpinner:
+    """Regression tests: spinner must stay visible between text and tool call.
+
+    When the assistant streams explanatory text and then emits a tool call,
+    the model often pauses between finishing the text and producing the tool
+    call. The spinner should remain visible during that pause rather than
+    disappearing as soon as the first text chunk arrives.
+    """
+
+    async def test_spinner_not_hidden_when_text_chunk_arrives(self) -> None:
+        """Streaming a text block must not hide the Thinking spinner."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "messages", (_text_message("Now I'll call a tool..."), {})),
+            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
+            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        # Patch AssistantMessage so it doesn't require a real Textual DOM.
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_cli.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        # Expected sequence:
+        #   1. "Thinking" before astream
+        #   2. "Thinking" after mounting the streaming AssistantMessage
+        #      (re-anchor the spinner below the message so the user still
+        #      sees activity if the model pauses before the tool call)
+        #   3. None when the tool call mounts
+        #   4. "Thinking" after the tool result
+        assert statuses[0] == "Thinking"
+        assert statuses[1] == "Thinking"
+        assert None in statuses
+        assert statuses[-1] == "Thinking"
+
+        # The spinner must never be hidden before the tool call arrives.
+        first_none = statuses.index(None)
+        text_thinking_seen = statuses[:first_none].count("Thinking") >= 2
+        assert text_thinking_seen, (
+            f"Spinner was hidden during text streaming before tool call: {statuses}"
+        )
+
+    async def test_spinner_reanchors_for_text_after_tool_cycle(self) -> None:
+        """Text -> tool_call -> tool_result -> text must re-anchor the spinner.
+
+        After a tool cycle completes, the tool_call handler pops the previous
+        AssistantMessage from `assistant_message_by_namespace`, so the next
+        text chunk mounts a fresh widget. The new re-anchor call at
+        `textual_adapter.py:780-784` must fire for that second text burst so
+        the spinner stays visible between it and any follow-up tool call.
+        """
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "messages", (_text_message("First, I'll inspect..."), {})),
+            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
+            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
+            ((), "messages", (_text_message("Now the second step..."), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_cli.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        # Expected Thinking calls:
+        #   1. Before astream (line 517)
+        #   2. After first AssistantMessage mount (re-anchor, line 784)
+        #   3. After tool result (line 705)
+        #   4. After second AssistantMessage mount (re-anchor again)
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count >= 4, (
+            f"Expected at least 4 Thinking calls including re-anchors after "
+            f"each text mount; got {thinking_count}: {statuses}"
+        )
+
+    async def test_spinner_reanchor_skipped_while_tools_pending(self) -> None:
+        """The re-anchor must be gated on `not _current_tool_messages`.
+
+        Contrived sequence: a tool call mounts (populating
+        `_current_tool_messages`), then a text chunk arrives before the tool
+        result. The new re-anchor logic must NOT call `_set_spinner("Thinking")`
+        in that window — the tool-call widget is the dominant progress
+        indicator.
+        """
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
+            ((), "messages", (_text_message("Meanwhile..."), {})),
+            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_cli.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        # Thinking calls should be:
+        #   1. Before astream
+        #   2. After tool result (guard is back to empty)
+        # The re-anchor must NOT fire while the tool is in flight.
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            f"Expected 2 Thinking calls (start + after tool); got "
+            f"{thinking_count}: {statuses}"
+        )
+
+
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
 
@@ -968,6 +1141,63 @@ class TestExecuteTaskTextualAskUser:
         assert ask_user_resume["status"] == "error"
         assert ask_user_resume["error"] == "ask_user not supported by this UI"
         assert ask_user_resume["answers"] == [""]
+
+    async def test_spinner_reappears_after_ask_user_resume(self) -> None:
+        """Spinner should re-show Thinking on each astream iteration.
+
+        Regression for a gap where the model was working on the resume
+        payload after an ask_user response but no spinner was visible.
+        """
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return None
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        # Two astream iterations (interrupt, then resume) -> expect
+        # Thinking set before each, and nothing above that count since
+        # no tool calls stream in this test.
+        assert len(agent.stream_inputs) == 2
+        thinking_count = sum(1 for s in statuses if s == "Thinking")
+        assert thinking_count == 2, (
+            f"Expected Thinking spinner on each iteration; got {statuses}"
+        )
 
     async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
         self,

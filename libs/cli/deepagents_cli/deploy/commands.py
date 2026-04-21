@@ -6,6 +6,7 @@ Registered with the CLI via `setup_deploy_parsers` in `main.py`.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -402,12 +403,14 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
 
     config_path = str(build_dir / "langgraph.json")
     cmd = ["langgraph", "deploy", "-c", config_path, "--name", name, "--verbose"]
+    env = os.environ.copy()
+    env["LANGGRAPH_CLI_ANALYTICS_SOURCE"] = "deepagents"
 
     print("Deploying to LangSmith Deployments...")
     print(f"Running: {' '.join(cmd)}")
     print()
 
-    result = subprocess.run(cmd, cwd=str(build_dir), check=False)
+    result = subprocess.run(cmd, cwd=str(build_dir), check=False, env=env)
 
     if result.returncode != 0:
         print(f"\nDeployment failed (exit code {result.returncode}).")

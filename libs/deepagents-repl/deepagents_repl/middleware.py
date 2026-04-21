@@ -17,10 +17,12 @@ the full design rationale.
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -30,6 +32,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 from pydantic import BaseModel, Field
@@ -39,7 +42,9 @@ from deepagents_repl._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from deepagents_repl._repl import _Registry, format_outcome
+from deepagents_repl._repl import SwarmBinding, _Registry, format_outcome
+from deepagents_repl._swarm.executor import SubagentFactory
+from deepagents_repl._swarm.types import DEFAULT_CONCURRENCY
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,183 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+
+
+_SWARM_PROMPT_TEMPLATE = """
+
+## Parallel fan-out (`swarm.create` + `swarm.execute` inside `{tool_name}`)
+
+Use `swarm.create` and `swarm.execute` inside `{tool_name}` to dispatch many independent subagent calls in parallel against a JSONL table. Each subagent runs in an isolated context — it sees only the interpolated instruction you write for it.
+
+### When to use swarm
+
+Reach for swarm when any of these apply:
+- A dataset has many items needing the same operation (classification, extraction, transformation)
+- A collection of entities each needs its own analysis (per-document, per-PR, per-entity)
+- The same input benefits from multiple independent perspectives
+- The work exceeds what a single subagent's context can hold
+
+Don't use swarm when:
+- Fewer than ~5 independent units — use inline tool calls or the `task` tool
+- Tasks depend on each other's output
+- One end-to-end analysis with no natural decomposition
+
+### Flow
+
+1. **Explore.** Sample the input with your file tools (`read_file` with offset/limit, `grep`, `ls`) outside `{tool_name}` to learn its shape. Finish in 2–3 tool calls.
+2. **Create a table.** In `{tool_name}`, call `swarm.create(file, source)` to materialise a JSONL table from a glob, explicit file paths, or inline task rows.
+3. **Execute against the table.** Call `swarm.execute(file, options)` with an instruction template. Results stream back as a new column on each row.
+4. **Aggregate.** In the same or a follow-up `{tool_name}`, read the table from the backend to combine results programmatically. For qualitative output (summaries, research, narrative), work from the table — don't pull every result string back into the orchestrator's context.
+
+### Hard rules
+
+- **Never read the full input that triggers swarm.** If the data is too large for one context, it reaches subagents via interpolated instruction templates, not through you.
+- **Results are final.** Do not dispatch recheck, verify, or cross-check tasks for completed results. Re-dispatching the same data with different ids is still rechecking.
+- **One retry for failures, then move on.** Fix the root cause (instruction, schema) and re-dispatch only the failed rows using a filter. Don't retry twice.
+
+### `swarm.create(file, source)`
+
+Materialises a JSONL table at ``file``. Overwrites if it exists.
+
+```typescript
+// From a glob pattern
+await swarm.create("/analysis.jsonl", {{ glob: "src/**/*.ts" }});
+
+// From explicit file paths
+await swarm.create("/analysis.jsonl", {{ filePaths: ["a.ts", "b.ts"] }});
+
+// From inline task rows (each must have id: string)
+await swarm.create("/analysis.jsonl", {{
+  tasks: lines.map((line, i) => ({{ id: `row-${{i}}`, text: line }}))
+}});
+```
+
+Glob and filePaths sources produce rows with `{{id, file}}`. Inline tasks can have any shape.
+
+### `swarm.execute(file, options)`
+
+Dispatches subagents against an existing table. Returns a JSON string — use `JSON.parse()`.
+
+```typescript
+const summary = JSON.parse(await swarm.execute("/analysis.jsonl", {{
+  instruction: "Review this file for security issues.\\n\\nFile: {{file}}",
+  column: "review",              // column to write results into (default: "result")
+  subagentType: "general-purpose",
+  concurrency: 25,
+}}));
+console.log("Completed:", summary.completed, "Failed:", summary.failed);
+```
+
+### Instruction templates
+
+`{{column}}` / `{{dotted.path}}` placeholders interpolate per-row from the table.
+
+```typescript
+// Row: {{ id: "utils.ts", file: "src/utils.ts" }}
+await swarm.execute("/analysis.jsonl", {{
+  instruction: "Analyze {{file}} for code complexity.",
+  column: "complexity",
+}});
+```
+
+### Filtering rows
+
+Use `filter` to dispatch only matching rows; others pass through unchanged.
+
+```typescript
+// Only rows where the column doesn't exist yet
+await swarm.execute("/analysis.jsonl", {{
+  instruction: "...",
+  filter: {{ column: "review", exists: false }},
+}});
+
+// Retry failed rows
+await swarm.execute("/analysis.jsonl", {{
+  instruction: "...",
+  filter: {{ column: "review", equals: null }},
+}});
+
+// Combine conditions
+await swarm.execute("/analysis.jsonl", {{
+  instruction: "...",
+  filter: {{ and: [
+    {{ column: "status", equals: "pending" }},
+    {{ column: "priority", in: ["high", "critical"] }},
+  ]}},
+}});
+```
+
+Operators: `equals`, `notEquals`, `in`, `exists` (boolean), `and`, `or`.
+
+### Multi-pass enrichment
+
+Run multiple `swarm.execute` calls against the same table, each writing a different column. Later passes can reference earlier columns.
+
+```typescript
+await swarm.create("/docs.jsonl", {{ glob: "docs/**/*.md" }});
+
+// Pass 1: extract summary
+await swarm.execute("/docs.jsonl", {{
+  instruction: "Summarize this document.\\n\\nFile: {{file}}",
+  column: "summary",
+}});
+
+// Pass 2: classify based on summary
+await swarm.execute("/docs.jsonl", {{
+  instruction: "Classify: {{file}}\\nSummary: {{summary}}",
+  column: "category",
+  responseSchema: {{
+    type: "object",
+    properties: {{ category: {{ type: "string" }} }},
+    required: ["category"],
+  }},
+}});
+```
+
+### Structured output (`responseSchema`)
+
+Use `responseSchema` when results will be aggregated programmatically. The column value is the parsed JSON, not a string.
+
+```typescript
+await swarm.execute("/analysis.jsonl", {{
+  instruction: "Classify the complexity of {{file}}.",
+  column: "metrics",
+  responseSchema: {{
+    type: "object",
+    properties: {{
+      complexity: {{ type: "string", enum: ["low", "medium", "high"] }},
+      reason: {{ type: "string" }},
+    }},
+    required: ["complexity", "reason"],
+  }},
+}});
+```
+
+Schema rules (enforced at dispatch time — violations throw before any subagent runs):
+- Top-level `type` must be `"object"`. Wrap arrays under a named field.
+- `properties` must be defined with at least one explicit field.
+
+### API Reference
+
+```typescript
+async function swarm.create(file: string, source: {{
+  glob?: string | string[];
+  filePaths?: string[];
+  tasks?: Array<{{id: string, [key: string]: any}}>;
+}}): Promise<void>
+
+async function swarm.execute(file: string, options: {{
+  instruction: string;
+  column?: string;               // default: "result"
+  filter?: SwarmFilter;
+  subagentType?: string;         // default: "general-purpose"
+  responseSchema?: object;       // top-level must be type: "object"
+  concurrency?: number;          // default: {default_concurrency}
+}}): Promise<string>  // JSON string of SwarmSummary
+```
+
+Available subagent types: {available_subagents}
+"""
 
 
 class EvalSchema(BaseModel):
@@ -146,6 +328,10 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
         ptc: PTCOption = False,
+        backend: BackendProtocol | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+        subagent_factories: Mapping[str, SubagentFactory] | None = None,
+        swarm_task_timeout: float | None = None,
     ) -> None:
         super().__init__()
         self._memory_limit = memory_limit
@@ -154,16 +340,61 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
         self._ptc = ptc
+        self._backend = backend
+
+        if subagents and backend is None:
+            msg = (
+                "REPLMiddleware: `subagents` requires `backend` — swarm needs "
+                "somewhere to persist its JSONL table. Pass a BackendProtocol "
+                "instance (e.g. `StateBackend()`) alongside `subagents`."
+            )
+            raise ValueError(msg)
+
+        swarm_binding: SwarmBinding | None = None
+        subagent_descriptions: list[dict[str, str]] = []
+        if subagents and backend is not None:
+            subagent_graphs: dict[str, Runnable] = {}
+            for spec in subagents:
+                if "runnable" not in spec:
+                    msg = (
+                        f"REPLMiddleware: subagent '{spec['name']}' lacks a "
+                        "pre-compiled `runnable`. Compile declarative "
+                        "SubAgent specs via `deepagents.graph.build_subagents` "
+                        "before passing them here."
+                    )
+                    raise ValueError(msg)
+                subagent_graphs[spec["name"]] = spec["runnable"]
+                subagent_descriptions.append(
+                    {"name": spec["name"], "description": spec["description"]}
+                )
+            swarm_binding = SwarmBinding(
+                backend=backend,
+                subagent_graphs=subagent_graphs,
+                subagent_factories=subagent_factories,
+                task_timeout_seconds=swarm_task_timeout,
+            )
+        self._swarm_binding = swarm_binding
+        self._swarm_subagent_descriptions = subagent_descriptions
+
         self._registry = _Registry(
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
+            swarm_binding=swarm_binding,
         )
-        self._base_system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        base_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             tool_name=tool_name,
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),
         )
+        if swarm_binding is not None:
+            available = ", ".join(s["name"] for s in subagent_descriptions)
+            base_prompt += _SWARM_PROMPT_TEMPLATE.format(
+                tool_name=tool_name,
+                available_subagents=available,
+                default_concurrency=DEFAULT_CONCURRENCY,
+            )
+        self._base_system_prompt = base_prompt
         # Backwards-compatible alias used in tests / external introspection.
         self.system_prompt = self._base_system_prompt
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
@@ -201,6 +432,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             finally:
                 repl.set_outer_runtime(None)
 
+        backend = self._backend
+
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[
@@ -220,6 +453,13 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     await repl.eval_async(code),
                     max_result_chars=max_chars,
                 )
+                # Flush any table writes the eval accumulated via
+                # `swarm.create` / `swarm.execute`. Done outside the
+                # eval so a crash mid-flush doesn't leave the REPL in
+                # an inconsistent state relative to its pending buffer.
+                if backend is not None:
+                    for path, pending_content in repl._drain_pending_writes():
+                        await backend.awrite(path, pending_content)
             finally:
                 repl.set_outer_runtime(None)
             return ToolMessage(content=content, tool_call_id=runtime.tool_call_id, name=tool_name)

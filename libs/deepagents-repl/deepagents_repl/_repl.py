@@ -32,11 +32,14 @@ from quickjs_rs import (
 from deepagents_repl._ptc import to_camel_case
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from deepagents.backends.protocol import BackendProtocol
+    from langchain_core.runnables import Runnable
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
+
+    from deepagents_repl._swarm.executor import SubagentFactory
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +252,32 @@ def _synth_tool_call_id(tool_name: str) -> str:
     return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
 
 
+def _summary_to_wire(summary: Any) -> dict[str, Any]:
+    """Shape a ``SwarmSummary`` for the JS side (camelCase, trimmed)."""
+    entries = []
+    for r in summary.results:
+        entry: dict[str, Any] = {
+            "id": r.id,
+            "subagentType": r.subagent_type,
+            "status": r.status,
+        }
+        if r.result is not None:
+            entry["result"] = r.result
+        if r.error is not None:
+            entry["error"] = r.error
+        entries.append(entry)
+    return {
+        "total": summary.total,
+        "completed": summary.completed,
+        "failed": summary.failed,
+        "skipped": summary.skipped,
+        "file": summary.file,
+        "column": summary.column,
+        "results": entries,
+        "failedTasks": list(summary.failed_tasks),
+    }
+
+
 def _inject_tool_args_for_ptc(
     tool: Any,
     payload: dict[str, Any],
@@ -306,6 +335,22 @@ def _inject_tool_args_for_ptc(
     return enriched
 
 
+@dataclass
+class SwarmBinding:
+    """Bundle of state needed by the in-REPL ``swarm`` namespace.
+
+    ``backend``, ``subagent_graphs``, and ``subagent_factories`` are
+    fixed for the lifetime of the REPL middleware; ``current_state`` is
+    pulled from the outer ``ToolRuntime`` at call time.
+    """
+
+    backend: BackendProtocol
+    subagent_graphs: Mapping[str, Runnable]
+    subagent_factories: Mapping[str, SubagentFactory] | None = None
+    task_timeout_seconds: float | None = None
+    """Per-subagent-task wall-clock timeout. ``None`` uses the swarm default."""
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer + lock, per LangGraph thread."""
 
@@ -315,6 +360,7 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
+        swarm_binding: SwarmBinding | None = None,
     ) -> None:
         # The Context-level ``timeout`` is used as the cumulative budget
         # for sync evals. Async evals pass ``timeout=`` per call so each
@@ -368,8 +414,11 @@ class _ThreadREPL:
         # single eval (e.g. `swarm.create` followed by `swarm.execute`)
         # push here, then the middleware flushes after the eval returns.
         self._pending_writes: dict[str, str] = {}
+        self._swarm_binding: SwarmBinding | None = swarm_binding
         if capture_console:
             self._install_console()
+        if swarm_binding is not None:
+            self._install_swarm(swarm_binding)
 
     def _install_console(self) -> None:
         ctx = self._ctx
@@ -492,6 +541,117 @@ class _ThreadREPL:
         drained = list(self._pending_writes.items())
         self._pending_writes.clear()
         return drained
+
+    def _install_swarm(self, binding: SwarmBinding) -> None:
+        """Install ``swarm.create`` and ``swarm.execute`` on the JS global.
+
+        Writes during ``swarm.create`` + ``swarm.execute`` are routed
+        through the REPL's pending-writes buffer so results are visible
+        to subsequent reads in the same eval. The middleware flushes
+        the buffer to the backend after each eval returns.
+        """
+        # Delayed imports: keeps the swarm subpackage (and its langchain
+        # transitive imports) out of the cold path for REPLs that don't
+        # configure swarm.
+        from deepagents_repl._swarm.executor import (  # noqa: PLC0415
+            SwarmExecutionOptions,
+            execute_swarm,
+        )
+        from deepagents_repl._swarm.table import (  # noqa: PLC0415
+            create_table,
+        )
+        from deepagents_repl._swarm.types import (  # noqa: PLC0415
+            CreateTableSource,
+        )
+
+        backend = binding.backend
+
+        def _write(path: str, content: str) -> None:
+            self._stage_write(path, content)
+
+        async def _read(path: str) -> str:
+            return await self._read_through_pending(path, backend)
+
+        async def _swarm_create(
+            file: Any = None, source: Any = None
+        ) -> None:
+            if not isinstance(file, str):
+                msg = "swarm.create: `file` must be a string path"
+                raise ValueError(msg)
+            if not isinstance(source, dict):
+                msg = "swarm.create: `source` must be an object"
+                raise ValueError(msg)
+            spec = CreateTableSource(
+                glob=source.get("glob"),
+                file_paths=source.get("filePaths") or source.get("file_paths"),
+                tasks=source.get("tasks"),
+            )
+            await create_table(file, spec, backend, _write)
+
+        async def _swarm_execute(
+            file: Any = None, options: Any = None
+        ) -> str:
+            if not isinstance(file, str):
+                msg = "swarm.execute: `file` must be a string path"
+                raise ValueError(msg)
+            if not isinstance(options, dict):
+                msg = "swarm.execute: `options` must be an object"
+                raise ValueError(msg)
+            current_state = self._current_state_from_runtime()
+            concurrency = options.get("concurrency")
+            if concurrency is not None and not isinstance(concurrency, int):
+                concurrency = int(concurrency)
+            exec_opts = SwarmExecutionOptions(
+                file=file,
+                instruction=options.get("instruction") or "",
+                subagent_graphs=binding.subagent_graphs,
+                read=_read,
+                write=_write,
+                column=options.get("column") or "result",
+                filter=options.get("filter"),
+                subagent_type=options.get("subagentType") or options.get("subagent_type"),
+                response_schema=options.get("responseSchema")
+                or options.get("response_schema"),
+                concurrency=concurrency,
+                current_state=current_state,
+                subagent_factories=binding.subagent_factories,
+                cancel_event=self._eval_cancel_event,
+            )
+            if binding.task_timeout_seconds is not None:
+                exec_opts.task_timeout_seconds = binding.task_timeout_seconds
+            if not exec_opts.instruction:
+                msg = "swarm.execute: `instruction` is required"
+                raise ValueError(msg)
+            summary = await execute_swarm(exec_opts)
+            return json.dumps(_summary_to_wire(summary))
+
+        self._ctx.register("__swarm_create", _swarm_create, is_async=True)
+        self._ctx.register("__swarm_execute", _swarm_execute, is_async=True)
+        # Expose as `swarm.create` / `swarm.execute` on the global.
+        # Trailing `undefined` sidesteps MarshalError on the object
+        # return (same trick as the console/tools install paths).
+        self._ctx.eval(
+            "globalThis.swarm = {"
+            " create: __swarm_create,"
+            " execute: __swarm_execute,"
+            "}; undefined"
+        )
+
+    def _current_state_from_runtime(self) -> dict[str, Any]:
+        """Best-effort read of agent state from the outer ``ToolRuntime``.
+
+        Returns an empty dict when no outer runtime is attached — e.g.
+        unit tests driving the REPL directly.
+        """
+        runtime = self._outer_runtime
+        if runtime is None:
+            return {}
+        state = getattr(runtime, "state", None)
+        if isinstance(state, dict):
+            return state
+        if state is None:
+            return {}
+        return getattr(state, "__dict__", {}) or {}
 
     def _register_tool_bridge(self, camel: str) -> None:
         """Install a host-function bridge for one camel-cased tool name.
@@ -681,6 +841,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
+    swarm_binding: SwarmBinding | None = None
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
     _init_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -703,6 +864,7 @@ class _Registry:
                         self._runtime,
                         timeout=self.timeout,
                         capture_console=self.capture_console,
+                        swarm_binding=self.swarm_binding,
                     )
                     self._repls[thread_id] = repl
         return repl

@@ -1,16 +1,29 @@
-"""Parallel subagent dispatch — helpers shared by the table-oriented executor."""
+"""Parallel subagent dispatch against a JSONL table."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import HumanMessage
 
-from deepagents_repl._swarm.types import SwarmTaskResult, SwarmTaskSpec
+from deepagents_repl._swarm.filter import SwarmFilter, evaluate_filter
+from deepagents_repl._swarm.interpolate import interpolate_instruction
+from deepagents_repl._swarm.parse import parse_table_jsonl, serialize_table_jsonl
+from deepagents_repl._swarm.table import WriteCallback
+from deepagents_repl._swarm.types import (
+    DEFAULT_CONCURRENCY,
+    MAX_CONCURRENCY,
+    TASK_TIMEOUT_SECONDS,
+    SwarmResultEntry,
+    SwarmSummary,
+    SwarmTaskResult,
+    SwarmTaskSpec,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -260,3 +273,230 @@ def _build_subagent_resolver(
         return variant
 
     return resolve
+
+
+ReadCallback = Callable[[str], Awaitable[str]]
+"""Async callback that returns file contents, checking the pending-writes
+buffer before the backend so a ``swarm.create`` in the same eval is
+visible to the subsequent ``swarm.execute``."""
+
+
+@dataclass
+class SwarmExecutionOptions:
+    """Everything the executor needs to run a swarm against a table."""
+
+    file: str
+    """Path to the JSONL table to dispatch against."""
+
+    instruction: str
+    """Template with ``{column}`` placeholders, interpolated per row."""
+
+    subagent_graphs: Mapping[str, Runnable]
+    """Default compiled subagent graphs keyed by type name."""
+
+    read: ReadCallback
+    """Read-through callback: pending buffer first, then backend."""
+
+    write: WriteCallback
+    """Write callback that streams updated rows back to the table."""
+
+    column: str = "result"
+    filter: SwarmFilter | None = None
+    subagent_type: str | None = None
+    response_schema: dict[str, Any] | None = None
+    concurrency: int | None = None
+    current_state: dict[str, Any] = field(default_factory=dict)
+    subagent_factories: Mapping[str, SubagentFactory] | None = None
+    task_timeout_seconds: float = TASK_TIMEOUT_SECONDS
+    cancel_event: asyncio.Event | None = None
+
+
+@dataclass
+class _PreparedSwarm:
+    tasks: list[SwarmTaskSpec]
+    row_index_by_id: dict[str, int]
+    rows: list[dict[str, Any]]
+    skipped: int
+    interpolation_errors: list[dict[str, str]]
+
+
+async def _prepare_swarm(
+    read: ReadCallback,
+    file: str,
+    instruction: str,
+    filter_clause: SwarmFilter | None,
+    subagent_type: str | None,
+    response_schema: dict[str, Any] | None,
+) -> _PreparedSwarm:
+    """Read the table, partition by filter, interpolate instructions.
+
+    Rows that fail interpolation are recorded but not dispatched; matched
+    rows become task specs. Non-matching rows pass through unchanged.
+    """
+    content = await read(file)
+    rows = parse_table_jsonl(content)
+
+    tasks: list[SwarmTaskSpec] = []
+    row_index_by_id: dict[str, int] = {}
+    interpolation_errors: list[dict[str, str]] = []
+    skipped = 0
+
+    for idx, row in enumerate(rows):
+        if filter_clause is not None and not evaluate_filter(filter_clause, row):
+            skipped += 1
+            continue
+        task_id = row["id"] if isinstance(row.get("id"), str) else f"row-{idx}"
+        try:
+            description = interpolate_instruction(instruction, row)
+        except ValueError as exc:
+            interpolation_errors.append({"id": task_id, "error": str(exc)})
+            continue
+        tasks.append(
+            SwarmTaskSpec(
+                id=task_id,
+                description=description,
+                subagent_type=subagent_type,
+                response_schema=response_schema,
+            )
+        )
+        row_index_by_id[task_id] = idx
+
+    return _PreparedSwarm(
+        tasks=tasks,
+        row_index_by_id=row_index_by_id,
+        rows=rows,
+        skipped=skipped,
+        interpolation_errors=interpolation_errors,
+    )
+
+
+def _try_parse_json(value: str) -> Any:
+    """Parse JSON if possible, return the raw string otherwise."""
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _build_summary(
+    results: list[SwarmTaskResult],
+    interpolation_errors: list[dict[str, str]],
+    file: str,
+    column: str,
+    skipped: int,
+) -> SwarmSummary:
+    completed = sum(1 for r in results if r.status == "completed")
+    dispatch_failed = sum(1 for r in results if r.status == "failed")
+    entries = [
+        SwarmResultEntry(
+            id=r.id,
+            subagent_type=r.subagent_type,
+            status=r.status,
+            result=r.result,
+            error=r.error,
+        )
+        for r in results
+    ]
+    failed_tasks: list[dict[str, str]] = [
+        {"id": r.id, "error": r.error or ""} for r in results if r.status == "failed"
+    ]
+    failed_tasks.extend(
+        {"id": entry["id"], "error": f"Interpolation: {entry['error']}"}
+        for entry in interpolation_errors
+    )
+    return SwarmSummary(
+        total=len(results),
+        completed=completed,
+        failed=dispatch_failed + len(interpolation_errors),
+        skipped=skipped,
+        file=file,
+        column=column,
+        results=entries,
+        failed_tasks=failed_tasks,
+    )
+
+
+async def execute_swarm(options: SwarmExecutionOptions) -> SwarmSummary:
+    """Execute a swarm against a JSONL table.
+
+    Reads the table, partitions rows by ``filter``, interpolates the
+    instruction template per matched row, dispatches subagents with
+    bounded concurrency, and streams each result back as a column on
+    the source row via ``options.write``.
+
+    Raises:
+        ValueError: when a task references an unknown subagent type,
+            when ``response_schema`` is malformed, or when the table
+            cannot be read / parsed.
+    """
+    prepared = await _prepare_swarm(
+        options.read,
+        options.file,
+        options.instruction,
+        options.filter,
+        options.subagent_type,
+        options.response_schema,
+    )
+
+    effective_concurrency = min(
+        options.concurrency if options.concurrency is not None else DEFAULT_CONCURRENCY,
+        MAX_CONCURRENCY,
+    )
+    if effective_concurrency < 1:
+        effective_concurrency = 1
+
+    _validate_subagent_types(prepared.tasks, options.subagent_graphs)
+    for task in prepared.tasks:
+        if task.response_schema is not None:
+            _validate_response_schema(task.id, task.response_schema)
+
+    resolve = _build_subagent_resolver(options.subagent_graphs, options.subagent_factories)
+    filtered_state = _filter_state_for_subagent(options.current_state)
+
+    semaphore = asyncio.Semaphore(effective_concurrency)
+    rows = prepared.rows
+    write_lock = asyncio.Lock()
+
+    async def _run(task: SwarmTaskSpec) -> SwarmTaskResult:
+        async with semaphore:
+            subagent_type = task.subagent_type or "general-purpose"
+            if options.cancel_event is not None and options.cancel_event.is_set():
+                return SwarmTaskResult(
+                    id=task.id,
+                    subagent_type=subagent_type,
+                    status="failed",
+                    error="Aborted",
+                )
+            subagent = resolve(subagent_type, task.response_schema)
+            result = await _dispatch_task(
+                task,
+                subagent,
+                filtered_state,
+                options.task_timeout_seconds,
+                options.cancel_event,
+            )
+            # Merge the result into the row and re-serialise the full
+            # table. The lock keeps concurrent completions from
+            # interleaving write calls (rows is mutable, shared).
+            if result.status == "completed" and result.result is not None:
+                row_idx = prepared.row_index_by_id.get(result.id)
+                if row_idx is not None:
+                    async with write_lock:
+                        value: Any = (
+                            _try_parse_json(result.result)
+                            if options.response_schema is not None
+                            else result.result
+                        )
+                        rows[row_idx] = {**rows[row_idx], options.column: value}
+                        options.write(options.file, serialize_table_jsonl(rows))
+            return result
+
+    results = await asyncio.gather(*[_run(t) for t in prepared.tasks])
+
+    return _build_summary(
+        list(results),
+        prepared.interpolation_errors,
+        options.file,
+        options.column,
+        prepared.skipped,
+    )

@@ -432,6 +432,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
+            backend=backend,
             swarm_binding=swarm_binding,
         )
         has_swarm = swarm_binding is not None

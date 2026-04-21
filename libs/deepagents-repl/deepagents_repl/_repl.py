@@ -360,6 +360,7 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
+        backend: BackendProtocol | None = None,
         swarm_binding: SwarmBinding | None = None,
     ) -> None:
         # The Context-level ``timeout`` is used as the cumulative budget
@@ -414,9 +415,12 @@ class _ThreadREPL:
         # single eval (e.g. `swarm.create` followed by `swarm.execute`)
         # push here, then the middleware flushes after the eval returns.
         self._pending_writes: dict[str, str] = {}
+        self._backend: BackendProtocol | None = backend
         self._swarm_binding: SwarmBinding | None = swarm_binding
         if capture_console:
             self._install_console()
+        if backend is not None:
+            self._install_vfs(backend)
         if swarm_binding is not None:
             self._install_swarm(swarm_binding)
 
@@ -541,6 +545,46 @@ class _ThreadREPL:
         drained = list(self._pending_writes.items())
         self._pending_writes.clear()
         return drained
+
+    def _install_vfs(self, backend: BackendProtocol) -> None:
+        """Install ``readFile`` / ``writeFile`` globals on the QuickJS context.
+
+        ``readFile(path)`` reads from the backend directly — it does NOT
+        consult the pending-writes buffer. A ``writeFile`` followed by a
+        ``readFile`` to the same path within one eval will not see the
+        staged content. Swarm bridges do their own read-through-pending
+        for the cases where same-eval read-after-write matters (e.g.
+        ``swarm.create`` → ``swarm.execute``).
+
+        ``writeFile(path, content)`` stages into the pending buffer and
+        returns ``undefined``; the middleware flushes after eval returns.
+        """
+
+        async def _read_file(path: Any = None) -> str:
+            if not isinstance(path, str):
+                msg = "readFile: `path` must be a string"
+                raise TypeError(msg)
+            result = await backend.aread(path)
+            if result.error is not None or result.file_data is None:
+                msg = f"ENOENT: no such file or directory '{path}'."
+                raise FileNotFoundError(msg)
+            content = result.file_data.get("content")
+            if not isinstance(content, str):
+                msg = f"Cannot read binary file '{path}' as text."
+                raise ValueError(msg)
+            return content
+
+        async def _write_file(path: Any = None, content: Any = None) -> None:
+            if not isinstance(path, str):
+                msg = "writeFile: `path` must be a string"
+                raise TypeError(msg)
+            if not isinstance(content, str):
+                msg = "writeFile: `content` must be a string"
+                raise TypeError(msg)
+            self._stage_write(path, content)
+
+        self._ctx.register("readFile", _read_file, is_async=True)
+        self._ctx.register("writeFile", _write_file, is_async=True)
 
     def _install_swarm(self, binding: SwarmBinding) -> None:
         """Install ``swarm.create`` and ``swarm.execute`` on the JS global.
@@ -863,6 +907,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
+    backend: BackendProtocol | None = None
     swarm_binding: SwarmBinding | None = None
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
@@ -886,6 +931,7 @@ class _Registry:
                         self._runtime,
                         timeout=self.timeout,
                         capture_console=self.capture_console,
+                        backend=self.backend,
                         swarm_binding=self.swarm_binding,
                     )
                     self._repls[thread_id] = repl

@@ -7,6 +7,10 @@ exercise the patched method directly.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 from textual._xterm_parser import XTermParser
 
 # Import triggers the monkey-patch.
@@ -104,6 +108,16 @@ class TestTwoCharFastPath:
         r"""`\x1b[A` (cursor up) must not be misinterpreted as alt-anything."""
         assert _keys_for("\x1b[A", alt=False) == [("up", None)]
 
+    def test_esc_esc_yields_alt_escape(self) -> None:
+        r"""`\x1b\x1b` is the intentional semantic change: immediate `alt+escape`.
+
+        Upstream waits for the full escape-delay before giving up; the
+        fast path short-circuits to `alt+escape` with zero latency,
+        matching crossterm / Node TTY. Flagged as load-bearing in the
+        patch module docstring.
+        """
+        assert _keys_for("\x1b\x1b", alt=False) == [("alt+escape", None)]
+
 
 class TestPatchInstalled:
     """Guardrail against silent upstream drift.
@@ -123,3 +137,51 @@ class TestPatchInstalled:
         patched = getattr(_textual_patches, "_sequence_to_key_events_with_alt", None)
         assert patched is not None, "patch module failed to bind replacement"
         assert XTermParser._sequence_to_key_events is patched
+
+    def test_patch_applied_flag_is_true_after_import(self) -> None:
+        """`PATCH_APPLIED` is the programmatic signal callers check on mount."""
+        assert _textual_patches.PATCH_APPLIED is True
+
+
+class TestImportSiteIntegration:
+    """Guardrails that the patch is actually installed via `app.py`.
+
+    The unit tests above import `_textual_patches` themselves, so they
+    cannot detect a regression where the side-effect import is removed
+    from `app.py`. This class uses a subprocess with a fresh interpreter
+    so it only sees the patch if some module in `deepagents_cli.app`'s
+    import graph triggers it.
+    """
+
+    def test_importing_app_installs_the_patch(self) -> None:
+        r"""`import deepagents_cli.app` must leave `XTermParser` patched.
+
+        If a refactor drops the `_textual_patches` import from `app.py`,
+        this test fails loudly. Runs in a subprocess to bypass the
+        current interpreter's already-patched state.
+        """
+        script = textwrap.dedent(
+            """
+            import sys
+            import deepagents_cli.app  # noqa: F401
+            from textual._xterm_parser import XTermParser
+
+            assert (
+                "deepagents_cli._textual_patches" in sys.modules
+            ), "patch module not imported by app.py's import graph"
+            assert (
+                XTermParser._sequence_to_key_events.__name__
+                == "_sequence_to_key_events_with_alt"
+            ), "XTermParser._sequence_to_key_events is not our replacement"
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"subprocess assertion failed:\nstdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )

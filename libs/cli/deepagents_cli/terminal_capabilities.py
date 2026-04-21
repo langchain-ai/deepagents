@@ -50,10 +50,11 @@ def _override_supports_kitty_keyboard_protocol(
     if normalized in _FALSE_VALUES:
         return False
 
-    logger.debug(
-        "kitty kbd detection override ignored: %s=%r",
+    logger.warning(
+        "%s=%r ignored; expected one of: %s, or 'auto' to defer to detection.",
         KITTY_KEYBOARD,
         raw,
+        ", ".join(sorted(_TRUE_VALUES | _FALSE_VALUES)),
     )
     return None
 
@@ -83,17 +84,32 @@ def supports_kitty_keyboard_protocol() -> bool:
     queued input bytes. That means it may under-detect some configurable
     terminals, but it will not interfere with Textual's input stream.
 
+    Set `DEEPAGENTS_CLI_KITTY_KEYBOARD` to an accepted truthy value (`1`,
+    `true`, `yes`, `on`) to force-enable the label, a falsy value (`0`,
+    `false`, `no`, `off`) to force-disable it, or `auto`/unset to use
+    heuristic detection.
+
     Returns:
         `True` when the terminal is known to support the kitty keyboard
         protocol, `False` otherwise.
     """
     if sys.platform == "win32":
+        logger.debug("kitty kbd detection: False (win32 unsupported)")
         return False
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        logger.debug("kitty kbd detection: False (stdin/stdout not a tty)")
         return False
 
     override = _override_supports_kitty_keyboard_protocol(os.environ)
     if override is not None:
+        logger.debug("kitty kbd detection: %s (explicit override)", override)
         return override
 
-    return _terminal_identity_supports_kitty_keyboard_protocol(os.environ)
+    detected = _terminal_identity_supports_kitty_keyboard_protocol(os.environ)
+    logger.debug(
+        "kitty kbd detection: %s (terminal identity TERM=%r KITTY_WINDOW_ID=%r)",
+        detected,
+        os.environ.get("TERM", ""),
+        os.environ.get("KITTY_WINDOW_ID"),
+    )
+    return detected

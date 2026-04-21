@@ -62,6 +62,21 @@ class TestOverrideSupportsKittyKeyboardProtocol:
             is None
         )
 
+    def test_returns_none_for_empty_string(self) -> None:
+        """Empty string should defer to heuristic detection, not be treated as off."""
+        assert _override_supports_kitty_keyboard_protocol({KITTY_KEYBOARD: ""}) is None
+
+    def test_normalizes_whitespace_and_case(self) -> None:
+        """Values lifted from `.env` files routinely carry trailing whitespace."""
+        assert (
+            _override_supports_kitty_keyboard_protocol({KITTY_KEYBOARD: " TRUE "})
+            is True
+        )
+        assert (
+            _override_supports_kitty_keyboard_protocol({KITTY_KEYBOARD: "Off\n"})
+            is False
+        )
+
 
 class TestTerminalIdentitySupportsKittyKeyboardProtocol:
     """Tests for the conservative terminal-identity heuristic."""

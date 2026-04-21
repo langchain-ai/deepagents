@@ -8,18 +8,52 @@ Importing this module applies the patches as a side effect. Import it
 once, early, from a module that always runs before `App()` is
 instantiated (see `app.py`). If the Textual internals we patch have
 been renamed or removed (e.g. after a minor version bump), the module
-logs a warning and no-ops instead of crashing the CLI.
+logs a warning, writes the same message to stderr, and no-ops instead
+of crashing the CLI. Check `PATCH_APPLIED` after import if a later
+caller needs to surface a user-visible warning (e.g. a toast on app
+mount).
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
+
+PATCH_APPLIED: bool = False
+"""Whether the `XTermParser._sequence_to_key_events` monkey-patch installed.
+
+`False` when either the import-time lookup or the attribute assignment
+failed (e.g. after a Textual pin bump renamed the private API). A
+warning is also printed to stderr before `App()` starts so the
+failure is visible to anyone launching the CLI from a shell; the flag
+is exposed for callers that want to surface a follow-up signal (e.g.
+an app-mount toast).
+"""
+
+
+def _report_patch_failure(reason: str) -> None:
+    """Log and stderr-print a patch-skipped warning.
+
+    The Textual app takes over the terminal before Python's "last
+    resort" handler can surface a `logger.warning` to the user, so we
+    also print to stderr at import time (before `App()` is
+    instantiated). The stderr message lands above the alternate-screen
+    switch and is visible to anyone running the CLI from a shell.
+    """
+    message = (
+        f"deepagents-cli: Textual keyboard parser patch skipped ({reason}). "
+        "Shift+Enter via VSCode sendSequence may not insert a newline; "
+        "check whether the Textual pin was bumped across a private-API rename."
+    )
+    logger.warning("%s", message)
+    print(message, file=sys.stderr)  # noqa: T201
+
 
 # ---------------------------------------------------------------------------
 # Patch: preserve the `alt` modifier when a single-byte sequence maps to a
@@ -36,8 +70,9 @@ logger = logging.getLogger(__name__)
 # Ctrl+<letter|@|\|]|^|_>. Only breaks for terminals that fall back to
 # legacy ESC-prefix encoding (VSCode's integrated terminal when
 # `sendSequence` bypasses xterm.js, GNOME Console, etc.) — kitty-protocol
-# terminals (Ghostty, kitty, recent iTerm2) send `CSI 13;3u` and go
-# through the extended-key regex path, which is correct.
+# terminals (Ghostty, kitty, recent iTerm2) send `CSI 13;<modifier>u`
+# (e.g. `;2u` for shift+enter, `;3u` for alt+enter) and go through the
+# extended-key regex path, which is correct.
 #
 # crossterm (used by codex, claude-code) and the Node TTY parsers
 # (used by opencode) both decode `ESC + <byte>` as `Alt+<byte>`
@@ -77,12 +112,7 @@ try:
 
     _original_sequence_to_key_events = XTermParser._sequence_to_key_events
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
-    logger.warning(
-        "Textual internal API unavailable; keyboard parser patch skipped (%s). "
-        "Shift+Enter via VSCode sendSequence may not insert a newline; "
-        "check whether the Textual pin was bumped across a private-API rename.",
-        exc,
-    )
+    _report_patch_failure(str(exc))
 else:
 
     def _emit_alt_keys(keys: tuple, character: str | None) -> Iterable[events.Key]:
@@ -130,4 +160,12 @@ else:
                 return
         yield from _original_sequence_to_key_events(self, sequence, alt=alt)
 
-    XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore[invalid-assignment]
+    try:
+        XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        # Guards against future upstream hardening (`__slots__`, frozen
+        # class, descriptor hooks) that would reject attribute writes on
+        # `XTermParser` even though the imports succeeded.
+        _report_patch_failure(f"assignment rejected: {exc}")
+    else:
+        PATCH_APPLIED = True

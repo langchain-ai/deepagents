@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
+from deepagents_cli._git import resolve_git_branch
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -578,16 +579,14 @@ hitting the default LangGraph ceiling.
 _git_branch_cache: dict[str, str | None] = {}
 """Per-cwd cache of resolved git branch names.
 
-Avoids repeated `git rev-parse` subprocess calls within the same session. Keyed
-by `str(Path.cwd())`; `None` values indicate the directory is not inside a git
-repository.
+Avoids repeated git branch resolution within the same session. Keyed by
+`str(Path.cwd())`; `None` values indicate the directory is not inside a git
+repository or that resolution failed.
 """
 
 
 def _get_git_branch() -> str | None:
     """Return the current git branch name, or `None` if not in a repo."""
-    import subprocess  # noqa: S404
-
     try:
         cwd = str(Path.cwd())
     except OSError:
@@ -597,21 +596,13 @@ def _get_git_branch() -> str | None:
         return _git_branch_cache[cwd]
 
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        branch = resolve_git_branch(cwd) or None
+    except OSError:
         logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
+        branch = None
+
+    _git_branch_cache[cwd] = branch
+    return branch
 
 
 def build_stream_config(

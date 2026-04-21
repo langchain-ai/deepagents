@@ -337,20 +337,21 @@ class TestGetGitBranch:
         config_module._git_branch_cache.clear()
 
     def test_reuses_cached_branch_for_same_working_directory(self) -> None:
-        """Repeated lookups in one repo should only spawn `git` once."""
-        result = MagicMock(returncode=0, stdout="feature-branch\n")
-
+        """Repeated lookups in one repo should only resolve the branch once."""
         with (
             patch(
                 "deepagents_cli.config.Path.cwd",
                 return_value=Path("/tmp/repo"),
             ),
-            patch("subprocess.run", return_value=result) as mock_run,
+            patch(
+                "deepagents_cli.config.resolve_git_branch",
+                return_value="feature-branch",
+            ) as mock_resolve,
         ):
             assert config_module._get_git_branch() == "feature-branch"
             assert config_module._get_git_branch() == "feature-branch"
 
-        assert mock_run.call_count == 1
+        mock_resolve.assert_called_once_with("/tmp/repo")
 
 
 class TestGetGitBranchOSError:

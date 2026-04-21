@@ -47,6 +47,16 @@ from deepagents_cli.widgets.messages import (
 )
 
 
+async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
+    """Wait until the status bar reports the expected git branch."""
+    for _ in range(100):
+        if app._status_bar is not None and app._status_bar.branch == branch:
+            return
+        await asyncio.sleep(0.01)
+    msg = f"Timed out waiting for branch {branch!r}"
+    raise AssertionError(msg)
+
+
 class TestInitialPromptOnMount:
     """Test that -m initial prompt is submitted on mount."""
 
@@ -1948,6 +1958,181 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             assert app._shell_running is False
             assert app._shell_worker is None
+
+    async def test_cleanup_refreshes_git_branch(self, tmp_path: Path) -> None:
+        """Verify branch refresh on shell cleanup.
+
+        `_cleanup_shell_task` must re-resolve the branch so commands like
+        `git checkout` are reflected in the footer.
+        """
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def _init_repo_on_feature_branch() -> None:
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+            }
+            for args in (
+                ["git", "init", "-q", "-b", "main"],
+                ["git", "add", "f"],
+                ["git", "commit", "-q", "-m", "init"],
+                ["git", "checkout", "-q", "-b", "feature"],
+            ):
+                if args[1] == "add":
+                    (repo / "f").write_text("x")
+                subprocess.run(args, cwd=repo, env=env, check=True, capture_output=True)
+
+        await asyncio.to_thread(_init_repo_on_feature_branch)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._status_bar is not None
+            app._cwd = str(repo)
+            app._status_bar.branch = "stale"
+            app._shell_running = True
+            app._shell_worker = MagicMock()
+            app._shell_worker.is_cancelled = False
+            app._shell_process = None
+
+            await app._cleanup_shell_task()
+            await asyncio.wait_for(_wait_for_branch(app, "feature"), timeout=1)
+
+            assert app._status_bar.branch == "feature"
+
+    async def test_refresh_git_branch_reads_gitdir_pointer(
+        self, tmp_path: Path
+    ) -> None:
+        """Worktree-style `.git` files should resolve to the pointed git dir."""
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "worktree"
+        nested = worktree / "src"
+        git_dir = repo / ".git" / "worktrees" / "feature"
+
+        nested.mkdir(parents=True)
+        git_dir.mkdir(parents=True)
+        (worktree / ".git").write_text(
+            "gitdir: ../repo/.git/worktrees/feature\n",
+            encoding="utf-8",
+        )
+        (git_dir / "HEAD").write_text(
+            "ref: refs/heads/feature/nested\n",
+            encoding="utf-8",
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._status_bar is not None
+            app._cwd = str(nested)
+
+            await app._refresh_git_branch()
+
+            assert app._status_bar.branch == "feature/nested"
+
+    async def test_refresh_git_branch_uses_inline_filesystem_fast_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Common branch reads should avoid the thread-offloaded fallback."""
+        repo = tmp_path / "repo"
+        git_dir = repo / ".git"
+        git_dir.mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+        app = DeepAgentsApp()
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+        app._cwd = str(repo)
+
+        with patch(
+            "deepagents_cli.app.asyncio.to_thread",
+            new=AsyncMock(side_effect=AssertionError("unexpected thread hop")),
+        ):
+            await app._refresh_git_branch()
+
+        assert status_bar.branch == "feature"
+
+    async def test_cleanup_does_not_wait_for_git_branch_refresh(self) -> None:
+        """Queue cleanup should not block on the background branch refresh."""
+        app = DeepAgentsApp()
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+
+        async def block_refresh() -> None:
+            refresh_started.set()
+            await release_refresh.wait()
+
+        app._refresh_git_branch = block_refresh  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._shell_running = True
+        app._shell_worker = MagicMock()
+        app._shell_worker.is_cancelled = False
+        app._shell_process = None
+
+        await app._cleanup_shell_task()
+        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
+
+        release_refresh.set()
+        refresh_task = app._git_branch_refresh_task
+        if refresh_task is not None:
+            await refresh_task
+
+    async def test_run_shell_task_starts_branch_refresh_before_render(self) -> None:
+        """Successful shell runs should overlap branch refresh with rendering."""
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        refresh_mock = MagicMock()
+        drain_mock = AsyncMock()
+        queue_mock = AsyncMock()
+
+        def assert_refresh_started(message: object) -> None:
+            if type(message).__name__ == "AssistantMessage":
+                assert refresh_mock.call_count == 1
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
+            app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+            app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_cli.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    app,
+                    "_mount_message",
+                    AsyncMock(side_effect=assert_refresh_started),
+                ),
+            ):
+                await app._run_shell_task("echo hi")
+
+        refresh_mock.assert_called_once_with()
+        drain_mock.assert_awaited_once()
+        queue_mock.assert_awaited_once()
 
     async def test_messages_queued_during_shell(self) -> None:
         """Messages should be queued while shell command runs."""

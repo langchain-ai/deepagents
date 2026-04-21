@@ -31,6 +31,10 @@ from textual.widgets import Static
 
 from deepagents_cli import theme
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._git import (
+    read_git_branch_from_filesystem,
+    read_git_branch_via_subprocess,
+)
 from deepagents_cli._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -854,6 +858,9 @@ class DeepAgentsApp(App):
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._git_branch_refresh_task: asyncio.Task[None] | None = None
+        """Latest background git-branch refresh task, if one is running."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -997,47 +1004,65 @@ class DeepAgentsApp(App):
 
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
-        # the subprocess is already done. _post_paint_init fires the heavier
-        # workers (server, model creation) afterward.
+        # the filesystem probe is already done. _post_paint_init fires the
+        # heavier workers (server, model creation) afterward.
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
 
-    async def _resolve_git_branch_and_continue(self) -> None:
-        """Resolve git branch, then schedule remaining init workers.
+    async def _refresh_git_branch(self) -> None:
+        """Resolve the current git branch and update the status bar.
 
-        Launched via `asyncio.create_task()` during `on_mount` so the subprocess
-        runs concurrently with first-paint rendering. `_post_paint_init` is
-        scheduled via `call_after_refresh` regardless of whether branch
-        resolution succeeds.
+        Reads repository metadata from `self._cwd` inline so the common path is
+        just local file I/O. Falls back to a thread-offloaded `git rev-parse`
+        only for unusual repository layouts. Swallows all errors — the status
+        bar simply stays empty (or keeps its prior value on unexpected failure)
+        if git is unavailable.
         """
         try:
-            import subprocess  # noqa: S404  # stdlib, already loaded
-
-            def _get_branch() -> str:
-                try:
-                    result = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                        check=False,
-                    )
-                    if result.returncode == 0:
-                        return result.stdout.strip()
-                except FileNotFoundError:
-                    pass  # git not installed
-                except subprocess.TimeoutExpired:
-                    logger.debug("Git branch detection timed out")
-                except OSError:
-                    logger.debug("Git branch detection failed", exc_info=True)
-                return ""
-
-            branch = await asyncio.to_thread(_get_branch)
+            cwd = self._cwd
+            branch = read_git_branch_from_filesystem(cwd)
+            if branch is None:
+                branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
             if self._status_bar:
                 self._status_bar.branch = branch
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
+
+    def _schedule_git_branch_refresh(self) -> None:
+        """Refresh the git branch in the background without stalling cleanup."""
+        prior_task = self._git_branch_refresh_task
+        if prior_task is not None and not prior_task.done():
+            prior_task.cancel()
+
+        refresh_task = asyncio.create_task(self._refresh_git_branch())
+        self._git_branch_refresh_task = refresh_task
+
+        def _finalize_git_branch_refresh(task: asyncio.Task[None]) -> None:
+            if self._git_branch_refresh_task is task:
+                self._git_branch_refresh_task = None
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "Background git branch refresh failed unexpectedly",
+                    exc_info=True,
+                )
+
+        refresh_task.add_done_callback(_finalize_git_branch_refresh)
+
+    async def _resolve_git_branch_and_continue(self) -> None:
+        """Resolve git branch, then schedule remaining init workers.
+
+        Launched via `asyncio.create_task()` during `on_mount` so branch
+        detection runs concurrently with first-paint rendering.
+        `_post_paint_init` is scheduled via `call_after_refresh` regardless
+        of whether branch resolution succeeds.
+        """
+        try:
+            await self._refresh_git_branch()
         finally:
             # Always schedule post-paint init — even if branch resolution
             # fails, the app must still start the server, session, etc.
@@ -2638,6 +2663,7 @@ class DeepAgentsApp(App):
         Raises:
             CancelledError: If the command is interrupted by the user.
         """
+        refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -2659,6 +2685,11 @@ class DeepAgentsApp(App):
             except asyncio.CancelledError:
                 await self._kill_shell_process()
                 raise
+
+            # Start branch refresh as soon as the shell exits so it can overlap
+            # with output rendering instead of trailing it.
+            self._schedule_git_branch_refresh()
+            refresh_started = True
 
             output = (stdout_bytes or b"").decode(errors="replace").strip()
             stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
@@ -2684,10 +2715,16 @@ class DeepAgentsApp(App):
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
-            await self._cleanup_shell_task()
+            await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
 
-    async def _cleanup_shell_task(self) -> None:
-        """Clean up after shell command task completes or is cancelled."""
+    async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
+        """Clean up after shell command task completes or is cancelled.
+
+        Args:
+            refresh_git_branch: Whether to schedule a footer branch refresh
+                during cleanup. Successful shell runs can launch this earlier
+                so refresh overlaps with output rendering.
+        """
         was_interrupted = self._shell_process is not None and (
             self._shell_worker is not None and self._shell_worker.is_cancelled
         )
@@ -2698,6 +2735,10 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+        if refresh_git_branch:
+            # A `!` command may have changed git state (e.g. `git checkout`);
+            # re-resolve so the footer reflects the new branch.
+            self._schedule_git_branch_refresh()
         try:
             await self._maybe_drain_deferred()
         except Exception:
@@ -4552,6 +4593,8 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        if self._git_branch_refresh_task is not None:
+            self._git_branch_refresh_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.

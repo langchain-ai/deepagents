@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from deepagents_cli import model_config
+from deepagents_cli import _git as git_module, model_config
 from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
@@ -79,6 +79,46 @@ class TestProjectRootDetection:
         # Should find inner repo, not outer
         result = _find_project_root(inner_repo)
         assert result == inner_repo
+
+    def test_find_project_root_with_gitdir_file(self, tmp_path: Path) -> None:
+        """Test that worktree-style `.git` files resolve to the worktree root."""
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "worktree"
+        nested = worktree / "src"
+        git_dir = repo / ".git" / "worktrees" / "feature"
+
+        nested.mkdir(parents=True)
+        git_dir.mkdir(parents=True)
+        (worktree / ".git").write_text(
+            "gitdir: ../repo/.git/worktrees/feature\n",
+            encoding="utf-8",
+        )
+
+        result = _find_project_root(nested)
+        assert result == worktree
+
+
+class TestGitMetadataLookup:
+    """Tests for shared git metadata helpers."""
+
+    def setup_method(self) -> None:
+        """Clear git metadata caches between tests."""
+        git_module._git_dir_cache.clear()
+
+    def test_find_git_dir_reuses_cached_resolution(self, tmp_path: Path) -> None:
+        """Repeated git-dir lookups should reuse the cached result."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        expected = repo / ".git"
+
+        with patch(
+            "deepagents_cli._git._find_git_dir_uncached",
+            return_value=expected,
+        ) as mock_find:
+            assert git_module.find_git_dir(repo) == expected
+            assert git_module.find_git_dir(repo) == expected
+
+        mock_find.assert_called_once()
 
 
 class TestProjectContext:

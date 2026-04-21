@@ -92,6 +92,24 @@ class TestTextualUIAdapterInit:
         assert adapter._on_tokens_hide is None
         assert adapter._on_tokens_show is None
 
+    def test_on_tool_complete_defaults_to_none_and_accepts_callback(self) -> None:
+        """Verify `on_tool_complete` is optional and can be assigned via init."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._on_tool_complete is None
+
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_tool_complete=callback,
+        )
+        assert adapter._on_tool_complete is callback
+
     def test_set_token_callbacks(self) -> None:
         """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
@@ -337,20 +355,21 @@ class TestGetGitBranch:
         config_module._git_branch_cache.clear()
 
     def test_reuses_cached_branch_for_same_working_directory(self) -> None:
-        """Repeated lookups in one repo should only spawn `git` once."""
-        result = MagicMock(returncode=0, stdout="feature-branch\n")
-
+        """Repeated lookups in one repo should only resolve the branch once."""
         with (
             patch(
                 "deepagents_cli.config.Path.cwd",
                 return_value=Path("/tmp/repo"),
             ),
-            patch("subprocess.run", return_value=result) as mock_run,
+            patch(
+                "deepagents_cli.config.resolve_git_branch",
+                return_value="feature-branch",
+            ) as mock_resolve,
         ):
             assert config_module._get_git_branch() == "feature-branch"
             assert config_module._get_git_branch() == "feature-branch"
 
-        assert mock_run.call_count == 1
+        mock_resolve.assert_called_once_with("/tmp/repo")
 
 
 class TestGetGitBranchOSError:
@@ -663,6 +682,57 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert thinking_count == 2, (
             "Expected exactly 2 Thinking calls (start + after last tool); "
             f"got {thinking_count}: {statuses}"
+        )
+
+    async def test_on_tool_complete_fires_per_tool_message(self) -> None:
+        """`on_tool_complete` should fire once per `ToolMessage`, even in parallel."""
+        tool_complete = MagicMock()
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
+            ((), "messages", (ToolMessage(content="a", tool_call_id="tool-a"), {})),
+            ((), "messages", (ToolMessage(content="b", tool_call_id="tool-b"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_tool_complete=tool_complete,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert tool_complete.call_count == 2
+
+    async def test_on_tool_complete_exception_is_swallowed(self) -> None:
+        """A raising `on_tool_complete` must not break agent streaming."""
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (ToolMessage(content="a", tool_call_id="tool-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_tool_complete=MagicMock(side_effect=RuntimeError("boom")),
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
         )
 
     async def test_spinner_shown_after_single_tool_completes(self) -> None:

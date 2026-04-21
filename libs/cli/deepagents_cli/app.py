@@ -31,6 +31,10 @@ from textual.widgets import Static
 
 from deepagents_cli import theme
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._git import (
+    read_git_branch_from_filesystem,
+    read_git_branch_via_subprocess,
+)
 from deepagents_cli._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -854,6 +858,9 @@ class DeepAgentsApp(App):
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._git_branch_refresh_task: asyncio.Task[None] | None = None
+        """Latest background git-branch refresh task, if one is running."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -997,47 +1004,105 @@ class DeepAgentsApp(App):
 
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
-        # the subprocess is already done. _post_paint_init fires the heavier
-        # workers (server, model creation) afterward.
+        # the filesystem probe is already done. _post_paint_init fires the
+        # heavier workers (server, model creation) afterward.
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
 
-    async def _resolve_git_branch_and_continue(self) -> None:
-        """Resolve git branch, then schedule remaining init workers.
+    async def _refresh_git_branch(self) -> None:
+        """Resolve the current git branch and update the status bar.
 
-        Launched via `asyncio.create_task()` during `on_mount` so the subprocess
-        runs concurrently with first-paint rendering. `_post_paint_init` is
-        scheduled via `call_after_refresh` regardless of whether branch
-        resolution succeeds.
+        Reads repository metadata from `self._cwd` inline so the common path is
+        just local file I/O. Falls back to a thread-offloaded `git rev-parse`
+        only for unusual repository layouts. Swallows all errors — the status
+        bar simply stays empty (or keeps its prior value on unexpected failure)
+        if git is unavailable.
         """
         try:
-            import subprocess  # noqa: S404  # stdlib, already loaded
-
-            def _get_branch() -> str:
-                try:
-                    result = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                        check=False,
-                    )
-                    if result.returncode == 0:
-                        return result.stdout.strip()
-                except FileNotFoundError:
-                    pass  # git not installed
-                except subprocess.TimeoutExpired:
-                    logger.debug("Git branch detection timed out")
-                except OSError:
-                    logger.debug("Git branch detection failed", exc_info=True)
-                return ""
-
-            branch = await asyncio.to_thread(_get_branch)
+            cwd = self._cwd
+            branch = read_git_branch_from_filesystem(cwd)
+            if branch is None:
+                branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
             if self._status_bar:
                 self._status_bar.branch = branch
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
+
+    async def _refresh_git_branch_subprocess_fallback(self, cwd: str) -> None:
+        """Run the `git rev-parse` fallback off-thread for unusual repo layouts."""
+        try:
+            branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
+        except Exception:
+            logger.warning("Git branch subprocess fallback failed", exc_info=True)
+            return
+        if self._status_bar:
+            self._status_bar.branch = branch
+
+    def _cancel_git_branch_refresh_task(self) -> None:
+        """Cancel and clear any in-flight background branch refresh task."""
+        prior_task = self._git_branch_refresh_task
+        if prior_task is not None and not prior_task.done():
+            prior_task.cancel()
+        self._git_branch_refresh_task = None
+
+    def _schedule_git_branch_refresh(self) -> None:
+        """Refresh the git branch, inline when possible.
+
+        The filesystem probe is sub-millisecond for the common repo layout, so
+        we run it synchronously and only spawn a background task for the
+        `git rev-parse` fallback. Keeping the hot path inline avoids an
+        event-loop tick plus a reactive watcher hop between a tool exiting and
+        the footer updating.
+        """
+        if self._exit:
+            return
+
+        cwd = self._cwd
+        try:
+            branch = read_git_branch_from_filesystem(cwd)
+        except Exception:
+            logger.warning("Git branch filesystem probe failed", exc_info=True)
+            return
+
+        if branch is not None:
+            if self._status_bar:
+                self._status_bar.branch = branch
+            self._cancel_git_branch_refresh_task()
+            return
+
+        # Unusual repo layout — hop to a thread for `git rev-parse`.
+        self._cancel_git_branch_refresh_task()
+        refresh_task = asyncio.create_task(
+            self._refresh_git_branch_subprocess_fallback(cwd)
+        )
+        self._git_branch_refresh_task = refresh_task
+
+        def _finalize_git_branch_refresh(task: asyncio.Task[None]) -> None:
+            if self._git_branch_refresh_task is task:
+                self._git_branch_refresh_task = None
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "Background git branch refresh failed unexpectedly",
+                    exc_info=True,
+                )
+
+        refresh_task.add_done_callback(_finalize_git_branch_refresh)
+
+    async def _resolve_git_branch_and_continue(self) -> None:
+        """Resolve git branch, then schedule remaining init workers.
+
+        Launched via `asyncio.create_task()` during `on_mount` so branch
+        detection runs concurrently with first-paint rendering.
+        `_post_paint_init` is scheduled via `call_after_refresh` regardless
+        of whether branch resolution succeeds.
+        """
+        try:
+            await self._refresh_git_branch()
         finally:
             # Always schedule post-paint init — even if branch resolution
             # fails, the app must still start the server, session, etc.
@@ -1063,6 +1128,7 @@ class DeepAgentsApp(App):
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
+            on_tool_complete=self._schedule_git_branch_refresh,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -1623,6 +1689,7 @@ class DeepAgentsApp(App):
                     )
             else:
                 from deepagents_cli.update_check import (
+                    format_age_suffix,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -1631,8 +1698,10 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
+                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
                 self.notify(
-                    f"Update available: v{latest} (current: v{cli_version}). "
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}{age_suffix}). "
                     f"Run: {cmd}\n\n"
                     f"Enable auto-updates: /auto-update",
                     severity="information",
@@ -1688,26 +1757,51 @@ class DeepAgentsApp(App):
         """Handle the `/update` slash command — check for and install updates."""
         await self._mount_message(UserMessage("/update"))
         try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
+                format_age_suffix,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
             )
 
+            if await asyncio.to_thread(_is_editable_install):
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        "Updates are not available for editable installs. "
+                        f"Currently on v{cli_version}{age_suffix}."
+                    )
+                )
+                return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available, bypass_cache=True
             )
+            if latest is None:
+                await self._mount_message(
+                    AppMessage(
+                        "Could not determine the latest version. "
+                        "Check your network and try again."
+                    )
+                )
+                return
             if not available:
-                await self._mount_message(AppMessage("Already on the latest version."))
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        f"Already on the latest version (v{cli_version}{age_suffix})."
+                    )
+                )
                 return
 
-            from deepagents_cli._version import __version__ as cli_version
-
+            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} (current: v{cli_version}). "
-                    "Upgrading..."
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
                 )
             )
             success, output = await perform_upgrade()
@@ -1727,6 +1821,83 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
             )
+
+    async def _handle_version_command(self) -> None:
+        """Handle the `/version` slash command — show versions and update status.
+
+        The CLI release age is served from the cache populated by the
+        background update check. The SDK release age is served from its own
+        cache; on the first call for a given SDK version (or on a cache
+        miss) this triggers a one-off PyPI fetch bounded by a 3s timeout,
+        then persists the result so subsequent calls stay local. The
+        update-available hint is sourced from `self._update_available`,
+        which reflects the last completed background check.
+        """
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        lines: list[str] = []
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.update_check import format_age_suffix
+
+            age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+            lines.append(f"deepagents-cli version: {cli_version}{age_suffix}")
+        except ImportError:
+            logger.debug("deepagents_cli._version module not found")
+            lines.append("deepagents-cli version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up CLI version", exc_info=True)
+            lines.append("deepagents-cli version: unknown")
+
+        try:
+            from deepagents_cli.update_check import format_sdk_age_suffix
+
+            sdk_version = _pkg_version("deepagents")
+            sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
+            lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
+        except PackageNotFoundError:
+            logger.debug("deepagents SDK package not found in environment")
+            lines.append("deepagents (SDK) version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up SDK version", exc_info=True)
+            lines.append("deepagents (SDK) version: unknown")
+
+        available, latest = self._update_available
+        if available and latest:
+            try:
+                from deepagents_cli.update_check import upgrade_command
+
+                cmd = upgrade_command()
+            except Exception:
+                logger.warning(
+                    "Could not resolve upgrade command for /version; "
+                    "falling back to generic pip hint",
+                    exc_info=True,
+                )
+                from deepagents_cli.update_check import FALLBACK_UPGRADE_COMMAND
+
+                cmd = FALLBACK_UPGRADE_COMMAND
+            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+
+        await self._mount_message(AppMessage("\n".join(lines)))
+
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status,
+                get_extras_status,
+            )
+
+            extras_markdown = format_extras_status(get_extras_status())
+        except Exception:
+            logger.warning(
+                "Failed to collect optional dependency status", exc_info=True
+            )
+            extras_markdown = ""
+        if extras_markdown:
+            await self._mount_message(AppMessage(extras_markdown, markdown=True))
 
     async def _handle_auto_update_toggle(self) -> None:
         """Handle the `/auto-update` slash command — persist toggle immediately."""
@@ -2638,6 +2809,7 @@ class DeepAgentsApp(App):
         Raises:
             CancelledError: If the command is interrupted by the user.
         """
+        refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -2659,6 +2831,11 @@ class DeepAgentsApp(App):
             except asyncio.CancelledError:
                 await self._kill_shell_process()
                 raise
+
+            # Start branch refresh as soon as the shell exits so it can overlap
+            # with output rendering instead of trailing it.
+            self._schedule_git_branch_refresh()
+            refresh_started = True
 
             output = (stdout_bytes or b"").decode(errors="replace").strip()
             stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
@@ -2684,10 +2861,16 @@ class DeepAgentsApp(App):
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
-            await self._cleanup_shell_task()
+            await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
 
-    async def _cleanup_shell_task(self) -> None:
-        """Clean up after shell command task completes or is cancelled."""
+    async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
+        """Clean up after shell command task completes or is cancelled.
+
+        Args:
+            refresh_git_branch: Whether to schedule a footer branch refresh
+                during cleanup. Successful shell runs can launch this earlier
+                so refresh overlaps with output rendering.
+        """
         was_interrupted = self._shell_process is not None and (
             self._shell_worker is not None and self._shell_worker.is_cancelled
         )
@@ -2698,6 +2881,10 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+        if refresh_git_branch:
+            # A `!` command may have changed git state (e.g. `git checkout`);
+            # re-resolve so the footer reflects the new branch.
+            self._schedule_git_branch_refresh()
         try:
             await self._maybe_drain_deferred()
         except Exception:
@@ -2938,34 +3125,7 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI and SDK package versions
-            try:
-                from deepagents_cli._version import (
-                    __version__ as cli_version,
-                )
-
-                cli_line = f"deepagents-cli version: {cli_version}"
-            except ImportError:
-                logger.debug("deepagents_cli._version module not found")
-                cli_line = "deepagents-cli version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up CLI version", exc_info=True)
-                cli_line = "deepagents-cli version: unknown"
-            try:
-                from importlib.metadata import (
-                    PackageNotFoundError,
-                    version as _pkg_version,
-                )
-
-                sdk_version = _pkg_version("deepagents")
-                sdk_line = f"deepagents (SDK) version: {sdk_version}"
-            except PackageNotFoundError:
-                logger.debug("deepagents SDK package not found in environment")
-                sdk_line = "deepagents (SDK) version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up SDK version", exc_info=True)
-                sdk_line = "deepagents (SDK) version: unknown"
-            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
+            await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
         elif cmd == "/clear":
@@ -3723,6 +3883,10 @@ class DeepAgentsApp(App):
         # Ensure token display is restored (in case of early cancellation).
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
         self._show_tokens(approximate=self._tokens_approximate)
+
+        # Agent-executed commands and tools can mutate repo state (e.g. git
+        # checkout inside an execute call), so refresh the footer on turn end.
+        self._schedule_git_branch_refresh()
 
         try:
             await self._maybe_drain_deferred()
@@ -4552,6 +4716,8 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        if self._git_branch_refresh_task is not None:
+            self._git_branch_refresh_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.

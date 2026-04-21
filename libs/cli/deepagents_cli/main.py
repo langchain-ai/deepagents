@@ -756,11 +756,27 @@ def parse_args() -> argparse.Namespace:
         help="Run as an ACP server over stdio instead of launching the Textual UI",
     )
 
+    version_text = f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}"
+    # `parse_args` runs on every invocation; keep the import-heavy metadata
+    # scan off the hot path unless the user explicitly asked for --version.
+    if any(arg in {"-v", "--version"} for arg in sys.argv[1:]):
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status_plain,
+                get_extras_status,
+            )
+
+            extras_text = format_extras_status_plain(get_extras_status())
+        except Exception:
+            logger.warning("Unexpected error collecting optional deps", exc_info=True)
+            extras_text = ""
+        if extras_text:
+            version_text = f"{version_text}\n\n{extras_text}"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
+        version=version_text,
     )
     parser.add_argument(
         "-h",
@@ -1335,7 +1351,20 @@ def cli_main() -> None:
         except Exception:  # Best-effort SDK version lookup
             logger.debug("Unexpected error looking up SDK version", exc_info=True)
             sdk_version = "unknown"
-        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        output = f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}"
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status_plain,
+                get_extras_status,
+            )
+
+            extras_text = format_extras_status_plain(get_extras_status())
+        except Exception:
+            logger.warning("Unexpected error collecting optional deps", exc_info=True)
+            extras_text = ""
+        if extras_text:
+            output = f"{output}\n\n{extras_text}"
+        print(output)  # noqa: T201  # CLI version output
         sys.exit(0)
 
     # ACP mode does not require Textual, so skip UI dependency checks when
@@ -1495,27 +1524,43 @@ def cli_main() -> None:
                 from rich.markup import escape
 
                 from deepagents_cli._version import __version__ as cli_version
+                from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
+                    format_age_suffix,
                     is_update_available,
                     perform_upgrade,
                     upgrade_command,
                 )
+
+                if _is_editable_install():
+                    age_suffix = format_age_suffix(cli_version)
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "Updates are not available for editable installs. "
+                        f"Currently on v{cli_version}{age_suffix}."
+                    )
+                    sys.exit(0)
 
                 console.print("Checking for updates...", style="dim")
                 available, latest = is_update_available(bypass_cache=True)
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "
-                        "reach PyPI. Check your network and try again."
+                        "determine the latest version. Check your network "
+                        "and try again."
                     )
                     sys.exit(1)
                 if not available:
-                    console.print(f"Already on the latest version (v{cli_version}).")
+                    age_suffix = format_age_suffix(cli_version)
+                    console.print(
+                        f"Already on the latest version (v{cli_version}{age_suffix})."
+                    )
                     sys.exit(0)
 
+                age_suffix = format_age_suffix(latest)
                 console.print(
                     f"Update available: v{latest} "
-                    f"(current: v{cli_version}). Upgrading..."
+                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
                 )
                 success, output = asyncio.run(perform_upgrade())
                 if success:
@@ -1860,6 +1905,7 @@ def cli_main() -> None:
                 if result.update_available[0]:
                     from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
+                        format_age_suffix,
                         is_auto_update_enabled,
                         mark_update_notified,
                         should_notify_update,
@@ -1869,9 +1915,12 @@ def cli_main() -> None:
                     latest = result.update_available[1]
                     if latest and should_notify_update(latest):
                         console.print()
+                        age_suffix = format_age_suffix(latest)
                         update_msg = Text("Update available: ", style="yellow bold")
                         update_msg.append(f"v{latest}", style="yellow")
-                        update_msg.append(f" (current: v{cli_version})", style="dim")
+                        update_msg.append(
+                            f" (current: v{cli_version}{age_suffix})", style="dim"
+                        )
                         console.print(update_msg)
                         cmd_hint = Text("Run: ", style="dim")
                         cmd_hint.append(upgrade_command(), style="cyan")

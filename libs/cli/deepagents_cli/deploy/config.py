@@ -36,6 +36,12 @@ VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
 
 VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
+AuthProvider = Literal["supabase", "clerk"]
+"""Valid auth provider identifiers."""
+
+VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
+"""Valid auth providers for deploy."""
+
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
 # Canonical filenames inside the project root.
@@ -112,6 +118,17 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class AuthConfig:
+    """`[auth]` section — authentication provider settings.
+
+    The whole section is optional. When omitted, the deployed agent has
+    no authentication and all requests are anonymous.
+    """
+
+    provider: AuthProvider
+
+
+@dataclass(frozen=True)
 class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
@@ -120,6 +137,7 @@ class DeployConfig:
 
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
+    auth: AuthConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -171,6 +189,10 @@ class DeployConfig:
 
         # Validate credentials for sandbox provider.
         errors.extend(_validate_sandbox_credentials(self.sandbox.provider))
+
+        # Validate credentials for auth provider.
+        if self.auth is not None:
+            errors.extend(_validate_auth_credentials(self.auth.provider))
 
         return errors
 
@@ -341,9 +363,10 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
+_ALLOWED_AUTH_KEYS = frozenset({"provider"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -394,7 +417,32 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     }
     sandbox = SandboxConfig(**sandbox_kwargs)
 
-    return DeployConfig(agent=agent, sandbox=sandbox)
+    auth: AuthConfig | None = None
+    auth_data = data.get("auth")
+    if auth_data is not None:
+        unknown_auth = set(auth_data.keys()) - _ALLOWED_AUTH_KEYS
+        if unknown_auth:
+            msg = (
+                f"Unknown key(s) in [auth]: {sorted(unknown_auth)}. "
+                f"Allowed: {sorted(_ALLOWED_AUTH_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        if "provider" not in auth_data:
+            msg = "[auth].provider is required in deepagents.toml"
+            raise ValueError(msg)
+
+        auth_provider = auth_data["provider"]
+        if auth_provider not in VALID_AUTH_PROVIDERS:
+            msg = (
+                f"Unknown auth provider: {auth_provider}. "
+                f"Valid: {', '.join(sorted(VALID_AUTH_PROVIDERS))}"
+            )
+            raise ValueError(msg)
+
+        auth = AuthConfig(provider=auth_provider)
+
+    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {
@@ -425,6 +473,11 @@ _SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
     "daytona": ["DAYTONA_API_KEY"],
     "runloop": ["RUNLOOP_API_KEY"],
     # Modal falls back to default auth if env vars are not set.
+}
+
+_AUTH_PROVIDER_ENV: dict[str, list[str]] = {
+    "supabase": ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_DEFAULT_KEY"],
+    "clerk": ["CLERK_SECRET_KEY"],
 }
 
 
@@ -461,6 +514,22 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
     ]
 
 
+def _validate_auth_credentials(provider: str) -> list[str]:
+    """Check that all required env vars are set for the auth provider."""
+    required_vars = _AUTH_PROVIDER_ENV.get(provider)
+    if required_vars is None:
+        return []
+    missing = [v for v in required_vars if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Auth provider '{provider}' requires {' and '.join(missing)}. "
+            f"Add them to your .env file or environment."
+        ),
+    ]
+
+
 def find_config(start_path: Path | None = None) -> Path | None:
     """Find `deepagents.toml` in *start_path* (or cwd if not given).
 
@@ -486,6 +555,10 @@ model = "anthropic:claude-sonnet-4-6"
 # [sandbox]
 # provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
+
+# [auth] is optional. Add to enable user authentication.
+# [auth]
+# provider = "supabase"   # supabase | clerk
 """
 
 
@@ -511,6 +584,11 @@ ANTHROPIC_API_KEY=
 
 # LangSmith API key (required for deploy and sandbox)
 LANGSMITH_API_KEY=
+
+# Auth provider (optional, uncomment for [auth])
+# SUPABASE_URL=
+# SUPABASE_PUBLISHABLE_DEFAULT_KEY=
+# CLERK_SECRET_KEY=
 """
 
 

@@ -5463,6 +5463,21 @@ class DeepAgentsApp(App):
 
         previous_agent = self._assistant_id
         previous_thread_id = self._lc_thread_id
+        # Only offer a resume hint if the previous thread produced agent-side
+        # output. `USER` alone is not enough: local-only flows (`/update`,
+        # `!shell`, most slash commands) mount a `UserMessage` widget without
+        # ever invoking the server, so no checkpoint exists and `-r <thread>`
+        # would fail. `ASSISTANT` / `TOOL` / `SKILL` entries only land in the
+        # store after a server round-trip, which implies a checkpoint row.
+        checkpoint_signal_types = {
+            MessageType.ASSISTANT,
+            MessageType.TOOL,
+            MessageType.SKILL,
+        }
+        previous_thread_has_agent_output = any(
+            msg.type in checkpoint_signal_types
+            for msg in self._message_store.get_all_messages()
+        )
         server_proc = self._server_proc
         if server_proc is None:
             # Guarded in _switch_agent, but the worker runs in the next tick
@@ -5626,8 +5641,9 @@ class DeepAgentsApp(App):
             # alone is enough: `_resolve_resume_thread` infers the owning
             # agent from persisted thread metadata via `get_thread_agent`.
             # Build via `from_markup` so a thread ID with stray brackets
-            # can't corrupt rendering.
-            if previous_thread_id:
+            # can't corrupt rendering. See checkpoint-gating rationale on
+            # `previous_thread_has_agent_output` above.
+            if previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] deepagents -r $thread "
                     "[dim]to resume the previous thread.[/dim]",

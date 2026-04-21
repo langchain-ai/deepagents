@@ -13,13 +13,16 @@ from deepagents_cli.deploy.config import (
     MCP_FILENAME,
     SKILLS_DIRNAME,
     SUBAGENTS_DIRNAME,
+    VALID_AUTH_PROVIDERS,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
     SubAgentConfig,
     SubAgentProject,
     _parse_config,
+    _validate_auth_credentials,
     _validate_mcp_for_deploy,
     _validate_model_credentials,
     _validate_sandbox_credentials,
@@ -98,6 +101,26 @@ class TestSandboxConfig:
 
 
 # ---------------------------------------------------------------------------
+# AuthConfig
+# ---------------------------------------------------------------------------
+
+
+class TestAuthConfig:
+    def test_valid_construction(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        assert cfg.provider == "supabase"
+
+    def test_clerk_provider(self) -> None:
+        cfg = AuthConfig(provider="clerk")
+        assert cfg.provider == "clerk"
+
+    def test_frozen(self) -> None:
+        cfg = AuthConfig(provider="supabase")
+        with pytest.raises(AttributeError):
+            cfg.provider = "clerk"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
 # DeployConfig
 # ---------------------------------------------------------------------------
 
@@ -133,6 +156,19 @@ class TestDeployConfig:
         cfg = DeployConfig(agent=AgentConfig(name="x"))
         errors = cfg.validate(tmp_path)
         assert any("stdio" in e for e in errors)
+
+    def test_validate_auth_missing_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        cfg = DeployConfig(
+            agent=AgentConfig(name="x"),
+            auth=AuthConfig(provider="supabase"),
+        )
+        errors = cfg.validate(tmp_path)
+        assert any("SUPABASE_URL" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +240,31 @@ class TestParseConfig:
         cfg = _parse_config({"agent": {"name": "x"}})
         assert cfg.agent.model == AgentConfig(name="x").model
         assert cfg.sandbox == SandboxConfig()
+
+    def test_auth_section_parsed(self) -> None:
+        data = {"agent": {"name": "bot"}, "auth": {"provider": "supabase"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is not None
+        assert cfg.auth.provider == "supabase"
+
+    def test_auth_section_optional(self) -> None:
+        data = {"agent": {"name": "bot"}}
+        cfg = _parse_config(data)
+        assert cfg.auth is None
+
+    def test_auth_missing_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"provider.*required"):
+            _parse_config({"agent": {"name": "x"}, "auth": {}})
+
+    def test_auth_invalid_provider_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown auth provider"):
+            _parse_config({"agent": {"name": "x"}, "auth": {"provider": "firebase"}})
+
+    def test_auth_unknown_key_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown key.*\[auth\]"):
+            _parse_config(
+                {"agent": {"name": "x"}, "auth": {"provider": "supabase", "extra": 1}}
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +375,63 @@ class TestValidateSandboxCredentials:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2-test")
         assert _validate_sandbox_credentials("langsmith") == []
+
+
+class TestValidateAuthCredentials:
+    def test_unknown_provider_skips(self) -> None:
+        assert _validate_auth_credentials("unknown") == []
+
+    def test_supabase_missing_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_URL" in errors[0]
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_missing_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.delenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", raising=False)
+        errors = _validate_auth_credentials("supabase")
+        assert len(errors) == 1
+        assert "SUPABASE_PUBLISHABLE_DEFAULT_KEY" in errors[0]
+
+    def test_supabase_all_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "pk-test")
+        assert _validate_auth_credentials("supabase") == []
+
+    def test_clerk_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+        errors = _validate_auth_credentials("clerk")
+        assert len(errors) == 1
+        assert "CLERK_SECRET_KEY" in errors[0]
+
+    def test_clerk_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_xxx")
+        assert _validate_auth_credentials("clerk") == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-module consistency
+# ---------------------------------------------------------------------------
+
+
+class TestStarterTemplates:
+    def test_starter_config_mentions_auth(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_config
+
+        result = generate_starter_config()
+        assert "[auth]" in result
+        assert "supabase" in result
+        assert "clerk" in result
+
+    def test_starter_env_mentions_auth_vars(self) -> None:
+        from deepagents_cli.deploy.config import generate_starter_env
+
+        result = generate_starter_env()
+        assert "SUPABASE_URL" in result
+        assert "CLERK_SECRET_KEY" in result
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +565,9 @@ class TestCrossModuleConsistency:
         from deepagents_cli.deploy.templates import SANDBOX_BLOCKS
 
         assert frozenset(SANDBOX_BLOCKS.keys()) == VALID_SANDBOX_PROVIDERS
+
+    def test_auth_blocks_matches_valid_providers(self) -> None:
+        """AUTH_BLOCKS keys in templates.py must match VALID_AUTH_PROVIDERS."""
+        from deepagents_cli.deploy.templates import AUTH_BLOCKS
+
+        assert frozenset(AUTH_BLOCKS.keys()) == VALID_AUTH_PROVIDERS

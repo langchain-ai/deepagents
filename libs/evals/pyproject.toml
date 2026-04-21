@@ -40,7 +40,7 @@ dependencies = [
     "langchain-mistralai>=1.0.0",
     "langchain-nvidia-ai-endpoints>=1.0.0",
     "langchain-ollama>=1.0.0",
-    "langchain-openai>=1.0.0",
+    "langchain-openai>=1.1.14",
     "langchain-openrouter>=0.1.0",
     "langchain-xai>=1.0.0",
     # Eval-specific dependencies
@@ -48,6 +48,8 @@ dependencies = [
     "nltk>=3.9.0",
     "openevals>=0.1.3",
     "tiktoken>=0.8.0",
+    "langchain-repl",
+    "langchain-quickjs",
 ]
 
 [project.optional-dependencies]
@@ -106,6 +108,8 @@ override-dependencies = [
 deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
 deepagents-repl = { path = "../deepagents-repl", editable = true }
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
+langchain-repl = { path = "../repl", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

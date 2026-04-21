@@ -9,7 +9,11 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Markdown, Static
 
 from deepagents_cli.tool_display import format_tool_display
-from deepagents_cli.widgets.ask_user import AskUserMenu, _QuestionWidget
+from deepagents_cli.widgets.ask_user import (
+    _TRAILING_ANNOTATION_RE,
+    AskUserMenu,
+    _QuestionWidget,
+)
 
 if TYPE_CHECKING:
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
@@ -64,6 +68,58 @@ class TestAskUserToolDisplay:
     def test_format_no_questions_key(self) -> None:
         result = format_tool_display("ask_user", {})
         assert "ask_user" in result
+
+
+class TestTrailingAnnotationRegex:
+    """Strips LLM-appended '(optional)'/'- required' annotations from question text."""
+
+    def test_strips_dash_optional(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? - optional") == "Your name?"
+
+    def test_strips_parens_optional(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? (optional)") == "Your name?"
+
+    def test_strips_brackets_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one [required]") == "Pick one"
+
+    def test_strips_em_dash(self) -> None:
+        text = "Your name? \u2014 optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_en_dash(self) -> None:
+        text = "Your name? \u2013 optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_parens_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one (required)") == "Pick one"
+
+    def test_strips_dash_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one - required") == "Pick one"
+
+    def test_strips_with_trailing_whitespace(self) -> None:
+        text = "Your name? (optional)   "
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_with_trailing_newline(self) -> None:
+        text = "Your name? (optional)\n"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_with_trailing_punctuation(self) -> None:
+        text = "Your name? \u2014 Optional."
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one (OPTIONAL!)") == "Pick one"
+
+    def test_case_insensitive(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? (Optional)") == "Your name?"
+
+    def test_preserves_trailing_word_optional_without_delimiter(self) -> None:
+        """Bare trailing 'optional' with no delimiter is not an annotation."""
+        text = "Which field is optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == text
+
+    def test_leaves_question_without_annotation(self) -> None:
+        text = "What is your name?"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == text
 
 
 class TestAskUserMenu:

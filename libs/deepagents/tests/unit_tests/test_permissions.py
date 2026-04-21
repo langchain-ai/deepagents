@@ -105,6 +105,31 @@ class TestFilesystemPermission:
         with pytest.raises(NotImplementedError, match="must not contain '~'"):
             FilesystemPermission(operations=["read"], paths=["/~/data/**"])
 
+    def test_backslash_path_with_dotdot_raises(self):
+        r"""`FilesystemPermission` normalizes backslashes before traversal checks.
+
+        A Windows-style path with `\..\` escaping a leading-slash prefix must
+        still be rejected: without normalization, `PurePosixPath(r"/a\..\b").parts`
+        yields the single component `r"a\..\b"` and the `'..' in parts` guard
+        would never fire, letting a traversal pattern slip past.
+        """
+        with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+            FilesystemPermission(operations=["read"], paths=["/workspace\\..\\secrets\\**"])
+
+    def test_mixed_separator_path_with_dotdot_raises(self):
+        """Mixed separators must also be rejected when they contain traversal."""
+        with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+            FilesystemPermission(operations=["read"], paths=["/workspace/..\\secrets/**"])
+
+    def test_backslash_path_without_traversal_accepted(self):
+        r"""Backslashes alone must not be rejected -- only `..` components are.
+
+        After `to_posix_path`, a path like `/workspace\sub` becomes `/workspace/sub`,
+        which has no traversal components and should pass validation.
+        """
+        rule = FilesystemPermission(operations=["read"], paths=["/workspace\\sub\\**"])
+        assert rule.paths == ["/workspace\\sub\\**"]
+
 
 class TestPermissionMiddleware:
     def _backend(self):

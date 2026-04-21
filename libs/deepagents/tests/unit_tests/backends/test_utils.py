@@ -10,8 +10,41 @@ from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _get_file_type,
     _glob_search_files,
+    to_posix_path,
     validate_path,
 )
+
+
+class TestToPosixPath:
+    """`to_posix_path` is the load-bearing primitive for Windows path handling."""
+
+    @pytest.mark.parametrize(
+        ("input_path", "expected"),
+        [
+            (r"C:\Users\project\file.txt", "C:/Users/project/file.txt"),
+            (r"C:\Users\project\skills\my-skill\\", "C:/Users/project/skills/my-skill//"),
+            ("already/posix/path", "already/posix/path"),
+            (r"mixed/sep\path/with\backslash", "mixed/sep/path/with/backslash"),
+            (r"\\server\share\file", "//server/share/file"),
+            ("", ""),
+            ("/", "/"),
+            (r"\\", "//"),
+            ("/foo/bar", "/foo/bar"),
+        ],
+        ids=[
+            "windows-drive",
+            "trailing-backslash",
+            "already-posix",
+            "mixed-separators",
+            "unc",
+            "empty",
+            "root",
+            "bare-backslashes",
+            "posix-absolute",
+        ],
+    )
+    def test_normalizes(self, input_path: str, expected: str) -> None:
+        assert to_posix_path(input_path) == expected
 
 
 class TestValidatePath:

@@ -191,99 +191,72 @@ jobs:
     name: "🧪 Test deepagents"
     needs: changes
     if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
+      coverage-python-version: "3.12"
 
   test-cli:
     name: "🧪 Test cli"
     needs: changes
     if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/cli"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-evals:
     name: "🧪 Test evals"
     needs: changes
     if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-daytona:
     name: "🧪 Test daytona"
     needs: changes
     if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-modal:
     name: "🧪 Test modal"
     needs: changes
     if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-runloop:
     name: "🧪 Test runloop"
     needs: changes
     if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-repl:
     name: "🧪 Test repl"
     needs: changes
     if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/repl"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:

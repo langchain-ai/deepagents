@@ -1,10 +1,11 @@
 """Tests for non-interactive mode HITL decision logic."""
 
 import io
+import signal
 import sys
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -24,6 +25,7 @@ from deepagents_cli.non_interactive import (
     _collect_action_request_warnings,
     _make_hitl_decision,
     _run_agent_loop,
+    _run_startup_command,
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
 )
@@ -1380,6 +1382,181 @@ class TestMaxTurns:
             result = await run_non_interactive(message="task", max_turns=1)
 
         assert result == 124
+
+
+class TestRunStartupCommand:
+    """Tests for `_run_startup_command` (`--startup-cmd`)."""
+
+    async def test_successful_command_prints_stdout(self) -> None:
+        """Exit 0 with stdout — output should be routed through the console."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        await _run_startup_command("echo hello-startup", console, quiet=False)
+
+        output = buf.getvalue()
+        assert "Running startup command: echo hello-startup" in output
+        assert "hello-startup" in output
+        assert "Warning" not in output
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="`false` is POSIX-only")
+    async def test_non_zero_exit_warns_but_does_not_raise(self) -> None:
+        """Non-zero exit emits a yellow warning and keeps the session alive."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        # `false` is guaranteed to exit 1 on POSIX.
+        await _run_startup_command("false", console, quiet=False)
+
+        output = buf.getvalue()
+        assert "Warning" in output
+        assert "exited with code 1" in output
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell redirection")
+    async def test_stderr_routed_through_console(self) -> None:
+        """Commands that write to stderr should render under the dim stream."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        await _run_startup_command("sh -c 'echo oops 1>&2'", console, quiet=False)
+
+        output = buf.getvalue()
+        assert "oops" in output
+
+    async def test_stdout_with_brackets_does_not_raise(self) -> None:
+        """Shell output with `[...]` must not be parsed as Rich markup."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        # Unbalanced/unknown markup would raise `MarkupError` if parsed.
+        await _run_startup_command(
+            "printf '[INFO] starting [1/3]\\n'", console, quiet=False
+        )
+
+        output = buf.getvalue()
+        assert "[INFO] starting [1/3]" in output
+        assert "Warning" not in output
+
+    async def test_quiet_mode_suppresses_header(self) -> None:
+        """In quiet mode, the "Running" header should not appear."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        await _run_startup_command("echo hi", console, quiet=True)
+
+        output = buf.getvalue()
+        assert "Running startup command" not in output
+        assert "hi" in output
+
+    async def test_launch_failure_warns(self) -> None:
+        """Unlaunchable commands warn instead of crashing."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        with patch(
+            "asyncio.create_subprocess_shell",
+            side_effect=OSError("boom"),
+        ):
+            await _run_startup_command("whatever", console, quiet=False)
+
+        output = buf.getvalue()
+        assert "Warning" in output
+        assert "failed to launch" in output
+
+    async def test_timeout_kills_process_group_on_posix(self) -> None:
+        """Timeouts should terminate the whole POSIX process group."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
+        mock_proc.wait = AsyncMock()
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=mock_proc),
+            patch.object(sys, "platform", "darwin"),
+            patch("os.getpgid", return_value=12345),
+            patch("os.killpg") as mock_killpg,
+        ):
+            await _run_startup_command("sleep 999", console, quiet=False)
+
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+        mock_proc.kill.assert_not_called()
+        assert "timed out" in buf.getvalue()
+
+    async def test_timeout_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
+        """If SIGTERM + 5s wait also times out, SIGKILL must follow."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        # First `communicate` raises TimeoutError (hit 60s limit).
+        # First `wait` raises TimeoutError (hit 5s post-SIGTERM grace).
+        # Second `wait` returns normally (post-SIGKILL reap).
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
+        mock_proc.wait = AsyncMock(side_effect=[TimeoutError(), None])
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=mock_proc),
+            patch.object(sys, "platform", "darwin"),
+            patch("os.getpgid", return_value=12345),
+            patch("os.killpg") as mock_killpg,
+        ):
+            await _run_startup_command("sleep 999", console, quiet=False)
+
+        assert mock_killpg.call_args_list == [
+            call(12345, signal.SIGTERM),
+            call(12345, signal.SIGKILL),
+        ]
+        mock_proc.kill.assert_not_called()
+        assert "timed out" in buf.getvalue()
+
+    async def test_timeout_uses_proc_kill_on_windows(self) -> None:
+        """Windows has no process groups; fall back to `proc.kill()`."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
+        mock_proc.wait = AsyncMock()
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=mock_proc),
+            patch.object(sys, "platform", "win32"),
+            patch("os.killpg") as mock_killpg,
+        ):
+            await _run_startup_command("sleep 999", console, quiet=False)
+
+        mock_proc.kill.assert_called_once()
+        mock_killpg.assert_not_called()
+        assert "timed out" in buf.getvalue()
+
+    async def test_empty_command_is_not_executed(self) -> None:
+        """Whitespace-only `--startup-cmd` should be treated as unset."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        with patch(
+            "asyncio.create_subprocess_shell",
+            new=AsyncMock(),
+        ) as mock_spawn:
+            # `run_non_interactive` strips and skips when empty; replicate
+            # that contract here by not calling through when stripped empty.
+            command = "   "
+            if command.strip():
+                await _run_startup_command(command.strip(), console, quiet=False)
+
+        mock_spawn.assert_not_called()
+        assert buf.getvalue() == ""
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

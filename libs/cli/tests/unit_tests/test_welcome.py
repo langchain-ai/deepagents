@@ -306,6 +306,10 @@ class TestBuildWelcomeFooter:
         assert "Tip: " in plain
         assert any(tip in plain for tip in _TIPS)
 
+    def test_startup_cmd_tip_registered(self) -> None:
+        """New `--startup-cmd` flag must have a discoverability tip."""
+        assert any("--startup-cmd" in tip for tip in _TIPS)
+
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""
         seen = {build_welcome_footer().plain for _ in range(50)}

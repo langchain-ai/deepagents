@@ -31,6 +31,10 @@ from textual.widgets import Static
 
 from deepagents_cli import theme
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._git import (
+    read_git_branch_from_filesystem,
+    read_git_branch_via_subprocess,
+)
 from deepagents_cli._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -523,6 +527,7 @@ class DeepAgentsApp(App):
         resume_thread: str | None = None,
         initial_prompt: str | None = None,
         initial_skill: str | None = None,
+        startup_cmd: str | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -554,6 +559,11 @@ class DeepAgentsApp(App):
                 Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
             initial_skill: Optional skill name to invoke when session starts.
+            startup_cmd: Optional shell command to run at startup before the
+                first prompt is accepted.
+
+                Output is rendered in the transcript and non-zero exits warn but
+                do not abort the session.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -646,6 +656,15 @@ class DeepAgentsApp(App):
         """Skill name to auto-invoke after first paint (from `--skill`).
 
         Normalized to lowercase; `None` when not provided.
+        """
+
+        self._startup_cmd = (
+            startup_cmd.strip() if startup_cmd and startup_cmd.strip() else None
+        )
+        """Shell command to run once before the first prompt, from
+        `--startup-cmd`.
+
+        Cleared to `None` after it runs so later server swaps cannot re-run it.
         """
 
         self._mcp_server_info = mcp_server_info
@@ -782,6 +801,14 @@ class DeepAgentsApp(App):
         """Re-entry guard for `_process_next_from_queue` so only one drain
         loop runs at a time."""
 
+        self._startup_sequence_running = False
+        """True while post-connect startup work is still being sequenced.
+
+        Covers resumed-history hydration, `--startup-cmd`, and the handoff to
+        the first queued or initial submission so user input stays serialized
+        until the session reaches its first stable busy/idle state.
+        """
+
         # Message queue & store
         self._pending_messages: deque[QueuedMessage] = deque()
         """User message queue for sequential processing."""
@@ -830,6 +857,9 @@ class DeepAgentsApp(App):
 
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
+
+        self._git_branch_refresh_task: asyncio.Task[None] | None = None
+        """Latest background git-branch refresh task, if one is running."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -974,47 +1004,105 @@ class DeepAgentsApp(App):
 
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
-        # the subprocess is already done. _post_paint_init fires the heavier
-        # workers (server, model creation) afterward.
+        # the filesystem probe is already done. _post_paint_init fires the
+        # heavier workers (server, model creation) afterward.
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
 
-    async def _resolve_git_branch_and_continue(self) -> None:
-        """Resolve git branch, then schedule remaining init workers.
+    async def _refresh_git_branch(self) -> None:
+        """Resolve the current git branch and update the status bar.
 
-        Launched via `asyncio.create_task()` during `on_mount` so the subprocess
-        runs concurrently with first-paint rendering. `_post_paint_init` is
-        scheduled via `call_after_refresh` regardless of whether branch
-        resolution succeeds.
+        Reads repository metadata from `self._cwd` inline so the common path is
+        just local file I/O. Falls back to a thread-offloaded `git rev-parse`
+        only for unusual repository layouts. Swallows all errors — the status
+        bar simply stays empty (or keeps its prior value on unexpected failure)
+        if git is unavailable.
         """
         try:
-            import subprocess  # noqa: S404  # stdlib, already loaded
-
-            def _get_branch() -> str:
-                try:
-                    result = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                        check=False,
-                    )
-                    if result.returncode == 0:
-                        return result.stdout.strip()
-                except FileNotFoundError:
-                    pass  # git not installed
-                except subprocess.TimeoutExpired:
-                    logger.debug("Git branch detection timed out")
-                except OSError:
-                    logger.debug("Git branch detection failed", exc_info=True)
-                return ""
-
-            branch = await asyncio.to_thread(_get_branch)
+            cwd = self._cwd
+            branch = read_git_branch_from_filesystem(cwd)
+            if branch is None:
+                branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
             if self._status_bar:
                 self._status_bar.branch = branch
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
+
+    async def _refresh_git_branch_subprocess_fallback(self, cwd: str) -> None:
+        """Run the `git rev-parse` fallback off-thread for unusual repo layouts."""
+        try:
+            branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
+        except Exception:
+            logger.warning("Git branch subprocess fallback failed", exc_info=True)
+            return
+        if self._status_bar:
+            self._status_bar.branch = branch
+
+    def _cancel_git_branch_refresh_task(self) -> None:
+        """Cancel and clear any in-flight background branch refresh task."""
+        prior_task = self._git_branch_refresh_task
+        if prior_task is not None and not prior_task.done():
+            prior_task.cancel()
+        self._git_branch_refresh_task = None
+
+    def _schedule_git_branch_refresh(self) -> None:
+        """Refresh the git branch, inline when possible.
+
+        The filesystem probe is sub-millisecond for the common repo layout, so
+        we run it synchronously and only spawn a background task for the
+        `git rev-parse` fallback. Keeping the hot path inline avoids an
+        event-loop tick plus a reactive watcher hop between a tool exiting and
+        the footer updating.
+        """
+        if self._exit:
+            return
+
+        cwd = self._cwd
+        try:
+            branch = read_git_branch_from_filesystem(cwd)
+        except Exception:
+            logger.warning("Git branch filesystem probe failed", exc_info=True)
+            return
+
+        if branch is not None:
+            if self._status_bar:
+                self._status_bar.branch = branch
+            self._cancel_git_branch_refresh_task()
+            return
+
+        # Unusual repo layout — hop to a thread for `git rev-parse`.
+        self._cancel_git_branch_refresh_task()
+        refresh_task = asyncio.create_task(
+            self._refresh_git_branch_subprocess_fallback(cwd)
+        )
+        self._git_branch_refresh_task = refresh_task
+
+        def _finalize_git_branch_refresh(task: asyncio.Task[None]) -> None:
+            if self._git_branch_refresh_task is task:
+                self._git_branch_refresh_task = None
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "Background git branch refresh failed unexpectedly",
+                    exc_info=True,
+                )
+
+        refresh_task.add_done_callback(_finalize_git_branch_refresh)
+
+    async def _resolve_git_branch_and_continue(self) -> None:
+        """Resolve git branch, then schedule remaining init workers.
+
+        Launched via `asyncio.create_task()` during `on_mount` so branch
+        detection runs concurrently with first-paint rendering.
+        `_post_paint_init` is scheduled via `call_after_refresh` regardless
+        of whether branch resolution succeeds.
+        """
+        try:
+            await self._refresh_git_branch()
         finally:
             # Always schedule post-paint init — even if branch resolution
             # fails, the app must still start the server, session, etc.
@@ -1040,6 +1128,7 @@ class DeepAgentsApp(App):
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
+            on_tool_complete=self._schedule_git_branch_refresh,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -1104,22 +1193,14 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
-        # Auto-submit initial prompt or skill if provided via -m / --skill.
-        # This check must come first because _lc_thread_id and _agent are
-        # always set (even for brand-new sessions), so an elif after the
-        # thread-history branch would never execute.
-        # When connecting, defer until on_deep_agents_app_server_ready fires.
-        # NOTE: _schedule_initial_submission() has a side effect (queues a
-        # task via call_after_refresh); short-circuit ensures it only runs
-        # when not connecting — the deferred path handles the connecting case.
-        if (
-            not self._connecting
-            and not self._schedule_initial_submission()
-            and self._lc_thread_id
-            and self._agent
-        ):
+        # Session-start sequence (history -> `--startup-cmd` -> initial prompt/
+        # skill -> queue drain). When connecting, defer until
+        # `on_deep_agents_app_server_ready` fires; otherwise run it now so the
+        # non-connecting path (pre-built agent) also honors `--startup-cmd` and
+        # serializes startup against user input.
+        if not self._connecting:
             self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
+                lambda: asyncio.create_task(self._run_session_start_sequence())
             )
 
     async def _init_session_state(self) -> None:
@@ -1425,13 +1506,14 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
-        # Handle deferred initial prompt, skill, or thread history
-        if not self._schedule_initial_submission() and (
-            self._lc_thread_id and self._agent
-        ):
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
+        # Session-start sequence: load resumed history, run `--startup-cmd`
+        # (if any), then dispatch the initial prompt/skill and drain
+        # user-typed messages. Sequenced through a single task so the
+        # startup command always resolves before the agent sees any user
+        # input.
+        self.call_after_refresh(
+            lambda: asyncio.create_task(self._run_session_start_sequence())
+        )
 
         # Drain deferred actions (e.g. model/thread switch queued during connection)
         # if the agent is not actively running. Wrapped in a helper so that
@@ -1452,13 +1534,6 @@ class DeepAgentsApp(App):
                         )
 
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
-
-        # Drain any messages the user typed while the server was starting.
-        # (If an initial submission exists, its cleanup path will drain the queue.)
-        if self._pending_messages and not self._has_initial_submission():
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._process_next_from_queue())
-            )
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
@@ -1972,7 +2047,12 @@ class DeepAgentsApp(App):
                 self._loading_widget = None
             return
 
-        messages = self.query_one("#messages", Container)
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            # Container was torn down (e.g. shutdown mid-stream). Skip
+            # silently so the streaming loop doesn't crash.
+            return
 
         if self._loading_widget is None:
             # Create new
@@ -1981,12 +2061,44 @@ class DeepAgentsApp(App):
         else:
             # Update existing
             self._loading_widget.set_status(status)
-            # Reposition if not already at the correct location
+            # Reposition via move_child so elapsed-time and animation state
+            # carry through; remove + re-mount would reset both.
             if not self._is_spinner_at_correct_position(messages):
-                await self._loading_widget.remove()
-                await self._mount_before_queued(messages, self._loading_widget)
+                self._reposition_spinner(messages)
         # NOTE: Don't call anchor() here - it would re-anchor and drag user back
         # to bottom if they've scrolled away during streaming
+
+    def _reposition_spinner(self, container: Container) -> None:
+        """Move the spinner to its correct position without resetting state.
+
+        The spinner must sit immediately before the first queued widget, or
+        at the very end of the container when no widgets are queued. Using
+        `move_child` preserves the widget's internal state (elapsed time,
+        animation frame) that a remove + re-mount would reset.
+
+        Args:
+            container: The messages container that hosts the spinner.
+        """
+        if self._loading_widget is None:
+            return
+        if self._loading_widget not in container.children:
+            # The caller holds a spinner reference that isn't in this
+            # container — the widget was reparented or removed by another
+            # code path. Log so the desync is visible instead of silently
+            # leaving the spinner in the wrong place.
+            logger.debug(
+                "Spinner widget not in container children; skipping reposition"
+            )
+            return
+        first_queued = self._queued_widgets[0] if self._queued_widgets else None
+        if first_queued is not None and first_queued.parent is container:
+            container.move_child(self._loading_widget, before=first_queued)
+            return
+        non_spinner = [
+            child for child in container.children if child is not self._loading_widget
+        ]
+        if non_spinner:
+            container.move_child(self._loading_widget, after=non_spinner[-1])
 
     async def _request_approval(
         self,
@@ -2320,18 +2432,102 @@ class DeepAgentsApp(App):
             self._initial_prompt and self._initial_prompt.strip()
         )
 
-    def _schedule_initial_submission(self) -> bool:
-        """Schedule the startup prompt or skill after the next refresh.
+    async def _run_session_start_sequence(self) -> None:
+        """Load history, run `--startup-cmd`, then dispatch initial work.
 
-        Returns:
-            `True` when a startup submission was queued, `False` otherwise.
+        Single entry point for the post-connect sequence. Sequencing the
+        startup command before any user-facing agent work guarantees the
+        agent never observes input until the command has completed.
         """
-        if not self._has_initial_submission():
-            return False
-        self.call_after_refresh(
-            lambda: asyncio.create_task(self._submit_initial_submission())
-        )
-        return True
+        self._startup_sequence_running = True
+        try:
+            should_load_history = bool(self._lc_thread_id and self._agent) and (
+                self._resume_thread_intent is not None
+                or not self._has_initial_submission()
+            )
+            if should_load_history:
+                await self._load_thread_history()
+
+            if self._startup_cmd:
+                cmd = self._startup_cmd
+                # One-shot: clear to avoid re-running on any subsequent server swap.
+                self._startup_cmd = None
+                await self._run_startup_command(cmd)
+
+            if self._has_initial_submission():
+                await self._submit_initial_submission()
+                return
+        finally:
+            self._startup_sequence_running = False
+
+        if self._agent_running or self._shell_running:
+            return
+
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception(
+                "Failed to drain deferred actions after startup sequencing"
+            )
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed during startup. "
+                        "You may need to retry the operation."
+                    )
+                )
+
+        if self._pending_messages:
+            await self._process_next_from_queue()
+
+    async def _run_startup_command(self, command: str) -> None:
+        """Execute the `--startup-cmd` and render its output in the transcript.
+
+        Uses the same worker-backed subprocess path as the interactive `!`
+        shell prefix, with an app-style header (since the user did not type
+        the command). Non-zero exit is already rendered as an error by
+        `_run_shell_task` but does not abort the session.
+
+        Raises:
+            CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
+                re-raised so `_run_shell_task`'s finally can clean up.
+        """
+        try:
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup("Running startup command: $cmd", cmd=command)
+                )
+            )
+        except Exception:
+            logger.warning("Failed to mount startup-command header", exc_info=True)
+
+        self._shell_running = True
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+
+        try:
+            worker = self.run_worker(self._run_shell_task(command), exclusive=False)
+        except Exception:
+            # `run_worker` failed synchronously — `_run_shell_task`'s finally
+            # never fires, so reset the busy flags here or the UI stays wedged.
+            logger.exception("Failed to schedule startup-command worker")
+            self._shell_running = False
+            self._shell_worker = None
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=True)
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage("Failed to start startup command; continuing session.")
+                )
+            return
+
+        self._shell_worker = worker
+        try:
+            await worker.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Startup command worker raised unexpectedly")
 
     async def _submit_initial_submission(self) -> None:
         """Submit the startup prompt or skill after the UI is ready."""
@@ -2405,10 +2601,15 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If agent/shell is running or server is still starting up, enqueue
-        # instead of processing. Messages queued during connection are drained
-        # once the server is ready (see on_deep_agents_app_server_ready).
-        if self._agent_running or self._shell_running or self._connecting:
+        # If the app is busy or still sequencing startup work, enqueue instead
+        # of processing. Messages queued during startup are drained once the
+        # session reaches its first stable idle/running state.
+        if (
+            self._agent_running
+            or self._shell_running
+            or self._connecting
+            or self._startup_sequence_running
+        ):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
                 return
@@ -2503,6 +2704,7 @@ class DeepAgentsApp(App):
         Raises:
             CancelledError: If the command is interrupted by the user.
         """
+        refresh_started = False
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -2524,6 +2726,11 @@ class DeepAgentsApp(App):
             except asyncio.CancelledError:
                 await self._kill_shell_process()
                 raise
+
+            # Start branch refresh as soon as the shell exits so it can overlap
+            # with output rendering instead of trailing it.
+            self._schedule_git_branch_refresh()
+            refresh_started = True
 
             output = (stdout_bytes or b"").decode(errors="replace").strip()
             stderr_text = (stderr_bytes or b"").decode(errors="replace").strip()
@@ -2549,10 +2756,16 @@ class DeepAgentsApp(App):
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
         finally:
-            await self._cleanup_shell_task()
+            await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
 
-    async def _cleanup_shell_task(self) -> None:
-        """Clean up after shell command task completes or is cancelled."""
+    async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
+        """Clean up after shell command task completes or is cancelled.
+
+        Args:
+            refresh_git_branch: Whether to schedule a footer branch refresh
+                during cleanup. Successful shell runs can launch this earlier
+                so refresh overlaps with output rendering.
+        """
         was_interrupted = self._shell_process is not None and (
             self._shell_worker is not None and self._shell_worker.is_cancelled
         )
@@ -2563,6 +2776,10 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+        if refresh_git_branch:
+            # A `!` command may have changed git state (e.g. `git checkout`);
+            # re-resolve so the footer reflects the new branch.
+            self._schedule_git_branch_refresh()
         try:
             await self._maybe_drain_deferred()
         except Exception:
@@ -2574,7 +2791,8 @@ class DeepAgentsApp(App):
                         "You may need to retry the operation."
                     )
                 )
-        await self._process_next_from_queue()
+        if not self._startup_sequence_running:
+            await self._process_next_from_queue()
 
     async def _kill_shell_process(self) -> None:
         """Terminate the running shell command process.
@@ -3588,6 +3806,10 @@ class DeepAgentsApp(App):
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
         self._show_tokens(approximate=self._tokens_approximate)
 
+        # Agent-executed commands and tools can mutate repo state (e.g. git
+        # checkout inside an execute call), so refresh the footer on turn end.
+        self._schedule_git_branch_refresh()
+
         try:
             await self._maybe_drain_deferred()
         except Exception:
@@ -3601,7 +3823,8 @@ class DeepAgentsApp(App):
                 )
 
         # Process next message from queue if any
-        await self._process_next_from_queue()
+        if not self._startup_sequence_running:
+            await self._process_next_from_queue()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
@@ -4194,8 +4417,8 @@ class DeepAgentsApp(App):
         self._deferred_actions.append(action)
 
     async def _maybe_drain_deferred(self) -> None:
-        """Drain deferred actions unless a server connection is still in progress."""
-        if not self._connecting:
+        """Drain deferred actions unless startup sequencing is still in progress."""
+        if not self._connecting and not self._startup_sequence_running:
             await self._drain_deferred_actions()
 
     async def _drain_deferred_actions(self) -> None:
@@ -4415,6 +4638,8 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        if self._git_branch_refresh_task is not None:
+            self._git_branch_refresh_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
@@ -5529,6 +5754,7 @@ async def run_textual_app(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -5559,6 +5785,9 @@ async def run_textual_app(
             Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
         initial_skill: Optional skill name to invoke when session starts.
+        startup_cmd: Optional shell command to run at startup before the first
+            prompt is accepted. Output is rendered in the transcript and
+            non-zero exits warn but do not abort the session.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -5586,6 +5815,7 @@ async def run_textual_app(
         resume_thread=resume_thread,
         initial_prompt=initial_prompt,
         initial_skill=initial_skill,
+        startup_cmd=startup_cmd,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

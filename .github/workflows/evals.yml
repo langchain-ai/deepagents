@@ -350,29 +350,6 @@ jobs:
             exit 1
           fi
 
-      - name: "🧠 Analyze eval failures"
-        if: "!cancelled() && inputs.analyze_failures"
-        continue-on-error: true
-        env:
-          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
-        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
-
-      - name: "📤 Upload failure analysis"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
-        with:
-          name: failure-analysis-${{ strategy.job-index }}
-          path: libs/evals/failure_analysis.json
-          if-no-files-found: warn
-
-      - name: "📤 Upload eval report"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
-        with:
-          name: evals-report-${{ strategy.job-index }}
-          path: libs/evals/evals_report.json
-          if-no-files-found: error
-
       - name: "📊 Post results to summary"
         if: "!cancelled()"
         run: |
@@ -464,6 +441,29 @@ jobs:
                   f.write(text)
           print(text)
           PYEOF
+
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled() && inputs.analyze_failures"
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
+
+      - name: "📤 Upload eval report"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: evals-report-${{ strategy.job-index }}
+          path: libs/evals/evals_report.json
+          if-no-files-found: error
 
   aggregate:
     name: "📋 Aggregate evals"

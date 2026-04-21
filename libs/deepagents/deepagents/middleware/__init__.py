@@ -47,17 +47,22 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.permissions import FilesystemPermission
-from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
-from deepagents.middleware.summarization import (
-    SummarizationMiddleware,
-    SummarizationToolMiddleware,
-    create_summarization_tool_middleware,
-)
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+    from deepagents.middleware.memory import MemoryMiddleware
+    from deepagents.middleware.permissions import FilesystemPermission
+    from deepagents.middleware.skills import SkillsMiddleware
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+    from deepagents.middleware.summarization import (
+        SummarizationMiddleware,
+        SummarizationToolMiddleware,
+        create_summarization_tool_middleware,
+    )
 
 __all__ = [
     "AsyncSubAgent",
@@ -73,3 +78,28 @@ __all__ = [
     "SummarizationToolMiddleware",
     "create_summarization_tool_middleware",
 ]
+
+_LAZY: dict[str, str] = {
+    "AsyncSubAgent": "deepagents.middleware.async_subagents",
+    "AsyncSubAgentMiddleware": "deepagents.middleware.async_subagents",
+    "FilesystemMiddleware": "deepagents.middleware.filesystem",
+    "MemoryMiddleware": "deepagents.middleware.memory",
+    "FilesystemPermission": "deepagents.middleware.permissions",
+    "SkillsMiddleware": "deepagents.middleware.skills",
+    "CompiledSubAgent": "deepagents.middleware.subagents",
+    "SubAgent": "deepagents.middleware.subagents",
+    "SubAgentMiddleware": "deepagents.middleware.subagents",
+    "SummarizationMiddleware": "deepagents.middleware.summarization",
+    "SummarizationToolMiddleware": "deepagents.middleware.summarization",
+    "create_summarization_tool_middleware": "deepagents.middleware.summarization",
+}
+
+
+def __getattr__(name: str) -> object:
+    if name in _LAZY:
+        import importlib
+
+        mod = importlib.import_module(_LAZY[name])
+        return getattr(mod, name)
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

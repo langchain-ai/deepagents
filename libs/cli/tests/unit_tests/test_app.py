@@ -4356,6 +4356,101 @@ class TestNotificationCenterIntegration:
         mock_suppress.assert_called_once_with("ripgrep")
         assert app._notice_registry.get("dep:ripgrep") is None
 
+    async def test_suppress_message_reloads_center_in_place(self) -> None:
+        """Posting NotificationSuppressRequested refreshes the open center."""
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationSuppressRequested,
+            _NotificationRow,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        dep = _missing_dep_entry("ripgrep")
+        tavily = _missing_dep_entry("tavily")
+        app._notice_registry.add(dep)
+        app._notice_registry.add(tavily)
+
+        with patch(
+            "deepagents_cli.model_config.suppress_warning",
+            return_value=True,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._open_notification_center()
+                await pilot.pause()
+                center = app.screen
+                assert isinstance(center, NotificationCenterScreen)
+                assert len(center.query(_NotificationRow)) == 2
+
+                center.post_message(NotificationSuppressRequested("dep:ripgrep"))
+                await pilot.pause()
+
+                # Suppressed entry gone; center stayed open on the rest.
+                assert isinstance(app.screen, NotificationCenterScreen)
+                keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
+                assert keys == ["dep:tavily"]
+                assert app._notice_registry.get("dep:ripgrep") is None
+
+    async def test_suppress_failure_while_center_open_keeps_rows_intact(self) -> None:
+        """suppress_warning=False with center open leaves all rows visible."""
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationSuppressRequested,
+            _NotificationRow,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        dep = _missing_dep_entry("ripgrep")
+        tavily = _missing_dep_entry("tavily")
+        app._notice_registry.add(dep)
+        app._notice_registry.add(tavily)
+
+        with patch(
+            "deepagents_cli.model_config.suppress_warning",
+            return_value=False,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._open_notification_center()
+                await pilot.pause()
+                center = app.screen
+                assert isinstance(center, NotificationCenterScreen)
+
+                center.post_message(NotificationSuppressRequested("dep:ripgrep"))
+                await pilot.pause()
+
+                # Entry stays; center stays open with both rows reachable.
+                assert isinstance(app.screen, NotificationCenterScreen)
+                keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
+                assert keys == ["dep:ripgrep", "dep:tavily"]
+                assert app._notice_registry.get("dep:ripgrep") is dep
+
+    async def test_suppress_last_entry_closes_center(self) -> None:
+        """Suppressing the only remaining entry dismisses the center."""
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationSuppressRequested,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("ripgrep")
+        app._notice_registry.add(entry)
+
+        with patch(
+            "deepagents_cli.model_config.suppress_warning",
+            return_value=True,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._open_notification_center()
+                await pilot.pause()
+                assert isinstance(app.screen, NotificationCenterScreen)
+
+                app.screen.post_message(NotificationSuppressRequested("dep:ripgrep"))
+                await pilot.pause()
+
+                assert not isinstance(app.screen, NotificationCenterScreen)
+
     async def test_suppress_action_failure_keeps_entry_and_warns(self) -> None:
         """When suppress_warning returns False, the entry stays and a warning toasts."""
         from deepagents_cli.notifications import ActionId
@@ -4384,6 +4479,42 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("dep:ripgrep") is entry
         assert any("Could not save notification preference" in m for m in notified)
+
+    async def test_suppress_skips_persistence_in_debug_mode(self) -> None:
+        """SUPPRESS with DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS set skips persistence."""
+        from deepagents_cli.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        with (
+            patch.dict(
+                os.environ,
+                {"DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS": "1"},
+                clear=False,
+            ),
+            patch(
+                "deepagents_cli.model_config.suppress_warning",
+            ) as mock_suppress,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._dispatch_notification_action(entry.key, ActionId.SUPPRESS)
+                await pilot.pause()
+
+        mock_suppress.assert_not_called()
+        assert app._notice_registry.get("dep:ripgrep") is None
+        assert any("debug mode" in m for m in notified)
 
     async def test_copy_install_action_copies_command(self) -> None:
         """COPY_INSTALL copies the payload command to the clipboard."""
@@ -4446,6 +4577,29 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
 
         mock_open.assert_called_once_with("https://tavily.com")
+
+    async def test_open_website_on_ripgrep_entry_routes_to_ripgrep_url(self) -> None:
+        """Dispatching OPEN_WEBSITE on the ripgrep entry opens _RIPGREP_URL."""
+        from deepagents_cli.main import _RIPGREP_URL, build_missing_tool_notification
+        from deepagents_cli.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        with patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value="brew install ripgrep",
+        ):
+            entry = build_missing_tool_notification("ripgrep")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch("webbrowser.open", return_value=True) as mock_open:
+                await app._dispatch_notification_action(
+                    entry.key, ActionId.OPEN_WEBSITE
+                )
+                await pilot.pause()
+
+        mock_open.assert_called_once_with(_RIPGREP_URL)
 
     async def test_open_website_failure_warns_with_url(self) -> None:
         """When webbrowser.open returns False, warn and include the URL."""
@@ -4872,6 +5026,45 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             assert isinstance(screen._options[screen._selected], _ChangelogOption)
 
+    async def test_notification_center_shift_tab_moves_cursor_up(self) -> None:
+        """App-level shift+tab routes to NotificationCenterScreen.move_up."""
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entries = [_missing_dep_entry("ripgrep"), _missing_dep_entry("tavily")]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationCenterScreen(entries)
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._selected == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            # Wraps from row 0 to the last row; auto_approve stays off.
+            assert screen._selected == len(entries) - 1
+            assert app._auto_approve is False
+
+    async def test_notification_detail_shift_tab_moves_cursor_up(self) -> None:
+        """App-level shift+tab routes to NotificationDetailScreen.move_up."""
+        from deepagents_cli.widgets.notification_detail import NotificationDetailScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("ripgrep")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = NotificationDetailScreen(entry)
+            app.push_screen(screen)
+            await pilot.pause()
+            start = screen._selected
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected != start
+            assert app._auto_approve is False
+
     async def test_toast_identity_warn_once_semantics(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -5043,7 +5236,12 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
 
     async def test_inject_debug_notifications_populates_registry(self) -> None:
-        """`_inject_debug_notifications` seeds three sample entries."""
+        """`_inject_debug_notifications` seeds missing-dep entries only.
+
+        Also binds a toast identity for each entry — without that, the
+        real surface (toast + clickable ctrl+n hint) would be invisible
+        even though the registry is populated.
+        """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 
         async with app.run_test() as pilot:
@@ -5052,7 +5250,26 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
 
         keys = {e.key for e in app._notice_registry.list_all()}
-        assert keys == {"dep:ripgrep", "dep:tavily", "update:available"}
+        assert keys == {"dep:ripgrep", "dep:tavily"}
+        # Toast identities must be bound so the entries actually surface.
+        assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
+        assert app._notice_registry.toast_identity_for("dep:tavily") is not None
+        # Update modal must not be triggered by DEBUG_NOTIFICATIONS.
+        assert not app._update_modal_pending.is_set()
+
+    async def test_inject_debug_update_registers_entry_and_sets_pending(
+        self,
+    ) -> None:
+        """`_inject_debug_update` registers the update entry and arms the modal."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._inject_debug_update()
+            await pilot.pause()
+
+        keys = {e.key for e in app._notice_registry.list_all()}
+        assert keys == {"update:available"}
         assert app._update_modal_pending.is_set()
 
     async def test_dispatcher_unknown_action_logs_warning(

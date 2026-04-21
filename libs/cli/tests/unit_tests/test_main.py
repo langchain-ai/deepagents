@@ -651,7 +651,8 @@ class TestBuildMissingToolNotification:
     """Tests for `build_missing_tool_notification` registry factory."""
 
     def test_ripgrep_with_package_manager_hint(self) -> None:
-        """Ripgrep with install command offers copy + suppress."""
+        """Ripgrep with install command offers copy + open-website + suppress."""
+        from deepagents_cli.main import _RIPGREP_URL
         from deepagents_cli.notifications import ActionId, MissingDepPayload
 
         with patch(
@@ -663,9 +664,13 @@ class TestBuildMissingToolNotification:
         assert isinstance(entry.payload, MissingDepPayload)
         assert entry.payload.tool == "ripgrep"
         assert entry.payload.install_command == "brew install ripgrep"
-        assert entry.payload.url is None
+        assert entry.payload.url == _RIPGREP_URL
         action_ids = [a.action_id for a in entry.actions]
-        assert action_ids == [ActionId.COPY_INSTALL, ActionId.SUPPRESS]
+        assert action_ids == [
+            ActionId.COPY_INSTALL,
+            ActionId.OPEN_WEBSITE,
+            ActionId.SUPPRESS,
+        ]
         assert entry.actions[0].primary is True
 
     def test_ripgrep_url_fallback_opens_website(self) -> None:

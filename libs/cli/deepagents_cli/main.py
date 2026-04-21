@@ -234,7 +234,9 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
         PendingNotification,
     )
 
-    suppress_action = NotificationAction(ActionId.SUPPRESS, "Don't show this again")
+    suppress_action = NotificationAction(
+        ActionId.SUPPRESS, "Don't show notification again"
+    )
     if tool == "ripgrep":
         hint = _ripgrep_install_hint()
         if hint.startswith("http"):
@@ -250,9 +252,12 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
                 NotificationAction(
                     ActionId.COPY_INSTALL, "Copy install command", primary=True
                 ),
+                NotificationAction(ActionId.OPEN_WEBSITE, "Open installation guide"),
                 suppress_action,
             )
-            payload = MissingDepPayload(tool="ripgrep", install_command=hint)
+            payload = MissingDepPayload(
+                tool="ripgrep", install_command=hint, url=_RIPGREP_URL
+            )
         body = (
             "ripgrep is not installed; the grep tool will use a slower fallback.\n\n"
             f"Install: {hint}"
@@ -287,7 +292,7 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
         body=f"{tool} is not installed.",
         actions=(
             NotificationAction(
-                ActionId.SUPPRESS, "Don't show this again", primary=True
+                ActionId.SUPPRESS, "Don't show notification again", primary=True
             ),
         ),
         payload=MissingDepPayload(tool=tool),

@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from deepagents_cli.textual_adapter import TextualUIAdapter
     from deepagents_cli.widgets.approval import ApprovalMenu
     from deepagents_cli.widgets.ask_user import AskUserMenu
+    from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -1300,12 +1301,16 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
-        # Debug helper: inject sample notifications so the center UI can
-        # be exercised without waiting for real conditions.
-        from deepagents_cli._env_vars import DEBUG_NOTIFICATIONS
+        # Debug helpers: exercise the notification center and update-modal
+        # flows without waiting for real conditions. The two env vars are
+        # independent so missing-dep notices can be surfaced without auto-
+        # stealing focus into the update modal.
+        from deepagents_cli._env_vars import DEBUG_NOTIFICATIONS, DEBUG_UPDATE
 
         if os.environ.get(DEBUG_NOTIFICATIONS):
             self.call_after_refresh(self._inject_debug_notifications)
+        if os.environ.get(DEBUG_UPDATE):
+            self.call_after_refresh(self._inject_debug_update)
 
         # Session-start sequence (history -> `--startup-cmd` -> initial prompt/
         # skill -> queue drain). When connecting, defer until
@@ -4970,6 +4975,10 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+        from deepagents_cli.widgets.notification_detail import NotificationDetailScreen
         from deepagents_cli.widgets.notification_settings import (
             NotificationSettingsScreen,
         )
@@ -4986,7 +4995,10 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, NotificationSettingsScreen):
             self.screen.focus_previous()
             return
-        if isinstance(self.screen, UpdateAvailableScreen):
+        if isinstance(
+            self.screen,
+            (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
+        ):
             self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
@@ -5731,29 +5743,42 @@ class DeepAgentsApp(App):
         self.post_message(_Notify(toast))
 
     def _inject_debug_notifications(self) -> None:
-        """Register sample notifications so the center UI can be exercised.
+        """Register sample missing-dependency entries for UI testing.
 
         Gated by `DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS`; no-op without it.
-        Covers every payload type and action, and auto-opens the
-        dedicated update modal so the startup flow can be exercised
-        without waiting for a real PyPI release.
+        Uses `_notify_actionable` so each entry also posts a clickable
+        toast — mirroring the real missing-dep path and exercising both
+        the toast surface and the notification center.
 
-        Mirrors the real startup flow: when an update is being
-        surfaced, missing-dep entries register silently (no toast)
-        so they don't flicker before the modal's
-        `clear_notifications` fires.
+        Deliberately does *not* register an update-available entry or
+        open the update modal — that flow is exercised via
+        `DEEPAGENTS_CLI_DEBUG_UPDATE` / `_inject_debug_update`, so the
+        notification center can be browsed without focus being stolen
+        by the update modal.
         """
         try:
             from deepagents_cli.main import build_missing_tool_notification
-        except Exception:
+        except ImportError:
             logger.warning(
                 "Could not inject debug notifications; main import failed",
                 exc_info=True,
             )
             return
 
-        self._notice_registry.add(build_missing_tool_notification("ripgrep"))
-        self._notice_registry.add(build_missing_tool_notification("tavily"))
+        for tool in ("ripgrep", "tavily"):
+            self._notify_actionable(
+                build_missing_tool_notification(tool),
+                severity="warning",
+                timeout=15,
+            )
+
+    def _inject_debug_update(self) -> None:
+        """Register a sample update entry and auto-open the update modal.
+
+        Gated by `DEEPAGENTS_CLI_DEBUG_UPDATE`; no-op without it.
+        Mirrors the real update-check path so the dedicated modal can
+        be exercised without waiting for a PyPI release.
+        """
         update_notification = self._build_update_notification(
             latest="9.9.9",
             cli_version="0.0.1",
@@ -5808,6 +5833,37 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         self.push_screen(NotificationCenterScreen(pending), handle_result)
+
+    async def on_notification_suppress_requested(
+        self,
+        message: NotificationSuppressRequested,
+    ) -> None:
+        """Suppress the notice in place and refresh the open center."""
+        from deepagents_cli.widgets.notification_center import NotificationCenterScreen
+
+        message.stop()
+        await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
+        screen = self.screen
+        if not isinstance(screen, NotificationCenterScreen):
+            return
+        try:
+            await screen.reload(self._notice_registry.list_all())
+        except Exception as exc:  # defend against dismiss/mount races
+            # A concurrent dismissal can detach the VerticalScroll before
+            # `reload` queries it. The worst case is a stale row list,
+            # which the next open of the center will heal. Log + toast
+            # so the failure surfaces instead of vanishing into a worker.
+            logger.warning(
+                "Failed to refresh notification center after suppress: %s",
+                exc,
+                exc_info=True,
+            )
+            self.notify(
+                f"Could not refresh notifications: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
 
     def _open_update_available_modal(self, entry: PendingNotification) -> None:
         """Push the dedicated update-available modal for *entry*.
@@ -5927,7 +5983,21 @@ class DeepAgentsApp(App):
                 Unknown ids are logged and treated as a no-op.
         """
         if action_id == ActionId.SUPPRESS:
+            from deepagents_cli._env_vars import DEBUG_NOTIFICATIONS
             from deepagents_cli.model_config import suppress_warning
+
+            # Debug mode injects sample entries via `_inject_debug_notifications`
+            # — persisted suppressions would silence the real warning on
+            # subsequent runs, defeating the point of replaying the UI.
+            if os.environ.get(DEBUG_NOTIFICATIONS):
+                self._notice_registry.remove(entry.key)
+                self.notify(
+                    f"Suppressed {payload.tool} (debug mode; not persisted).",
+                    severity="information",
+                    timeout=4,
+                    markup=False,
+                )
+                return
 
             if await asyncio.to_thread(suppress_warning, payload.tool):
                 self._notice_registry.remove(entry.key)

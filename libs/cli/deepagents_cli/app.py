@@ -1029,16 +1029,53 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
 
-    def _schedule_git_branch_refresh(self) -> None:
-        """Refresh the git branch in the background without stalling cleanup."""
-        if self._exit:
+    async def _refresh_git_branch_subprocess_fallback(self, cwd: str) -> None:
+        """Run the `git rev-parse` fallback off-thread for unusual repo layouts."""
+        try:
+            branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
+        except Exception:
+            logger.warning("Git branch subprocess fallback failed", exc_info=True)
             return
+        if self._status_bar:
+            self._status_bar.branch = branch
 
+    def _cancel_git_branch_refresh_task(self) -> None:
+        """Cancel and clear any in-flight background branch refresh task."""
         prior_task = self._git_branch_refresh_task
         if prior_task is not None and not prior_task.done():
             prior_task.cancel()
+        self._git_branch_refresh_task = None
 
-        refresh_task = asyncio.create_task(self._refresh_git_branch())
+    def _schedule_git_branch_refresh(self) -> None:
+        """Refresh the git branch, inline when possible.
+
+        The filesystem probe is sub-millisecond for the common repo layout, so
+        we run it synchronously and only spawn a background task for the
+        `git rev-parse` fallback. Keeping the hot path inline avoids an
+        event-loop tick plus a reactive watcher hop between a tool exiting and
+        the footer updating.
+        """
+        if self._exit:
+            return
+
+        cwd = self._cwd
+        try:
+            branch = read_git_branch_from_filesystem(cwd)
+        except Exception:
+            logger.warning("Git branch filesystem probe failed", exc_info=True)
+            return
+
+        if branch is not None:
+            if self._status_bar:
+                self._status_bar.branch = branch
+            self._cancel_git_branch_refresh_task()
+            return
+
+        # Unusual repo layout — hop to a thread for `git rev-parse`.
+        self._cancel_git_branch_refresh_task()
+        refresh_task = asyncio.create_task(
+            self._refresh_git_branch_subprocess_fallback(cwd)
+        )
         self._git_branch_refresh_task = refresh_task
 
         def _finalize_git_branch_refresh(task: asyncio.Task[None]) -> None:
@@ -1091,6 +1128,7 @@ class DeepAgentsApp(App):
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
+            on_tool_complete=self._schedule_git_branch_refresh,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update

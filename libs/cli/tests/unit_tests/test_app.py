@@ -278,6 +278,51 @@ class TestStartupSequence:
         assert app._git_branch_refresh_task is None
         mock_create_task.assert_not_called()
 
+    async def test_schedule_git_branch_refresh_inline_fast_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Filesystem probe should update the footer without spawning a task."""
+        repo = tmp_path / "repo"
+        git_dir = repo / ".git"
+        git_dir.mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+        app._cwd = str(repo)
+
+        with patch("deepagents_cli.app.asyncio.create_task") as mock_create_task:
+            app._schedule_git_branch_refresh()
+
+        assert status_bar.branch == "feature"
+        mock_create_task.assert_not_called()
+        assert app._git_branch_refresh_task is None
+
+    async def test_schedule_git_branch_refresh_falls_back_to_subprocess(
+        self,
+    ) -> None:
+        """Unusual repo layouts should spawn the off-thread subprocess fallback."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        status_bar = MagicMock()
+        app._status_bar = status_bar
+
+        fallback_mock = AsyncMock()
+        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+            fallback_mock
+        )
+
+        with patch(
+            "deepagents_cli.app.read_git_branch_from_filesystem",
+            return_value=None,
+        ):
+            app._schedule_git_branch_refresh()
+
+        refresh_task = app._git_branch_refresh_task
+        assert refresh_task is not None
+        await refresh_task
+        fallback_mock.assert_awaited_once_with(app._cwd)
+
     def test_empty_startup_cmd_is_normalized_to_none(self) -> None:
         """Empty or whitespace-only `--startup-cmd` should be treated as unset."""
         for raw in ("", "   ", "\t\n"):
@@ -2090,18 +2135,22 @@ class TestShellCommandInterrupt:
         assert status_bar.branch == "feature"
 
     async def test_cleanup_does_not_wait_for_git_branch_refresh(self) -> None:
-        """Queue cleanup should not block on the background branch refresh."""
+        """Queue cleanup should not block on the subprocess fallback refresh."""
         app = DeepAgentsApp()
         refresh_started = asyncio.Event()
         release_refresh = asyncio.Event()
         drain_mock = AsyncMock()
         queue_mock = AsyncMock()
 
-        async def block_refresh() -> None:
+        async def block_refresh(_cwd: str) -> None:
             refresh_started.set()
             await release_refresh.wait()
 
-        app._refresh_git_branch = block_refresh  # type: ignore[assignment]
+        # Force the subprocess fallback path so the test can observe whether
+        # cleanup awaits the background task.
+        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+            block_refresh
+        )
         app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
         app._process_next_from_queue = queue_mock  # type: ignore[assignment]
         app._shell_running = True
@@ -2109,8 +2158,12 @@ class TestShellCommandInterrupt:
         app._shell_worker.is_cancelled = False
         app._shell_process = None
 
-        await app._cleanup_shell_task()
-        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        with patch(
+            "deepagents_cli.app.read_git_branch_from_filesystem",
+            return_value=None,
+        ):
+            await app._cleanup_shell_task()
+            await asyncio.wait_for(refresh_started.wait(), timeout=1)
 
         drain_mock.assert_awaited_once()
         queue_mock.assert_awaited_once()

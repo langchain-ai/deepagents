@@ -496,14 +496,22 @@ def is_ascii_mode() -> bool:
 
 
 def newline_shortcut() -> str:
-    """Return the platform-native label for the newline keyboard shortcut.
+    """Return the terminal-appropriate label for the newline keyboard shortcut.
 
-    macOS labels the modifier "Option" while other platforms use Ctrl+J
-    as the most reliable cross-terminal shortcut.
+    Prefers `Shift+Enter` when the terminal is known to support the kitty
+    keyboard protocol, either via conservative terminal-identity heuristics
+    or the `DEEPAGENTS_CLI_KITTY_KEYBOARD` override. Falls back to
+    `Option+Enter` on macOS and `Ctrl+J` elsewhere — both survive legacy
+    terminals that strip the shift modifier from `Enter`.
 
     Returns:
-        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+        A human-readable shortcut string,
+            e.g. `'Shift+Enter'`, `'Option+Enter'`, or `'Ctrl+J'`.
     """
+    from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    if supports_kitty_keyboard_protocol():
+        return "Shift+Enter"
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 

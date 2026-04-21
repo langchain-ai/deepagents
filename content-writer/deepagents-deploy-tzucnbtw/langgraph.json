@@ -1,0 +1,11 @@
+{
+  "dependencies": [
+    ".",
+    "google-cloud-storage"
+  ],
+  "graphs": {
+    "agent": "./deploy_graph.py:make_graph"
+  },
+  "python_version": "3.12",
+  "env": ".env"
+}

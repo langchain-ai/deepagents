@@ -34,6 +34,7 @@ from deepagents_repl._ptc import to_camel_case
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -362,6 +363,11 @@ class _ThreadREPL:
         # (in-flight ainvoke calls are unwound via asyncio task
         # cancellation propagating from the outer wait_for).
         self._eval_cancel_event: asyncio.Event | None = None
+        # Path → content buffer for file writes initiated inside an eval.
+        # Swarm bridges that need read-after-write semantics inside a
+        # single eval (e.g. `swarm.create` followed by `swarm.execute`)
+        # push here, then the middleware flushes after the eval returns.
+        self._pending_writes: dict[str, str] = {}
         if capture_console:
             self._install_console()
 
@@ -449,6 +455,43 @@ class _ThreadREPL:
         and again with ``None`` after.
         """
         self._outer_runtime = runtime
+
+    def _stage_write(self, path: str, content: str) -> None:
+        """Buffer a file write for flush after the current eval returns.
+
+        Replaces any prior pending write to the same path so only the
+        latest version is flushed. Used by in-eval host bridges that
+        need read-after-write semantics before the backend has been
+        touched (e.g. ``swarm.create`` → ``swarm.execute``).
+        """
+        self._pending_writes[path] = content
+
+    async def _read_through_pending(
+        self,
+        path: str,
+        backend: BackendProtocol,
+    ) -> str:
+        """Read ``path``, preferring the pending buffer over the backend.
+
+        Raises ``FileNotFoundError`` if the path is absent from both.
+        """
+        if path in self._pending_writes:
+            return self._pending_writes[path]
+        result = await backend.aread(path)
+        if result.error is not None or result.file_data is None:
+            msg = f"Failed to read {path!r}: {result.error or 'empty'}"
+            raise FileNotFoundError(msg)
+        content = result.file_data.get("content")
+        if not isinstance(content, str):
+            msg = f"Unexpected content shape for {path!r}: {type(content).__name__}"
+            raise ValueError(msg)
+        return content
+
+    def _drain_pending_writes(self) -> list[tuple[str, str]]:
+        """Return and clear all buffered writes."""
+        drained = list(self._pending_writes.items())
+        self._pending_writes.clear()
+        return drained
 
     def _register_tool_bridge(self, camel: str) -> None:
         """Install a host-function bridge for one camel-cased tool name.

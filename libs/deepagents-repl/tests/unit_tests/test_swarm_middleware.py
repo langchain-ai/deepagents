@@ -251,6 +251,62 @@ async def test_response_schema_flows_to_factory(runtime: Runtime) -> None:
     assert default.ainvoke.call_count == 0
 
 
+async def test_swarm_execute_logs_summary_and_failures_to_stdout(
+    runtime: Runtime,
+) -> None:
+    """Summary + first-3 failure details should be emitted to the REPL stdout,
+    so the agent can see *why* dispatches failed instead of just a count."""
+    failing = AsyncMock(spec=Runnable)
+    failing.ainvoke.side_effect = RuntimeError("rate limit: 429")
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": failing}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+
+    outcome = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", {
+            tasks: [
+                { id: "a" }, { id: "b" }, { id: "c" },
+                { id: "d" }, { id: "e" },
+            ],
+        });
+        const summary = JSON.parse(await swarm.execute("/t.jsonl", {
+            instruction: "do {id}",
+        }));
+        summary.failed
+        """
+    )
+    assert outcome.result == "5"
+    assert outcome.stdout is not None
+    # Summary line
+    assert "[swarm.execute] 0 completed, 5 failed, 0 skipped" in outcome.stdout
+    # First three failures listed
+    assert '[swarm.execute] failure id="a"' in outcome.stdout
+    assert '[swarm.execute] failure id="b"' in outcome.stdout
+    assert '[swarm.execute] failure id="c"' in outcome.stdout
+    assert "rate limit: 429" in outcome.stdout
+    # Overflow tallied
+    assert "[swarm.execute] ... and 2 more failures" in outcome.stdout
+
+
+async def test_swarm_create_logs_to_stdout(runtime: Runtime) -> None:
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": _mock_subagent()}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    outcome = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }] });
+        "ok"
+        """
+    )
+    assert outcome.stdout is not None
+    assert "[swarm.create] Table written to /t.jsonl." in outcome.stdout
+
+
 async def test_swarm_execute_rejects_missing_instruction(runtime: Runtime) -> None:
     backend = _StubBackend()
     binding = SwarmBinding(

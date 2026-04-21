@@ -587,6 +587,7 @@ class _ThreadREPL:
                 tasks=source.get("tasks"),
             )
             await create_table(file, spec, backend, _write)
+            self._console.append("log", (f"[swarm.create] Table written to {file}.",))
 
         async def _swarm_execute(
             file: Any = None, options: Any = None
@@ -623,6 +624,27 @@ class _ThreadREPL:
                 msg = "swarm.execute: `instruction` is required"
                 raise ValueError(msg)
             summary = await execute_swarm(exec_opts)
+            self._console.append(
+                "log",
+                (
+                    f"[swarm.execute] {summary.completed} completed, "
+                    f"{summary.failed} failed, {summary.skipped} skipped. "
+                    f'Results → "{file}" column "{summary.column}".',
+                ),
+            )
+            if summary.failed > 0:
+                sample = summary.failed_tasks[:3]
+                for t in sample:
+                    self._console.append(
+                        "log",
+                        (f'[swarm.execute] failure id="{t["id"]}" error={t["error"]}',),
+                    )
+                overflow = len(summary.failed_tasks) - 3
+                if overflow > 0:
+                    self._console.append(
+                        "log",
+                        (f"[swarm.execute] ... and {overflow} more failures",),
+                    )
             return json.dumps(_summary_to_wire(summary))
 
         self._ctx.register("__swarm_create", _swarm_create, is_async=True)

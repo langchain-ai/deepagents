@@ -4008,7 +4008,16 @@ class TestRestartServerForAgentSwap:
         self,
     ) -> None:
         """Successful restart stages env, calls restart, and rewires client."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
         app, server_proc = self._make_app()
+        # Seed an assistant message so the previous thread looks like it
+        # produced agent-side output — the resume hint is gated on the
+        # presence of a `ASSISTANT`/`TOOL`/`SKILL` entry, since those only
+        # land in the store after a server round-trip wrote a checkpoint.
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="hi there")
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
 
@@ -4068,6 +4077,64 @@ class TestRestartServerForAgentSwap:
             assert any(
                 "deepagents -r old-thread" in s and "to resume" in s for s in plain
             )
+
+    async def test_no_resume_hint_when_previous_thread_has_no_agent_output(
+        self,
+    ) -> None:
+        """Untouched thread (no agent output) skips the resume hint.
+
+        An agent switch immediately after launch has a thread ID but no
+        server-side checkpoint, so `-r <thread>` would fail to resume
+        anything. Don't surface a hint that points at an empty thread.
+        """
+        app, _server_proc = self._make_app()
+        assert app._message_store.total_count == 0  # sanity check
+
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker"),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+        assert not any("to resume" in s for s in plain)
+
+    async def test_no_resume_hint_when_only_local_user_messages(self) -> None:
+        """Local-only slash commands don't count as agent-side activity.
+
+        Flows like `/update` and `!shell` mount a `UserMessage` widget but
+        never call the server, so no checkpoint exists. A `USER`-only store
+        must not trigger the resume hint.
+        """
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app, _server_proc = self._make_app()
+        app._message_store.append(MessageData(type=MessageType.USER, content="/update"))
+
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker"),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+        assert not any("to resume" in s for s in plain)
 
     async def test_no_resume_hint_when_no_previous_thread(self) -> None:
         """Fresh session (no previous thread) skips the resume hint."""

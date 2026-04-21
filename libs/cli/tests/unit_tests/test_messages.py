@@ -18,6 +18,7 @@ from deepagents_cli.widgets.messages import (
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
+    _MutedRichMarkdown,
     _show_timestamp_toast,
     _strip_frontmatter,
     _strip_success_exit_line,
@@ -103,6 +104,87 @@ class TestAppMessageMarkupSafety:
         msg = AppMessage(pre)
         rendered = msg._Static__content  # type: ignore[attr-defined]
         assert rendered is pre
+
+    def test_app_message_markdown_uses_muted_wrapper(self) -> None:
+        """`markdown=True` should route through `_MutedRichMarkdown`."""
+        msg = AppMessage("### heading", markdown=True)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, _MutedRichMarkdown)
+
+    def test_app_message_markdown_requires_string(self) -> None:
+        """`markdown=True` with non-string input should raise `TypeError`."""
+        pre = Content.styled("styled", "bold")
+        with pytest.raises(TypeError):
+            AppMessage(pre, markdown=True)
+
+
+class TestMutedRichMarkdown:
+    """Tests for the muted markdown theme wrapper."""
+
+    _DOC = (
+        "### Installed optional dependencies\n"
+        "\n"
+        "| Extra | Package | Version |\n"
+        "| --- | --- | --- |\n"
+        "| anthropic | langchain-anthropic | 1.4.1 |\n"
+    )
+
+    @staticmethod
+    def _render(renderable: object) -> str:
+        import io
+
+        from rich.console import Console
+
+        console = Console(
+            file=io.StringIO(),
+            force_terminal=True,
+            color_system="truecolor",
+            width=80,
+            legacy_windows=False,
+        )
+        console.print(renderable)
+        return console.file.getvalue()  # type: ignore[attr-defined]
+
+    def test_strips_heading_and_table_colors(self) -> None:
+        """Muted wrapper should drop magenta/cyan from headings and tables."""
+        from rich.markdown import Markdown as RichMarkdown
+
+        baseline = self._render(RichMarkdown(self._DOC))
+        muted = self._render(_MutedRichMarkdown(self._DOC))
+
+        # Default Rich theme paints `markdown.h3` magenta (ANSI code 35)
+        # and `markdown.table.*` cyan (ANSI code 36).
+        assert "\x1b[1;35m" in baseline
+        assert "\x1b[36m" in baseline
+
+        assert "\x1b[35m" not in muted
+        assert ";35m" not in muted
+        assert "\x1b[36m" not in muted
+        assert ";36m" not in muted
+
+    def test_applies_dim_to_body_and_headings(self) -> None:
+        """Muted wrapper should layer `dim` onto body, headings, and tables."""
+        muted = self._render(_MutedRichMarkdown(self._DOC))
+
+        # `dim` is ANSI code 2. Heading should be bold+dim ("1;2"),
+        # plain cells should be dim ("2m"), and both must be present.
+        assert "\x1b[1;2m" in muted
+        assert "\x1b[2m" in muted
+
+    def test_render_failure_falls_back_to_plain_source(self) -> None:
+        """A crash inside Rich markdown rendering must not escape.
+
+        If the themed render path raises, the wrapper should emit the raw
+        source so the chat view stays up; the full stream would otherwise
+        tear down when Textual asks the widget for content.
+        """
+        wrapped = _MutedRichMarkdown("# heading\n\nbody")
+        # Force the inner Markdown renderable to raise when consumed.
+        wrapped._markdown = MagicMock()
+        wrapped._markdown.__rich_console__ = MagicMock(side_effect=RuntimeError("boom"))
+
+        rendered = self._render(wrapped)
+        assert "body" in rendered
 
 
 class TestSummarizationMessage:

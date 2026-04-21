@@ -761,6 +761,134 @@ def _build_non_interactive_header(
     return Text.assemble(*parts)
 
 
+async def _run_startup_command(
+    command: str,
+    console: Console,
+    *,
+    quiet: bool,
+) -> None:
+    """Run the `--startup-cmd` shell command before the agent loop.
+
+    Stdout and stderr are routed through `console`. In `--quiet` mode the
+    caller wires `console` to stderr so agent output on stdout stays clean;
+    otherwise both streams land on stdout alongside the agent's response.
+    Non-zero exits and timeouts emit a yellow warning but do not abort the
+    session — the non-zero exit code is logged, not propagated.
+
+    Args:
+        command: Shell command to execute (subject to shell expansion).
+        console: Rich console for status messages. Respects `quiet`.
+        quiet: When `True`, suppresses the "Running startup command" header
+            so piped output stays minimal; warnings still appear (on stderr
+            when the caller wired the console there).
+    """
+    import asyncio
+    import sys
+
+    if not quiet:
+        console.print(Text(f"Running startup command: {command}", style="dim"))
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=(sys.platform != "win32"),
+        )
+    except OSError as e:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command failed to launch: "
+            f"{escape_markup(str(e))}"
+        )
+        return
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=60
+        )
+    except TimeoutError:
+        if proc.returncode is None:
+            try:
+                if sys.platform != "win32":
+                    import os
+                    import signal
+
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                else:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
+            except OSError:
+                logger.warning(
+                    "Failed to terminate startup command (pid=%s)",
+                    proc.pid,
+                    exc_info=True,
+                )
+            else:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except TimeoutError:
+                    logger.warning(
+                        "Startup command (pid=%s) did not exit after termination; "
+                        "sending SIGKILL",
+                        proc.pid,
+                    )
+                    try:
+                        if sys.platform != "win32":
+                            import os
+                            import signal
+
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        else:
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Failed to SIGKILL startup command (pid=%s); "
+                            "process may leak",
+                            proc.pid,
+                            exc_info=True,
+                        )
+                    try:
+                        await proc.wait()
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Failed to reap startup command (pid=%s) after SIGKILL",
+                            proc.pid,
+                            exc_info=True,
+                        )
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    logger.warning(
+                        "Failed to wait on startup command (pid=%s) after SIGTERM; "
+                        "process may leak",
+                        proc.pid,
+                        exc_info=True,
+                    )
+        console.print("[yellow]Warning:[/yellow] startup command timed out (60s limit)")
+        return
+
+    stdout_text = (stdout_bytes or b"").decode(errors="replace").rstrip("\n")
+    stderr_text = (stderr_bytes or b"").decode(errors="replace").rstrip("\n")
+    if stdout_text:
+        # Wrap in `Text` so Rich treats the shell output as literal — otherwise
+        # brackets in tool output (e.g. `[INFO]`, `[1/3]`) would be parsed as
+        # markup and either silently stripped or raise `MarkupError`.
+        console.print(Text(stdout_text), highlight=False)
+    if stderr_text:
+        console.print(Text(stderr_text, style="dim"), highlight=False)
+
+    if proc.returncode:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command exited with code "
+            f"{proc.returncode} — continuing anyway"
+        )
+
+
 async def run_non_interactive(
     message: str,
     assistant_id: str = "agent",
@@ -771,6 +899,7 @@ async def run_non_interactive(
     sandbox_setup: str | None = None,
     *,
     initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
@@ -810,6 +939,11 @@ async def run_non_interactive(
             after creation.
         initial_skill: Optional skill name whose `SKILL.md` instructions wrap
             the user message before sending it to the agent.
+        startup_cmd: Shell command to run at startup, before the agent runs.
+
+            Output follows the same console routing as other CLI messages:
+            stdout by default, stderr when `-q` is set. Non-zero exits and
+            timeouts warn but do not abort the task.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -838,6 +972,9 @@ async def run_non_interactive(
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
+
+    if startup_cmd and startup_cmd.strip():
+        await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
 
     message_kwargs: dict[str, Any] | None = None
     if initial_skill and initial_skill.strip():

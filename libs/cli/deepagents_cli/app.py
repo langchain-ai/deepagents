@@ -8,7 +8,6 @@ import logging
 import os
 import shlex
 import signal
-import subprocess  # noqa: S404  # only used for exception types
 import sys
 import time
 import uuid
@@ -407,12 +406,12 @@ def _new_thread_id() -> str:
     return generate_thread_id()
 
 
-def _action_label(entry: PendingNotification, action_id: str) -> str:
+def _action_label(entry: PendingNotification, action_id: ActionId) -> str:
     """Return the user-facing label for *action_id* on *entry*, or the id itself."""
     for action in entry.actions:
         if action.action_id == action_id:
             return action.label
-    return action_id
+    return str(action_id)
 
 
 def _truncate(text: str, *, limit: int) -> str:
@@ -460,15 +459,25 @@ _COMMAND_URLS: dict[str, str] = {
 
 
 _toast_internals_warned: list[bool] = [False]
-"""Single-slot flag; once `_Toast._notification` is missing, log warning once."""
+"""Single-slot flag; once `_Toast._notification` is missing, log warning once.
+
+Reset by `DeepAgentsApp.reset_toast_internals_warned` before tests so the
+one-shot semantics can be exercised deterministically.
+"""
 
 
-def _toast_identity(widget: _Toast) -> str | None:
+def _toast_identity(
+    widget: _Toast,
+    *,
+    app: App | None = None,
+) -> str | None:
     """Return the identity of the notification backing *widget*, or `None`.
 
     `_Toast._notification` is a Textual internal. If a future upgrade
-    renames it, toast-click routing silently becomes inert — this helper
-    logs a single warning so the regression surfaces in logs.
+    renames it, toast-click routing silently becomes inert. Logs a
+    single warning, and — when *app* is supplied — also posts a
+    one-shot user-visible toast pointing users at the `ctrl+n`
+    fallback so the regression isn't invisible outside the debug log.
     """
     notif = getattr(widget, "_notification", None)
     if notif is None:
@@ -477,6 +486,14 @@ def _toast_identity(widget: _Toast) -> str | None:
                 "Textual Toast no longer exposes `_notification`; "
                 "toast-click routing is disabled.",
             )
+            if app is not None:
+                app.notify(
+                    "Toast click routing disabled after a Textual upgrade. "
+                    "Press ctrl+n to view notifications.",
+                    severity="warning",
+                    timeout=10,
+                    markup=False,
+                )
             _toast_internals_warned[0] = True
         return None
     return getattr(notif, "identity", None)
@@ -924,13 +941,30 @@ class DeepAgentsApp(App):
         """Typing-aware approval deferral state."""
 
         self._update_available: tuple[bool, str | None] = (False, None)
-        """Update availability state — set by _check_for_updates, read on exit."""
+        """Update availability state.
+
+        Set by `_check_for_updates` when PyPI reports a newer version;
+        read at shutdown (for the exit banner), by `_handle_version_command`
+        (for the `/version` update hint), and by downstream callers. Does
+        *not* drive missing-dep toast suppression — that's gated on
+        `_update_modal_pending`.
+        """
 
         self._update_check_done = asyncio.Event()
         """Set by `_check_for_updates` when it returns (success, failure, or
         no-op). Lets `_check_optional_tools_background` defer posting
         missing-dep toasts until we know whether the update modal is about
         to clear them."""
+
+        self._update_modal_pending = asyncio.Event()
+        """Set only immediately before the update modal is scheduled.
+
+        Used by `_check_optional_tools_background` to decide whether to
+        suppress missing-dep toasts: we only suppress when a modal is
+        actually about to open, not merely when an update was detected.
+        A detected-but-throttled update (already notified within
+        `CACHE_TTL`) leaves this clear so missing-dep toasts still fire.
+        """
 
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
@@ -1305,9 +1339,10 @@ class DeepAgentsApp(App):
         """Check for optional tools and register actionable notices.
 
         Missing tools are added to the notifications registry. Toasts
-        are posted only if no update modal is about to open; otherwise
-        the modal would immediately clear them and cause visible
-        flicker. Entries remain reachable via ctrl+n either way.
+        are posted only if no update modal is actually about to open;
+        otherwise the modal's `clear_notifications` call would
+        immediately drop them and cause visible flicker. Entries remain
+        reachable via ctrl+n either way.
         """
         try:
             from deepagents_cli.main import (
@@ -1327,6 +1362,18 @@ class DeepAgentsApp(App):
         except OSError:
             logger.debug("Failed to check for optional tools", exc_info=True)
             return
+        except Exception:
+            # Defensive: surface regressions (e.g. future refactors of
+            # check_optional_tools raising an unexpected exception type)
+            # instead of silently returning.
+            logger.warning("Optional-tools check failed unexpectedly", exc_info=True)
+            self.notify(
+                "Could not check optional tools — see logs.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+            return
 
         if not missing:
             return
@@ -1340,7 +1387,12 @@ class DeepAgentsApp(App):
             except TimeoutError:
                 logger.debug("Update check timed out; posting tool toasts anyway")
 
-        suppress_toasts = self._update_available[0]
+        # Suppress only when a modal is actually going to open — not
+        # just when an update was detected. A detected-but-throttled
+        # update (already notified within CACHE_TTL) does not open the
+        # modal, so toasts must still fire or returning users never
+        # see the warning.
+        suppress_toasts = self._update_modal_pending.is_set()
 
         for tool in missing:
             notification = build_missing_tool_notification(tool)
@@ -1744,7 +1796,12 @@ class DeepAgentsApp(App):
             logger.warning("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
-        """Check PyPI for a newer version and optionally auto-update."""
+        """Run the update check and signal completion for downstream waiters.
+
+        Wraps `_check_for_updates_impl` so `_update_check_done.set()`
+        always fires — lets `_check_optional_tools_background` unblock
+        after the PyPI round-trip regardless of success, failure, or no-op.
+        """
         try:
             await self._check_for_updates_impl()
         finally:
@@ -1753,7 +1810,15 @@ class DeepAgentsApp(App):
             self._update_check_done.set()
 
     async def _check_for_updates_impl(self) -> None:
-        """Implementation body for `_check_for_updates`."""
+        """Check PyPI for a newer version and either auto-update or queue a modal.
+
+        Phase 1 contacts PyPI and records the latest version on the app.
+        Phase 2 either performs the auto-upgrade (when enabled), or
+        registers the actionable notice and schedules the update modal.
+        Phase 2 sets `_update_modal_pending` *only* when the modal is
+        actually being scheduled; a detected-but-throttled update
+        leaves the event clear so missing-dep toasts still fire.
+        """
         # Phase 1: version check (benign failure)
         try:
             from deepagents_cli.update_check import (
@@ -1831,6 +1896,10 @@ class DeepAgentsApp(App):
                 # reachable via ctrl+n if the modal is dismissed.
                 self._notice_registry.add(notification)
                 await asyncio.to_thread(mark_update_notified, latest)
+                # Set *before* scheduling the modal: the optional-tools
+                # worker may race with this path, and it gates toast
+                # suppression on this event.
+                self._update_modal_pending.set()
                 self.call_after_refresh(self._open_update_available_modal, notification)
         except Exception:
             logger.warning("Update check/notify failed unexpectedly", exc_info=True)
@@ -1985,8 +2054,8 @@ class DeepAgentsApp(App):
         cache; on the first call for a given SDK version (or on a cache
         miss) this triggers a one-off PyPI fetch bounded by a 3s timeout,
         then persists the result so subsequent calls stay local. The
-        update-available hint is sourced from `self._update_available`,
-        which reflects the last completed background check.
+        update-available hint reads `self._update_available`, which
+        reflects the last completed background check.
         """
         from importlib.metadata import (
             PackageNotFoundError,
@@ -5074,7 +5143,7 @@ class DeepAgentsApp(App):
         """
         widget = event.widget
         if isinstance(widget, _Toast):
-            identity = _toast_identity(widget)
+            identity = _toast_identity(widget, app=self)
             if identity is not None and self._notice_registry.is_actionable_toast(
                 identity
             ):
@@ -5630,6 +5699,10 @@ class DeepAgentsApp(App):
         effective_timeout = (
             timeout if timeout is not None else self.NOTIFICATION_TIMEOUT
         )
+        # `markup=False` is load-bearing: `notification.body` can carry
+        # dynamic content (tool names, versions, URLs, exception text)
+        # with square brackets that would crash Textual's toast
+        # renderer if parsed as Rich markup.
         toast = _Notification(
             message=toast_body,
             title=notification.title,
@@ -5644,16 +5717,23 @@ class DeepAgentsApp(App):
         """Register sample notifications so the center UI can be exercised.
 
         Gated by `DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS`; no-op without it.
-        Covers every registered `NotificationKind` and action, and
-        auto-opens the dedicated update modal so the startup flow can
-        be exercised without waiting for a real PyPI release.
+        Covers every payload type and action, and auto-opens the
+        dedicated update modal so the startup flow can be exercised
+        without waiting for a real PyPI release.
 
         Mirrors the real startup flow: when an update is being
         surfaced, missing-dep entries register silently (no toast)
         so they don't flicker before the modal's
         `clear_notifications` fires.
         """
-        from deepagents_cli.main import build_missing_tool_notification
+        try:
+            from deepagents_cli.main import build_missing_tool_notification
+        except Exception:
+            logger.warning(
+                "Could not inject debug notifications; main import failed",
+                exc_info=True,
+            )
+            return
 
         self._notice_registry.add(build_missing_tool_notification("ripgrep"))
         self._notice_registry.add(build_missing_tool_notification("tavily"))
@@ -5664,6 +5744,7 @@ class DeepAgentsApp(App):
             upgrade_cmd="uv tool upgrade deepagents-cli",
         )
         self._notice_registry.add(update_notification)
+        self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
 
     def action_open_notifications(self) -> None:
@@ -5714,13 +5795,24 @@ class DeepAgentsApp(App):
     def _open_update_available_modal(self, entry: PendingNotification) -> None:
         """Push the dedicated update-available modal for *entry*.
 
-        Skips silently when another modal is already open; the entry
-        remains registered so the user can still reach it via ctrl+n
-        once the blocking modal closes.
+        When another modal is already open the entry stays registered
+        and a toast hint points the user at `ctrl+n` once the blocking
+        modal closes. Also clears `_update_modal_pending` so
+        missing-dep toasts stop suppressing themselves.
         """
         from deepagents_cli.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ModalScreen):
+            # We can't stack; leave the entry in the registry and tell
+            # the user how to reach it.
+            self._update_modal_pending.clear()
+            self.notify(
+                "Update available. Close the current dialog, "
+                "then press ctrl+n to review it.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
             return
 
         # Textual layers are per-screen, so base-screen toasts visually
@@ -5741,16 +5833,21 @@ class DeepAgentsApp(App):
 
         self.push_screen(UpdateAvailableScreen(entry), handle_result)
 
-    async def _dispatch_notification_action(self, key: str, action_id: str) -> None:
+    async def _dispatch_notification_action(
+        self, key: str, action_id: ActionId
+    ) -> None:
         """Execute the side effect for a notification action.
 
-        Resolves the registry entry, runs the action-specific side
-        effect (suppress, install, open url, etc.), and removes the
-        entry on success.
+        Resolves the registry entry and runs the payload-specific
+        handler. Catches `Exception` broadly (not just `OSError`) so
+        browser-launch failures, clipboard backend errors, TOML write
+        errors, and any unhandled-payload `TypeError` surface as a
+        user-visible warning toast instead of vanishing into the
+        background worker's logs.
 
-        Raises:
-            TypeError: When `entry.payload` has no registered handler —
-                programming error that should fail loudly.
+        Args:
+            key: Registry key of the notification.
+            action_id: The action the user selected.
         """
         entry = self._notice_registry.get(key)
         if entry is None:
@@ -5758,19 +5855,13 @@ class DeepAgentsApp(App):
 
         action_label = _action_label(entry, action_id)
         try:
-            if isinstance(entry.payload, MissingDepPayload):
-                await self._handle_missing_dep_action(entry, entry.payload, action_id)
-            elif isinstance(entry.payload, UpdateAvailablePayload):
-                await self._handle_update_action(entry, entry.payload, action_id)
-            else:
-                msg = f"unhandled payload type {type(entry.payload).__name__}"
-                raise TypeError(msg)
-        except (OSError, subprocess.SubprocessError) as exc:
+            await self._route_payload_action(entry, action_id)
+        except Exception as exc:  # every failure surfaces to the user
             logger.warning(
                 "Action %r on %r failed: %s", action_id, key, exc, exc_info=True
             )
             self.notify(
-                f"{action_label} failed: {exc}",
+                f"{action_label} failed: {type(exc).__name__}: {exc}",
                 severity="warning",
                 timeout=8,
                 markup=False,
@@ -5779,13 +5870,39 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.focus_input()
 
+    async def _route_payload_action(
+        self, entry: PendingNotification, action_id: ActionId
+    ) -> None:
+        """Dispatch *action_id* to the payload-specific handler.
+
+        Raises:
+            TypeError: When `entry.payload` has no registered handler —
+                programming error; the caller converts it into a
+                user-facing warning toast.
+        """
+        if isinstance(entry.payload, MissingDepPayload):
+            await self._handle_missing_dep_action(entry, entry.payload, action_id)
+            return
+        if isinstance(entry.payload, UpdateAvailablePayload):
+            await self._handle_update_action(entry, entry.payload, action_id)
+            return
+        msg = f"unhandled payload type {type(entry.payload).__name__}"
+        raise TypeError(msg)
+
     async def _handle_missing_dep_action(
         self,
         entry: PendingNotification,
         payload: MissingDepPayload,
-        action_id: str,
+        action_id: ActionId,
     ) -> None:
-        """Complete a missing-dependency action."""
+        """Complete a missing-dependency action.
+
+        Args:
+            entry: The notification entry for the affected tool.
+            payload: Typed payload (tool name + install hint or URL).
+            action_id: The specific action the user selected.
+                Unknown ids are logged and treated as a no-op.
+        """
         if action_id == ActionId.SUPPRESS:
             from deepagents_cli.model_config import suppress_warning
 
@@ -5837,7 +5954,16 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
                 return
-            opened = await asyncio.to_thread(webbrowser.open, payload.url)
+            try:
+                opened = await asyncio.to_thread(webbrowser.open, payload.url)
+            except (webbrowser.Error, OSError) as exc:
+                logger.warning(
+                    "webbrowser.open failed for %s: %s",
+                    payload.url,
+                    exc,
+                    exc_info=True,
+                )
+                opened = False
             if opened:
                 self.notify(
                     f"Opened {payload.url}",
@@ -5861,9 +5987,16 @@ class DeepAgentsApp(App):
         self,
         entry: PendingNotification,
         payload: UpdateAvailablePayload,
-        action_id: str,
+        action_id: ActionId,
     ) -> None:
-        """Complete an update-available action."""
+        """Complete an update-available action.
+
+        Args:
+            entry: The update notification entry.
+            payload: Typed payload (target version + upgrade command).
+            action_id: The specific action the user selected.
+                Unknown ids are logged and treated as a no-op.
+        """
         from deepagents_cli.update_check import (
             clear_update_notified,
             mark_update_notified,

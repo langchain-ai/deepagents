@@ -40,7 +40,7 @@ DEBUG_FILE = "DEEPAGENTS_CLI_DEBUG_FILE"
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS"
 """Inject sample notifications at launch so the notification center UI can be
 exercised without waiting for real conditions (missing deps, update available).
-Any truthy value enables the flag."""
+Any non-empty value enables the flag (including `"0"` or `"false"`)."""
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""

@@ -3,27 +3,23 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+
+import pytest
 
 from deepagents_cli.notifications import (
     ActionId,
     MissingDepPayload,
     NotificationAction,
-    NotificationKind,
     NotificationRegistry,
     PendingNotification,
     UpdateAvailablePayload,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _dep_entry(
     key: str = "dep:ripgrep",
     *,
     tool: str = "ripgrep",
-    toast_identity: str | None = None,
 ) -> PendingNotification:
     return PendingNotification(
         key=key,
@@ -31,14 +27,12 @@ def _dep_entry(
         body=f"Install {tool}",
         actions=(NotificationAction(ActionId.SUPPRESS, "Don't show", primary=True),),
         payload=MissingDepPayload(tool=tool),
-        toast_identity=toast_identity,
     )
 
 
 def _update_entry(
     *,
     latest: str = "1.0.0",
-    toast_identity: str | None = None,
 ) -> PendingNotification:
     return PendingNotification(
         key="update:available",
@@ -46,18 +40,52 @@ def _update_entry(
         body=f"v{latest} is available.",
         actions=(NotificationAction(ActionId.INSTALL, "Install now", primary=True),),
         payload=UpdateAvailablePayload(latest=latest, upgrade_cmd="pip install"),
-        toast_identity=toast_identity,
     )
 
 
-class TestDerivedKind:
-    """`PendingNotification.kind` is derived from the payload type."""
+class TestPendingNotificationInvariants:
+    """Invariants enforced by `PendingNotification.__post_init__`."""
 
-    def test_missing_dep_payload_maps_to_missing_dep_kind(self) -> None:
-        assert _dep_entry().kind is NotificationKind.MISSING_DEP
+    def test_empty_key_raises(self) -> None:
+        with pytest.raises(ValueError, match="key must be non-empty"):
+            PendingNotification(
+                key="",
+                title="t",
+                body="b",
+                actions=(NotificationAction(ActionId.SUPPRESS, "x"),),
+                payload=MissingDepPayload(tool="x"),
+            )
 
-    def test_update_payload_maps_to_update_kind(self) -> None:
-        assert _update_entry().kind is NotificationKind.UPDATE_AVAILABLE
+    def test_empty_actions_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one action"):
+            PendingNotification(
+                key="k",
+                title="t",
+                body="b",
+                actions=(),
+                payload=MissingDepPayload(tool="x"),
+            )
+
+    def test_multiple_primary_actions_raises(self) -> None:
+        with pytest.raises(ValueError, match="primary actions"):
+            PendingNotification(
+                key="k",
+                title="t",
+                body="b",
+                actions=(
+                    NotificationAction(ActionId.INSTALL, "a", primary=True),
+                    NotificationAction(ActionId.SKIP_ONCE, "b", primary=True),
+                ),
+                payload=UpdateAvailablePayload(latest="1", upgrade_cmd="c"),
+            )
+
+    def test_pending_notification_is_frozen(self) -> None:
+        """Public invariants: the dataclass is immutable after construction."""
+        from dataclasses import FrozenInstanceError
+
+        entry = _dep_entry()
+        with pytest.raises(FrozenInstanceError):
+            entry.key = "other"  # type: ignore[misc]
 
 
 class TestNotificationRegistry:
@@ -77,27 +105,21 @@ class TestNotificationRegistry:
         assert len(reg) == 3
         assert bool(reg) is True
 
-    def test_add_with_same_key_replaces_entry(self) -> None:
+    def test_add_with_same_key_replaces_entry_and_drops_toast_binding(self) -> None:
         reg = NotificationRegistry()
-        reg.add(_dep_entry("dep:ripgrep", toast_identity="toast-1"))
-        reg.add(_dep_entry("dep:ripgrep", toast_identity="toast-2"))
+        reg.add(_dep_entry("dep:ripgrep"))
+        reg.bind_toast("dep:ripgrep", "toast-1")
+        reg.add(_dep_entry("dep:ripgrep"))
 
         assert len(reg) == 1
         assert reg.key_for_toast("toast-1") is None
-        assert reg.key_for_toast("toast-2") == "dep:ripgrep"
-
-    def test_add_replacement_with_no_toast_clears_old_toast_index(self) -> None:
-        reg = NotificationRegistry()
-        reg.add(_dep_entry("dep:ripgrep", toast_identity="toast-1"))
-        reg.add(_dep_entry("dep:ripgrep", toast_identity=None))
-
-        assert reg.key_for_toast("toast-1") is None
-        assert len(reg) == 1
+        assert reg.toast_identity_for("dep:ripgrep") is None
 
     def test_remove_returns_entry_and_clears_toast_index(self) -> None:
         reg = NotificationRegistry()
-        entry = _dep_entry("dep:ripgrep", toast_identity="toast-1")
+        entry = _dep_entry("dep:ripgrep")
         reg.add(entry)
+        reg.bind_toast("dep:ripgrep", "toast-1")
 
         removed = reg.remove("dep:ripgrep")
         assert removed is entry
@@ -116,6 +138,7 @@ class TestNotificationRegistry:
 
         assert reg.is_actionable_toast("toast-42") is True
         assert reg.key_for_toast("toast-42") == "update:available"
+        assert reg.toast_identity_for("update:available") == "toast-42"
         assert reg.is_actionable_toast("toast-other") is False
 
     def test_bind_toast_replaces_previous_identity(self) -> None:
@@ -126,6 +149,7 @@ class TestNotificationRegistry:
 
         assert reg.key_for_toast("toast-1") is None
         assert reg.key_for_toast("toast-2") == "update:available"
+        assert reg.toast_identity_for("update:available") == "toast-2"
 
     def test_bind_toast_for_unknown_key_logs_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -141,13 +165,16 @@ class TestNotificationRegistry:
 
     def test_clear_removes_everything(self) -> None:
         reg = NotificationRegistry()
-        reg.add(_dep_entry("dep:ripgrep", toast_identity="toast-1"))
-        reg.add(_dep_entry("dep:tavily", tool="tavily", toast_identity="toast-2"))
+        reg.add(_dep_entry("dep:ripgrep"))
+        reg.add(_dep_entry("dep:tavily", tool="tavily"))
+        reg.bind_toast("dep:ripgrep", "toast-1")
+        reg.bind_toast("dep:tavily", "toast-2")
 
         reg.clear()
         assert len(reg) == 0
         assert reg.key_for_toast("toast-1") is None
         assert reg.key_for_toast("toast-2") is None
+        assert reg.toast_identity_for("dep:ripgrep") is None
 
     def test_empty_registry_is_falsy(self) -> None:
         reg = NotificationRegistry()

@@ -495,7 +495,7 @@ def mark_update_notified(latest: str) -> None:
 
 
 def clear_update_notified() -> None:
-    """Clear the "already notified" marker so the next launch re-toasts.
+    """Clear the "already notified" marker so the update modal re-opens next launch.
 
     Removes both `notified_at` and `notified_version` from the shared
     update state file.

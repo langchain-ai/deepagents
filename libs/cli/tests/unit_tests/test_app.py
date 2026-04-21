@@ -4517,8 +4517,9 @@ class TestNotificationCenterIntegration:
 
         entry = app._notice_registry.get("dep:ripgrep")
         assert entry is not None
-        assert entry.toast_identity is not None
-        assert app._notice_registry.is_actionable_toast(entry.toast_identity)
+        identity = app._notice_registry.toast_identity_for("dep:ripgrep")
+        assert identity is not None
+        assert app._notice_registry.is_actionable_toast(identity)
 
     def test_toast_identity_returns_identity_when_attribute_present(self) -> None:
         """_toast_identity reads identity off the internal _notification attr."""
@@ -4557,8 +4558,9 @@ class TestNotificationCenterIntegration:
 
             entry = app._notice_registry.get(notification.key)
             assert entry is not None
-            assert entry.toast_identity is not None
-            assert app._notice_registry.is_actionable_toast(entry.toast_identity)
+            identity = app._notice_registry.toast_identity_for(notification.key)
+            assert identity is not None
+            assert app._notice_registry.is_actionable_toast(identity)
 
             app._open_notification_center()
             await pilot.pause()
@@ -4589,18 +4591,21 @@ class TestNotificationCenterIntegration:
 
         entry = app._notice_registry.get("dep:ripgrep")
         assert entry is not None
-        assert entry.toast_identity is not None
+        identity = app._notice_registry.toast_identity_for("dep:ripgrep")
+        assert identity is not None
 
-    async def test_tool_toasts_suppressed_when_update_available(self) -> None:
-        """When update check finds an update, missing-dep toasts are silent.
+    async def test_tool_toasts_suppressed_when_update_modal_pending(self) -> None:
+        """When the update modal is pending, missing-dep toasts are silent.
 
         Entry is still added to the registry so ctrl+n surfaces it
         after the update modal is dismissed; only the toast is skipped
         so the update modal's `clear_notifications` call doesn't cause
-        a visible flicker at startup.
+        a visible flicker at startup. Suppression is keyed on
+        `_update_modal_pending`, not `_update_available`.
         """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         app._update_available = (True, "9.9.9")
+        app._update_modal_pending.set()
         app._update_check_done.set()
 
         with (
@@ -4624,7 +4629,44 @@ class TestNotificationCenterIntegration:
 
         entry = app._notice_registry.get("dep:ripgrep")
         assert entry is not None
-        assert entry.toast_identity is None
+        assert app._notice_registry.toast_identity_for("dep:ripgrep") is None
+
+    async def test_tool_toasts_fire_when_update_detected_but_throttled(self) -> None:
+        """Detected-but-throttled update leaves missing-dep toasts firing.
+
+        Regression for the bug where suppression was gated on "update
+        detected" rather than "modal will open". A returning user with
+        a recently notified update (throttled) must still see missing
+        tool warnings.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        # Update was detected but the modal will NOT open.
+        app._update_available = (True, "9.9.9")
+        app._update_check_done.set()
+        # Crucially, _update_modal_pending stays clear.
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_cli.main._ripgrep_install_hint",
+                return_value="brew install ripgrep",
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        entry = app._notice_registry.get("dep:ripgrep")
+        assert entry is not None
+        assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
 
     async def test_update_check_auto_opens_dedicated_modal(self) -> None:
         """A detected update auto-opens the dedicated update modal after first paint."""
@@ -4663,13 +4705,23 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
 
-    async def test_open_update_available_modal_over_modal_is_noop(self) -> None:
-        """Another modal already open: dedicated update modal is skipped."""
+    async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
+        """Another modal already open: update modal is deferred with a hint toast."""
         from deepagents_cli.widgets.update_available import UpdateAvailableScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
+        app._update_modal_pending.set()
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         class _Dummy(ModalScreen[None]):
             def compose(self) -> ComposeResult:
@@ -4682,6 +4734,12 @@ class TestNotificationCenterIntegration:
             app._open_update_available_modal(entry)
             await pilot.pause()
             assert not isinstance(app.screen, UpdateAvailableScreen)
+
+        # Hint toast surfaced with ctrl+n pointer; pending event cleared so
+        # subsequent missing-dep toasts aren't suppressed.
+        assert any("Update available" in m and "ctrl+n" in m for m in notified)
+        assert not app._update_modal_pending.is_set()
+        assert app._notice_registry.get(entry.key) is entry
 
     async def test_update_modal_install_dispatches_action(self) -> None:
         """Picking 'Install now' in the dedicated modal routes to the dispatcher."""
@@ -4724,3 +4782,312 @@ class TestNotificationCenterIntegration:
             await pilot.press("shift+tab")
             await pilot.pause()
             assert isinstance(screen._options[screen._selected], _ChangelogOption)
+
+    async def test_toast_identity_warn_once_semantics(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Missing `_notification` logs a warning exactly once across calls."""
+        import logging
+
+        from deepagents_cli import app as app_module
+        from deepagents_cli.app import _toast_identity
+
+        # Reset the module-global one-shot flag so the test is deterministic.
+        app_module._toast_internals_warned[0] = False
+
+        toast_a = MagicMock(spec=[])
+        toast_b = MagicMock(spec=[])
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.app"):
+            assert _toast_identity(toast_a) is None
+            assert _toast_identity(toast_b) is None
+
+        warnings = [
+            r for r in caplog.records if "toast-click routing" in r.message.lower()
+        ]
+        assert len(warnings) == 1
+        # Reset so later tests see a clean flag.
+        app_module._toast_internals_warned[0] = False
+
+    async def test_toast_identity_missing_surfaces_user_toast(self) -> None:
+        """First miss with an app supplied posts a one-shot user notification."""
+        from deepagents_cli import app as app_module
+        from deepagents_cli.app import _toast_identity
+
+        app_module._toast_internals_warned[0] = False
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            toast = MagicMock(spec=[])
+            assert _toast_identity(toast, app=app) is None
+            await pilot.pause()
+
+        assert any(
+            "Toast click routing disabled" in m and "ctrl+n" in m for m in notified
+        )
+        app_module._toast_internals_warned[0] = False
+
+    async def test_check_optional_tools_empty_registers_nothing(self) -> None:
+        """No missing tools → registry stays empty, no toasts posted."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        assert len(app._notice_registry) == 0
+
+    async def test_check_optional_tools_oserror_logs_and_returns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Filesystem errors during tool detection are absorbed."""
+        import logging
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                side_effect=OSError("permission denied"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with caplog.at_level(logging.DEBUG, logger="deepagents_cli.app"):
+                    await app._check_optional_tools_background()
+                await pilot.pause()
+
+        assert len(app._notice_registry) == 0
+        assert any(
+            "Failed to check for optional tools" in r.message for r in caplog.records
+        )
+
+    async def test_check_optional_tools_unexpected_exception_surfaces_toast(
+        self,
+    ) -> None:
+        """Unexpected exceptions surface as a warning toast rather than vanishing."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                side_effect=RuntimeError("future refactor regression"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        assert any("Could not check optional tools" in m for m in notified)
+        assert len(app._notice_registry) == 0
+
+    async def test_check_optional_tools_posts_on_update_check_timeout(self) -> None:
+        """Timeout on _update_check_done falls through and posts toasts anyway."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        # _update_check_done is deliberately never set;
+        # _update_modal_pending stays clear.
+
+        with (
+            patch(
+                "deepagents_cli.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_cli.main._ripgrep_install_hint",
+                return_value="brew install ripgrep",
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            # Force TimeoutError immediately instead of waiting 5 seconds.
+            patch(
+                "asyncio.wait_for",
+                new=AsyncMock(side_effect=TimeoutError),
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        entry = app._notice_registry.get("dep:ripgrep")
+        assert entry is not None
+        assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
+
+    async def test_inject_debug_notifications_populates_registry(self) -> None:
+        """`_inject_debug_notifications` seeds three sample entries."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._inject_debug_notifications()
+            await pilot.pause()
+
+        keys = {e.key for e in app._notice_registry.list_all()}
+        assert keys == {"dep:ripgrep", "dep:tavily", "update:available"}
+        assert app._update_modal_pending.is_set()
+
+    async def test_dispatcher_unknown_action_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Dispatching an unknown action_id logs rather than crashing."""
+        import logging
+
+        from deepagents_cli.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry()
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with caplog.at_level(logging.WARNING, logger="deepagents_cli.app"):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        # INSTALL is an update-action id — the missing-dep handler logs and no-ops.
+        assert any(
+            "Unknown action_id" in r.message and entry.key in r.message
+            for r in caplog.records
+        )
+        # Entry still registered since nothing completed successfully.
+        assert app._notice_registry.get(entry.key) is entry
+
+    async def test_dispatcher_broad_catch_surfaces_unexpected_exception(self) -> None:
+        """Non-OSError exceptions (e.g. RuntimeError) also surface a warning toast."""
+        from deepagents_cli.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry(install_command="brew install ripgrep")
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        with patch.object(
+            app, "copy_to_clipboard", side_effect=RuntimeError("no clipboard backend")
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._dispatch_notification_action(
+                    entry.key, ActionId.COPY_INSTALL
+                )
+                await pilot.pause()
+
+        assert any(
+            "Copy install" in m and "no clipboard backend" in m for m in notified
+        )
+
+    async def test_open_website_webbrowser_error_surfaces_url(self) -> None:
+        """`webbrowser.Error` propagates as a warning toast with the URL."""
+        from deepagents_cli.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry(url="https://tavily.com")
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        with patch(
+            "webbrowser.open",
+            side_effect=webbrowser.Error("no browser found"),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._dispatch_notification_action(
+                    entry.key, ActionId.OPEN_WEBSITE
+                )
+                await pilot.pause()
+
+        assert any(
+            "Could not open a browser" in m and "https://tavily.com" in m
+            for m in notified
+        )
+
+    async def test_toast_click_event_opens_notification_center(self) -> None:
+        """Simulating `on_click` with a `_Toast` widget opens the notification center.
+
+        Textual's test harness does not reliably mount toast widgets, so we
+        drive the click dispatcher directly: register an actionable toast,
+        fabricate a Click event carrying the matching `_Toast` identity,
+        and assert `on_click` routes to `_open_notification_center`.
+        """
+        from textual.widgets._toast import Toast as _Toast
+
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notification = _missing_dep_entry()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._notify_actionable(notification, severity="warning", timeout=60)
+            await pilot.pause()
+
+            identity = app._notice_registry.toast_identity_for(notification.key)
+            assert identity is not None
+
+            fake_toast = MagicMock(spec=_Toast)
+            fake_toast._notification = MagicMock(identity=identity)
+            fake_event = MagicMock()
+            fake_event.widget = fake_toast
+
+            app.on_click(fake_event)
+            await pilot.pause()
+            await pilot.pause()
+
+            assert isinstance(app.screen, NotificationCenterScreen)

@@ -21,7 +21,11 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
-    from deepagents_cli.notifications import NotificationAction, PendingNotification
+    from deepagents_cli.notifications import (
+        ActionId,
+        NotificationAction,
+        PendingNotification,
+    )
 
 from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
@@ -38,7 +42,7 @@ class NotificationActionResult:
     key: str
     """Registry key of the notification the action was picked for."""
 
-    action_id: str
+    action_id: ActionId
     """Identifier of the chosen `NotificationAction`."""
 
 
@@ -261,7 +265,13 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
             yield Static("─" * 60, classes="nc-separator")
 
     def on_mount(self) -> None:
-        """Apply ASCII borders and highlight the first action row."""
+        """Apply ASCII borders and highlight the first action row.
+
+        Unlike `UpdateAvailableScreen`, this screen always starts on
+        the first row regardless of the `primary` flag — with multiple
+        cards flattened into one cursor, there is no single primary
+        action to prefer.
+        """
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)

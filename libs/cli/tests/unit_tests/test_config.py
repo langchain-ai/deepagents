@@ -314,6 +314,17 @@ class TestNewlineShortcut:
         ):
             assert newline_shortcut() == "Ctrl+J"
 
+    def test_returns_ctrl_j_on_win32(self) -> None:
+        """Windows falls into the non-darwin branch and must show Ctrl+J."""
+        with (
+            patch(
+                "deepagents_cli.terminal_capabilities.supports_kitty_keyboard_protocol",
+                return_value=False,
+            ),
+            patch("deepagents_cli.config.sys.platform", "win32"),
+        ):
+            assert newline_shortcut() == "Ctrl+J"
+
 
 class TestValidateModelCapabilities:
     """Tests for model capability validation."""

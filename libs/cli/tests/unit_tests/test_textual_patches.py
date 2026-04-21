@@ -96,10 +96,30 @@ class TestTwoCharFastPath:
 
         Printable bytes aren't in `ANSI_SEQUENCES_KEYS` as tuples, so the
         fast path must defer — the upstream single-char branch already
-        honours `alt` for these.
+        honors `alt` for these.
         """
         assert _keys_for("\x1ba", alt=False) == []
 
     def test_longer_sequence_ignored_by_fast_path(self) -> None:
         r"""`\x1b[A` (cursor up) must not be misinterpreted as alt-anything."""
         assert _keys_for("\x1b[A", alt=False) == [("up", None)]
+
+
+class TestPatchInstalled:
+    """Guardrail against silent upstream drift.
+
+    The patch is applied as an import-time side effect. If a Textual
+    minor bump renames the private API we patch, our defensive
+    `try/except` swallows the failure — tests elsewhere still pass
+    because they call the patched function directly. This assertion
+    catches that situation loudly.
+    """
+
+    def test_xterm_parser_method_points_at_our_replacement(self) -> None:
+        """`XTermParser._sequence_to_key_events` must be our patched callable."""
+        # Access via `getattr` because the name is only defined when the
+        # defensive `try/except ImportError` at module load succeeded;
+        # ty can't narrow that statically.
+        patched = getattr(_textual_patches, "_sequence_to_key_events_with_alt", None)
+        assert patched is not None, "patch module failed to bind replacement"
+        assert XTermParser._sequence_to_key_events is patched

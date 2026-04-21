@@ -12,11 +12,14 @@ race with its own keypress stream.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import select
 import sys
 from functools import cache
+
+logger = logging.getLogger(__name__)
 
 _QUERY_TIMEOUT_SECONDS = 0.1
 """Per-read timeout for the tty query. The first response byte typically
@@ -57,7 +60,7 @@ def supports_kitty_keyboard_protocol() -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     try:
-        import termios  # POSIX-only; imported lazily so Windows doesn't choke.
+        import termios  # POSIX-only
         import tty
     except ImportError:
         return False
@@ -65,7 +68,8 @@ def supports_kitty_keyboard_protocol() -> bool:
     fd = sys.stdin.fileno()
     try:
         original = termios.tcgetattr(fd)
-    except termios.error:
+    except termios.error as exc:
+        logger.debug("kitty kbd probe: tcgetattr failed: %s", exc)
         return False
 
     buffer = b""
@@ -84,10 +88,17 @@ def supports_kitty_keyboard_protocol() -> bool:
             # kitty reply, so its arrival means we have everything.
             if buffer.endswith(b"c"):
                 break
-    except OSError:
+    except OSError as exc:
+        logger.debug("kitty kbd probe: query failed: %s", exc)
         return False
     finally:
-        termios.tcsetattr(fd, termios.TCSANOW, original)
+        # `tcsetattr` can itself fail (fd closed mid-probe, EIO on a
+        # disappearing pty). Best-effort: log and swallow so a flaky
+        # restore doesn't crash startup.
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, original)
+        except (termios.error, OSError) as exc:
+            logger.debug("kitty kbd probe: tcsetattr restore failed: %s", exc)
 
     return _parse_kitty_response(buffer)
 

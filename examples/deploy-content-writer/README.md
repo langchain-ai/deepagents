@@ -43,37 +43,24 @@ Once deployed, open the agent in LangSmith and send it prompts like:
 
 ## Query via SDK
 
-After deploying, use the [LangGraph SDK](https://pypi.org/project/langgraph-sdk/) to call the agent programmatically. Pass a `user_id` in `configurable` to scope per-user memory to the authenticated user:
+Pass `user_id` in `configurable` to scope per-user memory to the authenticated user:
 
 ```python
-import asyncio
 from langgraph_sdk import get_client
 
-DEPLOY_URL = "https://<your-deployment-url>"
+client = get_client(url="https://<your-deployment-url>")
+thread = await client.threads.create()
 
-async def main():
-    client = get_client(url=DEPLOY_URL)
-    assistants = await client.assistants.search()
-    assistant_id = assistants[0]["assistant_id"]
-
-    thread = await client.threads.create()
-
-    async for event in client.runs.stream(
-        thread["thread_id"],
-        assistant_id,
-        input={"messages": [{"role": "user", "content": "Write a tweet about AI agents"}]},
-        config={"configurable": {"user_id": "user-123"}},  # scopes memory per user
-        stream_mode="values",
-    ):
-        if isinstance(event.data, dict):
-            for msg in event.data.get("messages", []):
-                if isinstance(msg, dict) and msg.get("type") == "ai" and msg.get("content"):
-                    print(msg["content"])
-
-asyncio.run(main())
+async for chunk in client.runs.stream(
+    thread["thread_id"], "agent",
+    input={"messages": [{"role": "user", "content": "Write a tweet about AI agents"}]},
+    config={"configurable": {"user_id": "user-123"}},
+    stream_mode="messages",
+):
+    print(chunk.data, end="", flush=True)
 ```
 
-Find your deployment URL in LangSmith under **Deployments**. See `test_user_memory.py` for a full example demonstrating memory isolation across users.
+Find your deployment URL in LangSmith under **Deployments**. See `test_user_memory.py` for a full example and the [LangGraph SDK docs](https://langchain-ai.github.io/langgraph/concepts/sdk/) for more.
 
 ## Structure
 

@@ -30,36 +30,21 @@ The agent always searches the docs first and cites the page it found the answer 
 
 ## Query via SDK
 
-After deploying, use the [LangGraph SDK](https://pypi.org/project/langgraph-sdk/) to call the agent programmatically:
-
 ```python
-import asyncio
 from langgraph_sdk import get_client
 
-DEPLOY_URL = "https://<your-deployment-url>"
+client = get_client(url="https://<your-deployment-url>")
+thread = await client.threads.create()
 
-async def main():
-    client = get_client(url=DEPLOY_URL)
-    assistants = await client.assistants.search()
-    assistant_id = assistants[0]["assistant_id"]
-
-    thread = await client.threads.create()
-
-    async for event in client.runs.stream(
-        thread["thread_id"],
-        assistant_id,
-        input={"messages": [{"role": "user", "content": "How do I add an MCP server to deepagents.toml?"}]},
-        stream_mode="values",
-    ):
-        if isinstance(event.data, dict):
-            for msg in event.data.get("messages", []):
-                if isinstance(msg, dict) and msg.get("type") == "ai" and msg.get("content"):
-                    print(msg["content"])
-
-asyncio.run(main())
+async for chunk in client.runs.stream(
+    thread["thread_id"], "agent",
+    input={"messages": [{"role": "user", "content": "How do I add an MCP server to deepagents.toml?"}]},
+    stream_mode="messages",
+):
+    print(chunk.data, end="", flush=True)
 ```
 
-Find your deployment URL in LangSmith under **Deployments**.
+Find your deployment URL in LangSmith under **Deployments**. See the [LangGraph SDK docs](https://langchain-ai.github.io/langgraph/concepts/sdk/) for more.
 
 ## Structure
 

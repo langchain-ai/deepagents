@@ -52,6 +52,9 @@ real PyPI release. Any non-empty value enables the flag (including `"0"` or
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
+KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
+"""Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
+
 LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 

@@ -498,11 +498,11 @@ def is_ascii_mode() -> bool:
 def newline_shortcut() -> str:
     """Return the terminal-appropriate label for the newline keyboard shortcut.
 
-    Prefers `Shift+Enter` when the kitty keyboard protocol is negotiated,
-    since modern terminals (kitty, WezTerm, Ghostty, recent iTerm2) can
-    distinguish it from plain `Enter`. Falls back to `Option+Enter` on
-    macOS and `Ctrl+J` elsewhere — both survive legacy terminals that
-    strip the shift modifier from `Enter`.
+    Prefers `Shift+Enter` when the terminal is known to support the kitty
+    keyboard protocol, either via conservative terminal-identity heuristics
+    or the `DEEPAGENTS_CLI_KITTY_KEYBOARD` override. Falls back to
+    `Option+Enter` on macOS and `Ctrl+J` elsewhere — both survive legacy
+    terminals that strip the shift modifier from `Enter`.
 
     Returns:
         A human-readable shortcut string,

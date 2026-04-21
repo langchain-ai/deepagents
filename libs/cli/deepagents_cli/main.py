@@ -1898,15 +1898,6 @@ def cli_main() -> None:
                 trust_flag=getattr(args, "trust_project_mcp", False),
             )
 
-            # Probe the terminal for kitty-protocol support before Textual
-            # acquires stdin. Result is cached; consumers like
-            # `config.newline_shortcut()` read it later without re-querying.
-            from deepagents_cli.terminal_capabilities import (
-                supports_kitty_keyboard_protocol,
-            )
-
-            supports_kitty_keyboard_protocol()
-
             # Run Textual CLI
             return_code = 0
             try:

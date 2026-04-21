@@ -435,13 +435,18 @@ def _read_update_state() -> dict[str, object]:
     return {}
 
 
-def _write_update_state(patch: dict[str, object]) -> None:
-    """Merge *patch* into the shared update state file (shallow, top-level only).
+def _write_update_state(
+    patch: dict[str, object], *, remove_keys: tuple[str, ...] = ()
+) -> None:
+    """Merge *patch* into the shared update state file and drop *remove_keys*.
 
     Args:
         patch: Keys to merge into the existing state.
+        remove_keys: Keys to drop from the existing state before writing.
     """
     data = _read_update_state()
+    for key in remove_keys:
+        data.pop(key, None)
     data.update(patch)
     try:
         UPDATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -487,6 +492,15 @@ def mark_update_notified(latest: str) -> None:
         latest: The version string that was shown.
     """
     _write_update_state({"notified_at": time.time(), "notified_version": latest})
+
+
+def clear_update_notified() -> None:
+    """Clear the "already notified" marker so the update modal re-opens next launch.
+
+    Removes both `notified_at` and `notified_version` from the shared
+    update state file.
+    """
+    _write_update_state({}, remove_keys=("notified_at", "notified_version"))
 
 
 def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:

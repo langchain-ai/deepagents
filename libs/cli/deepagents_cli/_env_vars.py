@@ -37,6 +37,18 @@ DEBUG = "DEEPAGENTS_CLI_DEBUG"
 DEBUG_FILE = "DEEPAGENTS_CLI_DEBUG_FILE"
 """Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
 
+DEBUG_NOTIFICATIONS = "DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS"
+"""Inject sample missing-dependency notifications at launch so the notification
+center UI can be exercised without waiting for real conditions. Does not
+auto-open the update modal (use `DEEPAGENTS_CLI_DEBUG_UPDATE` for that). Any
+non-empty value enables the flag (including `"0"` or `"false"`)."""
+
+DEBUG_UPDATE = "DEEPAGENTS_CLI_DEBUG_UPDATE"
+"""Inject a sample update-available notification and auto-open the update modal
+at launch so the update-available flow can be exercised without waiting for a
+real PyPI release. Any non-empty value enables the flag (including `"0"` or
+`"false"`)."""
+
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 

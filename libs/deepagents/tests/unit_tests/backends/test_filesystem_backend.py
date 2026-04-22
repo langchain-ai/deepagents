@@ -681,3 +681,27 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+def test_ls_symlink_loop_returns_empty(tmp_path: Path):
+    """`ls` must not crash the agent when the target path traverses a symlink loop.
+
+    Previously `Path.resolve()` raised `OSError(ELOOP)` on Python 3.13 (observed
+    as `OSError(62, 'Too many levels of symbolic links')` in the failing traces)
+    or `RuntimeError("Symlink loop ...")` on Python 3.12. Either would bubble up
+    through `SkillsMiddleware.before_agent` and kill the run before any LLM call.
+    Regression guard: a cyclic symlink must yield an empty listing, not a raise.
+    """
+    import os
+
+    # Self-referential symlink: tmp_path/loop -> tmp_path/loop
+    loop_path = tmp_path / "loop"
+    try:
+        os.symlink(str(loop_path), str(loop_path))
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    # Must not raise — must return a non-raising LsResult with empty entries.
+    result = be.ls(str(loop_path))
+    assert result.entries == []

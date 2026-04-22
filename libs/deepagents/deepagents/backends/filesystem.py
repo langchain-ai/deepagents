@@ -207,8 +207,17 @@ class FilesystemBackend(BackendProtocol):
                 directory. Directories have a trailing `/` in their path and
                 `is_dir=True`.
         """
-        dir_path = self._resolve_path(path)
-        if not dir_path.exists() or not dir_path.is_dir():
+        # Guard against resolver failures (symlink loops raise OSError(ELOOP) on
+        # Python 3.13 and RuntimeError("Symlink loop ...") on Python 3.12; also
+        # PermissionError on restricted mount points). Without this guard, callers
+        # like SkillsMiddleware.before_agent crashed the entire agent before a
+        # single LLM call whenever the configured skills source traversed a loop.
+        try:
+            dir_path = self._resolve_path(path)
+            if not dir_path.exists() or not dir_path.is_dir():
+                return LsResult(entries=[])
+        except (OSError, RuntimeError) as e:
+            logger.warning("ls(%s) failed to resolve path: %s; returning empty listing", path, e)
             return LsResult(entries=[])
 
         results: list[FileInfo] = []

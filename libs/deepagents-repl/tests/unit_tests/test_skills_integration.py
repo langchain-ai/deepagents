@@ -14,8 +14,8 @@ import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import SkillMetadata
 
-from deepagents_repl._repl import _Registry
-from deepagents_repl._skills import SkillScopeInvalid
+from langchain_quickjs._repl import _Registry
+from langchain_quickjs._skills import SkillScopeInvalid
 
 
 def _metadata(name: str, *, path: str, module: str | None = None) -> SkillMetadata:
@@ -77,7 +77,9 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
     assert after.result == "hello-world"
 
 
-async def test_dynamic_import_of_ts_skill_strips_types(registry: _Registry, tmp_path: Path) -> None:
+async def test_dynamic_import_of_ts_skill_strips_types(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """TS types survive install (are stripped) and the skill works."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "ts-skill")
@@ -106,7 +108,9 @@ async def test_dynamic_import_of_ts_skill_strips_types(registry: _Registry, tmp_
     assert after.result == "5"
 
 
-async def test_multi_file_skill_relative_import(registry: _Registry, tmp_path: Path) -> None:
+async def test_multi_file_skill_relative_import(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """A skill's entrypoint relative-imports a helper file."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "multi")
@@ -136,7 +140,9 @@ async def test_multi_file_skill_relative_import(registry: _Registry, tmp_path: P
     assert after.result == "14"
 
 
-async def test_install_cache_avoids_second_fetch(registry: _Registry, tmp_path: Path) -> None:
+async def test_install_cache_avoids_second_fetch(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """Second install request for the same skill doesn't re-load."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "cached")
@@ -194,18 +200,24 @@ async def test_installed_skill_visible_from_second_thread(
     assert after.result == "99"
 
 
-async def test_unavailable_skill_returns_error(registry: _Registry, tmp_path: Path) -> None:
+async def test_unavailable_skill_returns_error(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """Referencing a skill that has no metadata entry surfaces as an error."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     repl = registry.get("t1")
 
-    errors = await registry.aensure_skills_installed(frozenset({"nope"}), {}, backend, repl._ctx)
+    errors = await registry.aensure_skills_installed(
+        frozenset({"nope"}), {}, backend, repl._ctx
+    )
     assert len(errors) == 1
     assert "nope" in str(errors[0])
     assert "not available" in str(errors[0])
 
 
-async def test_broken_skill_failure_is_cached(registry: _Registry, tmp_path: Path) -> None:
+async def test_broken_skill_failure_is_cached(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """A failing install is cached so subsequent references fail fast."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "broken")
@@ -237,11 +249,15 @@ async def test_broken_skill_failure_is_cached(registry: _Registry, tmp_path: Pat
     assert cached.loaded is None
 
 
-async def test_unknown_specifier_rejects_at_import(registry: _Registry, tmp_path: Path) -> None:
+async def test_unknown_specifier_rejects_at_import(
+    registry: _Registry, tmp_path: Path
+) -> None:
     """If a skill specifier wasn't installed, dynamic import rejects."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     # Empty: no skills installed.
-    await registry.aensure_skills_installed(frozenset(), {}, backend, registry.get("t1")._ctx)
+    await registry.aensure_skills_installed(
+        frozenset(), {}, backend, registry.get("t1")._ctx
+    )
     repl = registry.get("t1")
     outcome = await repl.eval_async('await import("@/skills/nonexistent")')
     assert outcome.error_type is not None

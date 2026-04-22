@@ -15,7 +15,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import SkillMetadata
 from quickjs_rs import ModuleScope
 
-from deepagents_repl._skills import (
+from langchain_quickjs._skills import (
     SkillInstallError,
     SkillScopeInvalid,
     aload_skill,
@@ -237,7 +237,9 @@ def test_load_skill_rejects_non_utf8(tmp_path: Path) -> None:
     # file directly through the filesystem — bypassing upload_files,
     # which would re-encode.
     Path(skill_dir).mkdir(parents=True)
-    (Path(skill_dir) / "SKILL.md").write_bytes(b"---\nname: binary\ndescription: x\n---\n")
+    (Path(skill_dir) / "SKILL.md").write_bytes(
+        b"---\nname: binary\ndescription: x\n---\n"
+    )
     (Path(skill_dir) / "index.js").write_bytes(b"\x80\x81\x82")
     meta = _metadata("binary", path=f"{skill_dir}/SKILL.md", module="index.js")
 

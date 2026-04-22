@@ -9,6 +9,7 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 # Install Chromium and system deps for whatsapp-web.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
+        curl \
         fonts-liberation \
         libnss3 \
         libatk-bridge2.0-0 \
@@ -25,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxtst6 \
         psmisc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install uv (https://docs.astral.sh/uv/getting-started/installation/)
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Point puppeteer/whatsapp-web.js at the system Chromium
 ENV PUPPETEER_SKIP_DOWNLOAD=true

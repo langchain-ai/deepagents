@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 import shlex
 from pathlib import Path
@@ -24,9 +23,8 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
-_MB_PER_GB = 1024
+_BYTES_PER_MB = 1024 * 1024
 _MAX_NAME_LEN = 63
-_SESSION_HASH_LEN = 8
 
 
 class LangSmithEnvironment(BaseEnvironment):
@@ -39,12 +37,16 @@ class LangSmithEnvironment(BaseEnvironment):
             deepagents_harbor.langsmith_environment:LangSmithEnvironment ...
 
     The environment reads the task's Dockerfile to extract the base image,
-    creates a LangSmith template + sandbox with the appropriate resources, and
-    delegates all exec/file operations to the LangSmith sandbox SDK.
+    ensures a LangSmith snapshot exists for that image (building it on first
+    use), and boots a sandbox from it with the task's resource config applied
+    at `create_sandbox` time.
 
-    Each trial gets its own template (named with the session ID) so that
-    concurrent trials never race on shared resources during creation or
-    teardown.
+    Snapshots are keyed purely by image and are **shared across trials**.
+    They are intentionally never deleted on `stop()` — rebuilding the same
+    image for every trial would be wasteful, and the LangSmith workspace is
+    the canonical place to prune them manually. Per-trial vCPU / memory /
+    filesystem sizing lives on `create_sandbox`, not on the snapshot, so
+    sharing is safe.
     """
 
     def __init__(
@@ -70,7 +72,7 @@ class LangSmithEnvironment(BaseEnvironment):
         self._session_id = session_id
         self._sandbox: AsyncSandbox | None = None
         self._client: AsyncSandboxClient | None = None
-        self._template_name: str | None = None
+        self._snapshot_name: str | None = None
         self._default_cwd: str | None = None
         super().__init__(
             environment_dir,
@@ -180,45 +182,43 @@ class LangSmithEnvironment(BaseEnvironment):
             name = f"h-{name}"
         return name[:_MAX_NAME_LEN].rstrip("-")
 
-    # -- Template naming -------------------------------------------------------
+    # -- Snapshot naming -------------------------------------------------------
 
     @staticmethod
-    def _build_template_name(image: str, session_id: str) -> str:
-        """Build a unique LangSmith template name within the 63-char limit.
+    def _build_snapshot_name(image: str) -> str:
+        """Build a deterministic LangSmith snapshot name for `image`.
 
-        Previous implementation concatenated `harbor-{image}-{session}` and
-        truncated to 63 characters. When the image name was long the unique
-        session suffix was silently chopped off, causing name collisions across
-        concurrent matrix jobs.
-
-        This version reserves 8 hex characters (from a SHA-256 of the full
-        session ID) as a suffix so uniqueness is guaranteed regardless of
-        image-name length.
+        Snapshots are shared across trials in the new model, so the name is
+        derived solely from the (sanitized) image reference — no session hash.
+        Multiple concurrent trials that resolve to the same image will reuse
+        the same snapshot.
 
         Args:
-            image: Container image reference (e.g. `alexgshaw/foo:tag`).
-            session_id: Unique trial session identifier.
+            image: Container image reference (e.g. `python:3.12-slim` or
+                `alexgshaw/foo:tag`).
 
         Returns:
-            A sanitized name of at most 63 characters, guaranteed unique per
-                `session_id`.
+            A sanitized name of the form ``harbor-{sanitized_image}``, at most
+            63 characters, suitable for a LangSmith snapshot name.
         """
         sanitized_image = LangSmithEnvironment._sanitize_name(image)
-        session_suffix = hashlib.sha256(session_id.encode()).hexdigest()[:_SESSION_HASH_LEN]
-        # "harbor-" (7) + "-" (1) + suffix (8) = 16 reserved chars
-        max_image_len = _MAX_NAME_LEN - len("harbor-") - 1 - _SESSION_HASH_LEN
+        max_image_len = _MAX_NAME_LEN - len("harbor-")
         truncated_image = sanitized_image[:max_image_len].rstrip("-")
-        return f"harbor-{truncated_image}-{session_suffix}"
+        return f"harbor-{truncated_image}"
 
     # -- Lifecycle -------------------------------------------------------------
 
     async def start(self, force_build: bool) -> None:  # noqa: ARG002  # required by BaseEnvironment interface
         """Provision a LangSmith sandbox from the task's Dockerfile image.
 
+        Ensures a shared snapshot exists for the resolved image, then boots a
+        sandbox from it with per-trial resource limits applied at
+        `create_sandbox` time.
+
         Args:
             force_build: Accepted for interface compatibility but unused.
-                Each trial creates its own template, so there is nothing
-                to force-rebuild.
+                Snapshots are shared across trials; the first trial to touch
+                a given image builds it, every subsequent trial reuses it.
         """
         image = self._resolve_image()
 
@@ -237,37 +237,32 @@ class LangSmithEnvironment(BaseEnvironment):
         client = AsyncSandboxClient(api_key=api_key)
         self._client = client
 
-        template_name = self._build_template_name(image, self._session_id)
+        snapshot_name = self._build_snapshot_name(image)
 
-        cpu = f"{self.task_env_config.cpus * 1000}m"
-        memory_mb = self.task_env_config.memory_mb
-        memory = f"{memory_mb}Mi" if memory_mb < _MB_PER_GB else f"{memory_mb // _MB_PER_GB}Gi"
-        storage_gi = max(1, (self.task_env_config.storage_mb + _MB_PER_GB - 1) // _MB_PER_GB)
-        storage = f"{storage_gi}Gi"
+        vcpus = self.task_env_config.cpus
+        mem_bytes = self.task_env_config.memory_mb * _BYTES_PER_MB
+        fs_capacity_bytes = self.task_env_config.storage_mb * _BYTES_PER_MB
 
-        await client.create_template(
-            name=template_name,
-            image=image,
-            cpu=cpu,
-            memory=memory,
-            storage=storage,
-        )
-        logger.info(
-            "Created LangSmith template '%s' (image=%s, cpu=%s, mem=%s, disk=%s)",
-            template_name,
-            image,
-            cpu,
-            memory,
-            storage,
-        )
-        self._template_name = template_name
+        await self._ensure_snapshot(client, snapshot_name, image, fs_capacity_bytes)
+        self._snapshot_name = snapshot_name
 
         sandbox = await client.create_sandbox(
-            template_name=template_name,
+            snapshot_name=snapshot_name,  # ty: ignore[unknown-argument]
+            vcpus=vcpus,
+            mem_bytes=mem_bytes,
+            fs_capacity_bytes=fs_capacity_bytes,
             timeout=120,
         )
         self._sandbox = sandbox
-        logger.info("Created LangSmith sandbox '%s'", sandbox.name)
+        logger.info(
+            "Created LangSmith sandbox '%s' from snapshot '%s' "
+            "(vcpus=%s, mem_bytes=%s, fs_capacity_bytes=%s)",
+            sandbox.name,
+            snapshot_name,
+            vcpus,
+            mem_bytes,
+            fs_capacity_bytes,
+        )
 
         await sandbox.run(
             f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}"
@@ -281,6 +276,71 @@ class LangSmithEnvironment(BaseEnvironment):
             sandbox.name,
             self._default_cwd,
         )
+
+    @staticmethod
+    async def _ensure_snapshot(
+        client: AsyncSandboxClient,
+        snapshot_name: str,
+        image: str,
+        fs_capacity_bytes: int,
+    ) -> None:
+        """Guarantee a ready LangSmith snapshot named ``snapshot_name`` exists.
+
+        Uses the server-side ``name_contains`` filter to keep the lookup cheap
+        even when the workspace accumulates many snapshots, then matches the
+        exact name client-side (``name_contains`` is a case-insensitive
+        substring match, so it can return unrelated entries).
+
+        Behavior:
+          - If a snapshot with the exact name is ``ready`` -> return.
+          - If it exists but is in any other state -> raise ``RuntimeError``
+            with a clear instruction to wait for it to finish or delete it.
+          - Otherwise -> build it via ``create_snapshot`` (blocks until ready).
+
+        The helper does not return an ID: downstream callers pass
+        ``snapshot_name`` straight to ``create_sandbox``.
+
+        Args:
+            client: Async LangSmith sandbox client.
+            snapshot_name: Name of the snapshot to ensure.
+            image: Docker image reference to build from if missing.
+            fs_capacity_bytes: Filesystem capacity used when building.
+
+        Raises:
+            RuntimeError: If a snapshot with the same name exists but is not
+                ready, or if ``create_snapshot`` fails.
+        """
+        snapshots = await client.list_snapshots(
+            name_contains=snapshot_name,  # ty: ignore[unknown-argument]
+        )
+        for snap in snapshots:
+            if snap.name != snapshot_name:
+                continue
+            if snap.status == "ready":
+                logger.debug("Reusing existing LangSmith snapshot '%s'", snapshot_name)
+                return
+            msg = (
+                f"LangSmith snapshot '{snapshot_name}' exists but is in state "
+                f"'{snap.status}'. Wait for it to finish building, or delete "
+                f"it to rebuild."
+            )
+            raise RuntimeError(msg)
+
+        logger.info(
+            "Building LangSmith snapshot '%s' from image '%s' "
+            "(first run for this image may take a few minutes)",
+            snapshot_name,
+            image,
+        )
+        try:
+            await client.create_snapshot(
+                name=snapshot_name,
+                docker_image=image,
+                fs_capacity_bytes=fs_capacity_bytes,
+            )
+        except Exception as create_err:
+            msg = f"Failed to build LangSmith snapshot '{snapshot_name}': {create_err}"
+            raise RuntimeError(msg) from create_err
 
     @staticmethod
     async def _detect_workdir(sandbox: AsyncSandbox) -> str:
@@ -322,14 +382,14 @@ class LangSmithEnvironment(BaseEnvironment):
         return fallback if fallback != "/" else "/app"
 
     async def stop(self, delete: bool) -> None:
-        """Tear down the LangSmith sandbox and its dedicated template.
+        """Tear down the LangSmith sandbox.
 
-        Deletes the sandbox first so the template has no remaining
-        dependents and can be safely removed.
+        The backing snapshot is **never** deleted here: snapshots are shared
+        across trials and are only cleaned up manually in the LangSmith
+        workspace.
 
         Args:
-            delete: If True, delete the sandbox and template before
-                closing the client.
+            delete: If True, delete the sandbox before closing the client.
         """
         if self._sandbox and self._client and delete:
             try:
@@ -341,21 +401,11 @@ class LangSmithEnvironment(BaseEnvironment):
                     self._sandbox.name,
                     exc_info=True,
                 )
-        if self._template_name and self._client and delete:
-            try:
-                await self._client.delete_template(self._template_name)
-                logger.info("Deleted LangSmith template '%s'", self._template_name)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Failed to delete template '%s' -- resource may be leaked",
-                    self._template_name,
-                    exc_info=True,
-                )
         if self._client:
             await self._client.aclose()
         self._sandbox = None
         self._client = None
-        self._template_name = None
+        self._snapshot_name = None
         self._default_cwd = None
 
     # -- Command execution -----------------------------------------------------

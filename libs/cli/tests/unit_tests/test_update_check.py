@@ -15,6 +15,7 @@ from deepagents_cli.update_check import (
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
+    clear_update_notified,
     format_age_suffix,
     format_release_age,
     format_sdk_age_suffix,
@@ -1041,6 +1042,32 @@ class TestMarkUpdateNotified:
         """Mark then should_notify returns True for different version."""
         mark_update_notified("1.9.0")
         assert should_notify_update("2.0.0") is True
+
+    def test_clear_makes_should_notify_true_again(
+        self,
+        state_file,  # noqa: ARG002
+    ) -> None:
+        """clear_update_notified undoes a previous mark."""
+        mark_update_notified("2.0.0")
+        assert should_notify_update("2.0.0") is False
+        clear_update_notified()
+        assert should_notify_update("2.0.0") is True
+
+    def test_clear_removes_marker_keys_from_state(self, state_file) -> None:
+        """clear_update_notified pops the keys rather than writing sentinels."""
+        mark_update_notified("2.0.0")
+        clear_update_notified()
+        data = json.loads(state_file.read_text())
+        assert "notified_at" not in data
+        assert "notified_version" not in data
+
+    def test_clear_preserves_other_state_keys(self, state_file) -> None:
+        """Clearing notification markers leaves unrelated keys intact."""
+        mark_version_seen("1.0.0")
+        mark_update_notified("2.0.0")
+        clear_update_notified()
+        data = json.loads(state_file.read_text())
+        assert data["seen_version"] == "1.0.0"
 
     def test_write_failure_does_not_raise(self, state_file) -> None:
         """Write failure is absorbed gracefully."""

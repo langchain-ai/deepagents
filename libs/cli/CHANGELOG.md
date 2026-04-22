@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.41](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.40...deepagents-cli==0.0.41) (2026-04-21)
+
+### Features
+
+* `--startup-cmd` flag ([#2841](https://github.com/langchain-ai/deepagents/issues/2841)) ([8adcc2c](https://github.com/langchain-ai/deepagents/commit/8adcc2c2e612346c263d02d1ec5c33e0d63da5a3))
+* Actionable notifications, update modal ([#2855](https://github.com/langchain-ai/deepagents/issues/2855)) ([5fcd368](https://github.com/langchain-ai/deepagents/commit/5fcd368088079a84f151e0a3f5e4b9ac29c360c1))
+* Custom auth via `[auth]` in `deepagents deploy` ([#2734](https://github.com/langchain-ai/deepagents/issues/2734)) ([417ddaa](https://github.com/langchain-ai/deepagents/commit/417ddaab4804a54a8f83721bb8577d65cfa3659f))
+* Refresh footer git branch after shell commands ([#2851](https://github.com/langchain-ai/deepagents/issues/2851)) ([ee4fddd](https://github.com/langchain-ai/deepagents/commit/ee4fddde9454ee8f7ede98ee9a346da6c5ccd3d9))
+* Rework `/version`, add release-age and editable-install guard ([#2854](https://github.com/langchain-ai/deepagents/issues/2854)) ([1ae053f](https://github.com/langchain-ai/deepagents/commit/1ae053f347679e58562d2b81eb6d6e6e9bbf0b07))
+
+### Bug Fixes
+
+* Gate agent-swap resume hint on server checkpoint ([#2862](https://github.com/langchain-ai/deepagents/issues/2862)) ([f14b9cd](https://github.com/langchain-ai/deepagents/commit/f14b9cd3cc41f92ddb089d4294cba8496d517807))
+* Keep thinking spinner visible during text streaming ([#2849](https://github.com/langchain-ai/deepagents/issues/2849)) ([2cb2244](https://github.com/langchain-ai/deepagents/commit/2cb22446bc1351d20e8bbfa9f23b5d668947351f))
+* Re-show thinking spinner on hitl/`ask_user` resume ([#2847](https://github.com/langchain-ai/deepagents/issues/2847)) ([34a6167](https://github.com/langchain-ai/deepagents/commit/34a6167b0c275c7e4da067ef276a837f60da2f8a))
+* Restore `ctrl+j` newline keybinding ([#2827](https://github.com/langchain-ai/deepagents/issues/2827)) ([2e1a3f4](https://github.com/langchain-ai/deepagents/commit/2e1a3f45a9ff56390e294ea5b0f6a837200874ec))
+
 ## [0.0.40](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.39...deepagents-cli==0.0.40) (2026-04-20)
 
 ### Features

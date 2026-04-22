@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
 
@@ -838,6 +839,253 @@ class TestBuiltInProfiles:
 
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
+
+
+class TestProfilePluginLoader:
+    """Tests for the `importlib.metadata` entry-point loader."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_loader_state(self) -> Iterator[None]:
+        """Snapshot and restore loader globals plus both registries around every test.
+
+        The real bootstrap runs once at `deepagents.profiles` import, so by
+        the time this class executes, `_loaded` is `True` and the registries
+        hold built-in entries. Tests here reset `_loaded` to re-exercise the
+        loader with patched entry points; without this fixture they would
+        leak frozen snapshots and mutated registry state into sibling tests
+        — including `test_graph.TestHasAnyHarnessProfile`, which asserts
+        `_has_any_harness_profile() is False` at start.
+        """
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+
+        saved_loaded = _builtin_profiles._loaded
+        saved_snapshot = _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+        saved_harness = dict(_HARNESS_PROFILES)
+        saved_provider = dict(_PROVIDER_PROFILES)
+        try:
+            _builtin_profiles._loaded = False
+            _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = frozenset()
+            yield
+        finally:
+            _builtin_profiles._loaded = saved_loaded
+            _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = saved_snapshot
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(saved_harness)
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(saved_provider)
+
+    def test_iterates_both_entry_point_groups(self) -> None:
+        """Loader must query both provider and harness entry-point groups."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _HARNESS_PROFILE_GROUP,
+            _PROVIDER_PROFILE_GROUP,
+            _ensure_builtin_profiles_loaded,
+        )
+
+        with patch(
+            "deepagents.profiles._builtin_profiles.entry_points",
+            return_value=[],
+        ) as mock:
+            _ensure_builtin_profiles_loaded()
+
+        groups = {call.kwargs["group"] for call in mock.call_args_list}
+        assert groups == {_PROVIDER_PROFILE_GROUP, _HARNESS_PROFILE_GROUP}
+
+    def test_broken_plugin_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A plugin whose `load()` raises must not prevent sibling plugins from running."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        good_called = MagicMock()
+        broken = MagicMock()
+        broken.name = "broken"
+        broken.value = "nope:nope"
+        broken.load.side_effect = ImportError("boom")
+        good = MagicMock()
+        good.name = "good"
+        good.value = "mod:register"
+        good.load.return_value = good_called
+
+        def fake_entry_points(*, group: str) -> list[MagicMock]:
+            if group == "deepagents.provider_profiles":
+                return [broken, good]
+            return []
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            patch(
+                "deepagents.profiles._builtin_profiles.entry_points",
+                side_effect=fake_entry_points,
+            ),
+        ):
+            _ensure_builtin_profiles_loaded()
+
+        good_called.assert_called_once_with()
+        assert any("broken" in rec.message and "nope:nope" in rec.message for rec in caplog.records)
+
+    def test_non_callable_entry_point_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An entry point resolving to a non-callable must be skipped, not invoked."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        ep = MagicMock()
+        ep.name = "weird"
+        ep.value = "mod:CONST"
+        ep.load.return_value = "not callable"
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            patch(
+                "deepagents.profiles._builtin_profiles.entry_points",
+                return_value=[ep],
+            ),
+        ):
+            _ensure_builtin_profiles_loaded()
+
+        assert any("did not resolve to a callable" in rec.message for rec in caplog.records)
+
+    def test_registration_raises_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A registration callable that raises must be isolated to itself."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        ep = MagicMock()
+        ep.name = "angry"
+        ep.value = "mod:register"
+        ep.load.return_value = MagicMock(side_effect=RuntimeError("bad"))
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            patch(
+                "deepagents.profiles._builtin_profiles.entry_points",
+                return_value=[ep],
+            ),
+        ):
+            _ensure_builtin_profiles_loaded()
+
+        assert any("registration callable" in rec.message and "raised" in rec.message for rec in caplog.records)
+
+    def test_entry_points_call_itself_raises(self, caplog: pytest.LogCaptureFixture) -> None:
+        """If `entry_points(group=...)` raises, the loader must log and continue."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            patch(
+                "deepagents.profiles._builtin_profiles.entry_points",
+                side_effect=RuntimeError("malformed dist-info"),
+            ),
+        ):
+            _ensure_builtin_profiles_loaded()  # must not raise
+
+        assert any("Failed to enumerate" in rec.message for rec in caplog.records)
+
+    def test_loader_is_idempotent(self) -> None:
+        """A second call must be a no-op; plugin callables must not fire twice."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        plugin = MagicMock()
+        ep = MagicMock()
+        ep.name = "idem"
+        ep.value = "mod:register"
+        ep.load.return_value = plugin
+
+        def fake_entry_points(*, group: str) -> list[MagicMock]:
+            if group == "deepagents.provider_profiles":
+                return [ep]
+            return []
+
+        with patch(
+            "deepagents.profiles._builtin_profiles.entry_points",
+            side_effect=fake_entry_points,
+        ):
+            _ensure_builtin_profiles_loaded()
+            _ensure_builtin_profiles_loaded()
+
+        plugin.assert_called_once_with()
+
+    def test_two_plugins_on_same_key_merge(self) -> None:
+        """Additive merge semantics must hold across entry-point plugins."""
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        def plugin_a() -> None:
+            register_provider_profile(
+                "collidetest",
+                ProviderProfile(init_kwargs={"first": 1}),
+            )
+
+        def plugin_b() -> None:
+            register_provider_profile(
+                "collidetest",
+                ProviderProfile(init_kwargs={"second": 2}),
+            )
+
+        ep_a = MagicMock()
+        ep_a.name = "a"
+        ep_a.value = "mod:a"
+        ep_a.load.return_value = plugin_a
+        ep_b = MagicMock()
+        ep_b.name = "b"
+        ep_b.value = "mod:b"
+        ep_b.load.return_value = plugin_b
+
+        def fake_entry_points(*, group: str) -> list[MagicMock]:
+            if group == "deepagents.provider_profiles":
+                return [ep_a, ep_b]
+            return []
+
+        with patch(
+            "deepagents.profiles._builtin_profiles.entry_points",
+            side_effect=fake_entry_points,
+        ):
+            _ensure_builtin_profiles_loaded()
+
+        merged = _PROVIDER_PROFILES["collidetest"]
+        assert dict(merged.init_kwargs) == {"first": 1, "second": 2}
+
+    def test_bootstrap_harness_keys_snapshot_after_load(self) -> None:
+        """`_BOOTSTRAP_HARNESS_KEYS` must capture bootstrap-registered keys only."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        def plugin_registers_harness() -> None:
+            register_harness_profile("plugintest:model", HarnessProfile())
+
+        ep = MagicMock()
+        ep.name = "harness_plugin"
+        ep.value = "mod:register"
+        ep.load.return_value = plugin_registers_harness
+
+        def fake_entry_points(*, group: str) -> list[MagicMock]:
+            if group == "deepagents.harness_profiles":
+                return [ep]
+            return []
+
+        with patch(
+            "deepagents.profiles._builtin_profiles.entry_points",
+            side_effect=fake_entry_points,
+        ):
+            _ensure_builtin_profiles_loaded()
+
+        snapshot = _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+        assert "plugintest:model" in snapshot
+
+        # Keys registered after bootstrap must NOT appear in the snapshot —
+        # that invariant is what lets `_has_any_harness_profile` tell
+        # user-registered profiles apart from bootstrap defaults.
+        register_harness_profile("postbootstrap:model", HarnessProfile())
+        assert "postbootstrap:model" not in _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
 
 
 class TestResolveModelWithProviderProfiles:

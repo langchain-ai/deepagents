@@ -4,6 +4,11 @@ Enforces the minimum `langchain-openrouter` version and injects default
 app-attribution headers when the corresponding environment variables are not
 set. Users may layer additional kwargs on top via
 `register_provider_profile("openrouter", ...)`.
+
+Registered directly by `_ensure_builtin_profiles_loaded` at
+`deepagents.profiles` import time. Not exposed as an `importlib.metadata`
+entry point — built-ins ship with the SDK and should not depend on
+install-time metadata to activate.
 """
 
 from __future__ import annotations
@@ -92,10 +97,12 @@ def check_openrouter_version() -> None:
         raise ImportError(msg)
 
 
-register_provider_profile(
-    "openrouter",
-    ProviderProfile(
-        pre_init=lambda _spec: check_openrouter_version(),
-        init_kwargs_factory=_openrouter_attribution_kwargs,
-    ),
-)
+def register() -> None:
+    """Register the built-in OpenRouter provider profile."""
+    register_provider_profile(
+        "openrouter",
+        ProviderProfile(
+            pre_init=lambda _spec: check_openrouter_version(),
+            init_kwargs_factory=_openrouter_attribution_kwargs,
+        ),
+    )

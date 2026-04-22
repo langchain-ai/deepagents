@@ -1,10 +1,10 @@
 """Bootstrap for built-in and third-party profile plugins.
 
-Built-in provider profiles (OpenAI, OpenRouter, Google GenAI) and the
-built-in Google GenAI harness profile are registered via explicit module
-imports — not entry points — so a malformed or missing `dist-info` in the
-environment cannot silently disable the SDK's own defaults. Third parties
-plug in via `importlib.metadata` entry points under two groups:
+Built-in provider profiles (OpenAI, OpenRouter) are registered via
+explicit module imports — not entry points — so a malformed or missing
+`dist-info` in the environment cannot silently disable the SDK's own
+defaults. Third parties plug in via `importlib.metadata` entry points
+under two groups:
 
 - `deepagents.provider_profiles` — plugins that call
     `register_provider_profile(...)` to declare provider- or model-keyed
@@ -64,9 +64,9 @@ def _ensure_builtin_profiles_loaded() -> None:
 
     Runs two phases, both idempotent:
 
-    1. Call the built-in `register` functions directly (provider and
-        harness). Any exception propagates — a broken built-in is a
-        deepagents bug and must surface loudly, not degrade silently.
+    1. Call the built-in provider `register` functions directly.
+        Any exception propagates — a broken built-in is a deepagents
+        bug and must surface loudly, not degrade silently.
     2. Iterate `importlib.metadata` entry points in the
         `deepagents.provider_profiles` and `deepagents.harness_profiles`
         groups. Third-party failures are logged at `WARNING` and skipped

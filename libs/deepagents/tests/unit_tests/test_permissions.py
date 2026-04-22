@@ -1,4 +1,4 @@
-"""Unit tests for FilesystemPermission and _PermissionMiddleware."""
+"""Unit tests for FilesystemPermission, ExecutePermission, and _PermissionMiddleware."""
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -10,7 +10,14 @@ from deepagents.backends import StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import FilesystemPermission, _check_fs_permission, _filter_paths_by_permission, _PermissionMiddleware
+from deepagents.middleware.permissions import (
+    ExecutePermission,
+    FilesystemPermission,
+    _check_execute_permission,
+    _check_fs_permission,
+    _filter_paths_by_permission,
+    _PermissionMiddleware,
+)
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
@@ -197,8 +204,8 @@ class TestPermissionMiddleware:
         result = await middleware.awrap_tool_call(request, async_handler)
         assert result is expected
 
-    def test_raises_not_implemented_for_sandbox_backend(self):
-        """_PermissionMiddleware rejects backends that support execution."""
+    def test_accepts_sandbox_backend(self):
+        """_PermissionMiddleware now accepts execution-capable backends."""
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -214,14 +221,14 @@ class TestPermissionMiddleware:
         mem_store = InMemoryStore()
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
-        with pytest.raises(NotImplementedError, match="execute"):
-            _PermissionMiddleware(
-                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-                backend=sandbox,
-            )
+        middleware = _PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            backend=sandbox,
+        )
+        assert middleware._fs_rules
 
-    def test_raises_not_implemented_for_composite_with_sandbox_default(self):
-        """_PermissionMiddleware rejects CompositeBackend whose default supports execution."""
+    def test_accepts_composite_with_sandbox_default(self):
+        """_PermissionMiddleware now accepts CompositeBackend whose default supports execution."""
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -238,11 +245,11 @@ class TestPermissionMiddleware:
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
         composite = CompositeBackend(default=sandbox, routes={})
 
-        with pytest.raises(NotImplementedError, match="execute"):
-            _PermissionMiddleware(
-                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-                backend=composite,
-            )
+        middleware = _PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            backend=composite,
+        )
+        assert middleware._fs_rules
 
     def test_allows_composite_without_sandbox_default(self):
         """_PermissionMiddleware accepts CompositeBackend whose default does not support execution."""
@@ -780,3 +787,149 @@ class TestAsyncFilesystemMiddlewarePermissions:
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         result = await _ainvoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/secrets/b.txt" not in result
+
+
+class TestExecutePermission:
+    def test_default_mode_is_allow(self):
+        rule = ExecutePermission(patterns=["git *"])
+        assert rule.mode == "allow"
+
+    def test_deny_mode(self):
+        rule = ExecutePermission(patterns=["rm *"], mode="deny")
+        assert rule.mode == "deny"
+
+    def test_multiple_patterns(self):
+        rule = ExecutePermission(patterns=["rm *", "dd *"], mode="deny")
+        assert len(rule.patterns) == 2
+
+
+class TestCheckExecutePermission:
+    def test_deny_matching_command(self):
+        rules = [ExecutePermission(patterns=["rm *"], mode="deny")]
+        assert _check_execute_permission(rules, "rm -rf /tmp") == "deny"
+
+    def test_allow_non_matching_command(self):
+        rules = [ExecutePermission(patterns=["rm *"], mode="deny")]
+        assert _check_execute_permission(rules, "git status") == "allow"
+
+    def test_permissive_default_with_no_rules(self):
+        assert _check_execute_permission([], "rm -rf /") == "allow"
+
+    def test_first_match_wins_deny_before_allow(self):
+        rules = [
+            ExecutePermission(patterns=["rm *"], mode="deny"),
+            ExecutePermission(patterns=["*"], mode="allow"),
+        ]
+        assert _check_execute_permission(rules, "rm -rf /") == "deny"
+
+    def test_first_match_wins_allow_before_deny(self):
+        rules = [
+            ExecutePermission(patterns=["git *"], mode="allow"),
+            ExecutePermission(patterns=["*"], mode="deny"),
+        ]
+        assert _check_execute_permission(rules, "git status") == "allow"
+        assert _check_execute_permission(rules, "curl http://evil.com") == "deny"
+
+    def test_wildcard_matches_path_separators(self):
+        rules = [ExecutePermission(patterns=["rm *"], mode="deny")]
+        assert _check_execute_permission(rules, "rm -rf /some/deep/path") == "deny"
+
+    def test_multiple_patterns_in_single_rule(self):
+        rules = [ExecutePermission(patterns=["rm *", "dd *"], mode="deny")]
+        assert _check_execute_permission(rules, "rm file.txt") == "deny"
+        assert _check_execute_permission(rules, "dd if=/dev/zero of=/dev/sda") == "deny"
+        assert _check_execute_permission(rules, "git status") == "allow"
+
+    def test_exact_command_match(self):
+        rules = [ExecutePermission(patterns=["ls"], mode="deny")]
+        assert _check_execute_permission(rules, "ls") == "deny"
+        assert _check_execute_permission(rules, "ls -la") == "allow"
+
+
+class TestExecutePermissionMiddleware:
+    def _backend(self):
+        return _make_backend()
+
+    def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
+        return ToolCallRequest(
+            runtime=_runtime(tool_call_id),
+            tool_call={"id": tool_call_id, "name": tool_name, "args": args},
+            state={},
+            tool=None,
+        )
+
+    def test_execute_denied_by_rule(self):
+        middleware = _PermissionMiddleware(
+            rules=[ExecutePermission(patterns=["rm *"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("execute", {"command": "rm -rf /tmp"})
+        result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
+        assert isinstance(result, ToolMessage)
+        assert "permission denied" in result.content
+        assert "rm -rf /tmp" in result.content
+        assert result.status == "error"
+
+    def test_execute_allowed_when_no_exec_rules(self):
+        middleware = _PermissionMiddleware(
+            rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("execute", {"command": "rm -rf /"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_execute_allowed_by_matching_rule(self):
+        middleware = _PermissionMiddleware(
+            rules=[ExecutePermission(patterns=["{git,npm} *"], mode="allow")],
+            backend=self._backend(),
+        )
+        request = self._make_request("execute", {"command": "git status"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_execute_permissive_default_no_match(self):
+        middleware = _PermissionMiddleware(
+            rules=[ExecutePermission(patterns=["rm *"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("execute", {"command": "git log"})
+        expected = ToolMessage(content="ran", tool_call_id="tc1")
+        result = middleware.wrap_tool_call(request, lambda _: expected)
+        assert result is expected
+
+    def test_mixed_fs_and_exec_rules(self):
+        middleware = _PermissionMiddleware(
+            rules=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+                ExecutePermission(patterns=["rm *"], mode="deny"),
+            ],
+            backend=self._backend(),
+        )
+        assert len(middleware._fs_rules) == 1
+        assert len(middleware._exec_rules) == 1
+
+        fs_request = self._make_request("write_file", {"file_path": "/secrets/key.txt", "content": "x"})
+        fs_result = middleware.wrap_tool_call(fs_request, lambda _: ToolMessage(content="ok", tool_call_id="tc1"))
+        assert "permission denied" in fs_result.content
+
+        exec_request = self._make_request("execute", {"command": "rm /secrets/key.txt"})
+        exec_result = middleware.wrap_tool_call(exec_request, lambda _: ToolMessage(content="ok", tool_call_id="tc1"))
+        assert "permission denied" in exec_result.content
+
+    async def test_async_execute_denied(self):
+        middleware = _PermissionMiddleware(
+            rules=[ExecutePermission(patterns=["rm *"], mode="deny")],
+            backend=self._backend(),
+        )
+        request = self._make_request("execute", {"command": "rm -rf /"})
+
+        async def async_handler(_):
+            return ToolMessage(content="should not reach", tool_call_id="tc1")
+
+        result = await middleware.awrap_tool_call(request, async_handler)
+        assert isinstance(result, ToolMessage)
+        assert "permission denied" in result.content
+        assert result.status == "error"

@@ -34,7 +34,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
+from deepagents.middleware.permissions import ExecutePermission, FilesystemPermission, _PermissionMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -224,7 +224,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
-    permissions: list[FilesystemPermission] | None = None,
+    permissions: list[FilesystemPermission | ExecutePermission] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -363,8 +363,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For execution support, use a backend that
             implements `SandboxBackendProtocol`.
-        permissions: List of ``FilesystemPermission`` rules for the main agent
-            and its subagents.
+        permissions: List of ``FilesystemPermission`` and/or ``ExecutePermission``
+            rules for the main agent and its subagents.
 
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.

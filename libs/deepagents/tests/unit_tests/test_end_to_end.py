@@ -1685,62 +1685,56 @@ class TestCompositeBackendPermissionsEndToEnd:
         assert len(tool_messages) == 1
         assert "permission denied" not in tool_messages[0].content
 
-    def test_permissions_outside_routes_still_raises_with_sandbox_default(self) -> None:
-        """Permissions that target paths outside routes should still raise NotImplementedError.
+    def test_permissions_outside_routes_accepted_with_sandbox_default(self) -> None:
+        """Permissions targeting paths outside routes are now accepted with sandbox backends.
 
-        If any permission rule covers paths that could hit the sandbox default backend,
-        we must still reject — execute tool permissions are not implemented.
+        ExecutePermission can be used alongside FilesystemPermission to restrict
+        the execute tool separately.
         """
         sandbox = self._make_sandbox_store()
         route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
         composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
 
-        with pytest.raises(NotImplementedError, match="execute"):
-            create_deep_agent(
-                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
-                backend=composite,
-                permissions=[
-                    # This path is NOT under any route — it hits the sandbox default
-                    FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="deny"),
-                ],
-            )
+        # Should no longer raise — filesystem rules work alongside sandbox backends
+        agent = create_deep_agent(
+            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="deny"),
+            ],
+        )
+        assert agent is not None
 
-    def test_wildcard_permissions_raises_with_sandbox_default(self) -> None:
-        """Wildcard permissions (/**) that cover default backend paths should raise.
-
-        A blanket rule like /** covers both route and non-route paths, so it
-        cannot be safely scoped to just routes.
-        """
+    def test_wildcard_permissions_accepted_with_sandbox_default(self) -> None:
+        """Wildcard filesystem permissions are now accepted alongside sandbox backends."""
         sandbox = self._make_sandbox_store()
         route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
         composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
 
-        with pytest.raises(NotImplementedError, match="execute"):
-            create_deep_agent(
-                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
-                backend=composite,
-                permissions=[
-                    FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
-                ],
-            )
+        agent = create_deep_agent(
+            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+            ],
+        )
+        assert agent is not None
 
-    def test_mixed_permissions_some_outside_routes_raises(self) -> None:
-        """If any permission rule has paths outside routes, raise NotImplementedError."""
+    def test_mixed_permissions_outside_routes_accepted(self) -> None:
+        """Mixed filesystem permissions including non-route paths are now accepted."""
         sandbox = self._make_sandbox_store()
         route_store = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("route",))
         composite = CompositeBackend(default=sandbox, routes={"/memories/": route_store})
 
-        with pytest.raises(NotImplementedError, match="execute"):
-            create_deep_agent(
-                model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
-                backend=composite,
-                permissions=[
-                    # This one is route-scoped (fine)
-                    FilesystemPermission(operations=["read"], paths=["/memories/**"], mode="deny"),
-                    # This one is NOT route-scoped (should trigger error)
-                    FilesystemPermission(operations=["write"], paths=["/etc/**"], mode="deny"),
-                ],
-            )
+        agent = create_deep_agent(
+            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="Done.")])),
+            backend=composite,
+            permissions=[
+                FilesystemPermission(operations=["read"], paths=["/memories/**"], mode="deny"),
+                FilesystemPermission(operations=["write"], paths=["/etc/**"], mode="deny"),
+            ],
+        )
+        assert agent is not None
 
     def test_multiple_routes_all_scoped(self) -> None:
         """Permissions scoped to multiple routes should all work with sandbox default."""

@@ -1,9 +1,10 @@
-"""Permission types and middleware for filesystem access control.
+"""Permission types and middleware for filesystem and execute access control.
 
-Defines ``FilesystemPermission`` rules and enforces them via
-``wrap_tool_call`` / ``awrap_tool_call``.
+Defines ``FilesystemPermission`` and ``ExecutePermission`` rules and enforces
+them via ``wrap_tool_call`` / ``awrap_tool_call``.
 """
 
+import fnmatch
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -27,7 +28,6 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
-from deepagents.middleware.filesystem import supports_execution
 
 # ---------------------------------------------------------------------------
 # Permission types
@@ -90,6 +90,35 @@ class FilesystemPermission:
                 raise NotImplementedError(msg)
 
 
+@dataclass
+class ExecutePermission:
+    """A single access rule for shell command execution via the ``execute`` tool.
+
+    Rules are evaluated in declaration order. The first matching rule's
+    `mode` is applied. If no rule matches, the call is allowed (permissive
+    default).
+
+    Args:
+        patterns: Glob patterns matched against the full command string.
+            Supports brace expansion (e.g. ``"{git,npm} *"``).
+        mode: Whether to allow or deny matching commands.
+
+    Example:
+        ```python
+        from deepagents.middleware.permissions import ExecutePermission
+
+        # Deny dangerous destructive commands
+        ExecutePermission(patterns=["rm -rf *", "dd *"], mode="deny")
+
+        # Allow only git and npm
+        ExecutePermission(patterns=["{git,npm} *"], mode="allow")
+        ```
+    """
+
+    patterns: list[str]
+    mode: Literal["allow", "deny"] = "allow"
+
+
 # ---------------------------------------------------------------------------
 # Glob flags
 # ---------------------------------------------------------------------------
@@ -136,6 +165,28 @@ def _check_fs_permission(
         if operation not in rule.operations:
             continue
         if any(wcglob.globmatch(path, pattern, flags=_FS_WCMATCH_FLAGS) for pattern in rule.paths):
+            return rule.mode
+    return "allow"
+
+
+def _check_execute_permission(
+    rules: list[ExecutePermission],
+    command: str,
+) -> Literal["allow", "deny"]:
+    """Evaluate execute permission rules for a shell command.
+
+    Iterates rules in declaration order. The first matching rule's mode
+    is returned. If no rule matches, returns ``"allow"`` (permissive default).
+
+    Args:
+        rules: Ordered list of ``ExecutePermission`` rules to evaluate.
+        command: The full command string being executed.
+
+    Returns:
+        ``"allow"`` if the command should proceed, ``"deny"`` if it should be blocked.
+    """
+    for rule in rules:
+        if any(fnmatch.fnmatch(command, pattern) for pattern in rule.patterns):
             return rule.mode
     return "allow"
 
@@ -221,37 +272,23 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(self, *, rules: list[FilesystemPermission], backend: BACKEND_TYPES) -> None:
+    def __init__(self, *, rules: list[FilesystemPermission | ExecutePermission], backend: BACKEND_TYPES) -> None:  # noqa: ARG002
         """Initialize the permission middleware.
 
         Args:
-            rules: List of ``FilesystemPermission`` rules. Rules are evaluated
-                in declaration order; the first match wins.
-            backend: The backend instance. If it supports execution
-                (``SandboxBackendProtocol``), a ``NotImplementedError`` is
-                raised because tool-level permissions for the ``execute``
-                tool are not yet implemented.
+            rules: List of ``FilesystemPermission`` and/or ``ExecutePermission``
+                rules, evaluated in declaration order; the first match per type
+                wins. If no rule matches, the call is allowed (permissive default).
+            backend: The backend instance. Execution-capable backends
+                (``SandboxBackendProtocol``) are fully supported — use
+                ``ExecutePermission`` rules to restrict the ``execute`` tool.
 
-                **Exception for CompositeBackend**: If the backend is a
-                ``CompositeBackend`` whose default supports execution but
-                *every* permission path is scoped under a known route prefix,
-                the middleware is allowed. Filesystem permissions only govern
-                file operations on route backends, so the sandbox default's
-                execution capability is irrelevant.
-
-        Raises:
-            NotImplementedError: If the backend supports command execution
-                and any permission path is not scoped to a route.
+                **CompositeBackend note**: ``FilesystemPermission`` rules match
+                on ``file_path``/``path`` args only, so they naturally scope to
+                route-backed file tools without any special casing.
         """
-        if isinstance(backend, BackendProtocol) and supports_execution(backend) and not _all_paths_scoped_to_routes(rules, backend):
-            msg = (
-                "_PermissionMiddleware does not yet support backends with command "
-                "execution (SandboxBackendProtocol). Tool-level permissions for "
-                "the execute tool are not implemented. Either remove permissions "
-                "or use a backend without execution support."
-            )
-            raise NotImplementedError(msg)
-        self._fs_rules = list(rules)
+        self._fs_rules: list[FilesystemPermission] = [r for r in rules if isinstance(r, FilesystemPermission)]
+        self._exec_rules: list[ExecutePermission] = [r for r in rules if isinstance(r, ExecutePermission)]
         self._fs_tool_ops: dict[str, FilesystemOperation] = dict(_DEFAULT_FS_TOOL_OPS)
 
     # ------------------------------------------------------------------
@@ -259,7 +296,7 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     # ------------------------------------------------------------------
 
     def _pre_check(self, tool_name: str, tool_call_id: str | None, args: dict) -> ToolMessage | None:
-        """Run filesystem pre-checks.  Returns an error ToolMessage on deny, else None."""
+        """Run pre-checks. Returns an error ToolMessage on deny, else None."""
         if self._fs_rules and tool_name in self._fs_tool_ops:
             operation = self._fs_tool_ops[tool_name]
             path = args.get("file_path") if "file_path" in args else args.get("path")
@@ -276,6 +313,17 @@ class _PermissionMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tool_call_id=tool_call_id,
                         status="error",
                     )
+
+        if self._exec_rules and tool_name == "execute":
+            command = args.get("command", "")
+            if _check_execute_permission(self._exec_rules, command) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for command: {command}",
+                    name=tool_name,
+                    tool_call_id=tool_call_id,
+                    status="error",
+                )
+
         return None
 
     def _post_filter(self, result: ToolMessage) -> ToolMessage:  # noqa: PLR0911

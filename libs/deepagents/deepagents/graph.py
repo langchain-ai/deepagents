@@ -43,11 +43,8 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
-from deepagents.profiles import (
-    _GeneralPurposeSubagentProfile,
-    _get_harness_profile,
-    _HarnessProfile,
-)
+from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile
+from deepagents.profiles.harness_profiles import _get_harness_profile
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +96,7 @@ When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
 is prepended and this base prompt is appended. When `system_prompt` is `None`,
 this is used as the sole system prompt.
 """
-# Replaceable via `_HarnessProfile.base_system_prompt` (internal)
+# Replaceable via `HarnessProfile.base_system_prompt`
 
 
 def get_default_model() -> ChatAnthropic:
@@ -118,7 +115,7 @@ def get_default_model() -> ChatAnthropic:
 
 
 def _resolve_extra_middleware(
-    profile: _HarnessProfile,
+    profile: HarnessProfile,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Materialize the `extra_middleware` from a harness profile.
 
@@ -134,8 +131,8 @@ def _resolve_extra_middleware(
     return list(extra)
 
 
-def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _HarnessProfile:
-    """Look up the `_HarnessProfile` for an already-resolved model.
+def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
+    """Look up the `HarnessProfile` for an already-resolved model.
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
@@ -146,14 +143,14 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _Harne
         spec: Original model spec string, or `None` for pre-built instances.
 
     Returns:
-        The matching `_HarnessProfile`, or an empty default (null object).
+        The matching `HarnessProfile`, or an empty default (null object).
     """
     if spec is not None:
         return _get_harness_profile(spec)
     identifier = get_model_identifier(model)
     if identifier is not None:
         profile = _get_harness_profile(identifier)
-        if profile != _HarnessProfile():
+        if profile != HarnessProfile():
             return profile
         logger.debug("No profile for identifier %r, trying provider fallback", identifier)
     # Bare model name (no colon) — fall back to provider from the model class.
@@ -161,7 +158,7 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> _Harne
     if provider is not None:
         return _get_harness_profile(provider)
     logger.debug("No harness profile found for pre-built model %s, using defaults", type(model).__name__)
-    return _HarnessProfile()
+    return HarnessProfile()
 
 
 def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
@@ -470,7 +467,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if permissions:
         gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
-    gp_profile = _profile.general_purpose_subagent or _GeneralPurposeSubagentProfile()
+    gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,

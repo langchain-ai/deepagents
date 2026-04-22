@@ -1,12 +1,9 @@
-"""OpenRouter provider helpers.
+"""Built-in OpenRouter provider profile and helpers.
 
-!!! warning
-
-    This is an internal API subject to change without deprecation. It is not
-    intended for external use or consumption.
-
-Constants and runtime checks for the OpenRouter integration (version
-enforcement, app-attribution kwargs).
+Enforces the minimum `langchain-openrouter` version and injects default
+app-attribution headers when the corresponding environment variables are not
+set. Users may layer additional kwargs on top via
+`register_provider_profile("openrouter", ...)`.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from deepagents.profiles._provider_profiles import _ProviderProfile, _register_provider_profile
+from deepagents.profiles.provider_profiles import ProviderProfile, register_provider_profile
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +88,9 @@ def check_openrouter_version() -> None:
         raise ImportError(msg)
 
 
-_register_provider_profile(
+register_provider_profile(
     "openrouter",
-    _ProviderProfile(
+    ProviderProfile(
         pre_init=lambda _spec: check_openrouter_version(),
         init_kwargs_factory=_openrouter_attribution_kwargs,
     ),

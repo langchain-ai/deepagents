@@ -7,6 +7,13 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.permissions import FilesystemPermission
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.profiles import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    ProviderProfile,
+    register_harness_profile,
+    register_provider_profile,
+)
 
 __all__ = [
     "AsyncSubAgent",
@@ -14,9 +21,14 @@ __all__ = [
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "FilesystemPermission",
+    "GeneralPurposeSubagentProfile",
+    "HarnessProfile",
     "MemoryMiddleware",
+    "ProviderProfile",
     "SubAgent",
     "SubAgentMiddleware",
     "__version__",
     "create_deep_agent",
+    "register_harness_profile",
+    "register_provider_profile",
 ]

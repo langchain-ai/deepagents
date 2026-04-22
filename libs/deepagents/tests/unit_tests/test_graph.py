@@ -20,13 +20,8 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.profiles import (
-    _HARNESS_PROFILES,
-    _GeneralPurposeSubagentProfile,
-    _get_harness_profile,
-    _HarnessProfile,
-    _register_harness_profile,
-)
+from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
+from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -65,26 +60,26 @@ class TestResolveExtraMiddleware:
     """Tests for _resolve_extra_middleware."""
 
     def test_empty_profile_returns_empty_list(self) -> None:
-        result = _resolve_extra_middleware(_HarnessProfile())
+        result = _resolve_extra_middleware(HarnessProfile())
         assert result == []
 
     def test_static_sequence_returned_as_list(self) -> None:
         sentinel = MagicMock()
-        profile = _HarnessProfile(extra_middleware=(sentinel,))
+        profile = HarnessProfile(extra_middleware=(sentinel,))
         result = _resolve_extra_middleware(profile)
         assert result == [sentinel]
 
     def test_callable_factory_is_invoked(self) -> None:
         sentinel = MagicMock()
         factory = MagicMock(return_value=[sentinel])
-        profile = _HarnessProfile(extra_middleware=factory)
+        profile = HarnessProfile(extra_middleware=factory)
         result = _resolve_extra_middleware(profile)
         factory.assert_called_once()
         assert result == [sentinel]
 
     def test_returns_fresh_list_each_call(self) -> None:
         sentinel = MagicMock()
-        profile = _HarnessProfile(extra_middleware=(sentinel,))
+        profile = HarnessProfile(extra_middleware=(sentinel,))
         a = _resolve_extra_middleware(profile)
         b = _resolve_extra_middleware(profile)
         assert a == b
@@ -97,8 +92,8 @@ class TestProfileForModel:
     def test_uses_spec_when_provided(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(system_prompt_suffix="from spec")
-            _register_harness_profile("testprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from spec")
+            register_harness_profile("testprov", profile)
             result = _harness_profile_for_model(_make_model({}), "testprov:some-model")
             assert result is profile
         finally:
@@ -108,8 +103,8 @@ class TestProfileForModel:
     def test_falls_back_to_identifier_when_spec_is_none(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(system_prompt_suffix="from identifier")
-            _register_harness_profile("myprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from identifier")
+            register_harness_profile("myprov", profile)
             model = _make_model({"model_name": "myprov:my-model"})
             result = _harness_profile_for_model(model, None)
             assert result is profile
@@ -121,8 +116,8 @@ class TestProfileForModel:
         """Pre-built models with bare identifiers (no colon) resolve via provider."""
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(system_prompt_suffix="from provider")
-            _register_harness_profile("fakeprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from provider")
+            register_harness_profile("fakeprov", profile)
             model = _make_model({"model": "some-model-name"})
             # Simulate _get_ls_params returning the provider
             model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
@@ -136,13 +131,13 @@ class TestProfileForModel:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})
         result = _harness_profile_for_model(model, None)
-        assert result == _HarnessProfile()
+        assert result == HarnessProfile()
 
     def test_returns_empty_default_when_no_identifier(self) -> None:
         model = _make_model({})
         model._get_ls_params = MagicMock(return_value={})
         result = _harness_profile_for_model(model, None)
-        assert result == _HarnessProfile()
+        assert result == HarnessProfile()
 
 
 class TestToolName:
@@ -222,7 +217,7 @@ class TestDefaultModelProfile:
     def test_default_model_gets_default_profile(self) -> None:
         """model=None resolves to default profile (no Anthropic-specific registration)."""
         profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+        assert profile == HarnessProfile()
 
 
 class TestToolDescriptionOverrideWiring:
@@ -231,9 +226,9 @@ class TestToolDescriptionOverrideWiring:
     def test_create_deep_agent_passes_overrides_to_filesystem_and_task(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "testprov",
-                _HarnessProfile(
+                HarnessProfile(
                     tool_description_overrides={
                         "ls": "custom ls",
                         "task": "custom task",
@@ -275,10 +270,10 @@ class TestGeneralPurposeSubagentProfileWiring:
     def test_create_deep_agent_applies_general_purpose_subagent_edits(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "testprov",
-                _HarnessProfile(
-                    general_purpose_subagent=_GeneralPurposeSubagentProfile(
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
                         description="Custom general-purpose description",
                         system_prompt="Custom general-purpose prompt.",
                     )
@@ -310,9 +305,9 @@ class TestGeneralPurposeSubagentProfileWiring:
     def test_disabling_default_general_purpose_removes_task_tool(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "testprov",
-                _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=False)),
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             with patch("deepagents.graph.resolve_model", return_value=fake_model):
@@ -325,9 +320,9 @@ class TestGeneralPurposeSubagentProfileWiring:
     def test_explicit_sync_subagent_still_keeps_task_tool_when_default_disabled(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "testprov",
-                _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=False)),
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             with patch("deepagents.graph.resolve_model", return_value=fake_model):
@@ -350,11 +345,11 @@ class TestGeneralPurposeSubagentProfileWiring:
 class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
 
-    def _build_and_capture_system_prompt(self, profile_key: str, profile: _HarnessProfile, **kwargs: Any) -> str | SystemMessage:
+    def _build_and_capture_system_prompt(self, profile_key: str, profile: HarnessProfile, **kwargs: Any) -> str | SystemMessage:
         """Register a profile, call create_deep_agent, return the system_prompt passed to create_agent."""
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(profile_key, profile)
+            register_harness_profile(profile_key, profile)
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
             fake_agent.with_config.return_value = "compiled-agent"
@@ -376,13 +371,13 @@ class TestSystemPromptAssembly:
             _HARNESS_PROFILES.update(original)
 
     def test_default_uses_base_agent_prompt(self) -> None:
-        prompt = self._build_and_capture_system_prompt("defprov", _HarnessProfile())
+        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
         assert prompt == BASE_AGENT_PROMPT
 
     def test_profile_base_system_prompt_replaces_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="You are a custom agent."),
+            HarnessProfile(base_system_prompt="You are a custom agent."),
         )
         assert prompt == "You are a custom agent."
         assert BASE_AGENT_PROMPT not in prompt
@@ -390,7 +385,7 @@ class TestSystemPromptAssembly:
     def test_profile_base_system_prompt_with_suffix(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="You are a custom agent.",
                 system_prompt_suffix="Be concise.",
             ),
@@ -401,14 +396,14 @@ class TestSystemPromptAssembly:
     def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "suffprov",
-            _HarnessProfile(system_prompt_suffix="Think step by step."),
+            HarnessProfile(system_prompt_suffix="Think step by step."),
         )
         assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
 
     def test_user_system_prompt_prepended_before_profile_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(base_system_prompt="Custom base."),
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base."
@@ -417,7 +412,7 @@ class TestSystemPromptAssembly:
     def test_user_system_prompt_prepended_before_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "defprov",
-            _HarnessProfile(),
+            HarnessProfile(),
             system_prompt="User instructions.",
         )
         assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
@@ -425,7 +420,7 @@ class TestSystemPromptAssembly:
     def test_triple_combo_all_three_inputs(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="Custom base.",
                 system_prompt_suffix="Extra.",
             ),
@@ -438,7 +433,7 @@ class TestSystemPromptAssembly:
         msg = SystemMessage(content="User content.")
         result = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(base_system_prompt="Custom base."),
             system_prompt=msg,
         )
         assert isinstance(result, SystemMessage)
@@ -450,7 +445,7 @@ class TestSystemPromptAssembly:
     def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt=""),
+            HarnessProfile(base_system_prompt=""),
         )
         assert prompt == ""
         assert BASE_AGENT_PROMPT not in prompt
@@ -458,7 +453,7 @@ class TestSystemPromptAssembly:
     def test_empty_string_suffix_still_appended(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="Custom base.",
                 system_prompt_suffix="",
             ),
@@ -533,9 +528,9 @@ class TestToolExclusionWiring:
     def test_exclusion_middleware_added_when_profile_has_excluded_tools(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "exclprov",
-                _HarnessProfile(excluded_tools=frozenset({"execute", "write_file"})),
+                HarnessProfile(excluded_tools=frozenset({"execute", "write_file"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
@@ -565,9 +560,9 @@ class TestToolExclusionWiring:
     def test_no_exclusion_middleware_when_no_excluded_tools(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "noxprov",
-                _HarnessProfile(system_prompt_suffix="present"),
+                HarnessProfile(system_prompt_suffix="present"),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
@@ -595,9 +590,9 @@ class TestToolExclusionWiring:
         """User tools are not pre-filtered; the middleware handles exclusion."""
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "exclprov",
-                _HarnessProfile(excluded_tools=frozenset({"my_tool"})),
+                HarnessProfile(excluded_tools=frozenset({"my_tool"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()

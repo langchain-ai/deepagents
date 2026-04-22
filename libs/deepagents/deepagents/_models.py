@@ -7,7 +7,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from deepagents.profiles import _get_provider_profile
+from deepagents.profiles.provider_profiles import _get_provider_profile
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -17,10 +17,9 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
 
     String models are resolved via `init_chat_model`, composed with any
     provider-specific initialization behavior registered in the
-    `_ProviderProfile` registry. Built-in registrations supply
-    the OpenAI Responses API default and OpenRouter app attribution headers;
-    additional providers can register their own profiles without modifying
-    this function.
+    `ProviderProfile` registry. Built-in registrations supply the OpenAI
+    Responses API default and OpenRouter app attribution headers; users can
+    layer additional providers or overrides via `register_provider_profile`.
 
     Args:
         model: Model string (e.g. `"openai:gpt-5.4"`) or pre-configured

@@ -1,14 +1,13 @@
-"""OpenAI provider profile.
+"""Built-in OpenAI provider profile.
 
-!!! warning
-
-    This is an internal API subject to change without deprecation. It is not
-    intended for external use or consumption.
+Registers the default configuration used when constructing OpenAI chat models
+via `resolve_model`. Users may layer additional kwargs on top via
+`register_provider_profile("openai", ...)`.
 """
 
-from deepagents.profiles._provider_profiles import _ProviderProfile, _register_provider_profile
+from deepagents.profiles.provider_profiles import ProviderProfile, register_provider_profile
 
-_register_provider_profile(
+register_provider_profile(
     "openai",
-    _ProviderProfile(init_kwargs={"use_responses_api": True}),
+    ProviderProfile(init_kwargs={"use_responses_api": True}),
 )

@@ -1,4 +1,10 @@
-"""Harness profile registry for deep agent runtime configuration.
+"""Beta APIs for configuring deep agent runtime behavior.
+
+!!! beta
+
+    `deepagents.profiles` exposes beta APIs that may receive minor changes in
+    future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+    for more details.
 
 Harness profiles declare how `create_deep_agent` should shape the agent's
 runtime behavior for a given provider or specific model spec. They tune
@@ -24,6 +30,11 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class GeneralPurposeSubagentProfile:
     """Edits applied to the auto-added `general-purpose` subagent.
+
+    !!! beta
+
+        `GeneralPurposeSubagentProfile` is a beta API. It is safe for
+        production use, but may receive minor changes in future releases.
 
     These settings only affect the default subagent that `create_deep_agent`
     inserts when the caller does not explicitly provide a subagent named
@@ -52,6 +63,11 @@ class GeneralPurposeSubagentProfile:
 @dataclass(frozen=True)
 class HarnessProfile:
     """Declarative configuration for deep agent runtime behavior.
+
+    !!! beta
+
+        `HarnessProfile` is a beta API. It is safe for production use, but may
+        receive minor changes in future releases.
 
     A `HarnessProfile` describes prompt-assembly, tool-visibility, middleware,
     and default-subagent adjustments applied by `create_deep_agent` once a
@@ -149,6 +165,11 @@ then provider prefix, then an empty default profile.
 
 def register_harness_profile(key: str, profile: HarnessProfile) -> None:
     """Register a `HarnessProfile` for a provider or specific model.
+
+    !!! beta
+
+        `register_harness_profile` is a beta API. It is safe for production
+        use, but may receive minor changes in future releases.
 
     Registrations are **additive**: if a profile is already registered under
     `key` (including a built-in profile loaded at import time), the new

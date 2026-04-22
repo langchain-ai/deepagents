@@ -1,19 +1,8 @@
 """``REPLMiddleware``: exposes a persistent JavaScript REPL as an agent tool.
 
 State persists across tool calls within a LangGraph thread (each thread
-gets its own QuickJS context). See the spec at
-``libs/deepagents/deepagents/middleware/JS_EVAL_MIDDLEWARE_SPEC.md`` for
-the full design rationale.
+gets its own QuickJS context).
 """
-
-# NOTE: Deliberately no ``from __future__ import annotations`` here.
-# LangChain's StructuredTool machinery reads ``ToolRuntime`` from tool
-# function signatures at tool-build time to discover injected args. With
-# the future import on, those annotations are strings and the
-# introspection fails silently — the runtime arg drops out of the
-# invoke path and the tool call raises ``TypeError: missing 1 required
-# positional argument: 'runtime'`` at execution time. Keeping real
-# annotations here matches what FilesystemMiddleware does.
 
 import logging
 import uuid
@@ -38,13 +27,13 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.skills import SkillMetadata
 
-from deepagents_repl._ptc import (
+from langchain_quickjs._ptc import (
     PTCOption,
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from deepagents_repl._repl import _Registry, format_outcome
-from deepagents_repl._skills import scan_skill_references
+from langchain_quickjs._repl import _Registry, format_outcome
+from langchain_quickjs._skills import scan_skill_references
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +122,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     Example:
         ```python
         from deepagents import create_deep_agent
-        from deepagents_repl import REPLMiddleware
+        from langchain_quickjs import REPLMiddleware
 
         agent = create_deep_agent(
             model="claude-sonnet-4-6",
@@ -206,7 +195,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         def _run(outcome_fn: Any, code: str, tool_call_id: str) -> ToolMessage:
             content = format_outcome(outcome_fn(code), max_result_chars=max_chars)
-            return ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name)
+            return ToolMessage(
+                content=content, tool_call_id=tool_call_id, name=tool_name
+            )
 
         def sync_eval(
             runtime: ToolRuntime[None, Any],
@@ -237,7 +228,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # circuit with a formatted error so the model sees a clean
             # "skill unavailable" message instead of the raw
             # ReferenceError quickjs-rs's resolver would produce.
-            install_error = await middleware._ensure_skills_for_eval(runtime, code, repl)
+            install_error = await middleware._ensure_skills_for_eval(
+                runtime, code, repl
+            )
             if install_error is not None:
                 return ToolMessage(
                     content=install_error,
@@ -257,7 +250,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 )
             finally:
                 repl.set_outer_runtime(None)
-            return ToolMessage(content=content, tool_call_id=runtime.tool_call_id, name=tool_name)
+            return ToolMessage(
+                content=content, tool_call_id=runtime.tool_call_id, name=tool_name
+            )
 
         return StructuredTool.from_function(
             name=tool_name,
@@ -292,7 +287,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         referenced = scan_skill_references(code)
         if not referenced:
             return None
-        metadata_list = runtime.state.get("skills_metadata", []) if runtime.state else []
+        metadata_list = (
+            runtime.state.get("skills_metadata", []) if runtime.state else []
+        )
         metadata: dict[str, SkillMetadata] = {m["name"]: m for m in metadata_list}
         errors = await self._registry.aensure_skills_installed(
             referenced,
@@ -316,18 +313,24 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Inject the REPL's system-prompt snippet on every model call."""
         prompt = self._prepare_for_call(request)
         return handler(
-            request.override(system_message=self._extend(request.system_message, prompt)),
+            request.override(
+                system_message=self._extend(request.system_message, prompt)
+            ),
         )
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+        handler: Callable[
+            [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
+        ],
     ) -> ModelResponse[ResponseT]:
         """(async) Inject the REPL's system-prompt snippet on every model call."""
         prompt = self._prepare_for_call(request)
         return await handler(
-            request.override(system_message=self._extend(request.system_message, prompt)),
+            request.override(
+                system_message=self._extend(request.system_message, prompt)
+            ),
         )
 
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
@@ -365,7 +368,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self._ptc_prompt_cache = (exposed_names, render_ptc_prompt(exposed))
         return self._base_system_prompt + self._ptc_prompt_cache[1]
 
-    def _extend(self, system_message: SystemMessage | None, prompt: str) -> SystemMessage:
+    def _extend(
+        self, system_message: SystemMessage | None, prompt: str
+    ) -> SystemMessage:
         return append_to_system_message(system_message, prompt)
 
     def __del__(self) -> None:

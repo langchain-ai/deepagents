@@ -30,8 +30,8 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
-from deepagents_repl._ptc import to_camel_case
-from deepagents_repl._skills import LoadedSkill, SkillLoadError, aload_skill
+from langchain_quickjs._ptc import to_camel_case
+from langchain_quickjs._skills import LoadedSkill, SkillLoadError, aload_skill
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -152,7 +152,9 @@ def _format_jsvalue(value: Any) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(_format_nested(v) for v in value) + "]"
     if isinstance(value, dict):
-        return "{" + ", ".join(f"{k}: {_format_nested(v)}" for k, v in value.items()) + "}"
+        return (
+            "{" + ", ".join(f"{k}: {_format_nested(v)}" for k, v in value.items()) + "}"
+        )
     return repr(value)
 
 
@@ -199,7 +201,7 @@ def _coerce_tool_output(value: Any) -> str:
     """
     if isinstance(value, str):
         return value
-    # Delayed import: langgraph is always present as a deepagents-repl
+    # Delayed import: langgraph is always present as a langchain-quickjs
     # transitive dep, but keeping the import local means this file can
     # still be imported in environments where the type isn't needed.
     try:
@@ -470,7 +472,9 @@ class _ThreadREPL:
             call_id = _synth_tool_call_id(tool.name)
             # Build a ToolCall-shaped input so InjectedToolCallId and the
             # runtime-arg injection in _inject_tool_args_for_ptc fire.
-            args = _inject_tool_args_for_ptc(tool, payload, self._outer_runtime, call_id)
+            args = _inject_tool_args_for_ptc(
+                tool, payload, self._outer_runtime, call_id
+            )
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
@@ -581,7 +585,9 @@ class _ThreadREPL:
 
     async def _describe_via_handle_async(self, code: str) -> str:
         try:
-            handle = await self._ctx.eval_handle_async(code, timeout=self._per_call_timeout)
+            handle = await self._ctx.eval_handle_async(
+                code, timeout=self._per_call_timeout
+            )
         except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
             return _HANDLE_PLACEHOLDER
         try:
@@ -723,7 +729,9 @@ def format_outcome(
     """Render an EvalOutcome as the tool's wire format (see spec §8)."""
     parts: list[str] = []
     if outcome.stdout:
-        parts.append(f"<stdout>\n{_truncate(outcome.stdout, max_result_chars)}\n</stdout>")
+        parts.append(
+            f"<stdout>\n{_truncate(outcome.stdout, max_result_chars)}\n</stdout>"
+        )
     if outcome.error_type is not None:
         inner = outcome.error_message
         if outcome.error_stack:

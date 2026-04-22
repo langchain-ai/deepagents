@@ -19,11 +19,12 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from deepagents import create_deep_agent
-from deepagents.backends import LangSmithSandbox
+from deepagents.backends import LangSmithSandbox, StoreBackend
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.graph import build_subagents
 from deepagents.middleware.subagents import (
     DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
@@ -31,7 +32,9 @@ from deepagents.middleware.subagents import (
     SubAgent,
 )
 from deepagents_repl import REPLMiddleware
+from langchain.agents.middleware import before_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.memory import InMemoryStore
 from langsmith import testing as t
 from langsmith.sandbox import SandboxClient
 
@@ -69,6 +72,13 @@ OOLONG_TASK_IDS: set[int] | None = {116010200}
 SUBAGENT_MODEL: str = "claude-haiku-4-5-20251001"
 """Model for swarm subagents."""
 
+BACKEND: Literal["sandbox", "store"] = "store"
+"""Which backend the REPL + agent filesystem runs against.
+
+- ``"sandbox"`` — LangSmith sandbox backend, one container per test.
+- ``"store"`` — in-process ``StoreBackend`` keyed by thread id.
+"""
+
 # ---------------------------------------------------------------------------
 # Marks
 # ---------------------------------------------------------------------------
@@ -80,16 +90,22 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# Sandbox fixture
+# Backend fixture
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def sandbox_backend() -> Generator[LangSmithSandbox, None, None]:
-    """Create a LangSmith sandbox backend per test for isolation."""
-    client = SandboxClient()
-    with client.sandbox(template_name="deepagents-cli") as sb:
-        yield LangSmithSandbox(sandbox=sb)
+def backend() -> Generator[BackendProtocol, None, None]:
+    """Per-test backend selected by the ``BACKEND`` constant above."""
+    if BACKEND == "sandbox":
+        client = SandboxClient()
+        with client.sandbox(template_name="deepagents-cli") as sb:
+            yield LangSmithSandbox(sandbox=sb)
+    elif BACKEND == "store":
+        yield StoreBackend(namespace=lambda rt: (rt.execution_info.thread_id,))
+    else:
+        msg = f"Unknown BACKEND={BACKEND!r}"
+        raise ValueError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -181,14 +197,16 @@ def _log_score(result: Score) -> None:
 async def test_oolong(
     model: BaseChatModel,
     task: OolongTask,
-    sandbox_backend: LangSmithSandbox,
+    backend: BackendProtocol,
 ) -> None:
     """Run a single Oolong aggregation task."""
     gold = parse_gold(task.answer)
 
-    await sandbox_backend.aupload_files(
-        [("/context.txt", task.context_window_text.encode("utf-8"))]
-    )
+    context_bytes = task.context_window_text.encode("utf-8")
+
+    @before_agent
+    async def seed_context(state: Any, runtime: Any) -> None:
+        await backend.aupload_files([("/context.txt", context_bytes)])
 
     # Compile subagents once — same runnables are shared between the
     # `task` tool (via SubAgentMiddleware inside create_deep_agent) and
@@ -207,7 +225,7 @@ async def test_oolong(
     compiled_subagents, subagent_factories = build_subagents(
         subagent_specs,
         model=model,
-        backend=sandbox_backend,
+        backend=backend,
     )
 
     agent = create_deep_agent(
@@ -215,8 +233,9 @@ async def test_oolong(
         system_prompt=SYSTEM_PROMPT,
         subagents=compiled_subagents,
         middleware=[
+            seed_context,
             REPLMiddleware(
-                backend=sandbox_backend,
+                backend=backend,
                 subagents=compiled_subagents,
                 subagent_factories=subagent_factories,
                 # Outer eval ceiling — must cover the whole swarm fan-out.
@@ -226,14 +245,14 @@ async def test_oolong(
             ),
         ],
         checkpointer=MemorySaver(),
-        backend=sandbox_backend,
+        backend=backend,
+        store=InMemoryStore(),
     )
 
     trajectory = await run_agent_async(
         agent,
         model=model,
-        query=task.question + " Make sure to use `swarm.create` + `swarm.execute` to fan out counting and classification across subagents.",
-        # query=task.question,
+        query=task.question,
         scorer=TrajectoryScorer().success(OolongCorrect(gold_answer=gold)),
         eval_metadata={
             "oolong_task_id": task.id,

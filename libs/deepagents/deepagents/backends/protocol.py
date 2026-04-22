@@ -596,6 +596,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
 
+    def set_route_prefix(self, prefix: str) -> None:
+        """Configure the backend to use a specific route prefix for isolation.
+
+        This is used by `CompositeBackend` to ensure isolation between routes,
+        especially when multiple backends share the same underlying storage.
+        Backends that share storage (like `StoreBackend` or `StateBackend`)
+        should use this prefix to scope their internal storage keys or namespaces.
+
+        Args:
+            prefix: The route prefix (e.g. "/memories/").
+        """
+        _ = prefix
+
     # -- deprecated methods --------------------------------------------------
 
     def ls_info(self, path: str) -> list["FileInfo"]:

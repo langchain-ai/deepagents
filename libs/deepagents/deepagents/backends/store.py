@@ -205,6 +205,11 @@ class StoreBackend(BackendProtocol):
         self._store = store
         self._namespace = namespace
         self._file_format = file_format
+        self._route_prefix: str | None = None
+
+    def set_route_prefix(self, prefix: str) -> None:
+        """Set the route prefix for this backend (called by CompositeBackend)."""
+        self._route_prefix = prefix
 
     def _get_store(self) -> BaseStore:
         """Return the store instance.
@@ -231,15 +236,22 @@ class StoreBackend(BackendProtocol):
         wrapper that duck-types as both ``Runtime`` (new) and ``BackendContext`` (legacy).
         Otherwise, uses legacy assistant_id detection from metadata (deprecated).
         """
-        if self._namespace is not None:
-            try:
-                runtime = get_runtime()
-            except (RuntimeError, KeyError):
-                runtime = None
-            compat = _NamespaceRuntimeCompat(runtime)
-            return _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]
+        try:
+            runtime = get_runtime()
+        except (RuntimeError, KeyError):
+            runtime = None
 
-        return self._get_namespace_legacy()
+        if self._namespace:
+            compat = _NamespaceRuntimeCompat(runtime)
+            ns = _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]
+        else:
+            ns = self._get_namespace_legacy()
+
+        if self._route_prefix:
+            # Add the route prefix to the namespace for isolation.
+            # Strip slashes to keep namespace components clean.
+            ns = (*ns, self._route_prefix.strip("/"))
+        return ns
 
     def _get_namespace_legacy(self) -> tuple[str, ...]:
         """Legacy namespace resolution: check metadata for assistant_id.

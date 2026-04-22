@@ -158,11 +158,24 @@ class CompositeBackend(BackendProtocol):
         self.default = default
 
         # Virtual routes
-        self.routes = routes
+        self.routes = routes or {}
+        seen_backends: dict[int, str] = {}
+        for prefix, backend in self.routes.items():
+            backend_id = id(backend)
+            if backend_id in seen_backends:
+                msg = (
+                    "CompositeBackend routes must use distinct backend instances. "
+                    f"Routes {seen_backends[backend_id]!r} and {prefix!r} share the same backend object, "
+                    "which would make route isolation order-dependent."
+                )
+                raise ValueError(msg)
+            if hasattr(backend, "set_route_prefix"):
+                backend.set_route_prefix(prefix)
+            seen_backends[backend_id] = prefix
 
-        # Sort routes by length (longest first) for correct prefix matching
-        self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
-
+        # Sort routes by length (descending) so longest prefixes match first
+        self.sorted_routes = sorted(self.routes.items(), key=lambda x: len(x[0]), reverse=True)
+        self.default = default
         self.artifacts_root = artifacts_root
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:

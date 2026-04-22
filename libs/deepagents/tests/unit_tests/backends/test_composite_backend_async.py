@@ -878,11 +878,6 @@ async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -
     assert line_numbers == [1, 2]
 
 
-@pytest.mark.xfail(
-    reason="StoreBackend instances share the same underlying store when using the same runtime, "
-    "causing files written to one route to appear in all routes that use the same backend instance. "
-    "This violates the expected isolation between routes."
-)
 async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path) -> None:
     """Test async grep aggregates results from multiple routed backends with expected isolation.
 
@@ -920,6 +915,23 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
         ]
     )
     assert match_paths == expected_paths
+
+
+async def test_composite_rejects_shared_backend_instance_across_routes_async(tmp_path: Path) -> None:
+    """Reject mounting the same backend instance under multiple route prefixes."""
+    root = tmp_path
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    mem_store = InMemoryStore()
+    shared_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    with pytest.raises(ValueError, match="distinct backend instances"):
+        CompositeBackend(
+            default=fs,
+            routes={
+                "/memories/": shared_store,
+                "/archive/": shared_store,
+            },
+        )
 
 
 async def test_composite_agrep_error_in_routed_backend_async() -> None:

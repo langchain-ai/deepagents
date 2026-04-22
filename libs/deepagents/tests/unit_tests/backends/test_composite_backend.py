@@ -458,7 +458,8 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store(file_form
     assert "Tool result too large" in result.content
     assert "/large_tool_results/test_routed_123" in result.content
 
-    stored_item = mem_store.get(("filesystem",), "/test_routed_123")
+    # The storage location is now isolated by the route prefix
+    stored_item = mem_store.get(("filesystem", "large_tool_results"), "/test_routed_123")
     assert stored_item is not None
     expected = [large_content] if file_format == "v1" else large_content
     assert stored_item.value["content"] == expected
@@ -992,11 +993,6 @@ def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     assert line_numbers == [1, 2]
 
 
-@pytest.mark.xfail(
-    reason="StoreBackend instances share the same underlying store when using the same runtime, "
-    "causing files written to one route to appear in all routes that use the same backend instance. "
-    "This violates the expected isolation between routes."
-)
 def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     """Test grep aggregates results from multiple routed backends with expected isolation.
 
@@ -1034,6 +1030,23 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
         ]
     )
     assert match_paths == expected_paths
+
+
+def test_composite_rejects_shared_backend_instance_across_routes(tmp_path: Path) -> None:
+    """Reject mounting the same backend instance under multiple route prefixes."""
+    root = tmp_path
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    mem_store = InMemoryStore()
+    shared_store = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    with pytest.raises(ValueError, match="distinct backend instances"):
+        CompositeBackend(
+            default=fs,
+            routes={
+                "/memories/": shared_store,
+                "/archive/": shared_store,
+            },
+        )
 
 
 def test_composite_grep_error_in_routed_backend() -> None:

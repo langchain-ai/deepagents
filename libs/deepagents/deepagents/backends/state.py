@@ -72,6 +72,11 @@ class StateBackend(BackendProtocol):
                 stacklevel=2,
             )
         self._file_format = file_format
+        self._route_prefix: str | None = None
+
+    def set_route_prefix(self, prefix: str) -> None:
+        """Set the route prefix for this backend (called by CompositeBackend)."""
+        self._route_prefix = prefix
 
     # ------------------------------------------------------------------
     # Internal helpers for reading / writing state via config keys
@@ -116,7 +121,12 @@ class StateBackend(BackendProtocol):
         config = self._get_config()
         read = config["configurable"][CONFIG_KEY_READ]
         fresh = False
-        return read("files", fresh) or {}
+        files = read("files", fresh) or {}
+        if not self._route_prefix:
+            return files
+
+        # Filter and strip prefix from keys for the caller
+        return {k[len(self._route_prefix) :]: v for k, v in files.items() if k.startswith(self._route_prefix)}
 
     def _send_files_update(self, update: dict[str, Any]) -> None:
         """Queue a write to the `files` channel via Pregel internals.
@@ -138,6 +148,8 @@ class StateBackend(BackendProtocol):
         """
         config = self._get_config()
         send = config["configurable"][CONFIG_KEY_SEND]
+        if self._route_prefix:
+            update = {self._route_prefix + k: v for k, v in update.items()}
         send([("files", update)])
 
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:

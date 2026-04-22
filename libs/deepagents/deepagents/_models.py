@@ -8,7 +8,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from deepagents.profiles.provider_profiles import _get_provider_profile
+from deepagents.profiles.provider.provider_profiles import _get_provider_profile
 
 logger = logging.getLogger(__name__)
 

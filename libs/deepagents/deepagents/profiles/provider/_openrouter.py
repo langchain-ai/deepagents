@@ -15,7 +15,7 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from deepagents.profiles.provider_profiles import ProviderProfile, register_provider_profile
+from deepagents.profiles.provider.provider_profiles import ProviderProfile, register_provider_profile
 
 logger = logging.getLogger(__name__)
 

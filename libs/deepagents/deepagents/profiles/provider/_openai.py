@@ -5,7 +5,7 @@ Enables the OpenAI Responses API by default for all `openai:*` models via
 via `register_provider_profile("openai", ...)`.
 """
 
-from deepagents.profiles.provider_profiles import ProviderProfile, register_provider_profile
+from deepagents.profiles.provider.provider_profiles import ProviderProfile, register_provider_profile
 
 register_provider_profile(
     "openai",

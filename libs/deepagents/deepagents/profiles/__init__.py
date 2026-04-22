@@ -18,7 +18,7 @@ from deepagents.profiles.harness_profiles import (
     HarnessProfile,
     register_harness_profile,
 )
-from deepagents.profiles.provider_profiles import (
+from deepagents.profiles.provider.provider_profiles import (
     ProviderProfile,
     register_provider_profile,
 )

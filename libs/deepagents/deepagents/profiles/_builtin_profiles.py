@@ -14,5 +14,5 @@ def _ensure_builtin_profiles_loaded() -> None:
     register their profiles as a top-level side effect, so re-importing is a
     no-op thanks to the Python import cache.
     """
-    import_module("deepagents.profiles._openai")
-    import_module("deepagents.profiles._openrouter")
+    import_module("deepagents.profiles.provider._openai")
+    import_module("deepagents.profiles.provider._openrouter")

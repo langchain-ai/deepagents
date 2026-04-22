@@ -22,20 +22,20 @@ from deepagents.profiles import (
     register_harness_profile,
     register_provider_profile,
 )
-from deepagents.profiles._openrouter import (
-    _OPENROUTER_APP_TITLE,
-    _OPENROUTER_APP_URL,
-    OPENROUTER_MIN_VERSION,
-    _openrouter_attribution_kwargs,
-    check_openrouter_version,
-)
 from deepagents.profiles.harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,
     _merge_middleware,
     _merge_profiles,
 )
-from deepagents.profiles.provider_profiles import (
+from deepagents.profiles.provider._openrouter import (
+    _OPENROUTER_APP_TITLE,
+    _OPENROUTER_APP_URL,
+    OPENROUTER_MIN_VERSION,
+    _openrouter_attribution_kwargs,
+    check_openrouter_version,
+)
+from deepagents.profiles.provider.provider_profiles import (
     _PROVIDER_PROFILES,
     _get_provider_profile,
     _merge_provider_profiles,
@@ -202,36 +202,36 @@ class TestCheckOpenRouterVersion:
 
     def test_passes_when_not_installed(self) -> None:
         with patch(
-            "deepagents.profiles._openrouter.pkg_version",
+            "deepagents.profiles.provider._openrouter.pkg_version",
             side_effect=PackageNotFoundError("langchain-openrouter"),
         ):
             check_openrouter_version()
 
     def test_passes_when_version_sufficient(self) -> None:
         with patch(
-            "deepagents.profiles._openrouter.pkg_version",
+            "deepagents.profiles.provider._openrouter.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
             check_openrouter_version()
 
     def test_passes_when_version_above_minimum(self) -> None:
-        with patch("deepagents.profiles._openrouter.pkg_version", return_value="99.0.0"):
+        with patch("deepagents.profiles.provider._openrouter.pkg_version", return_value="99.0.0"):
             check_openrouter_version()
 
     def test_raises_when_version_too_old(self) -> None:
         with (
-            patch("deepagents.profiles._openrouter.pkg_version", return_value="0.0.1"),
+            patch("deepagents.profiles.provider._openrouter.pkg_version", return_value="0.0.1"),
             pytest.raises(ImportError, match="langchain-openrouter>="),
         ):
             check_openrouter_version()
 
     def test_skips_check_for_invalid_version(self) -> None:
-        with patch("deepagents.profiles._openrouter.pkg_version", return_value="not-a-version"):
+        with patch("deepagents.profiles.provider._openrouter.pkg_version", return_value="not-a-version"):
             check_openrouter_version()
 
     def test_resolve_model_calls_check(self) -> None:
         with (
-            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
+            patch("deepagents.profiles.provider._openrouter.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -241,7 +241,7 @@ class TestCheckOpenRouterVersion:
 
     def test_resolve_model_skips_check_for_non_openrouter(self) -> None:
         with (
-            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
+            patch("deepagents.profiles.provider._openrouter.check_openrouter_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)
@@ -853,7 +853,7 @@ class TestResolveModelWithProviderProfiles:
     def test_openrouter_runs_pre_init_and_factory(self) -> None:
         with (
             patch("deepagents._models.init_chat_model") as mock,
-            patch("deepagents.profiles._openrouter.check_openrouter_version") as mock_check,
+            patch("deepagents.profiles.provider._openrouter.check_openrouter_version") as mock_check,
         ):
             mock.return_value = MagicMock(spec=BaseChatModel)
             resolve_model("openrouter:anthropic/claude-sonnet-4-6")
@@ -1087,7 +1087,7 @@ class TestProfileLookupBreadcrumb:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("crumbprov", ProviderProfile(init_kwargs={"a": 1}))
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider_profiles"):
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
                 _get_provider_profile("crumbprov:typo-model")
             messages = [r.getMessage() for r in caplog.records]
             assert any("No exact ProviderProfile" in m and "crumbprov" in m for m in messages)

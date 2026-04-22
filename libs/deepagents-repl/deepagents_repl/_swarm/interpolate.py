@@ -15,7 +15,12 @@ from typing import Any
 
 from deepagents_repl._swarm.filter import MISSING, read_column
 
-_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+# Identifier-only placeholder: ``{name}`` or ``{dotted.path}``. The
+# regex deliberately rejects expressions, template-literal remnants, and
+# anything with whitespace or operators inside the braces — otherwise a
+# subagent prompt that contained natural-language curly braces (or a
+# leaked JS template literal) would get eaten by the interpolator.
+_PLACEHOLDER_RE = re.compile(r"\{\s*([a-zA-Z_$][a-zA-Z0-9_$.]*)\s*\}")
 
 
 def interpolate_instruction(template: str, row: Mapping[str, Any]) -> str:

@@ -72,3 +72,13 @@ def test_no_placeholders_passes_through() -> None:
 def test_placeholder_is_trimmed() -> None:
     row = {"x": 1}
     assert interpolate_instruction("val={ x }", row) == "val=1"
+
+
+def test_non_identifier_braces_left_alone() -> None:
+    """The interpolator must only match identifier/dotted paths so that
+    natural-language curly braces pass through untouched."""
+    # JSON fragment in an instruction template — should not be interpolated.
+    template = 'Output schema: { "label": string, "score": number }'
+    assert interpolate_instruction(template, {}) == template
+    # Expression with an operator — shouldn't parse as a column.
+    assert interpolate_instruction("{n + 1}", {"n": 5}) == "{n + 1}"

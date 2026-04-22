@@ -198,7 +198,9 @@ class TestResponseSchema:
             )
         )
         rows = [json.loads(line) for line in store.contents["/t.jsonl"].strip().split("\n")]
-        assert rows[0]["result"] == {"label": "bug", "confidence": 0.9}
+        # Structured results are spread onto the row — each property becomes
+        # a top-level column instead of a nested object under `result`.
+        assert rows[0] == {"id": "a", "label": "bug", "confidence": 0.9}
 
     async def test_factory_called_with_schema(self) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}

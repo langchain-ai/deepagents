@@ -378,6 +378,18 @@ def _try_parse_json(value: str) -> Any:
         return value
 
 
+def _merge_result_into_row(
+    row: dict[str, Any], column: str, value: Any
+) -> dict[str, Any]:
+    """Write ``value`` onto ``row``. Structured objects (from a
+    ``response_schema``) are spread — each property becomes a top-level
+    column on the row. Plain text and arrays land under ``column``.
+    """
+    if isinstance(value, dict):
+        return {**row, **value}
+    return {**row, column: value}
+
+
 def _build_summary(
     results: list[SwarmTaskResult],
     interpolation_errors: list[dict[str, str]],
@@ -487,7 +499,9 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmSummary:
                             if options.response_schema is not None
                             else result.result
                         )
-                        rows[row_idx] = {**rows[row_idx], options.column: value}
+                        rows[row_idx] = _merge_result_into_row(
+                            rows[row_idx], options.column, value
+                        )
                         options.write(options.file, serialize_table_jsonl(rows))
             return result
 

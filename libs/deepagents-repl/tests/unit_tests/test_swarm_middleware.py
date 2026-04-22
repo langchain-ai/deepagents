@@ -247,7 +247,7 @@ async def test_response_schema_flows_to_factory(runtime: Runtime) -> None:
     # Parsed JSON, not a string.
     drained = dict(repl._drain_pending_writes())
     rows = [json.loads(line) for line in drained["/t.jsonl"].strip().split("\n")]
-    assert rows == [{"id": "a", "result": {"label": "bug"}}]
+    assert rows == [{"id": "a", "label": "bug"}]
     assert default.ainvoke.call_count == 0
 
 
@@ -305,6 +305,49 @@ async def test_swarm_create_logs_to_stdout(runtime: Runtime) -> None:
     )
     assert outcome.stdout is not None
     assert "[swarm.create] Table written to /t.jsonl." in outcome.stdout
+
+
+async def test_swarm_execute_authoritative_hint_always_logged(runtime: Runtime) -> None:
+    """The 'Results are authoritative' breadcrumb fires on every execute,
+    not just on failure — so the model never re-dispatches to verify."""
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": _mock_subagent("ok")}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    outcome = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }] });
+        await swarm.execute("/t.jsonl", { instruction: "do {id}" });
+        "ok"
+        """
+    )
+    assert outcome.stdout is not None
+    assert "Results are authoritative" in outcome.stdout
+
+
+async def test_swarm_execute_summary_wire_omits_results(runtime: Runtime) -> None:
+    """The summary returned to the JS side should not include per-row
+    results — they're on the table already, and duplicating them wastes
+    context tokens."""
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": _mock_subagent("ok")}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    outcome = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }, { id: "b" }] });
+        const summary = JSON.parse(await swarm.execute("/t.jsonl", { instruction: "do {id}" }));
+        JSON.stringify({
+            hasResults: "results" in summary,
+            total: summary.total,
+            completed: summary.completed,
+        })
+        """
+    )
+    parsed = json.loads(outcome.result)
+    assert parsed == {"hasResults": False, "total": 2, "completed": 2}
 
 
 async def test_swarm_execute_rejects_missing_instruction(runtime: Runtime) -> None:

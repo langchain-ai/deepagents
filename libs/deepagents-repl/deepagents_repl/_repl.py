@@ -253,19 +253,12 @@ def _synth_tool_call_id(tool_name: str) -> str:
 
 
 def _summary_to_wire(summary: Any) -> dict[str, Any]:
-    """Shape a ``SwarmSummary`` for the JS side (camelCase, trimmed)."""
-    entries = []
-    for r in summary.results:
-        entry: dict[str, Any] = {
-            "id": r.id,
-            "subagentType": r.subagent_type,
-            "status": r.status,
-        }
-        if r.result is not None:
-            entry["result"] = r.result
-        if r.error is not None:
-            entry["error"] = r.error
-        entries.append(entry)
+    """Shape a ``SwarmSummary`` for the JS side (camelCase, trimmed).
+
+    Per-row ``results`` are intentionally omitted: results land on the
+    JSONL table as columns, so returning them in the summary would
+    duplicate data and bloat the model's context.
+    """
     return {
         "total": summary.total,
         "completed": summary.completed,
@@ -273,7 +266,6 @@ def _summary_to_wire(summary: Any) -> dict[str, Any]:
         "skipped": summary.skipped,
         "file": summary.file,
         "column": summary.column,
-        "results": entries,
         "failedTasks": list(summary.failed_tasks),
     }
 
@@ -674,6 +666,13 @@ class _ThreadREPL:
                     f"[swarm.execute] {summary.completed} completed, "
                     f"{summary.failed} failed, {summary.skipped} skipped. "
                     f'Results → "{file}" column "{summary.column}".',
+                ),
+            )
+            self._console.append(
+                "log",
+                (
+                    "[swarm.execute] Results are authoritative — do not "
+                    "re-dispatch to verify. Read the table directly to aggregate.",
                 ),
             )
             if summary.failed > 0:

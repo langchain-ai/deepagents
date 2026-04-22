@@ -225,12 +225,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
+    backend: BackendProtocol | BackendFactory | None = None,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
-    backend: BackendProtocol | BackendFactory | None = None,
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -345,24 +345,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
-        response_format: A structured output response format to use for the agent.
-        context_schema: Schema class that defines immutable run-scoped context.
-
-            Passed through to [`create_agent`][langchain.agents.create_agent].
-        checkpointer: Optional `Checkpointer` for persisting agent state
-            between runs.
-
-            Passed through to [`create_agent`][langchain.agents.create_agent].
-        store: Optional store for persistent storage (required if backend
-            uses `StoreBackend`).
-
-            Passed through to [`create_agent`][langchain.agents.create_agent].
-        backend: Optional backend for file storage and execution.
-
-            Pass a `Backend` instance (e.g. `StateBackend()`).
-
-            For execution support, use a backend that
-            implements `SandboxBackendProtocol`.
         permissions: List of ``FilesystemPermission`` rules for the main agent
             and its subagents.
 
@@ -374,6 +356,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `_PermissionMiddleware` is appended last in the stack so it sees
             all tools (including those injected by other middleware).
+        backend: Optional backend for file storage and execution.
+
+            Pass a `Backend` instance (e.g. `StateBackend()`).
+
+            For execution support, use a backend that
+            implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
             Pass to pause agent execution at specified tool calls for human
@@ -396,6 +384,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        response_format: A structured output response format to use for the agent.
+        context_schema: Schema class that defines immutable run-scoped context.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        checkpointer: Optional `Checkpointer` for persisting agent state
+            between runs.
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
+        store: Optional store for persistent storage (required if backend
+            uses `StoreBackend`).
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
         debug: Whether to enable debug mode.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].

@@ -303,14 +303,20 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
 
 
 def _has_any_harness_profile() -> bool:
-    """Return `True` when at least one harness profile is registered.
+    """Return `True` when a user has registered any harness profile.
 
     Narrow helper for modules (e.g. `graph.py`) that need to adjust logging
     verbosity based on whether the user has registered any harness profile.
+    Built-in registrations loaded by `_ensure_builtin_profiles_loaded` are
+    excluded — with only built-ins in play, a "no match" miss against a
+    non-matching provider is unsurprising and should stay at debug.
+
     Exists so callers do not have to import the private `_HARNESS_PROFILES`
     registry directly.
     """
-    return bool(_HARNESS_PROFILES)
+    from deepagents.profiles._builtin_profiles import _BUILTIN_HARNESS_KEYS  # noqa: PLC0415
+
+    return bool(_HARNESS_PROFILES.keys() - _BUILTIN_HARNESS_KEYS)
 
 
 def _get_harness_profile(spec: str) -> HarnessProfile | None:

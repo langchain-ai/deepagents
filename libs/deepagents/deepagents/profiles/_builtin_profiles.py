@@ -1,10 +1,10 @@
 """Bootstrap for built-in and third-party profile plugins.
 
-Built-in provider profiles (OpenAI, OpenRouter, Google GenAI) are registered
-via explicit module imports — not entry points — so a malformed or missing
-`dist-info` in the environment cannot silently disable the SDK's own
-defaults. Third parties plug in via `importlib.metadata` entry points
-under two groups:
+Built-in provider profiles (OpenAI, OpenRouter, Google GenAI) and the
+built-in Google GenAI harness profile are registered via explicit module
+imports — not entry points — so a malformed or missing `dist-info` in the
+environment cannot silently disable the SDK's own defaults. Third parties
+plug in via `importlib.metadata` entry points under two groups:
 
 - `deepagents.provider_profiles` — plugins that call
     `register_provider_profile(...)` to declare provider- or model-keyed
@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 from importlib.metadata import entry_points
 
+from deepagents.profiles.harness import _google_genai as _google_genai_harness
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
-from deepagents.profiles.provider import _google_genai, _openai, _openrouter
+from deepagents.profiles.provider import _google_genai as _google_genai_provider, _openai, _openrouter
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,9 @@ def _ensure_builtin_profiles_loaded() -> None:
 
     Runs two phases, both idempotent:
 
-    1. Call the built-in provider `register` functions directly.
-        Any exception propagates — a broken built-in is a deepagents
-        bug and must surface loudly, not degrade silently.
+    1. Call the built-in `register` functions directly (provider and
+        harness). Any exception propagates — a broken built-in is a
+        deepagents bug and must surface loudly, not degrade silently.
     2. Iterate `importlib.metadata` entry points in the
         `deepagents.provider_profiles` and `deepagents.harness_profiles`
         groups. Third-party failures are logged at `WARNING` and skipped
@@ -85,7 +86,8 @@ def _ensure_builtin_profiles_loaded() -> None:
         return
     _openai.register()
     _openrouter.register()
-    _google_genai.register()
+    _google_genai_provider.register()
+    _google_genai_harness.register()
     _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
     _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
     _BOOTSTRAP_HARNESS_KEYS = frozenset(_HARNESS_PROFILES)

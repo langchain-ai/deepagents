@@ -308,6 +308,33 @@ class TestCheckGoogleGenaiVersion:
         mock_check.assert_not_called()
 
 
+class TestGoogleGenaiHarnessProfile:
+    """Tests for the built-in `google_genai` harness profile registration."""
+
+    def test_applies_parallel_tools_suffix(self) -> None:
+        profile = _get_harness_profile("google_genai:gemini-3.1-pro")
+
+        assert profile is not None
+        assert profile.system_prompt_suffix is not None
+        assert "parallel tool calls" in profile.system_prompt_suffix
+
+    def test_user_registration_merges_on_top(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "google_genai:gemini-3.1-pro",
+                HarnessProfile(system_prompt_suffix="Use metric units."),
+            )
+            profile = _get_harness_profile("google_genai:gemini-3.1-pro")
+            # Exact-model suffix wins; provider-level built-in still governs
+            # unset fields.
+            assert profile is not None
+            assert profile.system_prompt_suffix == "Use metric units."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
 class TestOpenRouterAttributionKwargs:
     """Tests for `_openrouter_attribution_kwargs`."""
 

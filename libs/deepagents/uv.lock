@@ -13,9 +13,6 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[manifest]
-overrides = [{ name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" }]
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -453,8 +450,8 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
-    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=diff-channel-incremental-checkpointing" },
-    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=diff-channel-incremental-checkpointing" },
+    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=delta-channel-writes-based" },
+    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=delta-channel-writes-based" },
     { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]
@@ -902,8 +899,8 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.1.7a2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
+version = "1.1.9"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -916,7 +913,7 @@ dependencies = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.0.2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
@@ -924,8 +921,8 @@ dependencies = [
 
 [[package]]
 name = "langgraph-prebuilt"
-version = "1.0.9"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
+version = "1.0.10"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -934,7 +931,7 @@ dependencies = [
 [[package]]
 name = "langgraph-sdk"
 version = "0.3.13"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },

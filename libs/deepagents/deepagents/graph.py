@@ -467,47 +467,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
-    # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(
-            backend=backend,
-            custom_tool_descriptions=_profile.tool_description_overrides,
-        ),
-        create_summarization_middleware(model, backend),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-
-    # Add harness-profile middleware, if any
-    gp_middleware.extend(_resolve_extra_middleware(_profile))
-
-    # Strip excluded tools after all tool-injecting middleware has run
-    if _profile.excluded_tools:
-        gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
-    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-
-    # Permissions must be last so they see all tools from prior middleware
-    if permissions:
-        gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
-
-    gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-    general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-        **GENERAL_PURPOSE_SUBAGENT,
-        "model": model,
-        "tools": _tools or [],
-        "middleware": gp_middleware,
-    }
-    if gp_profile.description is not None:
-        general_purpose_spec["description"] = gp_profile.description
-    if gp_profile.system_prompt is not None:
-        general_purpose_spec["system_prompt"] = gp_profile.system_prompt
-    if interrupt_on is not None:
-        general_purpose_spec["interrupt_on"] = interrupt_on
-
-    # Set up subagent middleware
+    # Process caller-supplied subagents first so the decision of whether to
+    # auto-add the default general-purpose subagent can factor in an explicit
+    # override, and so its (expensive) middleware stack can be skipped
+    # entirely when it won't be attached.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
@@ -574,10 +537,51 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
-    # Skip auto-adding when the harness profile disables it or when a caller
-    # already supplied their own general-purpose subagent — an explicit spec
-    # is how callers override the default.
+    # Auto-add the default general-purpose subagent unless the harness profile
+    # disables it or the caller already supplied their own — an explicit spec
+    # is how callers override the default. Building its middleware stack is
+    # skipped entirely in those cases so the work isn't paid for and then
+    # discarded (including factory-based `extra_middleware`).
+    gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+        gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            TodoListMiddleware(),
+            FilesystemMiddleware(
+                backend=backend,
+                custom_tool_descriptions=_profile.tool_description_overrides,
+            ),
+            create_summarization_middleware(model, backend),
+            PatchToolCallsMiddleware(),
+        ]
+        if skills is not None:
+            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+
+        # Add harness-profile middleware, if any
+        gp_middleware.extend(_resolve_extra_middleware(_profile))
+
+        # Strip excluded tools after all tool-injecting middleware has run
+        if _profile.excluded_tools:
+            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+        # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
+        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+
+        # Permissions must be last so they see all tools from prior middleware
+        if permissions:
+            gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
+        general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            **GENERAL_PURPOSE_SUBAGENT,
+            "model": model,
+            "tools": _tools or [],
+            "middleware": gp_middleware,
+        }
+        if gp_profile.description is not None:
+            general_purpose_spec["description"] = gp_profile.description
+        if gp_profile.system_prompt is not None:
+            general_purpose_spec["system_prompt"] = gp_profile.system_prompt
+        if interrupt_on is not None:
+            general_purpose_spec["interrupt_on"] = interrupt_on
+
         inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack

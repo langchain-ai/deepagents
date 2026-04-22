@@ -95,8 +95,9 @@ For longer tasks, provide brief progress updates at reasonable intervals — a c
 When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
 is prepended and this base prompt is appended. When `system_prompt` is `None`,
 this is used as the sole system prompt.
+
+Replaceable using `HarnessProfile.base_system_prompt`
 """
-# Replaceable via `HarnessProfile.base_system_prompt`
 
 
 def get_default_model() -> ChatAnthropic:
@@ -135,9 +136,12 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     """Look up the `HarnessProfile` for an already-resolved model.
 
     If `spec` is provided (the original string the caller passed), it is used
-    for registry lookup. Otherwise the model identifier is extracted from the
-    model instance (via `model_dump`) and used as a best-effort fallback, with a
-    final fallback to the provider name from the model class.
+    for registry lookup. Otherwise both the model identifier (via `model_dump`)
+    and provider (via `_get_ls_params`) are extracted from the model instance
+    and combined into a `provider:identifier` key so that model-level profiles
+    registered under the canonical `provider:model` shape still resolve when
+    the caller hands in a pre-built model. The combined lookup is followed by
+    identifier-only and provider-only fallbacks for less-typical registrations.
 
     Args:
         model: Resolved chat model instance.
@@ -150,11 +154,21 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     if spec is not None:
         return _get_harness_profile(spec) or HarnessProfile()
     identifier = get_model_identifier(model)
+    provider = get_model_provider(model)
+    # Try the canonical `provider:model` key first so user registrations under
+    # that shape match. `_get_harness_profile` internally falls back from the
+    # exact key to the provider prefix, which also subsumes the pure
+    # provider-only case below when both pieces are known. Skip when the
+    # identifier already contains a colon to avoid producing a malformed
+    # double-colon key.
+    if provider and identifier and ":" not in identifier:
+        profile = _get_harness_profile(f"{provider}:{identifier}")
+        if profile is not None:
+            return profile
     if identifier is not None:
         profile = _get_harness_profile(identifier)
         if profile is not None:
             return profile
-    provider = get_model_provider(model)
     if provider is not None:
         profile = _get_harness_profile(provider)
         if profile is not None:

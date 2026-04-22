@@ -130,6 +130,31 @@ class TestProfileForModel:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_matches_combined_provider_model_key_for_prebuilt(self) -> None:
+        """Model-level keys (`provider:model`) resolve for pre-built models.
+
+        Prior to combining the identifier and provider into a single registry
+        key, a profile registered under `"fakeprov:my-model"` was unreachable
+        when the caller handed in a pre-built model without a spec string: the
+        bare identifier `"my-model"` never matched the full key, and lookup
+        silently fell through to any provider-level profile (or the empty
+        default). This asserts the combined key is consulted first.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            provider_profile = HarnessProfile(system_prompt_suffix="provider level")
+            model_profile = HarnessProfile(system_prompt_suffix="model level")
+            register_harness_profile("fakeprov", provider_profile)
+            register_harness_profile("fakeprov:my-model", model_profile)
+            model = _make_model({"model_name": "my-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
+            result = _harness_profile_for_model(model, None)
+            # Model-level wins on merge; suffix reflects model-level registration.
+            assert result.system_prompt_suffix == "model level"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})

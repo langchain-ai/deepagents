@@ -5,12 +5,15 @@ Imports built-in provider modules whose top-level code registers default
 so the public package surface stays focused on the public beta APIs.
 """
 
-from functools import cache
 from importlib import import_module
 
 
-@cache
 def _ensure_builtin_profiles_loaded() -> None:
-    """Ensure built-in provider profiles are registered once."""
+    """Register built-in provider profiles.
+
+    Called once from `deepagents.profiles.__init__`. The imported modules
+    register their profiles as a top-level side effect, so re-importing is a
+    no-op thanks to the Python import cache.
+    """
     import_module("deepagents.profiles._openai")
     import_module("deepagents.profiles._openrouter")

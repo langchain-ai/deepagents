@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -27,6 +29,7 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    import pytest
     from langchain.agents.middleware.types import ModelRequest
 
 
@@ -214,10 +217,9 @@ class TestToolDescriptionOverrides:
 class TestDefaultModelProfile:
     """Tests for default model=None getting the default profile."""
 
-    def test_default_model_gets_default_profile(self) -> None:
-        """model=None resolves to default profile (no Anthropic-specific registration)."""
-        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == HarnessProfile()
+    def test_default_model_has_no_registered_profile(self) -> None:
+        """No anthropic-specific registration means lookup returns None."""
+        assert _get_harness_profile("anthropic:claude-sonnet-4-6") is None
 
 
 class TestToolDescriptionOverrideWiring:
@@ -626,6 +628,158 @@ class TestToolExclusionWiring:
             exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 1
             assert "my_tool" in exclusion_mws[0]._excluded
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class _StubMW(AgentMiddleware[Any, Any, Any]):
+    """Minimal real `AgentMiddleware` subclass so langchain's agent factory accepts it."""
+
+
+class TestExtraMiddlewareWiring:
+    """End-to-end tests that `extra_middleware` from a harness profile reaches the compiled agent."""
+
+    def test_extra_middleware_is_added_to_main_stack(self) -> None:
+        mw_instance = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "emprov",
+                HarnessProfile(extra_middleware=[mw_instance]),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="emprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert any(m is mw_instance for m in mw_stack), "extra_middleware instance missing from main middleware stack"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_extra_middleware_factory_is_invoked_per_stack(self) -> None:
+        """A callable factory is called once for each middleware stack (main + general-purpose)."""
+        calls: list[None] = []
+
+        def factory() -> list[AgentMiddleware]:
+            calls.append(None)
+            return [_StubMW()]
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "emfactprov",
+                HarnessProfile(extra_middleware=factory),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="emfactprov:some-model")
+
+            # Invoked at least twice: once for the general-purpose subagent, once for the main stack.
+            assert len(calls) >= 2
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSubagentLevelProfileResolution:
+    """Tests that sync subagents with their own `model` get their own harness profile applied."""
+
+    def test_subagent_with_different_model_resolves_its_own_profile(self) -> None:
+        parent_mw = _StubMW()
+        subagent_mw = _StubMW()
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentprov",
+                HarnessProfile(extra_middleware=[parent_mw]),
+            )
+            register_harness_profile(
+                "subprov",
+                HarnessProfile(extra_middleware=[subagent_mw]),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subprov"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentprov:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subprov:worker-model",
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            worker_middleware = worker["middleware"]
+            assert any(m is subagent_mw for m in worker_middleware), "Subagent profile's middleware not applied"
+            assert not any(m is parent_mw for m in worker_middleware), "Parent profile's middleware leaked into subagent"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestProfileMissLogLevel:
+    """Tests that pre-built-model profile-miss logs escalate to info when profiles are registered."""
+
+    def test_no_registered_profiles_logs_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model.model_dump.return_value = {}
+        model._get_ls_params = MagicMock(return_value={})
+        with caplog.at_level(logging.DEBUG, logger="deepagents.graph"):
+            result = _harness_profile_for_model(model, None)
+        assert result == HarnessProfile()
+        records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
+        assert records, "Expected a profile-miss log record"
+        assert all(r.levelno == logging.DEBUG for r in records)
+
+    def test_registered_profiles_but_no_match_logs_at_info(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
+            model = MagicMock(spec=BaseChatModel)
+            model.model_dump.return_value = {}
+            model._get_ls_params = MagicMock(return_value={})
+            with caplog.at_level(logging.DEBUG, logger="deepagents.graph"):
+                result = _harness_profile_for_model(model, None)
+            assert result == HarnessProfile()
+            records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
+            assert records, "Expected a profile-miss log record"
+            assert all(r.levelno == logging.INFO for r in records)
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

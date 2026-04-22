@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
 from deepagents.profiles.provider_profiles import _get_provider_profile
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -32,17 +35,17 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
         return model
 
     profile = _get_provider_profile(model)
+    if profile is None:
+        return init_chat_model(model)
 
-    # Execute any pre-initialization logic
     if profile.pre_init is not None:
         profile.pre_init(model)
 
-    # Combine static and factory kwargs, with factory taking precedence
     kwargs: dict[str, Any] = {**profile.init_kwargs}
     if profile.init_kwargs_factory is not None:
         kwargs.update(profile.init_kwargs_factory())
 
-    return init_chat_model(model, **kwargs)  # kwargs may be empty
+    return init_chat_model(model, **kwargs)
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:
@@ -77,7 +80,12 @@ def get_model_provider(model: BaseChatModel) -> str | None:
     """
     try:
         ls_params = model._get_ls_params()
-    except (AttributeError, TypeError, NotImplementedError):
+    except (AttributeError, TypeError, NotImplementedError) as exc:
+        logger.debug(
+            "Could not extract provider from %s via _get_ls_params: %s",
+            type(model).__name__,
+            exc,
+        )
         return None
     provider = ls_params.get("ls_provider")
     if isinstance(provider, str) and provider:

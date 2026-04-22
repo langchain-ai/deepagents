@@ -1,5 +1,6 @@
 """Tests for deepagents._models helpers and internal profile registries."""
 
+import logging
 import os
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
@@ -31,6 +32,7 @@ from deepagents.profiles._openrouter import (
 from deepagents.profiles.harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,
+    _merge_middleware,
     _merge_profiles,
 )
 from deepagents.profiles.provider_profiles import (
@@ -345,15 +347,26 @@ class TestProviderProfileRegistry:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
-    def test_returns_empty_default_for_unknown(self) -> None:
-        assert _get_provider_profile("nonexistent:model") == ProviderProfile()
+    def test_returns_none_for_unknown(self) -> None:
+        assert _get_provider_profile("nonexistent:model") is None
 
-    def test_bare_model_name_without_colon(self) -> None:
-        assert _get_provider_profile("claude-sonnet-4-6") == ProviderProfile()
+    def test_bare_model_name_without_colon_returns_none(self) -> None:
+        assert _get_provider_profile("claude-sonnet-4-6") is None
 
-    def test_empty_spec_returns_empty_default(self) -> None:
-        """Empty spec has no colon and no exact match; the default profile wins."""
-        assert _get_provider_profile("") == ProviderProfile()
+    def test_empty_spec_returns_none(self) -> None:
+        """Empty spec has no colon and no exact match."""
+        assert _get_provider_profile("") is None
+
+    def test_exact_miss_falls_back_to_provider(self) -> None:
+        """A typo'd model spec should fall back to the provider profile, not None."""
+        base = ProviderProfile(init_kwargs={"a": 1})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("fbprov", base)
+            assert _get_provider_profile("fbprov:missing-model") is base
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
 
 
 class TestRegisterProviderProfileAdditive:
@@ -546,11 +559,22 @@ class TestHarnessProfileRegistry:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_returns_empty_default_for_unknown(self) -> None:
-        assert _get_harness_profile("nonexistent:model") == HarnessProfile()
+    def test_returns_none_for_unknown(self) -> None:
+        assert _get_harness_profile("nonexistent:model") is None
 
-    def test_bare_model_name_without_colon(self) -> None:
-        assert _get_harness_profile("claude-sonnet-4-6") == HarnessProfile()
+    def test_bare_model_name_without_colon_returns_none(self) -> None:
+        assert _get_harness_profile("claude-sonnet-4-6") is None
+
+    def test_exact_miss_falls_back_to_provider(self) -> None:
+        """A typo'd spec should fall back to the provider profile, not None."""
+        base = HarnessProfile(system_prompt_suffix="provider suffix")
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("fbharness", base)
+            assert _get_harness_profile("fbharness:missing-model") is base
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
 
 class TestRegisterHarnessProfileAdditive:
@@ -813,7 +837,7 @@ class TestBuiltInProfiles:
         assert profile.init_kwargs_factory is not None
 
     def test_openai_has_no_built_in_harness_profile(self) -> None:
-        assert _get_harness_profile("openai:gpt-5") == HarnessProfile()
+        assert _get_harness_profile("openai:gpt-5") is None
 
 
 class TestResolveModelWithProviderProfiles:
@@ -885,3 +909,200 @@ class TestResolveModelWithProviderProfiles:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
+
+
+class TestProfileImmutability:
+    """Tests that `frozen=True` profile fields can't be mutated post-construction."""
+
+    def test_provider_init_kwargs_unaliased_after_construction(self) -> None:
+        """Mutating the source dict after construction must not mutate the profile."""
+        source = {"a": 1}
+        profile = ProviderProfile(init_kwargs=source)
+        source["a"] = 999
+        source["b"] = 2
+        assert profile.init_kwargs == {"a": 1}
+
+    def test_provider_init_kwargs_cannot_be_mutated_in_place(self) -> None:
+        profile = ProviderProfile(init_kwargs={"a": 1})
+        with pytest.raises(TypeError):
+            profile.init_kwargs["a"] = 999  # type: ignore[index]
+
+    def test_harness_tool_description_overrides_unaliased(self) -> None:
+        source = {"ls": "original"}
+        profile = HarnessProfile(tool_description_overrides=source)
+        source["ls"] = "mutated"
+        source["new"] = "added"
+        assert dict(profile.tool_description_overrides) == {"ls": "original"}
+
+    def test_harness_tool_description_overrides_cannot_be_mutated_in_place(self) -> None:
+        profile = HarnessProfile(tool_description_overrides={"ls": "original"})
+        with pytest.raises(TypeError):
+            profile.tool_description_overrides["ls"] = "mutated"  # type: ignore[index]
+
+
+class TestRegisterProfileKeyValidation:
+    """Tests for key-shape validation in `register_provider_profile` and `register_harness_profile`."""
+
+    def test_empty_key_rejected_provider(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            register_provider_profile("", ProviderProfile())
+
+    def test_empty_key_rejected_harness(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            register_harness_profile("", HarnessProfile())
+
+    def test_multiple_colons_rejected_provider(self) -> None:
+        with pytest.raises(ValueError, match="more than one"):
+            register_provider_profile("a:b:c", ProviderProfile())
+
+    def test_multiple_colons_rejected_harness(self) -> None:
+        with pytest.raises(ValueError, match="more than one"):
+            register_harness_profile("a:b:c", HarnessProfile())
+
+    def test_empty_provider_half_rejected(self) -> None:
+        with pytest.raises(ValueError, match="empty provider"):
+            register_provider_profile(":model", ProviderProfile())
+
+    def test_empty_model_half_rejected(self) -> None:
+        with pytest.raises(ValueError, match="empty provider"):
+            register_harness_profile("openai:", HarnessProfile())
+
+    def test_valid_provider_key_accepted(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("validprov", ProviderProfile())
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_valid_provider_model_key_accepted(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("validprov:model-name", HarnessProfile())
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestMergeMiddlewareDuplicateTypes:
+    """Regression tests for `_merge_middleware` when either side has multiple middleware of the same concrete type."""
+
+    def test_base_with_duplicate_types_drops_trailing_after_replace(self) -> None:
+        """With two base entries of one type, the override replaces only the first; the duplicate is dropped."""
+
+        class MW:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        a1, a2 = MW("a1"), MW("a2")
+        b1 = MW("b1")
+        merged_factory = _merge_middleware([a1, a2], [b1])
+        assert callable(merged_factory)
+        merged = list(merged_factory())
+        assert merged == [b1]
+
+    def test_base_with_duplicate_types_preserves_other_base_entries(self) -> None:
+        """Novel base types are kept; only duplicates of replaced types are dropped."""
+
+        class MWA:
+            pass
+
+        class MWB:
+            pass
+
+        a1, a2 = MWA(), MWA()
+        b_novel = MWB()
+        override_a = MWA()
+        merged_factory = _merge_middleware([a1, a2, b_novel], [override_a])
+        assert callable(merged_factory)
+        merged = list(merged_factory())
+        assert merged == [override_a, b_novel]
+
+    def test_novel_override_types_appended_after_replacement(self) -> None:
+        class MWA:
+            pass
+
+        class MWB:
+            pass
+
+        base_a = MWA()
+        override_a = MWA()
+        override_b = MWB()
+        merged_factory = _merge_middleware([base_a], [override_a, override_b])
+        assert callable(merged_factory)
+        merged = list(merged_factory())
+        assert merged == [override_a, override_b]
+
+
+class TestResolveModelFullPath:
+    """Tests that exercise the full string-spec path through `resolve_model` → profile lookup → `init_chat_model`."""
+
+    def test_openai_responses_api_end_to_end(self) -> None:
+        """String spec for OpenAI should reach init_chat_model with the built-in kwarg."""
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openai:gpt-5.4")
+        mock.assert_called_once_with("openai:gpt-5.4", use_responses_api=True)
+
+    def test_no_profile_registered_calls_init_chat_model_without_kwargs(self) -> None:
+        """If no profile matches, init_chat_model is called with just the spec."""
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("noprofile:some-model")
+        mock.assert_called_once_with("noprofile:some-model")
+
+    def test_exact_miss_falls_back_to_provider_profile_kwargs(self) -> None:
+        """A typo'd model spec should still get the provider-level init kwargs."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "fallprov",
+                ProviderProfile(init_kwargs={"temperature": 0.5}),
+            )
+            with patch("deepagents._models.init_chat_model") as mock:
+                mock.return_value = MagicMock(spec=BaseChatModel)
+                resolve_model("fallprov:typo-model-name")
+            mock.assert_called_once_with("fallprov:typo-model-name", temperature=0.5)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestProfileLookupBreadcrumb:
+    """Tests that exact-miss profile fallback emits a debug breadcrumb."""
+
+    def test_harness_exact_miss_logs_breadcrumb(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("crumbprov", HarnessProfile(system_prompt_suffix="s"))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness_profiles"):
+                _get_harness_profile("crumbprov:typo-model")
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("No exact HarnessProfile" in m and "crumbprov" in m for m in messages)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_provider_exact_miss_logs_breadcrumb(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("crumbprov", ProviderProfile(init_kwargs={"a": 1}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider_profiles"):
+                _get_provider_profile("crumbprov:typo-model")
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("No exact ProviderProfile" in m and "crumbprov" in m for m in messages)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestGetModelProviderLogging:
+    """Tests that `get_model_provider` logs a debug breadcrumb when `_get_ls_params` raises."""
+
+    def test_logs_exception_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(side_effect=AttributeError("boom"))
+        with caplog.at_level(logging.DEBUG, logger="deepagents._models"):
+            assert get_model_provider(model) is None
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("_get_ls_params" in m and "boom" in m for m in messages)

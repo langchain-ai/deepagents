@@ -19,11 +19,17 @@ runtime state (e.g. environment variables).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from deepagents.profiles._keys import validate_profile_key
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -32,8 +38,9 @@ class ProviderProfile:
 
     !!! beta
 
-        `ProviderProfile` is a beta API. It is safe for production use, but
-        may receive minor changes in future releases.
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     A `ProviderProfile` describes provider- or model-specific kwargs,
     pre-initialization side effects, and runtime-derived kwargs that should be
@@ -67,8 +74,15 @@ class ProviderProfile:
         ```
     """
 
-    init_kwargs: dict[str, Any] = field(default_factory=dict)
+    init_kwargs: Mapping[str, Any] = field(default_factory=dict)
     """Static keyword arguments forwarded to `init_chat_model`.
+
+    Once a profile is constructed, its kwargs can be read but not
+    rewritten — for example, `profile.init_kwargs["temperature"] = 2.0`
+    raises `TypeError`. The registry stores its own defensive copy, so
+    mutating the dict you passed into the constructor after the fact won't
+    affect the registered profile either. To change a registered profile's
+    kwargs, re-register (which merges on top) or construct a new profile.
 
     When both `init_kwargs` and `init_kwargs_factory` are set on the same
     profile, the factory's output overrides `init_kwargs` on key collision.
@@ -86,11 +100,62 @@ class ProviderProfile:
 
     Use when values depend on runtime state such as environment variables.
 
-    Factory output overrides static `init_kwargs` on any key collision within
-    the same profile.
+    Within a single profile, whenever the factory and `init_kwargs` set the
+    same key, the factory's value wins. For example:
+
+    ```python
+    ProviderProfile(
+        init_kwargs={"temperature": 0, "timeout": 30},
+        init_kwargs_factory=lambda: {"temperature": 0.7, "base_url": os.environ["BASE_URL"]},
+    )
+    ```
+
+    At resolution, this forwards `temperature=0.7` (factory wins),
+    `timeout=30` (only in static), and `base_url=<env value>` (only from
+    factory) to `init_chat_model`.
+
+    When merging profiles, if both the base and override profiles define a
+    factory, both run at every resolution — base first, then override — and
+    their outputs merge with the override's values winning on any shared
+    keys. A worked example: the built-in OpenRouter factory always sets
+    `app_url` and `app_title`; layer a user profile whose factory reads a
+    per-tenant `OPENROUTER_APP_TITLE_TENANT` env var and sets `app_title`
+    from it. Every resolution runs both factories; the user's `app_title`
+    replaces the built-in, while the built-in's `app_url` is preserved.
     """
-    # (e.g. the built-in OpenRouter attribution headers that defer to
-    # `OPENROUTER_APP_URL` / `OPENROUTER_APP_TITLE`).
+
+    def __post_init__(self) -> None:
+        """Freeze `init_kwargs` to prevent post-construction mutation.
+
+        `@dataclass(frozen=True)` only prevents rebinding attributes (e.g.,
+        `profile.init_kwargs = {...}`). It does not prevent mutating the
+        contents of a mutable value, so without this hook a caller could
+        silently corrupt a registered profile:
+
+        ```python
+        shared = {"temperature": 0}
+        profile = ProviderProfile(init_kwargs=shared)
+        register_provider_profile("openai", profile)
+
+        # Later, somewhere else in the program:
+        shared["temperature"] = 2.0  # mutates caller's dict
+        profile.init_kwargs["timeout"] = 5  # mutates the registered profile
+        ```
+
+        Both of those were ways to change what `resolve_model` forwarded to
+        `init_chat_model` long after registration, with no audit trail.
+        This method defensively copies `init_kwargs` into a fresh dict and
+        wraps it in `MappingProxyType` — a read-only view — so both
+        scenarios become errors: the first because the registry holds its
+        own copy independent of `shared`, and the second because item
+        assignment on a `MappingProxyType` raises `TypeError`.
+        """
+        if not isinstance(self.init_kwargs, MappingProxyType):
+            object.__setattr__(
+                self,
+                "init_kwargs",
+                MappingProxyType(dict(self.init_kwargs)),
+            )
 
 
 _PROVIDER_PROFILES: dict[str, ProviderProfile] = {}
@@ -102,8 +167,9 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
 
     !!! beta
 
-        `register_provider_profile` is a beta API. It is safe for production
-        use, but may receive minor changes in future releases.
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     Registrations are **additive**: if a profile is already registered under
     `key` (including a built-in profile loaded at import time), the new profile
@@ -132,37 +198,50 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     ```
 
     Args:
-        key: A provider name like `"openai"` for provider-wide defaults, or a
-            full `provider:model` spec like `"openai:gpt-5.4"` for a per-model
-            override.
+        key: Either a provider name (no colon) for provider-wide defaults,
+            or a full `provider:model` spec for a per-model override. Valid
+            shapes:
+
+            - `"openai"` — provider-wide
+            - `"openai:gpt-5.4"` — specific model
+
         profile: The provider profile to register.
+
+    Raises:
+        ValueError: If `key` is empty, contains more than one `:`, or has an
+            empty provider/model half.
     """
+    validate_profile_key(key)
     existing = _PROVIDER_PROFILES.get(key)
     if existing is not None:
         profile = _merge_provider_profiles(existing, profile)
     _PROVIDER_PROFILES[key] = profile
 
 
-def _get_provider_profile(spec: str) -> ProviderProfile:
+def _get_provider_profile(spec: str) -> ProviderProfile | None:
     """Look up the `ProviderProfile` for a model spec.
 
     Resolution order:
 
     1. Exact match on `spec`.
-    2. Provider prefix (everything before the first `:`), when `spec` contains a colon.
-    3. A default empty `ProviderProfile`.
+    2. Provider prefix (everything before the first `:`), when `spec`
+        contains a colon.
+    3. `None` when neither matches.
 
     When both an exact-model profile and a provider-level profile exist, they
     are merged via `_merge_provider_profiles` with the exact-model entry
     overriding the provider-level entry on conflicts.
+
+    When only the provider-level profile matches, a debug breadcrumb is
+    emitted so registrations layered on an exact key can be traced when they
+    don't apply (e.g. typo'd specs falling through to the provider default).
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
             identifier.
 
     Returns:
-        The matching `ProviderProfile`, or an empty default when no registered
-        profile matches.
+        The matching `ProviderProfile`, or `None` when no registered profile matches.
     """
     exact = _PROVIDER_PROFILES.get(spec)
 
@@ -174,8 +253,13 @@ def _get_provider_profile(spec: str) -> ProviderProfile:
     if exact is not None:
         return exact
     if base is not None:
+        logger.debug(
+            "No exact ProviderProfile for %r; using provider %r profile.",
+            spec,
+            provider,
+        )
         return base
-    return ProviderProfile()
+    return None
 
 
 def _merge_provider_profiles(base: ProviderProfile, override: ProviderProfile) -> ProviderProfile:

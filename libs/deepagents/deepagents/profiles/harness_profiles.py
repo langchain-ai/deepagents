@@ -12,19 +12,25 @@ prompt assembly, tool visibility, middleware, and default subagent behavior
 *after* the chat model has been constructed — orthogonal to
 `ProviderProfile`, which controls the model-construction phase.
 
-Users may register additional profiles via `register_harness_profile`. Built-in
-profiles are registered as side effects of importing partner modules.
+Users may register profiles via `register_harness_profile`.
 """
+# Built-in profiles register during package import (see `deepagents.profiles._builtin_profiles`).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from deepagents.profiles._keys import validate_profile_key
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,8 +39,9 @@ class GeneralPurposeSubagentProfile:
 
     !!! beta
 
-        `GeneralPurposeSubagentProfile` is a beta API. It is safe for
-        production use, but may receive minor changes in future releases.
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     These settings only affect the default subagent that `create_deep_agent`
     inserts when the caller does not explicitly provide a subagent named
@@ -44,8 +51,11 @@ class GeneralPurposeSubagentProfile:
     enabled: bool | None = None
     """Whether to auto-add the default general-purpose subagent.
 
-    `None` means inherit the parent/default behavior of including the
-    subagent. `False` disables the auto-added subagent entirely.
+    `None` means inherit from a base profile when merging, or fall back to
+    the default of including the subagent. `True` forces inclusion and is
+    what a model-level profile can use to re-enable a subagent that a
+    provider-level profile disabled. `False` disables the auto-added
+    subagent entirely.
 
     !!! note
 
@@ -66,8 +76,9 @@ class HarnessProfile:
 
     !!! beta
 
-        `HarnessProfile` is a beta API. It is safe for production use, but may
-        receive minor changes in future releases.
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     A `HarnessProfile` describes prompt-assembly, tool-visibility, middleware,
     and default-subagent adjustments applied by `create_deep_agent` once a
@@ -79,6 +90,10 @@ class HarnessProfile:
     phase (e.g. `init_chat_model` kwargs, pre-init side effects). Concerns
     that shape *how the model is built* belong in `ProviderProfile`; concerns
     that shape *how the agent runs* belong here.
+
+    The `extra_middleware` field expects
+    `langchain.agents.middleware.types.AgentMiddleware` instances or a
+    factory returning a sequence of them.
 
     Example:
         Append a model-specific system-prompt suffix:
@@ -109,18 +124,37 @@ class HarnessProfile:
     `base_system_prompt` when set. `None` means no suffix.
     """
 
-    tool_description_overrides: dict[str, str] = field(default_factory=dict)
+    tool_description_overrides: Mapping[str, str] = field(default_factory=dict)
     """Per-tool description replacements keyed by tool name.
 
     Applied only where Deep Agents has a stable description hook: built-in
     filesystem tools, the `task` tool, and user-supplied `BaseTool` or dict
     tools. Plain callable tools are left unchanged.
 
+    Once a profile is constructed, its overrides can be read but not
+    rewritten — for example, `profile.tool_description_overrides["ls"] =
+    "new"` raises `TypeError`. The registry stores its own defensive copy,
+    so mutating the dict you passed into the constructor after the fact
+    won't affect the registered profile either. To change a registered
+    profile's overrides, re-register (which merges on top) or construct a
+    new profile.
+
     !!! warning
 
         Keys are matched by tool name string. If a built-in tool is renamed
         or removed, stale keys silently become no-ops with no error. Keep
         overrides minimal and verify against the current tool names.
+
+    !!! warning "Overriding task tool description"
+
+        The `task` tool's default description contains an `{available_agents}`
+        format placeholder that `SubAgentMiddleware` replaces at build time
+        with the registered subagent name/description list. If your
+        override string does not include `{available_agents}`, the final
+        description is used as-is and the model will not see which
+        subagents exist — making the tool much less useful. Include the
+        placeholder in any `"task"` override, e.g.
+        `"My custom instructions.\\n\\n{available_agents}"`.
     """
 
     excluded_tools: frozenset[str] = frozenset()
@@ -140,7 +174,16 @@ class HarnessProfile:
     """Middleware appended to every runtime middleware stack.
 
     Applied to the main agent, the auto-added `general-purpose` subagent, and
-    declarative synchronous subagents created from `SubAgent` specs.
+    declarative synchronous subagents created from `SubAgent` specs —
+    i.e., the stacks that `create_deep_agent` assembles itself.
+
+    *Not* applied to `CompiledSubAgent` runnables or `AsyncSubAgent` entries.
+    A `CompiledSubAgent` is passed in pre-built (its `runnable` is already a
+    compiled graph with its own middleware chain), so `create_deep_agent` has
+    nothing to append to. An `AsyncSubAgent` runs out-of-process against a
+    remote deployment and its middleware is configured on that remote graph,
+    not here. In both cases, injecting local middleware would either fail
+    silently or violate the caller's explicit configuration.
 
     May be a static sequence or a zero-arg factory that returns one. Use a
     factory when middleware instances should not be shared across stacks.
@@ -153,13 +196,43 @@ class HarnessProfile:
     entirely.
     """
 
+    def __post_init__(self) -> None:
+        """Freeze the tool-description override mapping.
+
+        `@dataclass(frozen=True)` only prevents rebinding attributes; it does
+        not prevent mutating the contents of a mutable value. Without this
+        hook, both of the following would silently alter a registered
+        profile after the fact:
+
+        ```python
+        shared = {"ls": "original"}
+        profile = HarnessProfile(tool_description_overrides=shared)
+        register_harness_profile("openai", profile)
+
+        shared["ls"] = "mutated"  # via external alias
+        profile.tool_description_overrides["ls"] = "x"  # via direct write
+        ```
+
+        This method defensively copies the dict into a fresh one and wraps
+        it in `MappingProxyType` — a read-only view — so both scenarios
+        become errors: the first because the registry holds its own copy
+        independent of `shared`, and the second because item assignment on
+        a `MappingProxyType` raises `TypeError`.
+        """
+        if not isinstance(self.tool_description_overrides, MappingProxyType):
+            object.__setattr__(
+                self,
+                "tool_description_overrides",
+                MappingProxyType(dict(self.tool_description_overrides)),
+            )
+
 
 _HARNESS_PROFILES: dict[str, HarnessProfile] = {}
 """Internal registry mapping harness-profile keys to `HarnessProfile` instances.
 
 Keys are either a full `provider:model` spec for per-model overrides or a
 bare provider name for provider-wide defaults. Lookup order is exact spec,
-then provider prefix, then an empty default profile.
+then provider prefix, then no match (returns `None`).
 """
 
 
@@ -168,12 +241,12 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
 
     !!! beta
 
-        `register_harness_profile` is a beta API. It is safe for production
-        use, but may receive minor changes in future releases.
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded at import time), the new
-    profile is merged on top via `_merge_profiles` rather than replacing it.
+    `key`, the new profile is merged on top rather than replacing it.
     The incoming profile's fields win on conflicts; unspecified fields inherit
     from the existing profile. Excluded-tool sets union, middleware sequences
     merge by type, and `general_purpose_subagent` settings merge field-wise.
@@ -191,37 +264,50 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
     ```
 
     Args:
-        key: A provider name like `"openai"` for provider-wide defaults, or a
-            full `provider:model` spec like `"openai:gpt-5.4"` for a
-            per-model override.
+        key: Either a provider name (no colon) for provider-wide defaults,
+            or a full `provider:model` spec for a per-model override. Valid
+            shapes:
+
+            - `"openai"` — provider-wide
+            - `"openai:gpt-5.4"` — specific model
         profile: The harness profile to register.
+
+    Raises:
+        ValueError: If `key` is empty, contains more than one `:`, or has an
+            empty provider/model half.
     """
+    validate_profile_key(key)
     existing = _HARNESS_PROFILES.get(key)
     if existing is not None:
         profile = _merge_profiles(existing, profile)
     _HARNESS_PROFILES[key] = profile
 
 
-def _get_harness_profile(spec: str) -> HarnessProfile:
+def _get_harness_profile(spec: str) -> HarnessProfile | None:
     """Look up the `HarnessProfile` for a model spec.
 
     Resolution order:
 
     1. Exact match on `spec`.
-    2. Provider prefix (everything before the first `:`).
-    3. A default empty `HarnessProfile`.
+    2. Provider prefix (everything before the first `:`), when `spec`
+        contains a colon.
+    3. `None` when neither matches.
 
     When both an exact-model profile and a provider-level profile exist, they
     are merged field-by-field. Unset model-level fields inherit provider
     defaults, while explicit model-level overrides still replace or augment
     provider settings according to each field's merge semantics.
 
+    When only the provider-level profile matches, a debug breadcrumb is
+    emitted so registrations layered on an exact key can be traced when they
+    don't apply (e.g. typo'd specs falling through to the provider default).
+
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
             identifier.
 
     Returns:
-        The matching `HarnessProfile`, or an empty default.
+        The matching `HarnessProfile`, or `None` when no registered profile matches.
     """
     exact = _HARNESS_PROFILES.get(spec)
 
@@ -233,8 +319,13 @@ def _get_harness_profile(spec: str) -> HarnessProfile:
     if exact is not None:
         return exact
     if base is not None:
+        logger.debug(
+            "No exact HarnessProfile for %r; using provider %r profile.",
+            spec,
+            provider,
+        )
         return base
-    return HarnessProfile()
+    return None
 
 
 def _resolve_middleware_seq(
@@ -252,9 +343,30 @@ def _merge_middleware(
 ) -> Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]]:
     """Merge two middleware sequences by type.
 
-    If the override supplies middleware whose type already exists in the base,
-    the override instance replaces it in place and preserves the original
-    position. Novel override middleware is appended.
+    Middleware stacks have at most one instance of each concrete class, so
+    the merge treats the class as the identity. When the override has an
+    instance whose class already appears in the base, the override instance
+    replaces the base instance *at the same position*; the rest of the
+    base ordering is preserved. Classes that appear only in the override
+    are appended at the end in override order.
+
+    Example:
+        Given base `[A, B]` and override `[A_new, C]` where `A_new` is a
+        second instance of the same class as `A`:
+
+        - `A_new` replaces `A` at position 0.
+        - `B` is kept at position 1.
+        - `C` is appended at the end.
+
+        Merged result: `[A_new, B, C]`.
+
+    Edge case — duplicates within the base:
+        If the base somehow contains more than one instance of the same
+        class (an unusual configuration), only the first occurrence is
+        replaced; later duplicates are dropped. For example, base
+        `[A1, A2]` + override `[A_new]` merges to `[A_new]`, not
+        `[A_new, A_new]`. This mirrors the intent of "replace in place"
+        rather than "insert once per base match".
 
     Args:
         base_middleware: Base middleware sequence with lower priority.
@@ -271,15 +383,17 @@ def _merge_middleware(
         override_seq = _resolve_middleware_seq(override_middleware)
         override_by_type: dict[type, AgentMiddleware] = {type(m): m for m in override_seq}
         merged: list[AgentMiddleware] = []
-        seen: set[type] = set()
-        for middleware in base_seq:
-            middleware_type = type(middleware)
-            if middleware_type in override_by_type:
-                merged.append(override_by_type[middleware_type])
-                seen.add(middleware_type)
+        replaced: set[type] = set()
+        for entry in base_seq:
+            entry_type = type(entry)
+            if entry_type in override_by_type:
+                if entry_type not in replaced:
+                    merged.append(override_by_type[entry_type])
+                    replaced.add(entry_type)
+                # Drop subsequent base duplicates so the override isn't inserted twice.
             else:
-                merged.append(middleware)
-        merged.extend(m for m in override_seq if type(m) not in seen)
+                merged.append(entry)
+        merged.extend(m for m in override_seq if type(m) not in replaced)
         return merged
 
     return factory
@@ -304,8 +418,9 @@ def _merge_general_purpose_subagent_profiles(
 def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessProfile:
     """Merge two harness profiles, layering `override` on top of `base`.
 
-    Scalar fields such as prompts use the override value when set, otherwise
-    fall back to the base. For example, if the provider sets
+    Single-value fields such as `base_system_prompt` and `system_prompt_suffix`
+    use the override value when the override has set it, otherwise fall back
+    to the base. For example, if the provider sets
     `system_prompt_suffix="Use tools when helpful"` and the exact-model
     profile leaves `system_prompt_suffix=None`, the merged profile keeps the
     provider suffix.
@@ -318,15 +433,17 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     Excluded-tool sets are unioned. For example, `{"execute"}` plus
     `{"grep"}` becomes `{"execute", "grep"}` in the merged profile.
 
-    Middleware sequences are merged by type via `_merge_middleware`. For
+    Middleware sequences are merged by type (see `_merge_middleware`). For
     example, if both profiles provide a middleware of the same class, the
     override instance replaces the base instance in the same position, while
     novel middleware classes from the override are appended.
 
-    General-purpose subagent settings are merged fieldwise so model-level
-    tweaks can inherit provider defaults. For example, a provider profile can
-    set the default subagent description while an exact-model profile only
-    overrides its system prompt; the merged profile keeps both.
+    `general_purpose_subagent` fields merge one at a time so model-level
+    tweaks can inherit provider defaults: whichever side explicitly sets a
+    field wins, and unset fields (left as `None`) fall back to the other
+    side. This means a model-level `enabled=True` can re-enable a subagent
+    that a provider-level profile disabled with `enabled=False`, and vice
+    versa.
 
     Args:
         base: Lower-priority profile, typically from the provider.

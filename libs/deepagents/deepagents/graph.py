@@ -7,7 +7,7 @@ middleware.
 
 import logging
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from langchain.agents import AgentState, create_agent
@@ -44,7 +44,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile
-from deepagents.profiles.harness_profiles import _get_harness_profile
+from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 
 logger = logging.getLogger(__name__)
 
@@ -136,28 +136,40 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
 
     If `spec` is provided (the original string the caller passed), it is used
     for registry lookup. Otherwise the model identifier is extracted from the
-    instance (via `model_dump`) and used as a best-effort fallback.
+    model instance (via `model_dump`) and used as a best-effort fallback, with a
+    final fallback to the provider name from the model class.
 
     Args:
         model: Resolved chat model instance.
         spec: Original model spec string, or `None` for pre-built instances.
 
     Returns:
-        The matching `HarnessProfile`, or an empty default (null object).
+        The matching `HarnessProfile`, or an empty default (null object) when
+            nothing resolves.
     """
     if spec is not None:
-        return _get_harness_profile(spec)
+        return _get_harness_profile(spec) or HarnessProfile()
     identifier = get_model_identifier(model)
     if identifier is not None:
         profile = _get_harness_profile(identifier)
-        if profile != HarnessProfile():
+        if profile is not None:
             return profile
-        logger.debug("No profile for identifier %r, trying provider fallback", identifier)
-    # Bare model name (no colon) — fall back to provider from the model class.
     provider = get_model_provider(model)
     if provider is not None:
-        return _get_harness_profile(provider)
-    logger.debug("No harness profile found for pre-built model %s, using defaults", type(model).__name__)
+        profile = _get_harness_profile(provider)
+        if profile is not None:
+            return profile
+    # Only surface at info when the user has registered profiles but none
+    # matched. With an empty registry, no profile was ever going to apply, so
+    # the miss is unsurprising and stays at debug.
+    level = logging.INFO if _HARNESS_PROFILES else logging.DEBUG
+    logger.log(
+        level,
+        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults.",
+        type(model).__name__,
+        identifier,
+        provider,
+    )
     return HarnessProfile()
 
 
@@ -179,7 +191,7 @@ def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
 
 def _apply_tool_description_overrides(
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-    overrides: dict[str, str],
+    overrides: Mapping[str, str],
 ) -> list[BaseTool | Callable | dict[str, Any]] | None:
     """Apply description overrides without mutating caller-owned tools.
 
@@ -287,7 +299,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `TodoListMiddleware`
             - `SkillsMiddleware` (if `skills` is provided)
             - `FilesystemMiddleware`
-            - `SubAgentMiddleware` (if sync subagents are available)
+            - `SubAgentMiddleware` (if any inline subagents — declarative `SubAgent` or `CompiledSubAgent` — are available)
             - `SummarizationMiddleware`
             - `PatchToolCallsMiddleware`
             - `AsyncSubAgentMiddleware` (if async `subagents` are provided)
@@ -548,8 +560,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
-    # Skip auto-adding when a caller already supplied their own general-purpose
-    # subagent — that explicit spec is how callers override the default.
+    # Skip auto-adding when the harness profile disables it or when a caller
+    # already supplied their own general-purpose subagent — an explicit spec
+    # is how callers override the default.
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         inline_subagents.insert(0, general_purpose_spec)
 
@@ -570,11 +583,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
-                # Overrides the task tool description. Value should include
-                # {available_agents} — a format placeholder replaced with the
-                # subagent name/description list. Without it the model can't
-                # see which subagents exist. None (default) uses the built-in
-                # template. Stale keys silently no-op if the tool is renamed.
                 task_description=_profile.tool_description_overrides.get("task"),
             )
         )

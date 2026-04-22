@@ -362,8 +362,8 @@ def scan_skill_references(source: str) -> frozenset[str]:
 
 
 __all__ = [
-    "LoadedSkill",
     "SKILL_MODULE_EXTENSIONS",
+    "LoadedSkill",
     "SkillInstallError",
     "SkillLoadError",
     "SkillScopeInvalid",

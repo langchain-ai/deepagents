@@ -26,9 +26,8 @@ agent = create_deep_agent(
 - [Programmatic tool calling (PTC)](#programmatic-tool-calling-ptc)
 - [Skills: importable JS/TS modules](#skills-importable-jsts-modules)
 - [Configuration reference](#configuration-reference)
-- [How it fits together](#how-it-fits-together)
 - [Errors the model can see](#errors-the-model-can-see)
-- [Status](#status)
+- [License](#license)
 
 ## Why
 
@@ -176,7 +175,7 @@ The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")`
 
 ### What the model sees
 
-When PTC is on, the system-prompt snippet grows a `### API Reference — `tools` namespace` section listing every exposed tool as a TypeScript-ish signature derived from the tool's args schema:
+When PTC is on, the system-prompt snippet grows an *API Reference — `tools` namespace* section listing every exposed tool as a TypeScript-ish signature derived from the tool's args schema:
 
 ```ts
 /** Search the web for the given query. */

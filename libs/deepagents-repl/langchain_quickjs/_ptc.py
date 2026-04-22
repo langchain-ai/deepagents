@@ -109,7 +109,9 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
         camel = to_camel_case(t.name)
         schema = _safe_json_schema(t)
         signature = _render_signature(camel, schema)
-        description = (t.description or "").strip().splitlines()[0] if t.description else ""
+        description = (
+            (t.description or "").strip().splitlines()[0] if t.description else ""
+        )
         blocks.append(f"/** {description} */\n{signature}")
     body = "\n\n".join(blocks)
     return (

@@ -1,7 +1,7 @@
 """Bootstrap for built-in and third-party profile plugins.
 
-Built-in provider profiles (OpenAI, OpenRouter) are registered via
-explicit module imports — not entry points — so a malformed or missing
+Built-in provider profiles (OpenAI, OpenRouter, Google GenAI) are registered
+via explicit module imports — not entry points — so a malformed or missing
 `dist-info` in the environment cannot silently disable the SDK's own
 defaults. Third parties plug in via `importlib.metadata` entry points
 under two groups:
@@ -25,7 +25,7 @@ import logging
 from importlib.metadata import entry_points
 
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
-from deepagents.profiles.provider import _openai, _openrouter
+from deepagents.profiles.provider import _google_genai, _openai, _openrouter
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ def _ensure_builtin_profiles_loaded() -> None:
         return
     _openai.register()
     _openrouter.register()
+    _google_genai.register()
     _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
     _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
     _BOOTSTRAP_HARNESS_KEYS = frozenset(_HARNESS_PROFILES)

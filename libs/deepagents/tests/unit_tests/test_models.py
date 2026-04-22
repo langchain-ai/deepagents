@@ -29,6 +29,10 @@ from deepagents.profiles.harness_profiles import (
     _merge_middleware,
     _merge_profiles,
 )
+from deepagents.profiles.provider._google_genai import (
+    GOOGLE_GENAI_MIN_VERSION,
+    check_google_genai_version,
+)
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
@@ -243,6 +247,59 @@ class TestCheckOpenRouterVersion:
     def test_resolve_model_skips_check_for_non_openrouter(self) -> None:
         with (
             patch("deepagents.profiles.provider._openrouter.check_openrouter_version") as mock_check,
+            patch("deepagents._models.init_chat_model") as mock_init,
+        ):
+            mock_init.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("anthropic:claude-sonnet-4-6")
+
+        mock_check.assert_not_called()
+
+
+class TestCheckGoogleGenaiVersion:
+    """Tests for `check_google_genai_version`."""
+
+    def test_passes_when_not_installed(self) -> None:
+        with patch(
+            "deepagents.profiles.provider._google_genai.pkg_version",
+            side_effect=PackageNotFoundError("langchain-google-genai"),
+        ):
+            check_google_genai_version()
+
+    def test_passes_when_version_sufficient(self) -> None:
+        with patch(
+            "deepagents.profiles.provider._google_genai.pkg_version",
+            return_value=GOOGLE_GENAI_MIN_VERSION,
+        ):
+            check_google_genai_version()
+
+    def test_passes_when_version_above_minimum(self) -> None:
+        with patch("deepagents.profiles.provider._google_genai.pkg_version", return_value="99.0.0"):
+            check_google_genai_version()
+
+    def test_raises_when_version_too_old(self) -> None:
+        with (
+            patch("deepagents.profiles.provider._google_genai.pkg_version", return_value="0.0.1"),
+            pytest.raises(ImportError, match="langchain-google-genai>="),
+        ):
+            check_google_genai_version()
+
+    def test_skips_check_for_invalid_version(self) -> None:
+        with patch("deepagents.profiles.provider._google_genai.pkg_version", return_value="not-a-version"):
+            check_google_genai_version()
+
+    def test_resolve_model_calls_check(self) -> None:
+        with (
+            patch("deepagents.profiles.provider._google_genai.check_google_genai_version") as mock_check,
+            patch("deepagents._models.init_chat_model") as mock_init,
+        ):
+            mock_init.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("google_genai:gemini-3.1-pro")
+
+        mock_check.assert_called_once()
+
+    def test_resolve_model_skips_check_for_non_google_genai(self) -> None:
+        with (
+            patch("deepagents.profiles.provider._google_genai.check_google_genai_version") as mock_check,
             patch("deepagents._models.init_chat_model") as mock_init,
         ):
             mock_init.return_value = MagicMock(spec=BaseChatModel)

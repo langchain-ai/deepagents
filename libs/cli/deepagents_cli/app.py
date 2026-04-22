@@ -33,7 +33,11 @@ from textual.widgets._toast import (
     Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
 )
 
-from deepagents_cli import theme
+# Applied as an import-time side effect; must come before any App is created.
+from deepagents_cli import (
+    _textual_patches,  # noqa: F401
+    theme,
+)
 from deepagents_cli._cli_context import CLIContext
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,

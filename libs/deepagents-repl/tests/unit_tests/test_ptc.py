@@ -120,6 +120,29 @@ def test_filter_rejects_both_include_and_exclude() -> None:
         )
 
 
+def test_filter_list_of_tools_uses_them_directly() -> None:
+    """`list[BaseTool]` ignores agent tools and uses the supplied list."""
+    greet = _greet_tool()
+    out = filter_tools_for_ptc([], [greet], self_tool_name="eval")
+    assert out == [greet]
+
+
+def test_filter_list_of_tools_excludes_self_tool() -> None:
+    greet = _greet_tool()
+    eval_tool = _echo_tool("eval")
+    out = filter_tools_for_ptc([], [greet, eval_tool], self_tool_name="eval")
+    assert [t.name for t in out] == ["greet"]
+
+
+def test_filter_rejects_mixed_str_and_tool_list() -> None:
+    with pytest.raises(TypeError, match="all str or all BaseTool"):
+        filter_tools_for_ptc(
+            [_echo_tool()],
+            ["echo", _greet_tool()],
+            self_tool_name="eval",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Camel case + prompt rendering
 # ---------------------------------------------------------------------------
@@ -252,6 +275,16 @@ def test_middleware_ptc_true_includes_prompt_block() -> None:
     assert "async tools.greet(" in prompt
     # The REPL's own tool never appears
     assert "tools.eval(" not in prompt
+
+
+def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
+    """`ptc=[tool]` installs the tool in the REPL even when the agent has none."""
+    from types import SimpleNamespace
+
+    mw = REPLMiddleware(ptc=[_greet_tool()])
+    req = SimpleNamespace(tools=[])
+    prompt = mw._prepare_for_call(req)
+    assert "async tools.greet(" in prompt
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
